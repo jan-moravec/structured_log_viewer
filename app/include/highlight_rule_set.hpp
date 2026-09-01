@@ -54,8 +54,8 @@ public:
     /// @p table is non-null) rebuild the row-match cache. Emits
     /// `rulesChanged` then `matchesChanged`.
     void SetRules(
-        std::vector<loglib::LogConfiguration::HighlightRule> rules,
-        const std::vector<loglib::LogConfiguration::Column> &columns,
+        std::vector<loglib::HighlightRule> rules,
+        const std::vector<loglib::Column> &columns,
         const loglib::LogTable *table
     );
 
@@ -63,7 +63,7 @@ public:
     /// Called after `AppendKeys`, `SetColumnType`, or dictionary
     /// growth so a rule can activate / deactivate without reopening
     /// the editor.
-    void RebindColumns(const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table);
+    void RebindColumns(const std::vector<loglib::Column> &columns, const loglib::LogTable *table);
 
     /// Evaluate rules against newly-appended rows
     /// `[firstNewRow, lastNewRow]`. @p table must already contain
@@ -84,7 +84,7 @@ public:
 
     /// Source rules (used by the editor + config mirror). Order is
     /// significant (last-match-wins).
-    [[nodiscard]] const std::vector<loglib::LogConfiguration::HighlightRule> &Rules() const noexcept;
+    [[nodiscard]] const std::vector<loglib::HighlightRule> &Rules() const noexcept;
 
     /// Winning rule index for @p sourceRow, or `nullopt` when no
     /// rule matches (or the row is out of range).
@@ -124,9 +124,9 @@ private:
     /// dict, ...); the rule stays listed but doesn't participate
     /// in matching.
     static std::optional<CompiledRule> CompileRule(
-        const loglib::LogConfiguration::HighlightRule &rule,
+        const loglib::HighlightRule &rule,
         int resolvedColumn,
-        const std::vector<loglib::LogConfiguration::Column> &columns,
+        const std::vector<loglib::Column> &columns,
         const loglib::LogTable *table
     );
 
@@ -134,12 +134,12 @@ private:
     /// semantics (rule keys must all appear in the column's keys).
     /// Returns -1 when no column matches or @p keys is empty.
     static int ResolveColumnByKeys(
-        const std::vector<std::string> &keys, const std::vector<loglib::LogConfiguration::Column> &columns
+        const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns
     ) noexcept;
 
     /// Recompile every rule; refreshes `mCompiled`,
     /// `mResolvedColumn`, `mInactiveCount`, `mActiveCount`.
-    void RecompileAll(const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table);
+    void RecompileAll(const std::vector<loglib::Column> &columns, const loglib::LogTable *table);
 
     /// Evaluate rows `[first, last]` into `mRowMatch`. Requires
     /// `mRowMatch.size() > last`.
@@ -148,7 +148,7 @@ private:
     /// Rebuild `mRowMatch` from scratch against @p table.
     void RebuildAllMatches(const loglib::LogTable &table);
 
-    std::vector<loglib::LogConfiguration::HighlightRule> mRules;
+    std::vector<loglib::HighlightRule> mRules;
 
     /// Same size as `mRules`; `nullptr` marks an inert entry.
     /// `unique_ptr` keeps `RowPredicate` (a non-trivial `variant`)

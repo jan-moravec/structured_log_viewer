@@ -3,6 +3,7 @@
 #include "loglib/internal/path_encoding.hpp"
 
 #include <fmt/format.h>
+#include <mio/mmap.hpp>
 
 #include <cassert>
 #include <stdexcept>
@@ -24,6 +25,11 @@
 
 namespace loglib
 {
+
+struct LogFile::Mapping
+{
+    mio::mmap_source mmap;
+};
 
 namespace
 {
@@ -63,7 +69,7 @@ LogFile::LogFile(const std::filesystem::path &filePath)
 }
 
 LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath)
-    : mPath(std::move(logicalPath)), mStoragePath(std::move(storagePath))
+    : mPath(std::move(logicalPath)), mStoragePath(std::move(storagePath)), mMapping(std::make_unique<Mapping>())
 {
     if (!std::filesystem::exists(mStoragePath))
     {
@@ -78,9 +84,9 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
         std::error_code ec;
         // Pass mio a lossless native path encoding.
 #ifdef _WIN32
-        mMmap = mio::make_mmap_source(mStoragePath.wstring(), 0, mio::map_entire_file, ec);
+        mMapping->mmap = mio::make_mmap_source(mStoragePath.wstring(), 0, mio::map_entire_file, ec);
 #else
-        mMmap = mio::make_mmap_source(internal::PathToUtf8(mStoragePath), 0, mio::map_entire_file, ec);
+        mMapping->mmap = mio::make_mmap_source(internal::PathToUtf8(mStoragePath), 0, mio::map_entire_file, ec);
 #endif
         if (ec)
         {
@@ -88,12 +94,15 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
                 fmt::format("Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message())
             );
         }
-        HintSequential(mMmap);
+        HintSequential(mMapping->mmap);
     }
 
     mLineOffsets.push_back(0);
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
+
+LogFile::LogFile(LogFile &&) noexcept = default;
+LogFile::~LogFile() = default;
 
 const std::filesystem::path &LogFile::GetPath() const
 {
@@ -102,12 +111,12 @@ const std::filesystem::path &LogFile::GetPath() const
 
 const char *LogFile::Data() const
 {
-    return mMmap.data();
+    return mMapping ? mMapping->mmap.data() : nullptr;
 }
 
 size_t LogFile::Size() const
 {
-    return mMmap.size();
+    return mMapping ? mMapping->mmap.size() : 0;
 }
 
 std::string LogFile::GetLine(size_t lineNumber) const
@@ -121,8 +130,8 @@ std::string LogFile::GetLine(size_t lineNumber) const
     size_t stopLine = lineNumber + 1;
     if (HasMultiLineRecords())
     {
-        const auto it = mMultiLineSpans.find(lineNumber);
-        if (it != mMultiLineSpans.end() && it->second + 1 < mLineOffsets.size())
+        const auto it = mMultiLineSpans->find(lineNumber);
+        if (it != mMultiLineSpans->end() && it->second + 1 < mLineOffsets.size())
         {
             stopLine = it->second + 1;
         }
@@ -139,13 +148,14 @@ std::string LogFile::GetLine(size_t lineNumber) const
     // newline use `fileSize + 1` as the sentinel; clamp against the mmap size.
     size_t length = stopOffset - startOffset - 1;
 
-    const size_t mmapSize = mMmap.size();
+    assert(mMapping);
+    const size_t mmapSize = mMapping->mmap.size();
     if (startOffset + length > mmapSize)
     {
         length = mmapSize - static_cast<size_t>(startOffset);
     }
 
-    std::string buffer(mMmap.data() + startOffset, length);
+    std::string buffer(mMapping->mmap.data() + startOffset, length);
     if (!buffer.empty() && buffer.back() == '\r')
     {
         buffer.pop_back();
@@ -190,7 +200,7 @@ void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
     {
         return;
     }
-    mMultiLineSpans[headerLineId] = lastLineId;
+    (*mMultiLineSpans)[headerLineId] = lastLineId;
 }
 
 std::string_view LogFile::OwnedStringsView() const noexcept

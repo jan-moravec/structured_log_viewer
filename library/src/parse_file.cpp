@@ -69,7 +69,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
     // fallback. Verify the JSON case explicitly so unknown
     // content still surfaces as an unparseable-file error rather
     // than being silently pushed through the JSON parser.
-    if (detected.format == LogConfiguration::Source::Format::Json)
+    if (detected.format == Source::Format::Json)
     {
         const JsonParser probe;
         if (!probe.IsValidBytes(head))

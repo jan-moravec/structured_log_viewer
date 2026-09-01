@@ -39,7 +39,7 @@
 #include <utility>
 #include <vector>
 
-using Rule = loglib::LogConfiguration::HighlightRule;
+using Rule = loglib::HighlightRule;
 
 namespace
 {
@@ -553,11 +553,11 @@ private slots:
     /// over-accept-not-over-reject design contract.
     void AllAbsentAndUnderNotIsMatchAll()
     {
-        loglib::LogConfiguration::Column existing;
+        loglib::Column existing;
         existing.header = "level";
         existing.keys = {"level"};
-        existing.type = loglib::LogConfiguration::Type::String;
-        const std::vector<loglib::LogConfiguration::Column> columns{existing};
+        existing.type = loglib::ColumnType::String;
+        const std::vector<loglib::Column> columns{existing};
 
         // `NOT (missing:x AND other_missing:y)` -- both leaves
         // reference unknown columns, so both compile absent.
@@ -590,11 +590,11 @@ private slots:
     /// in the design note.
     void SiblingSurvivesNotAllAbsent()
     {
-        loglib::LogConfiguration::Column svcCol;
+        loglib::Column svcCol;
         svcCol.header = "svc";
         svcCol.keys = {"svc"};
-        svcCol.type = loglib::LogConfiguration::Type::String;
-        const std::vector<loglib::LogConfiguration::Column> columns{svcCol};
+        svcCol.type = loglib::ColumnType::String;
+        const std::vector<loglib::Column> columns{svcCol};
 
         loglib::LeafRule svcLeaf;
         svcLeaf.type = loglib::LeafRule::Type::String;
@@ -643,11 +643,11 @@ private slots:
     /// `EvaluateExpression`.
     void NotWithNullChildCompilesToMatchAll()
     {
-        loglib::LogConfiguration::Column svcCol;
+        loglib::Column svcCol;
         svcCol.header = "svc";
         svcCol.keys = {"svc"};
-        svcCol.type = loglib::LogConfiguration::Type::String;
-        const std::vector<loglib::LogConfiguration::Column> columns{svcCol};
+        svcCol.type = loglib::ColumnType::String;
+        const std::vector<loglib::Column> columns{svcCol};
 
         // Top-level `Not{child=nullptr}` -> match-all.
         loglib::FilterExpression bareNullNot;

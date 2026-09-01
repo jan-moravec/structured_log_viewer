@@ -19,9 +19,9 @@
 // project-wide UPPER_CASE constexpr convention without breaking JSON I/O.
 // NOLINTBEGIN(readability-identifier-naming)
 
-template <> struct glz::meta<loglib::LogConfiguration::Type>
+template <> struct glz::meta<loglib::ColumnType>
 {
-    using enum loglib::LogConfiguration::Type;
+    using enum loglib::ColumnType;
     static constexpr std::array keys{
         "any", "string", "boolean", "integer", "floating", "number", "time", "enumeration", "level"
     };
@@ -46,18 +46,18 @@ template <> struct glz::meta<loglib::LeafRule::Match>
 // `LeafRule::Type` / `LeafRule::Match`, so their meta comes from
 // the specialisations above.
 
-template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
+template <> struct glz::meta<loglib::Source::Kind>
 {
-    using enum loglib::LogConfiguration::Source::Kind;
+    using enum loglib::Source::Kind;
     // Append `Stdin` so existing `File` and `NetworkStream` ordinals
     // remain stable in saved sessions. Stdin sessions are not auto-saved.
     static constexpr std::array keys{"file", "networkStream", "stdin"};
     static constexpr std::array value{File, NetworkStream, Stdin};
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::Source::Format>
+template <> struct glz::meta<loglib::Source::Format>
 {
-    using enum loglib::LogConfiguration::Source::Format;
+    using enum loglib::Source::Format;
     static constexpr std::array keys{"json", "logfmt", "csv", "regex"};
     static constexpr std::array value{Json, Logfmt, Csv, Regex};
 };
@@ -66,18 +66,28 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Format>
 // rename into a compile-time conflict instead of a silent breaking
 // schema change. The names match the current implicit reflection,
 // so adopting these meta declarations is a no-op for on-disk JSON.
-template <> struct glz::meta<loglib::LogConfiguration::Source>
+template <> struct glz::meta<loglib::Source>
 {
-    using T = loglib::LogConfiguration::Source;
+    using T = loglib::Source;
+
+    static constexpr auto readDisplayPaths = [](T &self, std::vector<std::string> paths) {
+        self.ReplaceDisplayPaths(std::move(paths));
+    };
+    static constexpr auto writeDisplayPaths = [](const T &self) { return self.DisplayPaths(); };
+    static constexpr auto readDedupKeys = [](T &self, std::vector<std::string> keys) {
+        self.ReplaceDedupKeys(std::move(keys));
+    };
+    static constexpr auto writeDedupKeys = [](const T &self) { return self.DedupKeys(); };
+
     static constexpr auto value = object(
         "kind",
         &T::kind,
         "format",
         &T::format,
         "locators",
-        &T::locators,
+        glz::custom<readDisplayPaths, writeDisplayPaths>,
         "locatorDedupKeys",
-        &T::locatorDedupKeys,
+        glz::custom<readDedupKeys, writeDedupKeys>,
         "regexPattern",
         &T::regexPattern,
         "followRotationSiblings",
@@ -85,9 +95,9 @@ template <> struct glz::meta<loglib::LogConfiguration::Source>
     );
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::Column>
+template <> struct glz::meta<loglib::Column>
 {
-    using T = loglib::LogConfiguration::Column;
+    using T = loglib::Column;
     static constexpr auto value = object(
         "header",
         &T::header,
@@ -109,7 +119,7 @@ template <> struct glz::meta<loglib::LogConfiguration::Column>
 };
 
 // A leaf of the filter tree. Column identity is a subset-match
-// against `LogConfiguration::Column::keys`, so leaves survive
+// against `Column::keys`, so leaves survive
 // `MoveColumn` and cross-source apply without any remap.
 template <> struct glz::meta<loglib::LeafRule>
 {
@@ -196,9 +206,9 @@ template <> struct glz::meta<loglib::FilterExpression>
     static constexpr auto value = &T::node;
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::Sort>
+template <> struct glz::meta<loglib::Sort>
 {
-    using T = loglib::LogConfiguration::Sort;
+    using T = loglib::Sort;
     static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
 };
 
@@ -213,16 +223,16 @@ template <> struct glz::meta<loglib::LogConfiguration::Sort>
 // Add new fields at the end of `object(...)` with defaults in
 // `AnchorEntry` so old configs still round-trip.
 // `error_on_unknown_keys=false` lets old builds tolerate new keys.
-template <> struct glz::meta<loglib::LogConfiguration::AnchorEntry>
+template <> struct glz::meta<loglib::AnchorEntry>
 {
-    using T = loglib::LogConfiguration::AnchorEntry;
+    using T = loglib::AnchorEntry;
     static constexpr auto value =
         object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::HighlightRule>
+template <> struct glz::meta<loglib::HighlightRule>
 {
-    using T = loglib::LogConfiguration::HighlightRule;
+    using T = loglib::HighlightRule;
     static constexpr auto value = object(
         "name",
         &T::name,

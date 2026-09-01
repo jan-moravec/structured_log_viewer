@@ -390,9 +390,8 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     // The `level` column auto-promotes from Enumeration to the canonical
     // Level type once enough dictionary entries map to a `LogLevel`; the
     // benchmark checks that *either* terminal enum-like state was reached.
-    const bool levelIsEnumeration =
-        levelColumn != columns.end() && (levelColumn->type == LogConfiguration::Type::Enumeration ||
-                                         levelColumn->type == LogConfiguration::Type::Level);
+    const bool levelIsEnumeration = levelColumn != columns.end() && (levelColumn->type == ColumnType::Enumeration ||
+                                                                     levelColumn->type == ColumnType::Level);
 
     size_t dictRefValues = 0;
     for (const LogLine &line : table.Data().Lines())

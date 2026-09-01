@@ -1045,7 +1045,7 @@ private slots:
         QVERIFY(run.model->StreamingErrors().empty());
 
         const auto &columns = run.model->Configuration().columns;
-        const auto findColumn = [&](const std::string &header) -> const loglib::LogConfiguration::Column * {
+        const auto findColumn = [&](const std::string &header) -> const loglib::Column * {
             for (const auto &c : columns)
             {
                 if (c.header == header)
@@ -1066,7 +1066,7 @@ private slots:
                 column != nullptr,
                 qPrintable(QStringLiteral("column '%1' must exist").arg(QString::fromStdString(header)))
             );
-            QCOMPARE(column->type, loglib::LogConfiguration::Type::Time);
+            QCOMPARE(column->type, loglib::ColumnType::Time);
         }
 
         // Each row populated only its own timestamp column; the other two are empty.
@@ -1151,7 +1151,7 @@ private slots:
         QVERIFY(tsCol >= 0 && msgCol >= 0);
 
         const auto &columns = run.model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::LogConfiguration::Type::Time);
+        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::ColumnType::Time);
 
         // (1) Loading: rows preserve file order (msg column).
         QCOMPARE(run.model->data(run.model->index(0, msgCol), Qt::DisplayRole).toString(), QStringLiteral("line1"));
@@ -4106,14 +4106,10 @@ private slots:
         // bookmark position + note survive a downgrade. The return
         // value counts the remapped entries so the GUI can surface
         // the colour drift.
-        std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
+        std::vector<loglib::AnchorEntry> incoming;
+        incoming.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"});
         incoming.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"}
-        );
-        incoming.push_back(
-            loglib::LogConfiguration::AnchorEntry{
-                .locator = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"
-            }
+            loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"}
         );
         QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
@@ -4132,8 +4128,8 @@ private slots:
 
         // All-valid input returns 0 clamped (it is a schema-drift
         // signal, not an input size).
-        std::vector<loglib::LogConfiguration::AnchorEntry> clean;
-        clean.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1});
+        std::vector<loglib::AnchorEntry> clean;
+        clean.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1});
         QCOMPARE(manager.Replace(clean), std::size_t{0});
     }
 
@@ -4179,38 +4175,26 @@ private slots:
         const QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
 
         // Seed two anchors.
-        std::vector<loglib::LogConfiguration::AnchorEntry> entries;
-        entries.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
-        );
-        entries.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
-        );
+        std::vector<loglib::AnchorEntry> entries;
+        entries.push_back(loglib::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
+        entries.push_back(loglib::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5});
         QCOMPARE(manager.Replace(entries), std::size_t{0});
         QCOMPARE(resetSpy.count(), 1);
         QCOMPARE(manager.Count(), std::size_t{2});
 
         // Same content, shuffled order: comparison is map-equality,
         // so this must NOT emit.
-        std::vector<loglib::LogConfiguration::AnchorEntry> shuffled;
-        shuffled.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
-        );
-        shuffled.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
-        );
+        std::vector<loglib::AnchorEntry> shuffled;
+        shuffled.push_back(loglib::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5});
+        shuffled.push_back(loglib::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
         QCOMPARE(manager.Replace(shuffled), std::size_t{0});
         QCOMPARE(resetSpy.count(), 1);
 
         // Same keys, different colour: content changed, listeners
         // must be told.
-        std::vector<loglib::LogConfiguration::AnchorEntry> mutated;
-        mutated.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
-        );
-        mutated.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 6}
-        );
+        std::vector<loglib::AnchorEntry> mutated;
+        mutated.push_back(loglib::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
+        mutated.push_back(loglib::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 6});
         QCOMPARE(manager.Replace(mutated), std::size_t{0});
         QCOMPARE(resetSpy.count(), 2);
         QCOMPARE(manager.ColorFor({.locator = "c:/logs/b.json", .lineId = 9}).value_or(255U), uint8_t{6});
@@ -5892,9 +5876,9 @@ private slots:
     void TestAnchorManagerReplaceSanitisesNotes()
     {
         AnchorManager manager;
-        std::vector<loglib::LogConfiguration::AnchorEntry> entries;
+        std::vector<loglib::AnchorEntry> entries;
         entries.push_back(
-            loglib::LogConfiguration::AnchorEntry{
+            loglib::AnchorEntry{
                 .locator = "c:/logs/a.json",
                 .lineId = 1,
                 .colorIndex = 0,
@@ -5902,7 +5886,7 @@ private slots:
             }
         );
         entries.push_back(
-            loglib::LogConfiguration::AnchorEntry{
+            loglib::AnchorEntry{
                 .locator = "c:/logs/b.json",
                 .lineId = 2,
                 .colorIndex = 3,
@@ -6782,32 +6766,18 @@ private slots:
 
         // Case A: same key twice, out-of-range first, valid second.
         // Final persisted colour is valid, so `clampedCount` = 0.
-        std::vector<loglib::LogConfiguration::AnchorEntry> aInput;
-        aInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{
-                .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"
-            }
-        );
-        aInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{
-                .locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"
-            }
-        );
+        std::vector<loglib::AnchorEntry> aInput;
+        aInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"});
+        aInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"});
         QCOMPARE(manager.Replace(aInput), std::size_t{0});
         QCOMPARE(manager.Count(), std::size_t{1});
         QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), static_cast<std::uint8_t>(3));
 
         // Case B: same key twice, valid first, out-of-range second.
         // Final persisted colour is the clamped one, so count = 1.
-        std::vector<loglib::LogConfiguration::AnchorEntry> bInput;
-        bInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"}
-        );
-        bInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{
-                .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"
-            }
-        );
+        std::vector<loglib::AnchorEntry> bInput;
+        bInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"});
+        bInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"});
         QCOMPARE(manager.Replace(bInput), std::size_t{1});
         QCOMPARE(manager.Count(), std::size_t{1});
         QCOMPARE(
@@ -6817,27 +6787,17 @@ private slots:
 
         // Case C: three duplicates: valid, out-of-range, valid.
         // Only the final state counts (valid), so count = 0.
-        std::vector<loglib::LogConfiguration::AnchorEntry> cInput;
-        cInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""}
-        );
-        cInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""}
-        );
-        cInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""}
-        );
+        std::vector<loglib::AnchorEntry> cInput;
+        cInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""});
+        cInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""});
+        cInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""});
         QCOMPARE(manager.Replace(cInput), std::size_t{0});
 
         // Case D: two distinct keys, both clamped -> count = 2
         // (proves we still count per-key, not just once).
-        std::vector<loglib::LogConfiguration::AnchorEntry> dInput;
-        dInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""}
-        );
-        dInput.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""}
-        );
+        std::vector<loglib::AnchorEntry> dInput;
+        dInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""});
+        dInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""});
         QCOMPARE(manager.Replace(dInput), std::size_t{2});
     }
 
@@ -6896,9 +6856,7 @@ private slots:
         // hint warns the user about.
         const auto persistable = manager.Entries();
         QVERIFY2(
-            std::ranges::none_of(
-                persistable, [](const loglib::LogConfiguration::AnchorEntry &e) { return e.locator.empty(); }
-            ),
+            std::ranges::none_of(persistable, [](const loglib::AnchorEntry &e) { return e.locator.empty(); }),
             "Entries() must not persist runtime-only anchors (or their notes)"
         );
 
@@ -6906,10 +6864,7 @@ private slots:
         const auto all = manager.EntriesIncludingRuntimeOnly();
         QVERIFY2(
             std::ranges::any_of(
-                all,
-                [](const loglib::LogConfiguration::AnchorEntry &e) {
-                    return e.locator.empty() && e.note == "session note";
-                }
+                all, [](const loglib::AnchorEntry &e) { return e.locator.empty() && e.note == "session note"; }
             ),
             "EntriesIncludingRuntimeOnly() must retain the runtime-only note for diagnostics"
         );
@@ -7915,7 +7870,7 @@ private slots:
         QVERIFY2(levelCol >= 0, "auto-promoted level column must exist");
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         FilterEditor editor(*run.model, QStringLiteral("test-filter"));
         editor.Load(levelCol, QStringList{});
@@ -8103,7 +8058,7 @@ private slots:
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
         // Every dict entry is canonical, so the tolerance trivially
         // holds and promotion must reach `Type::Level`.
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Row-cycle pattern is `levels[i % 6]`; check the first few.
         const auto col = static_cast<size_t>(levelCol);
@@ -8171,7 +8126,7 @@ private slots:
         QCOMPARE(columns.size(), static_cast<size_t>(3));
         QCOMPARE(columns[0].header, std::string{"body"});
         QCOMPARE(columns[1].header, std::string{"level"});
-        QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[1].type, loglib::ColumnType::Level);
         QCOMPARE(columns[2].header, std::string{"scope"});
 
         // Match any single-column `columnsMoved` whose destination
@@ -8234,10 +8189,10 @@ private slots:
         const auto &columns = run.model->Configuration().columns;
         QCOMPARE(columns.size(), static_cast<size_t>(3));
         QCOMPARE(columns[0].header, std::string{"time"});
-        QCOMPARE(columns[0].type, loglib::LogConfiguration::Type::Time);
+        QCOMPARE(columns[0].type, loglib::ColumnType::Time);
         // Level rejoined canonical index 1 after the Time bubble.
         QCOMPARE(columns[1].header, std::string{"level"});
-        QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[1].type, loglib::ColumnType::Level);
         QCOMPARE(columns[2].header, std::string{"body"});
 
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
@@ -8729,11 +8684,11 @@ private slots:
     {
         // Step 1: build the saved configuration on disk.
         loglib::LogConfiguration cfg;
-        loglib::LogConfiguration::Column column;
+        loglib::Column column;
         column.header = "lvl";
         column.keys = {"lvl"};
         column.printFormat = "{}";
-        column.type = loglib::LogConfiguration::Type::Level;
+        column.type = loglib::ColumnType::Level;
         column.parseFormats = {};
         column.levelMapping = {
             {"NOTICE", "Info"},
@@ -8754,9 +8709,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
         const int levelCol = ColumnByHeader(*model, QStringLiteral("lvl"));
         QVERIFY2(levelCol >= 0, "lvl column must exist after configuration load");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Step 3: drive a stream with mixed canonical / aliased values.
         const TempJsonFile emptyFixture(QStringList{});
@@ -8859,7 +8812,7 @@ private slots:
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Find the Filters-menu action whose data matches `filterId`.
         const auto findFilterMenuAction = [&](const QString &filterId) -> QAction * {
@@ -8980,7 +8933,7 @@ private slots:
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = run.model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         const loglib::EnumDictionary *dictionary = nullptr;
         QVERIFY(!columns[static_cast<size_t>(levelCol)].keys.empty());
@@ -9083,10 +9036,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promoting batch");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
         const loglib::KeyId levelKey = keys.Find("category");
         QVERIFY(levelKey != loglib::INVALID_KEY_ID);
         const loglib::EnumDictionary *dict = model->Table().EnumDictionaries().Find(levelKey);
@@ -9121,9 +9071,7 @@ private slots:
             model->AppendBatch(std::move(batch));
         }
 
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
         QVERIFY2(
             model->Table().EnumDictionaries().Find(levelKey) == nullptr, "demotion must erase the dictionary entry"
         );
@@ -9254,9 +9202,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist post-batch");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
         const loglib::KeyId levelKey = model->Table().Keys().Find("category");
         QVERIFY2(
             model->Table().EnumDictionaries().Find(levelKey) == nullptr,
@@ -9325,9 +9271,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Submit `Info` through FilterEditor. Only the two `info`
         // rows out of three should survive.
@@ -9362,9 +9306,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
 
         // Translation succeeded iff the two `info` rows still match
         // post-demote. Without it, `["Info"]` would byte-compare
@@ -9414,10 +9356,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Install an enum filter selecting the one resolved value via
         // `FilterEnumSubmitted` (the FilterEditor slot).
@@ -9451,9 +9390,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
 
         // Rebuilt predicate has no dictionary, so the string-set
         // fallback runs against the demoted column's string slots:
@@ -9510,10 +9447,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
@@ -11001,12 +10935,12 @@ private slots:
 
         // Install a Contains rule via `SetRules` (same call path
         // as an editor Save).
-        loglib::LogConfiguration::HighlightRule rule;
+        loglib::HighlightRule rule;
         rule.name = "hl-category-info";
         rule.enabled = true;
         rule.columnKeys = {"category"};
-        rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
-        rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Contains;
+        rule.type = loglib::HighlightRule::Type::String;
+        rule.matchType = loglib::HighlightRule::Match::Contains;
         rule.filterString = "info";
         rule.backgroundIndex = 1;
         highlights->SetRules({rule}, model->Configuration().columns, &model->Table());
@@ -11916,8 +11850,7 @@ private slots:
         const auto &columns = model->Configuration().columns;
         const auto levelType = columns[static_cast<size_t>(levelCol)].type;
         QVERIFY2(
-            levelType == loglib::LogConfiguration::Type::Enumeration ||
-                levelType == loglib::LogConfiguration::Type::Level,
+            levelType == loglib::ColumnType::Enumeration || levelType == loglib::ColumnType::Level,
             "precondition: streaming must have promoted the level column to an enum-like type"
         );
         const std::vector<std::string> levelKeys = columns[static_cast<size_t>(levelCol)].keys;
@@ -12296,11 +12229,11 @@ private slots:
         // `TryLoadAsConfigurationForTest` mirrors the on-disk load
         // path used by the production entry point.
         loglib::LogConfiguration cfg;
-        loglib::LogConfiguration::Column svcCol;
+        loglib::Column svcCol;
         svcCol.header = "svc";
         svcCol.keys = {"svc", "service", "svcname"};
         svcCol.printFormat = "{}";
-        svcCol.type = loglib::LogConfiguration::Type::String;
+        svcCol.type = loglib::ColumnType::String;
         svcCol.parseFormats = {};
         cfg.columns.push_back(svcCol);
 
@@ -12676,9 +12609,7 @@ private slots:
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
         mWindow->SetCurrentSourceForTest(
-            loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {syntheticSource}
-            }
+            loglib::Source{.kind = loglib::Source::Kind::File, .locators = {syntheticSource}}
         );
 
         const QTemporaryDir savedDir;
@@ -12694,13 +12625,10 @@ private slots:
             probe.Configuration().source.has_value(),
             "SaveScope::Full must persist the source descriptor for a streamed-then-finished file"
         );
-        QCOMPARE(
-            static_cast<int>(probe.Configuration().source->kind),
-            static_cast<int>(loglib::LogConfiguration::Source::Kind::File)
-        );
+        QCOMPARE(static_cast<int>(probe.Configuration().source->kind), static_cast<int>(loglib::Source::Kind::File));
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()),
+            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
             QString::fromStdString(syntheticSource)
         );
 
@@ -12723,7 +12651,7 @@ private slots:
             "Load -> Save round trip must preserve a loaded source descriptor"
         );
         QCOMPARE(resaveProbe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(resaveProbe.Configuration().source->locators.front(), syntheticSource);
+        QCOMPARE(resaveProbe.Configuration().source->locators.front().displayPath, syntheticSource);
     }
 
     // `OpenMode::Append` keeps the active static session's rows / filters /
@@ -12766,7 +12694,7 @@ private slots:
 
         // Source descriptor lists every appended file in load order.
         loglib::LogConfigurationManager manager;
-        manager.SetSource(loglib::LogConfiguration::Source{});
+        manager.SetSource(loglib::Source{});
         const QTemporaryDir saved;
         QVERIFY(saved.isValid());
         const QString sessionPath = saved.filePath(QStringLiteral("appended.json"));
@@ -12780,20 +12708,20 @@ private slots:
         // lower-cased dedup form is parallel-indexed under
         // `locatorDedupKeys`. Assert both stay populated.
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
-        QCOMPARE(probe.Configuration().source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].dedupKey),
             logapp::CanonicalLocator(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].dedupKey),
             logapp::CanonicalLocator(fixtureB.Path())
         );
     }
@@ -12903,9 +12831,9 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         const auto &locators = probe.Configuration().source->locators;
         QCOMPARE(locators.size(), static_cast<std::size_t>(3));
-        QCOMPARE(QString::fromStdString(locators[0]), logapp::CanonicalDisplayPath(olderPath));
-        QCOMPARE(QString::fromStdString(locators[1]), logapp::CanonicalDisplayPath(oldPath));
-        QCOMPARE(QString::fromStdString(locators[2]), logapp::CanonicalDisplayPath(primaryPath));
+        QCOMPARE(QString::fromStdString(locators[0].displayPath), logapp::CanonicalDisplayPath(olderPath));
+        QCOMPARE(QString::fromStdString(locators[1].displayPath), logapp::CanonicalDisplayPath(oldPath));
+        QCOMPARE(QString::fromStdString(locators[2].displayPath), logapp::CanonicalDisplayPath(primaryPath));
     }
 
     // The sibling toast names the expanded family, not the last input.
@@ -13261,7 +13189,7 @@ private slots:
         {
             const auto &source = mWindow->CurrentSourceForTest();
             QVERIFY(source.has_value());
-            QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+            QCOMPARE(source->locators.size(), static_cast<std::size_t>(2));
         }
 
         finishedSpy.clear();
@@ -13301,11 +13229,10 @@ private slots:
         );
 
         // Use an unrelated source so deduplication cannot mask the opt-out.
-        loglib::LogConfiguration::Source spoof;
-        spoof.kind = loglib::LogConfiguration::Source::Kind::File;
-        spoof.format = loglib::LogConfiguration::Source::Format::Json;
+        loglib::Source spoof;
+        spoof.kind = loglib::Source::Kind::File;
+        spoof.format = loglib::Source::Format::Json;
         spoof.locators = {dir.filePath(QStringLiteral("unrelated.log")).toStdString()};
-        spoof.locatorDedupKeys = spoof.locators;
         spoof.followRotationSiblings = false;
         mWindow->SetCurrentSourceForTest(spoof);
 
@@ -13372,11 +13299,7 @@ private slots:
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
-        const bool sawPrimary = std::any_of(
-            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
-                return k == primaryKey;
-            }
-        );
+        const bool sawPrimary = loglib::ContainsDedupKey(*source, primaryKey);
         QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
 
         mWindow->NewSessionForTest();
@@ -13443,11 +13366,7 @@ private slots:
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
-        const bool sawPrimary = std::any_of(
-            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
-                return k == primaryKey;
-            }
-        );
+        const bool sawPrimary = loglib::ContainsDedupKey(*source, primaryKey);
         QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
 
         mWindow->NewSessionForTest();
@@ -13517,13 +13436,7 @@ private slots:
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const std::string otherKey = logapp::CanonicalLocator(otherPath).toStdString();
         const std::string siblingKey = logapp::CanonicalLocator(oldPath).toStdString();
-        const auto hasKey = [&source](const std::string &k) {
-            return std::any_of(
-                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&k](const std::string &existing) {
-                    return existing == k;
-                }
-            );
-        };
+        const auto hasKey = [&source](const std::string &k) { return loglib::ContainsDedupKey(*source, k); };
         QVERIFY2(hasKey(primaryKey), "undo must resurrect the app.log primary");
         QVERIFY2(hasKey(otherKey), "undo must resurrect the other.log primary");
         QVERIFY2(!hasKey(siblingKey), "undo must not re-attach the sibling this time");
@@ -14080,18 +13993,14 @@ private slots:
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const std::string olderKey = logapp::CanonicalLocator(olderPath).toStdString();
         const std::string oldKey = logapp::CanonicalLocator(oldPath).toStdString();
-        const auto hasKey = [&source](const std::string &key) {
-            return std::any_of(
-                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&key](const std::string &k) {
-                    return k == key;
-                }
-            );
-        };
+        const auto hasKey = [&source](const std::string &key) { return loglib::ContainsDedupKey(*source, key); };
         QVERIFY2(hasKey(primaryKey), "derotated live-tail must include the active primary");
         QVERIFY2(hasKey(olderKey), "picked segment must still appear in the historical prefix");
         QVERIFY2(hasKey(oldKey), "intermediate numbered sibling must be loaded");
         QCOMPARE(source->locators.size(), static_cast<std::size_t>(3));
-        QCOMPARE(QString::fromStdString(source->locators.back()), logapp::CanonicalDisplayPath(primaryPath));
+        QCOMPARE(
+            QString::fromStdString(source->locators.back().displayPath), logapp::CanonicalDisplayPath(primaryPath)
+        );
 
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
@@ -14131,11 +14040,12 @@ private slots:
 
         // Keep the global preference on while the bound source opts out.
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
-        loglib::LogConfiguration::Source optedOut{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
-            .format = loglib::LogConfiguration::Source::Format::Json,
-            .locators = {logapp::CanonicalDisplayPath(otherPath).toStdString()},
-            .locatorDedupKeys = {logapp::CanonicalLocator(otherPath).toStdString()},
+        loglib::Source optedOut{
+            .kind = loglib::Source::Kind::File,
+            .format = loglib::Source::Format::Json,
+            .locators =
+                {{logapp::CanonicalDisplayPath(otherPath).toStdString(),
+                  logapp::CanonicalLocator(otherPath).toStdString()}},
             .followRotationSiblings = false,
         };
         mWindow->SetCurrentSourceForTest(optedOut);
@@ -14150,8 +14060,8 @@ private slots:
 
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
-        QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(1));
-        QCOMPARE(QString::fromStdString(source->locatorDedupKeys.front()), logapp::CanonicalLocator(primaryPath));
+        QCOMPARE(source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(source->locators.front().dedupKey), logapp::CanonicalLocator(primaryPath));
 
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
@@ -14265,11 +14175,11 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
@@ -14379,7 +14289,7 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()),
+            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
@@ -14451,11 +14361,12 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()), logapp::CanonicalDisplayPath(path)
+            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
+            logapp::CanonicalDisplayPath(path)
         );
         // Format sniff runs on the DECOMPRESSED bytes -- extension
         // (`.jsonl.gz`) must not fool the classifier.
-        QCOMPARE(probe.Configuration().source->format, loglib::LogConfiguration::Source::Format::Json);
+        QCOMPARE(probe.Configuration().source->format, loglib::Source::Format::Json);
     }
 
     // Regression: appending during an in-flight decompression must
@@ -14547,10 +14458,11 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]), logapp::CanonicalDisplayPath(gzipPath)
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
+            logapp::CanonicalDisplayPath(gzipPath)
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(appendFixture.Path())
         );
     }
@@ -14637,11 +14549,12 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(uncompressedFixture.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]), logapp::CanonicalDisplayPath(gzipPath)
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
+            logapp::CanonicalDisplayPath(gzipPath)
         );
     }
 
@@ -14923,9 +14836,7 @@ private slots:
         // Streaming auto-detected `msg` to `String`; pin it to
         // `Integer` to force a mismatch and re-snapshot health.
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
 
         const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
         model->RefreshColumnHealth();
@@ -15150,9 +15061,7 @@ private slots:
         const QImage funnelOnlyImage = funnelOnly.pixmap(16, 16).toImage();
 
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -15350,9 +15259,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Submit `Info` while the column is still Level; the
         // pre-demote tooltip lists the canonical name.
@@ -15389,9 +15296,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
 
         const QString tooltipAfter = model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(
@@ -15512,10 +15417,7 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "category column must exist after streaming");
         auto *model = mWindow->Model();
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Enum branch: assert each selected value is mentioned;
         // the exact separator is an implementation detail. The
@@ -15607,9 +15509,7 @@ private slots:
 
         // Force a mismatch by pinning `msg` to Integer.
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -15634,9 +15534,7 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
 
         const ConfigurationDiagnosticsDialog dialog(model);
@@ -15730,9 +15628,7 @@ private slots:
 
         // Force `msg` into a mismatch so the dialog paints a warning row.
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
 
         // Snapshot the Light-theme brushes for the `msg` row.
@@ -16002,9 +15898,7 @@ private slots:
 
         // Baseline: msg auto-detected to String, visible, header "msg".
         QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(msgCol)].type, loglib::LogConfiguration::Type::String
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(msgCol)].type, loglib::ColumnType::String);
 
         ColumnEditor editor(model, msgCol);
 
@@ -16034,7 +15928,7 @@ private slots:
 
         const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
         QCOMPARE(QString::fromStdString(updated.header), QStringLiteral("message"));
-        QCOMPARE(updated.type, loglib::LogConfiguration::Type::Integer);
+        QCOMPARE(updated.type, loglib::ColumnType::Integer);
         QVERIFY2(!updated.autoDetect, "Pinning a concrete type must flip autoDetect off");
         QVERIFY2(!updated.visible, "Visible checkbox must round-trip to Column::visible");
 
@@ -16071,10 +15965,7 @@ private slots:
         // it stops short of `Type::Level`). Verify the precondition
         // so a future detector change doesn't silently disarm the
         // test.
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // (1) Enumeration -> String: editor demotes the column. The
         // signal must fire so any active enum filter rebuilds onto
@@ -16093,10 +15984,7 @@ private slots:
             typeCombo->setCurrentIndex(STRING_CHOICE_INDEX);
             editor.Apply();
 
-            QCOMPARE(
-                model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-                loglib::LogConfiguration::Type::String
-            );
+            QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
             bool sawDemote = false;
             for (int i = 0; i < enumSpy.count(); ++i)
             {
@@ -16128,8 +16016,7 @@ private slots:
             editor.Apply();
 
             QCOMPARE(
-                model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-                loglib::LogConfiguration::Type::Enumeration
+                model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration
             );
             bool sawPromote = false;
             for (int i = 0; i < enumSpy.count(); ++i)
@@ -16189,7 +16076,7 @@ private slots:
         // never clears the flag. `FindTypeChoiceIndex` must surface
         // this as "Enumeration", not as index 0 ("Auto-detect").
         const auto &preEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
-        QCOMPARE(preEdit.type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(preEdit.type, loglib::ColumnType::Enumeration);
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
 
         ColumnEditor editor(model, categoryCol);
@@ -16211,7 +16098,7 @@ private slots:
         editor.Apply();
 
         const auto &postEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
-        QCOMPARE(postEdit.type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(postEdit.type, loglib::ColumnType::Enumeration);
         QVERIFY2(postEdit.autoDetect, "Accept-without-change must preserve the auto-detector's autoDetect=true flag");
         QCOMPARE(enumSpy.count(), 0);
     }
@@ -16237,9 +16124,7 @@ private slots:
         // "Auto-detect" then exercises both the autoDetect flag
         // restoration *and* the rescan that promotes the column
         // back to the detector's preferred type.
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
         ColumnEditor editor(model, msgCol);
@@ -16256,7 +16141,7 @@ private slots:
         // re-route -- consistent with the streaming detector's
         // behaviour, and harmless because `Type::String` columns
         // are not enum-pass-eligible.
-        QCOMPARE(updated.type, loglib::LogConfiguration::Type::String);
+        QCOMPARE(updated.type, loglib::ColumnType::String);
         QVERIFY2(updated.autoDetect, "Auto-detect choice must restore autoDetect=true");
     }
 
@@ -16277,19 +16162,14 @@ private slots:
 
         // `category` was already promoted by streaming. Demote it
         // to Integer so picking Auto-detect is a real transition.
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(categoryCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(categoryCol), loglib::ColumnType::Integer);
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(categoryCol), false);
 
         // Pump the model through the same edit path the user would
         // hit to make sure `OnUserChangedColumnType` is invoked
         // (which clears dict state) before the rescan runs.
-        model->ApplyColumnTypeEdit(categoryCol, loglib::LogConfiguration::Type::Integer, false);
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(categoryCol)].type,
-            loglib::LogConfiguration::Type::Integer
-        );
+        model->ApplyColumnTypeEdit(categoryCol, loglib::ColumnType::Integer, false);
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(categoryCol)].type, loglib::ColumnType::Integer);
 
         ColumnEditor editor(model, categoryCol);
         auto *typeCombo = editor.findChild<QComboBox *>();
@@ -16300,8 +16180,7 @@ private slots:
 
         const auto promotedType = model->Configuration().columns[static_cast<size_t>(categoryCol)].type;
         QVERIFY2(
-            promotedType == loglib::LogConfiguration::Type::Enumeration ||
-                promotedType == loglib::LogConfiguration::Type::Level,
+            promotedType == loglib::ColumnType::Enumeration || promotedType == loglib::ColumnType::Level,
             "RescanColumnForAutoDetection must promote a small-cardinality column out of Any"
         );
     }
@@ -16787,10 +16666,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(
-            model.Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model.Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Warm the cache.
         filterModel.sort(levelCol, Qt::AscendingOrder);
@@ -19717,9 +19593,7 @@ private slots:
         // type mismatch and re-snapshot health. Same pattern as
         // `TestColumnHealthFlagsMismatchedType`.
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -19801,9 +19675,7 @@ private slots:
         QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
 
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(
-            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
-        );
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -20406,13 +20278,13 @@ private slots:
         {
             loglib::LogConfigurationManager scratch;
             scratch.AppendKeys({"category"});
-            scratch.SetColumnType(0, loglib::LogConfiguration::Type::Enumeration);
+            scratch.SetColumnType(0, loglib::ColumnType::Enumeration);
             scratch.Save(cfgPath.toStdString());
         }
         model->ConfigurationManager().Load(cfgPath.toStdString());
 
         QCOMPARE(model->Configuration().columns.size(), static_cast<size_t>(1));
-        QCOMPARE(model->Configuration().columns[0].type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(model->Configuration().columns[0].type, loglib::ColumnType::Enumeration);
 
         const FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
         // `UpdateSelectedColumn(0)` settles the OK / placeholder state.
@@ -20473,10 +20345,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::Enumeration;
@@ -20569,7 +20438,7 @@ private slots:
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Don't pin an exact count: dictionary growth may re-fire.
         QVERIFY2(
@@ -20702,7 +20571,7 @@ private slots:
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
         const auto &columns = model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(valueCol)].type, loglib::LogConfiguration::Type::Integer);
+        QCOMPARE(columns[static_cast<size_t>(valueCol)].type, loglib::ColumnType::Integer);
 
         const QString filterId = QStringLiteral("numeric-range");
         QVERIFY2(
@@ -20813,7 +20682,7 @@ private slots:
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
         const auto &columns = model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean);
+        QCOMPARE(columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         const QString filterId = QStringLiteral("boolean-true-only");
         QVERIFY2(
@@ -20987,10 +20856,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::Number;
@@ -21071,9 +20937,7 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::String;
@@ -21151,9 +21015,7 @@ private slots:
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(valueCol)].type, loglib::LogConfiguration::Type::Integer
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(valueCol)].type, loglib::ColumnType::Integer);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::String;
@@ -21232,9 +21094,7 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::Boolean;
@@ -21315,7 +21175,7 @@ private slots:
 
         const int col = ColumnByHeader(*model, QStringLiteral("mycol"));
         QVERIFY2(col >= 0, "mycol column must exist after the first batch");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Any);
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::ColumnType::Any);
         QVERIFY(model->Configuration().columns[static_cast<size_t>(col)].autoDetect);
 
         // Install an enum filter while the column is still a candidate:
@@ -21357,9 +21217,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::ColumnType::Enumeration);
         bool sawPromoted = false;
         for (const auto &args : enumChangedSpy)
         {
@@ -21429,9 +21287,7 @@ private slots:
 
         const int colA = ColumnByHeader(*model, QStringLiteral("colA"));
         QVERIFY2(colA >= 0, "colA must exist after batch 1");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::ColumnType::Enumeration);
 
         // Install an enum filter on colA only. Predicate is built
         // with the live dictionary so it's already on the fast path.
@@ -21468,9 +21324,7 @@ private slots:
 
         const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
         QVERIFY2(colB >= 0, "colB must exist after batch 2");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
         QVERIFY2(colA != colB, "colA and colB must be distinct columns for the scoping test");
 
         // The filter on colA must NOT have been rebuilt. The only
@@ -21546,11 +21400,9 @@ private slots:
         const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
         QVERIFY2(colA == 0, "colA must land at column 0 (first appended new key)");
         QVERIFY2(colB == 1, "colB must land at column 1 (second appended new key)");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Any);
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::ColumnType::Any);
         QVERIFY(model->Configuration().columns[static_cast<size_t>(colA)].autoDetect);
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
         const loglib::KeyId colBKey = keys.Find("colB");
         QVERIFY(colBKey != loglib::INVALID_KEY_ID);
         const loglib::EnumDictionary *colBDict = model->Table().EnumDictionaries().Find(colBKey);
@@ -21578,15 +21430,9 @@ private slots:
 
         const int colC = ColumnByHeader(*model, QStringLiteral("colC"));
         QVERIFY2(colC == 2, "colC must land at column 2 (only new key in batch 2)");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Enumeration
-        );
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
-        );
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colC)].type, loglib::LogConfiguration::Type::Enumeration
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colC)].type, loglib::ColumnType::Enumeration);
         const loglib::EnumDictionary *colBDictAfter = model->Table().EnumDictionaries().Find(colBKey);
         QVERIFY2(colBDictAfter != nullptr, "colB must remain enum across batch 2");
         QCOMPARE(static_cast<int>(colBDictAfter->Size()), 2);
@@ -21809,9 +21655,7 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         const QString filterId = QStringLiteral("bool-canonical-title");
         QVERIFY2(
@@ -23466,7 +23310,7 @@ private slots:
 
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(tsCol) < columns.size());
-        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::LogConfiguration::Type::Time);
+        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::ColumnType::Time);
 
         // `FormatLogValue` rounds to milliseconds before formatting, so the
         // date library always emits a `.fff` fractional suffix even with the
@@ -23506,18 +23350,11 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.columns.push_back(
-            loglib::LogConfiguration::Column{
-                .header = "category", .keys = {"category"}, .type = loglib::LogConfiguration::Type::Enumeration
-            }
+            loglib::Column{.header = "category", .keys = {"category"}, .type = loglib::ColumnType::Enumeration}
         );
-        cfg.columns.push_back(
-            loglib::LogConfiguration::Column{
-                .header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String
-            }
-        );
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
-            .locators = {"C:/logs/first.json", "C:/logs/second.json"}
+        cfg.columns.push_back(loglib::Column{.header = "msg", .keys = {"msg"}, .type = loglib::ColumnType::String});
+        cfg.source = loglib::Source{
+            .kind = loglib::Source::Kind::File, .locators = {"C:/logs/first.json", "C:/logs/second.json"}
         };
 
         const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
@@ -23554,9 +23391,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"TCP 127.0.0.1:5170"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"TCP 127.0.0.1:5170"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 
@@ -23579,8 +23414,8 @@ private slots:
         for (int i = 0; i < capacityPlus; ++i)
         {
             loglib::LogConfiguration cfg;
-            cfg.source = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File,
+            cfg.source = loglib::Source{
+                .kind = loglib::Source::Kind::File,
                 .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
             };
             const QString uuid = manager.WriteSnapshot(cfg);
@@ -23623,15 +23458,11 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfgA;
-        cfgA.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/a.json"}
-        };
+        cfgA.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/a.json"}};
         const QString uuidA = manager.WriteSnapshot(cfgA);
 
         loglib::LogConfiguration cfgB;
-        cfgB.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/b.json"}
-        };
+        cfgB.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/b.json"}};
         const QString uuidB = manager.WriteSnapshot(cfgB);
 
         // Newest (B) is the head; LastSessionPath points at B.
@@ -23658,9 +23489,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/only.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/only.json"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
 
@@ -24003,7 +23832,7 @@ private slots:
         QVERIFY(foreign.tryLock(100));
 
         loglib::LogConfiguration cfg;
-        loglib::LogConfiguration::Source src;
+        loglib::Source src;
         src.locators = {"C:/logs/locked.json"};
         cfg.source = src;
 
@@ -24783,8 +24612,8 @@ private slots:
         for (int i = 0; i < 3; ++i)
         {
             loglib::LogConfiguration cfg;
-            cfg.source = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File,
+            cfg.source = loglib::Source{
+                .kind = loglib::Source::Kind::File,
                 .locators = {QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()}
             };
             uuids.append(manager.WriteSnapshot(cfg));
@@ -24857,9 +24686,7 @@ private slots:
         // Seed an entry so the `Touch` pre-check passes and the
         // call reaches the cross-process lock.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/contended.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/contended.json"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 
@@ -24969,9 +24796,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/versioned.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/versioned.json"}};
         QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
 
         const QSettings probe;
@@ -25149,7 +24974,7 @@ private slots:
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25250,7 +25075,7 @@ private slots:
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25331,7 +25156,7 @@ private slots:
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25449,7 +25274,7 @@ private slots:
         const QString cfgPath = cfgDir.filePath(QStringLiteral("mixed-cfg.json"));
 
         loglib::LogConfigurationManager builder;
-        builder.SetSource(loglib::LogConfiguration::Source{});
+        builder.SetSource(loglib::Source{});
         builder.AppendKeys({"category", "msg"});
 
         loglib::LeafRule filter;
@@ -25459,7 +25284,7 @@ private slots:
         filter.matchType = loglib::LeafRule::Match::Contains;
         builder.SetExpression(WireLeavesAsExpression({filter}));
 
-        loglib::LogConfiguration::Sort sort;
+        loglib::Sort sort;
         sort.columnIndex = 0;
         sort.descending = true;
         builder.SetSort(sort);
@@ -25681,9 +25506,9 @@ private slots:
 
         const auto &source = wired->CurrentSourceForTest();
         QVERIFY(source.has_value());
-        QCOMPARE(source->kind, loglib::LogConfiguration::Source::Kind::File);
-        QCOMPARE(source->locators, std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
-        QCOMPARE(source->locatorDedupKeys, std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
+        QCOMPARE(source->kind, loglib::Source::Kind::File);
+        QCOMPARE(source->DisplayPaths(), std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
+        QCOMPARE(source->DedupKeys(), std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
         QCOMPARE(wired->Model()->Configuration().anchors.size(), static_cast<size_t>(1));
         // Anchor locators must match `Source::locatorDedupKeys`
@@ -25725,12 +25550,12 @@ private slots:
                 QStringLiteral(R"({"severity":"err","msg":"second"})"),
             },
             [](loglib::LogConfiguration &configuration) {
-                loglib::LogConfiguration::HighlightRule rule{};
+                loglib::HighlightRule rule{};
                 rule.name = "Errors";
                 rule.enabled = true;
                 rule.columnKeys = {"severity"};
-                rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
-                rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Exactly;
+                rule.type = loglib::HighlightRule::Type::String;
+                rule.matchType = loglib::HighlightRule::Match::Exactly;
                 rule.filterString = "err";
                 rule.foregroundIndex = 2;
                 rule.backgroundIndex = 0;
@@ -25843,7 +25668,7 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 2);
         QCOMPARE(QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Active"));
         QVERIFY(wired->CurrentSourceForTest().has_value());
-        QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::LogConfiguration::Source::Kind::File);
+        QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::Source::Kind::File);
         QCOMPARE(wired->CurrentSourceForTest()->locators.size(), static_cast<size_t>(2));
     }
 
@@ -26233,9 +26058,7 @@ private slots:
 
         // Seed one valid entry.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/kept.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/kept.json"}};
         const QString keptUuid = manager.WriteSnapshot(cfg);
         QVERIFY(!keptUuid.isEmpty());
         const QString keptPath = manager.PathForUuid(keptUuid);
@@ -26285,9 +26108,7 @@ private slots:
 
         // Seed an entry to mkpath the directory.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/seed.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/seed.json"}};
         const QString seedUuid = manager.WriteSnapshot(cfg);
         QVERIFY(!seedUuid.isEmpty());
 
@@ -26361,9 +26182,7 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
-                loglib::LogConfiguration::Source{
-                    .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/live.log"}
-                }
+                loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"/tmp/live.log"}}
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -26379,9 +26198,7 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
-                loglib::LogConfiguration::Source{
-                    .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-                }
+                loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}}
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -26408,9 +26225,7 @@ private slots:
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         wired->SetCurrentSourceForTest(
-            loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}
-            }
+            loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}}
         );
         wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -26457,9 +26272,7 @@ private slots:
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
         builder.SetSource(
-            loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-            }
+            loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}}
         );
         builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
@@ -26501,9 +26314,7 @@ private slots:
             loglib::LogConfigurationManager builder;
             builder.AppendKeys({"msg"});
             builder.SetSource(
-                loglib::LogConfiguration::Source{
-                    .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-                }
+                loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}}
             );
             builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
 
@@ -26562,9 +26373,7 @@ private slots:
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
         builder.SetSource(
-            loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {fixture.Path().toStdString()}
-            }
+            loglib::Source{.kind = loglib::Source::Kind::File, .locators = {fixture.Path().toStdString()}}
         );
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         builder.Save(adhocPath.toStdString(), loglib::SaveScope::Full);
@@ -26764,9 +26573,7 @@ private slots:
         // `WriteSnapshot` so the entry lives in the index; without
         // it, `Touch` would short-circuit and mask the gate.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
         const QString jsonPath = manager.PathForUuid(uuid);
@@ -26800,9 +26607,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
@@ -26836,9 +26641,7 @@ private slots:
         // Corrupt the JSON so the pre-flight parse fails. Post-fix
         // the corrupt entry is removed from the index.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 
@@ -26875,7 +26678,7 @@ private slots:
         const QString path = dir.filePath(QStringLiteral("seed.json"));
         {
             loglib::LogConfiguration cfg;
-            loglib::LogConfiguration::Column col;
+            loglib::Column col;
             col.header = "msg";
             col.keys = {"msg"};
             cfg.columns.push_back(col);
@@ -26923,8 +26726,8 @@ private slots:
         for (int i = 0; i < capacityPlus; ++i)
         {
             loglib::LogConfiguration cfg;
-            cfg.source = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File,
+            cfg.source = loglib::Source{
+                .kind = loglib::Source::Kind::File,
                 .locators = {QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()}
             };
             const QString uuid = manager.WriteSnapshot(cfg);
@@ -27245,8 +27048,8 @@ private slots:
         for (int i = 0; i < 6; ++i)
         {
             loglib::LogConfiguration cfg;
-            cfg.source = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File,
+            cfg.source = loglib::Source{
+                .kind = loglib::Source::Kind::File,
                 .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
             };
             QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
@@ -27329,9 +27132,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/atomic.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/atomic.json"}};
 
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
         QVERIFY(!uuid.isEmpty());
@@ -27362,9 +27163,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/noopen.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/noopen.json"}};
 
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
         QVERIFY(!uuid.isEmpty());
@@ -27384,9 +27183,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/reuse.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/reuse.json"}};
 
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -27413,17 +27210,14 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/initial.json"}
-        };
+        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/initial.json"}};
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 
         // Mutate the source so `BuildLabel` differs; fast-path
         // equality check rejects and rewrites the entry slot.
-        cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
-            .locators = {"C:/logs/initial.json", "C:/logs/added.json"}
+        cfg.source = loglib::Source{
+            .kind = loglib::Source::Kind::File, .locators = {"C:/logs/initial.json", "C:/logs/added.json"}
         };
         const QString reuse = manager.WriteSnapshot(cfg, uuid);
         QCOMPARE(reuse, uuid);
@@ -27452,8 +27246,8 @@ private slots:
             for (int i = 0; i < OPS_PER_WRITER; ++i)
             {
                 loglib::LogConfiguration cfg;
-                cfg.source = loglib::LogConfiguration::Source{
-                    .kind = loglib::LogConfiguration::Source::Kind::File,
+                cfg.source = loglib::Source{
+                    .kind = loglib::Source::Kind::File,
                     .locators = {QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()}
                 };
                 if (!manager.WriteSnapshot(cfg).isEmpty())

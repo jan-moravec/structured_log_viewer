@@ -236,10 +236,8 @@ class HistogramDockTest : public QObject
     Q_OBJECT
 
 private slots:
-    /// Install the timezone database so `date::CurrentZone()` returns
-    /// a live pointer when the widget formats labels. Without it, the
-    /// first `zoned_time` throws and the test binary crashes on the
-    /// first paint over a populated index.
+    /// Load tzdata into the process-default `TimeZoneContext` so
+    /// histogram labels format in the display zone.
     void initTestCase()
     {
         QVERIFY2(

@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -71,9 +72,7 @@ namespace
 /// Returns -1 when nothing matches or @p keys is empty. Duplicated
 /// from `leaf_rule_compile.cpp` so `loglib` tests don't take an
 /// app-side dependency.
-[[nodiscard]] int LegacyColumnKeysToRow(
-    const std::vector<std::string> &keys, const std::vector<LogConfiguration::Column> &columns
-)
+[[nodiscard]] int LegacyColumnKeysToRow(const std::vector<std::string> &keys, const std::vector<Column> &columns)
 {
     if (keys.empty())
     {
@@ -142,8 +141,8 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
     const TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
-    const LogConfiguration::Column defaultColumn = {
-        .header = "test", .keys = {"test"}, .printFormat = "{}", .type = LogConfiguration::Type::Any, .parseFormats = {}
+    const Column defaultColumn = {
+        .header = "test", .keys = {"test"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}
     };
     logConfiguration.columns.push_back(defaultColumn);
     testLogConfiguration.Write(logConfiguration);
@@ -182,21 +181,21 @@ TEST_CASE(
         return std::ranges::find_if(columns, [header](const auto &c) { return c.header == header; });
     };
 
-    auto checkType = [&](std::string_view header, LogConfiguration::Type expected) {
+    auto checkType = [&](std::string_view header, ColumnType expected) {
         const auto it = findColumn(header);
         REQUIRE(it != columns.end());
         CHECK(it->type == expected);
     };
 
-    checkType("timestamp", LogConfiguration::Type::Time);
-    checkType("time", LogConfiguration::Type::Time);
-    checkType("ts", LogConfiguration::Type::Time);
-    checkType("@timestamp", LogConfiguration::Type::Time);
-    checkType("datetime", LogConfiguration::Type::Time);
-    checkType("created_at", LogConfiguration::Type::Time);
+    checkType("timestamp", ColumnType::Time);
+    checkType("time", ColumnType::Time);
+    checkType("ts", ColumnType::Time);
+    checkType("@timestamp", ColumnType::Time);
+    checkType("datetime", ColumnType::Time);
+    checkType("created_at", ColumnType::Time);
 
-    checkType("t", LogConfiguration::Type::Any);
-    checkType("tag", LogConfiguration::Type::Any);
+    checkType("t", ColumnType::Any);
+    checkType("tag", ColumnType::Any);
 }
 
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
@@ -205,11 +204,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "regular",
-         .keys = {"regular"},
-         .printFormat = "{}",
-         .type = LogConfiguration::Type::Any,
-         .parseFormats = {}}
+        {.header = "regular", .keys = {"regular"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
 
@@ -231,7 +226,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     REQUIRE(manager.Configuration().columns.size() == 3);
 
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[0].type == ColumnType::Time);
 
     CHECK(manager.Configuration().columns[1].header == "regular");
     CHECK(manager.Configuration().columns[2].header == "newKey");
@@ -291,7 +286,7 @@ TEST_CASE(
 
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[0].type == ColumnType::Time);
     CHECK(manager.Configuration().columns[1].header == "regular");
 }
 
@@ -307,7 +302,7 @@ TEST_CASE(
             {.header = "loaded_key",
              .keys = {"loaded_key"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::Any,
+             .type = ColumnType::Any,
              .parseFormats = {}}
         );
         firstConfigOnDisk.Write(logConfiguration);
@@ -319,7 +314,7 @@ TEST_CASE(
             {.header = "other_key",
              .keys = {"other_key"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::Any,
+             .type = ColumnType::Any,
              .parseFormats = {}}
         );
         secondConfigOnDisk.Write(logConfiguration);
@@ -363,11 +358,7 @@ TEST_CASE(
     const TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "regular",
-         .keys = {"regular"},
-         .printFormat = "{}",
-         .type = LogConfiguration::Type::Any,
-         .parseFormats = {}}
+        {.header = "regular", .keys = {"regular"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
 
@@ -404,7 +395,7 @@ TEST_CASE(
         {.header = "display",
          .keys = {"raw_key", "alias"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Any,
+         .type = ColumnType::Any,
          .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
@@ -432,7 +423,7 @@ TEST_CASE("Save and load configuration with Type::Enumeration column", "[log_con
         {.header = "Level",
          .keys = {"level", "severity"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
@@ -442,7 +433,7 @@ TEST_CASE("Save and load configuration with Type::Enumeration column", "[log_con
 
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "Level");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    CHECK(manager.Configuration().columns[0].type == ColumnType::Enumeration);
     CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"level", "severity"});
 }
 
@@ -460,7 +451,7 @@ TEST_CASE(
         LogConfigurationManager manager;
         manager.AppendKeys({"level"});
         REQUIRE(manager.Configuration().columns.size() == 1);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[0].type == ColumnType::Any);
         CHECK(manager.Configuration().columns[0].autoDetect);
     }
 
@@ -479,7 +470,7 @@ TEST_CASE(
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
         {
-            CHECK(column.type == LogConfiguration::Type::Any);
+            CHECK(column.type == ColumnType::Any);
             CHECK(column.autoDetect);
         }
     }
@@ -492,7 +483,7 @@ TEST_CASE(
             {.header = "level",
              .keys = {"level"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::Any,
+             .type = ColumnType::Any,
              .parseFormats = {},
              .visible = true,
              .levelMapping = {},
@@ -502,7 +493,7 @@ TEST_CASE(
             {.header = "service",
              .keys = {"service"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::String,
+             .type = ColumnType::String,
              .parseFormats = {}}
         );
         testCfg.Write(cfg);
@@ -511,9 +502,9 @@ TEST_CASE(
         manager.Load(testCfg.GetFilePath());
 
         REQUIRE(manager.Configuration().columns.size() == 2);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[0].type == ColumnType::Any);
         CHECK_FALSE(manager.Configuration().columns[0].autoDetect);
-        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::String);
+        CHECK(manager.Configuration().columns[1].type == ColumnType::String);
     }
 
     SECTION("Post-Load AppendKeys still assigns the candidate state to genuinely-new keys")
@@ -524,7 +515,7 @@ TEST_CASE(
             {.header = "level",
              .keys = {"level"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::Any,
+             .type = ColumnType::Any,
              .parseFormats = {},
              .visible = true,
              .levelMapping = {},
@@ -537,20 +528,20 @@ TEST_CASE(
 
         manager.AppendKeys({"freshly_streamed"});
         REQUIRE(manager.Configuration().columns.size() == 2);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[0].type == ColumnType::Any);
         CHECK_FALSE(manager.Configuration().columns[0].autoDetect);
-        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[1].type == ColumnType::Any);
         CHECK(manager.Configuration().columns[1].autoDetect);
     }
 }
 
-TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_configuration][type_round_trip]")
+TEST_CASE("Round-trip preserves every ColumnType variant", "[log_configuration][type_round_trip]")
 {
     // C++ enumerators are UpperCamelCase but the Glaze meta keeps the
     // wire format as the original lowerCamelCase strings so existing
     // saved configurations stay loadable. `double` is reserved, so both
     // sides spell it `floating`.
-    using Type = LogConfiguration::Type;
+    using Type = ColumnType;
     const std::vector<Type> variants = {
         Type::Any,
         Type::String,
@@ -622,10 +613,8 @@ TEST_CASE(
     filter.filterString = "boot";
     filter.matchType = LeafRule::Match::Contains;
     manager.SetExpression(LeavesAsExpression({filter}));
-    manager.SetSort(LogConfiguration::Sort{.columnIndex = 1, .descending = true});
-    manager.SetSource(
-        LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locators = {"C:/logs/app.json"}}
-    );
+    manager.SetSort(Sort{.columnIndex = 1, .descending = true});
+    manager.SetSource(Source{.kind = Source::Kind::File, .locators = {"C:/logs/app.json"}});
 
     const TestLogConfiguration columnsOnlyFile;
     manager.Save(columnsOnlyFile.GetFilePath(), SaveScope::ColumnsOnly);
@@ -672,17 +661,15 @@ TEST_CASE(
     CHECK(reloadedFromFull.Configuration().sort.columnIndex == 1);
     CHECK(reloadedFromFull.Configuration().sort.descending);
     REQUIRE(reloadedFromFull.Configuration().source.has_value());
-    CHECK(reloadedFromFull.Configuration().source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(reloadedFromFull.Configuration().source->kind == Source::Kind::File);
     REQUIRE(reloadedFromFull.Configuration().source->locators.size() == 1);
-    CHECK(reloadedFromFull.Configuration().source->locators.front() == "C:/logs/app.json");
+    CHECK(reloadedFromFull.Configuration().source->locators.front().displayPath == "C:/logs/app.json");
 }
 
-TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_configuration][session][source]")
+TEST_CASE("Source round-trips both Kind variants", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-    };
+    original.source = Source{.kind = Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}};
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -694,17 +681,16 @@ TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_confi
     REQUIRE_FALSE(readError);
 
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::NetworkStream);
+    CHECK(loaded.source->kind == Source::Kind::NetworkStream);
     REQUIRE(loaded.source->locators.size() == 1);
-    CHECK(loaded.source->locators.front() == "tcp://127.0.0.1:5170");
+    CHECK(loaded.source->locators.front().displayPath == "tcp://127.0.0.1:5170");
 }
 
-TEST_CASE("LogConfiguration::Source round-trips a multi-file `File` descriptor", "[log_configuration][session][source]")
+TEST_CASE("Source round-trips a multi-file `File` descriptor", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File,
-        .locators = {"C:/logs/first.json", "C:/logs/second.json", "C:/logs/third.json"}
+    original.source = Source{
+        .kind = Source::Kind::File, .locators = {"C:/logs/first.json", "C:/logs/second.json", "C:/logs/third.json"}
     };
 
     std::string json;
@@ -716,21 +702,18 @@ TEST_CASE("LogConfiguration::Source round-trips a multi-file `File` descriptor",
     REQUIRE_FALSE(readError);
 
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(loaded.source->kind == Source::Kind::File);
     REQUIRE(loaded.source->locators.size() == 3);
-    CHECK(loaded.source->locators[0] == "C:/logs/first.json");
-    CHECK(loaded.source->locators[1] == "C:/logs/second.json");
-    CHECK(loaded.source->locators[2] == "C:/logs/third.json");
+    CHECK(loaded.source->locators[0].displayPath == "C:/logs/first.json");
+    CHECK(loaded.source->locators[1].displayPath == "C:/logs/second.json");
+    CHECK(loaded.source->locators[2].displayPath == "C:/logs/third.json");
 }
 
-TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configuration][session][source]")
+TEST_CASE("Source round-trips Format::Logfmt", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File,
-        .format = LogConfiguration::Source::Format::Logfmt,
-        .locators = {"C:/logs/app.logfmt"}
-    };
+    original.source =
+        Source{.kind = Source::Kind::File, .format = Source::Format::Logfmt, .locators = {"C:/logs/app.logfmt"}};
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -742,10 +725,10 @@ TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configura
     REQUIRE_FALSE(readError);
 
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
-    CHECK(loaded.source->format == LogConfiguration::Source::Format::Logfmt);
+    CHECK(loaded.source->kind == Source::Kind::File);
+    CHECK(loaded.source->format == Source::Format::Logfmt);
     REQUIRE(loaded.source->locators.size() == 1);
-    CHECK(loaded.source->locators.front() == "C:/logs/app.logfmt");
+    CHECK(loaded.source->locators.front().displayPath == "C:/logs/app.logfmt");
 }
 
 TEST_CASE("Round-trip LeafRule with Type::Enumeration and filterValues", "[log_configuration][enum]")
@@ -882,7 +865,7 @@ TEST_CASE(
     const auto readError = glz::read_json(loaded, WIRE_JSON);
     REQUIRE_FALSE(readError);
 
-    using Type = LogConfiguration::Type;
+    using Type = ColumnType;
     REQUIRE(loaded.columns.size() == 7);
     CHECK(loaded.columns[0].type == Type::Any);
     CHECK(loaded.columns[1].type == Type::String);
@@ -945,7 +928,7 @@ TEST_CASE(
     const auto readError = glz::read_json(loaded, JSON);
     REQUIRE_FALSE(readError);
 
-    using Type = LogConfiguration::Type;
+    using Type = ColumnType;
     REQUIRE(loaded.columns.size() == 2);
     CHECK(loaded.columns[0].type == Type::Number);
     CHECK(loaded.columns[1].type == Type::Boolean);
@@ -973,11 +956,11 @@ TEST_CASE(
     // round-trips through `write_json` -> `read_json` instead of
     // matching bytes.
     LogConfiguration original;
-    LogConfiguration::Column column;
+    Column column;
     column.header = "severity";
     column.keys = {"severity"};
     column.printFormat = "{}";
-    column.type = LogConfiguration::Type::Level;
+    column.type = ColumnType::Level;
     column.parseFormats = {};
     column.levelMapping = {
         {"NOTICE", "Info"},
@@ -1002,7 +985,7 @@ TEST_CASE(
     REQUIRE_FALSE(readError);
 
     REQUIRE(loaded.columns.size() == 1);
-    CHECK(loaded.columns[0].type == LogConfiguration::Type::Level);
+    CHECK(loaded.columns[0].type == ColumnType::Level);
     REQUIRE(loaded.columns[0].levelMapping.size() == 2);
     CHECK(loaded.columns[0].levelMapping[0].first == "NOTICE");
     CHECK(loaded.columns[0].levelMapping[0].second == "Info");
@@ -1054,21 +1037,21 @@ TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationMan
     {
         LogConfiguration configuration;
         configuration.columns.push_back(
-            LogConfiguration::Column{
+            Column{
                 .header = "shown",
                 .keys = {"shown"},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::String,
+                .type = ColumnType::String,
                 .parseFormats = {},
                 .visible = true,
             }
         );
         configuration.columns.push_back(
-            LogConfiguration::Column{
+            Column{
                 .header = "hidden",
                 .keys = {"hidden"},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::String,
+                .type = ColumnType::String,
                 .parseFormats = {},
                 .visible = false,
             }
@@ -1223,7 +1206,7 @@ TEST_CASE(
     SECTION("Sort on the dragged column travels with the move")
     {
         // Index 2 ("c") sorts descending; drag "c" to the front.
-        manager.SetSort(LogConfiguration::Sort{.columnIndex = 2, .descending = true});
+        manager.SetSort(Sort{.columnIndex = 2, .descending = true});
 
         manager.MoveColumn(2, 0);
         // "c" is now at index 0; the indicator must follow.
@@ -1234,7 +1217,7 @@ TEST_CASE(
 
     SECTION("Sort on a downstream column slides up when the drag crosses it")
     {
-        manager.SetSort(LogConfiguration::Sort{.columnIndex = 3, .descending = false});
+        manager.SetSort(Sort{.columnIndex = 3, .descending = false});
 
         // Move "a" (0) to position 3 -- "d" shifts left to index 2.
         manager.MoveColumn(0, 3);
@@ -1243,7 +1226,7 @@ TEST_CASE(
 
     SECTION("Sort indicator outside the rotation window stays put")
     {
-        manager.SetSort(LogConfiguration::Sort{.columnIndex = 0, .descending = false});
+        manager.SetSort(Sort{.columnIndex = 0, .descending = false});
 
         manager.MoveColumn(2, 3);
         CHECK(manager.Configuration().sort.columnIndex == 0);
@@ -1251,7 +1234,7 @@ TEST_CASE(
 
     SECTION("No-sort sentinel (-1) survives a move")
     {
-        manager.SetSort(LogConfiguration::Sort{.columnIndex = -1, .descending = false});
+        manager.SetSort(Sort{.columnIndex = -1, .descending = false});
 
         manager.MoveColumn(0, 2);
         CHECK(manager.Configuration().sort.columnIndex == -1);
@@ -1344,7 +1327,7 @@ TEST_CASE(
 
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[0].type == ColumnType::Time);
     CHECK(manager.Configuration().columns[1].header == "regular_a");
     CHECK(manager.Configuration().columns[2].header == "regular_b");
 
@@ -1476,21 +1459,21 @@ TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigura
     {
         LogConfiguration good;
         good.columns.push_back(
-            LogConfiguration::Column{
+            Column{
                 .header = "good_a",
                 .keys = {"a"},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::String,
+                .type = ColumnType::String,
                 .parseFormats = {},
                 .visible = true,
             }
         );
         good.columns.push_back(
-            LogConfiguration::Column{
+            Column{
                 .header = "good_b",
                 .keys = {"b"},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::Integer,
+                .type = ColumnType::Integer,
                 .parseFormats = {},
                 .visible = false,
             }
@@ -1602,7 +1585,7 @@ TEST_CASE("IsLogLevelKey recognises canonical level aliases case-insensitively",
 
 TEST_CASE("FirstTimeColumnIndex returns the first Type::Time column or -1", "[log_configuration][time_column]")
 {
-    using Type = LogConfiguration::Type;
+    using Type = ColumnType;
 
     const LogConfiguration empty;
     CHECK(FirstTimeColumnIndex(empty) == -1);
@@ -1637,11 +1620,11 @@ TEST_CASE(
 )
 {
     LogConfiguration cfg;
-    LogConfiguration::Column column;
+    Column column;
     column.header = "severity";
     column.keys = {"severity"};
     column.printFormat = "{}";
-    column.type = LogConfiguration::Type::Level;
+    column.type = ColumnType::Level;
     column.parseFormats = {};
     column.levelMapping = {
         {"NOTICE", "Info"},
@@ -1658,7 +1641,7 @@ TEST_CASE(
     REQUIRE(loaded.Configuration().columns.size() == 1);
     const auto &restored = loaded.Configuration().columns[0];
     CHECK(restored.header == "severity");
-    CHECK(restored.type == LogConfiguration::Type::Level);
+    CHECK(restored.type == ColumnType::Level);
     REQUIRE(restored.levelMapping.size() == 2);
     CHECK(restored.levelMapping[0].first == "NOTICE");
     CHECK(restored.levelMapping[0].second == "Info");
@@ -1863,7 +1846,7 @@ TEST_CASE(
     // opt-in, this would throw and lose the entire session).
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[0].type == ColumnType::Time);
     CHECK(manager.Configuration().columns[1].header == "msg");
 
     const auto leaves = LegacyLeavesOf(manager.Configuration().expression);
@@ -1926,13 +1909,13 @@ TEST_CASE(
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "msg");
     REQUIRE(loglib::HasLocators(manager.Configuration().source));
-    CHECK(manager.Configuration().source->locators.front() == "C:/logs/example.json");
+    CHECK(manager.Configuration().source->locators.front().displayPath == "C:/logs/example.json");
 }
 
 TEST_CASE("Empty `locators` round-trips through Save / Load as an empty array", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locators = {}};
+    original.source = Source{.kind = Source::Kind::File, .locators = {}};
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -1943,7 +1926,7 @@ TEST_CASE("Empty `locators` round-trips through Save / Load as an empty array", 
     REQUIRE_FALSE(readError);
 
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(loaded.source->kind == Source::Kind::File);
     CHECK(loaded.source->locators.empty());
 
     // `HasLocators` is the canonical "is the source actionable"
@@ -1956,9 +1939,7 @@ TEST_CASE(
 )
 {
     LogConfiguration original;
-    original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File, .locators = {"C:/logs/a.json", "C:/logs/b.json"}
-    };
+    original.source = Source{.kind = Source::Kind::File, .locators = {"C:/logs/a.json", "C:/logs/b.json"}};
 
     const TestLogConfiguration file("test_log_configuration_pretty_locators.json");
     LogConfigurationManager::Save(original, file.GetFilePath(), SaveScope::Full);
@@ -1978,6 +1959,141 @@ TEST_CASE(
     CHECK(raw.contains("\"C:/logs/b.json\""));
 }
 
+TEST_CASE(
+    "Source JSON zips locators with locatorDedupKeys regardless of key order", "[log_configuration][session][source]"
+)
+{
+    auto load = [](std::string_view json) {
+        LogConfiguration loaded;
+        const auto error = glz::read_json(loaded, json);
+        REQUIRE_FALSE(error);
+        REQUIRE(loaded.source.has_value());
+        return std::move(loaded.source).value();
+    };
+
+    const auto displayFirst =
+        load(R"({"source":{"kind":"file","locators":["C:/A","C:/B"],"locatorDedupKeys":["c:/a","c:/b"]}})");
+    REQUIRE(displayFirst.locators.size() == 2);
+    CHECK(displayFirst.locators[0] == SourceLocator{"C:/A", "c:/a"});
+    CHECK(displayFirst.locators[1] == SourceLocator{"C:/B", "c:/b"});
+
+    const auto keysFirst =
+        load(R"({"source":{"kind":"file","locatorDedupKeys":["c:/a","c:/b"],"locators":["C:/A","C:/B"]}})");
+    REQUIRE(keysFirst.locators.size() == 2);
+    CHECK(keysFirst.locators[0] == SourceLocator{"C:/A", "c:/a"});
+    CHECK(keysFirst.locators[1] == SourceLocator{"C:/B", "c:/b"});
+
+    const auto missingKeys = load(R"({"source":{"kind":"file","locators":["C:/A"]}})");
+    REQUIRE(missingKeys.locators.size() == 1);
+    CHECK(missingKeys.locators[0].displayPath == "C:/A");
+    CHECK(missingKeys.locators[0].dedupKey.empty());
+
+    const auto extraKeys =
+        load(R"({"source":{"kind":"file","locators":["C:/A"],"locatorDedupKeys":["c:/a","extra"]}})");
+    REQUIRE(extraKeys.locators.size() == 1);
+    CHECK(extraKeys.locators[0] == SourceLocator{"C:/A", "c:/a"});
+}
+
+TEST_CASE(
+    "Source JSON discards locatorDedupKeys when locators is missing or empty", "[log_configuration][session][source]"
+)
+{
+    auto load = [](std::string_view json) {
+        LogConfiguration loaded;
+        const auto error = glz::read_json(loaded, json);
+        REQUIRE_FALSE(error);
+        REQUIRE(loaded.source.has_value());
+        return loaded;
+    };
+
+    const auto assertNotActionable = [](LogConfiguration configuration) {
+        REQUIRE(configuration.source.has_value());
+        CHECK(configuration.source->locators.empty());
+        CHECK_FALSE(loglib::HasLocators(configuration.source));
+
+        std::string json;
+        const auto writeError = glz::write_json(configuration, json);
+        REQUIRE_FALSE(writeError);
+        CHECK_FALSE(json.contains(R"("locators":[""])"));
+        CHECK_FALSE(json.contains(R"("locators":["")"));
+        CHECK_FALSE(json.contains("c:/a"));
+
+        LogConfiguration roundTrip;
+        const auto readError = glz::read_json(roundTrip, json);
+        REQUIRE_FALSE(readError);
+        CHECK_FALSE(loglib::HasLocators(roundTrip.source));
+        if (roundTrip.source.has_value())
+        {
+            CHECK(roundTrip.source->locators.empty());
+        }
+    };
+
+    SECTION("missing locators")
+    {
+        assertNotActionable(load(R"({"source":{"kind":"file","locatorDedupKeys":["c:/a"]}})"));
+    }
+
+    SECTION("empty locators array after keys")
+    {
+        assertNotActionable(load(R"({"source":{"kind":"file","locatorDedupKeys":["c:/a"],"locators":[]}})"));
+    }
+
+    SECTION("empty locators array before keys")
+    {
+        assertNotActionable(load(R"({"source":{"kind":"file","locators":[],"locatorDedupKeys":["c:/a"]}})"));
+    }
+}
+
+TEST_CASE("ReplaceDedupKeys stages keys until display paths arrive", "[log_configuration][session][source]")
+{
+    Source source;
+    source.ReplaceDedupKeys({"c:/a", "c:/b"});
+    CHECK(source.locators.empty());
+    CHECK_FALSE(loglib::HasLocators(std::optional<Source>{source}));
+
+    source.ReplaceDisplayPaths({"C:/A", "C:/B"});
+    REQUIRE(source.locators.size() == 2);
+    CHECK(source.locators[0] == SourceLocator{"C:/A", "c:/a"});
+    CHECK(source.locators[1] == SourceLocator{"C:/B", "c:/b"});
+    CHECK(source.pendingDedupKeys.empty());
+}
+
+TEST_CASE("LogConfiguration aliases extracted value groups", "[log_configuration]")
+{
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Column, Column>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Type, ColumnType>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Source, Source>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::SourceLocator, SourceLocator>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Sort, Sort>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::AnchorEntry, AnchorEntry>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::HighlightRule, HighlightRule>);
+
+    LogConfiguration configuration;
+    configuration.sort = Sort{.columnIndex = 0, .descending = true};
+    const SessionView view{.expression = configuration.expression, .sort = configuration.sort};
+    CHECK(view.sort.columnIndex == 0);
+    CHECK(view.sort.descending);
+}
+
+TEST_CASE(
+    "Source JSON write keeps parallel locators and locatorDedupKeys arrays", "[log_configuration][session][source]"
+)
+{
+    LogConfiguration original;
+    original.source = Source{
+        .kind = Source::Kind::File,
+        .locators = {{"C:/Logs/App.json", "c:/logs/app.json"}},
+    };
+
+    std::string json;
+    const auto error = glz::write_json(original, json);
+    REQUIRE_FALSE(error);
+    CHECK(json.contains("\"locators\""));
+    CHECK(json.contains("\"locatorDedupKeys\""));
+    CHECK(json.contains("C:/Logs/App.json"));
+    CHECK(json.contains("c:/logs/app.json"));
+}
+
 TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log_configuration][session][source]")
 {
     // nullopt: no source bound.
@@ -1985,14 +2101,14 @@ TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log
 
     // Present but empty: not actionable. `has_value()` alone would
     // erroneously claim a binding here.
-    LogConfiguration::Source emptyLocators;
-    emptyLocators.kind = LogConfiguration::Source::Kind::File;
-    CHECK_FALSE(loglib::HasLocators(std::optional<LogConfiguration::Source>{emptyLocators}));
+    Source emptyLocators;
+    emptyLocators.kind = Source::Kind::File;
+    CHECK_FALSE(loglib::HasLocators(std::optional<Source>{emptyLocators}));
 
-    LogConfiguration::Source oneLocator;
-    oneLocator.kind = LogConfiguration::Source::Kind::File;
+    Source oneLocator;
+    oneLocator.kind = Source::Kind::File;
     oneLocator.locators.emplace_back("C:/x.json");
-    CHECK(loglib::HasLocators(std::optional<LogConfiguration::Source>{oneLocator}));
+    CHECK(loglib::HasLocators(std::optional<Source>{oneLocator}));
 }
 
 TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_configuration][session][anchors]")
@@ -2004,7 +2120,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
     {
         LogConfiguration written;
         written.anchors.push_back(
-            LogConfiguration::AnchorEntry{
+            AnchorEntry{
                 .locator = "",
                 .lineId = 17,
                 .colorIndex = 0,
@@ -2012,7 +2128,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
             }
         );
         written.anchors.push_back(
-            LogConfiguration::AnchorEntry{
+            AnchorEntry{
                 .locator = "c:/logs/two.json",
                 .lineId = 42,
                 .colorIndex = 5,
@@ -2036,10 +2152,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
     CHECK(anchors[1].note == "first error of the incident");
 }
 
-TEST_CASE(
-    "LogConfiguration::AnchorEntry without note loads with empty note",
-    "[log_configuration][session][anchors][forward_compat]"
-)
+TEST_CASE("AnchorEntry without note loads with empty note", "[log_configuration][session][anchors][forward_compat]")
 {
     // Pre-notes session JSON: `note` is absent. Glaze's
     // default-on-missing + `error_on_unknown_keys=false` load it as
@@ -2081,13 +2194,13 @@ TEST_CASE(
     CHECK(manager.Configuration().anchors.empty());
 }
 
-TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[log_configuration][session][anchors]")
+TEST_CASE("AnchorEntry serialises with stable wire keys", "[log_configuration][session][anchors]")
 {
     // Wire-format snapshot: an entry rename would surface here as a
     // missing key, not as a silent shape change.
     LogConfiguration original;
     original.anchors.push_back(
-        LogConfiguration::AnchorEntry{
+        AnchorEntry{
             .locator = "c:/logs/app.jsonl",
             .lineId = 123,
             .colorIndex = 3,
@@ -2126,19 +2239,15 @@ TEST_CASE(
     {
         LogConfiguration written;
         // Include a minimal columns vector alongside.
-        written.columns.push_back(
-            LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
-        );
-        written.columns.push_back(
-            LogConfiguration::Column{.header = "duration", .keys = {"duration"}, .type = LogConfiguration::Type::Number}
-        );
+        written.columns.push_back(Column{.header = "service", .keys = {"service"}, .type = ColumnType::String});
+        written.columns.push_back(Column{.header = "duration", .keys = {"duration"}, .type = ColumnType::Number});
         written.highlightRules.push_back(
-            LogConfiguration::HighlightRule{
+            HighlightRule{
                 .name = "auth service",
                 .enabled = true,
                 .columnKeys = {"service"},
-                .type = LogConfiguration::HighlightRule::Type::String,
-                .matchType = LogConfiguration::HighlightRule::Match::Exactly,
+                .type = HighlightRule::Type::String,
+                .matchType = HighlightRule::Match::Exactly,
                 .filterString = "auth",
                 .foregroundIndex = 0,
                 .backgroundIndex = 3,
@@ -2147,11 +2256,11 @@ TEST_CASE(
             }
         );
         written.highlightRules.push_back(
-            LogConfiguration::HighlightRule{
+            HighlightRule{
                 .name = "slow requests",
                 .enabled = true,
                 .columnKeys = {"duration"},
-                .type = LogConfiguration::HighlightRule::Type::Number,
+                .type = HighlightRule::Type::Number,
                 .filterMinValue = 500.0,
                 .foregroundIndex = 2,
                 .backgroundIndex = 1,
@@ -2171,9 +2280,9 @@ TEST_CASE(
     CHECK(rules[0].enabled);
     REQUIRE(rules[0].columnKeys.size() == 1);
     CHECK(rules[0].columnKeys[0] == "service");
-    CHECK(rules[0].type == LogConfiguration::HighlightRule::Type::String);
+    CHECK(rules[0].type == HighlightRule::Type::String);
     REQUIRE(rules[0].matchType.has_value());
-    CHECK(*rules[0].matchType == LogConfiguration::HighlightRule::Match::Exactly);
+    CHECK(*rules[0].matchType == HighlightRule::Match::Exactly);
     REQUIRE(rules[0].filterString.has_value());
     CHECK(*rules[0].filterString == "auth");
     CHECK(rules[0].foregroundIndex == 0u);
@@ -2182,7 +2291,7 @@ TEST_CASE(
     CHECK_FALSE(rules[0].italic);
 
     CHECK(rules[1].name == "slow requests");
-    CHECK(rules[1].type == LogConfiguration::HighlightRule::Type::Number);
+    CHECK(rules[1].type == HighlightRule::Type::Number);
     REQUIRE(rules[1].filterMinValue.has_value());
     CHECK(*rules[1].filterMinValue == 500.0);
     CHECK_FALSE(rules[1].filterMaxValue.has_value());
@@ -2201,9 +2310,7 @@ TEST_CASE(
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
-        written.columns.push_back(
-            LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
-        );
+        written.columns.push_back(Column{.header = "service", .keys = {"service"}, .type = ColumnType::String});
         written.expression = LeavesAsExpression({
             LeafRule{
                 .type = LeafRule::Type::String,
@@ -2212,11 +2319,9 @@ TEST_CASE(
                 .filterString = "auth",
             },
         });
-        written.anchors.push_back(
-            LogConfiguration::AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u}
-        );
+        written.anchors.push_back(AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u});
         written.highlightRules.push_back(
-            LogConfiguration::HighlightRule{.name = "auth service", .columnKeys = {"service"}, .filterString = "auth"}
+            HighlightRule{.name = "auth service", .columnKeys = {"service"}, .filterString = "auth"}
         );
         LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::ColumnsOnly);
     }
@@ -2256,20 +2361,18 @@ TEST_CASE(
     CHECK(manager.Configuration().columns.size() == 1);
 }
 
-TEST_CASE(
-    "LogConfiguration::HighlightRule serialises with stable wire keys", "[LogConfigurationManager][highlight_rules]"
-)
+TEST_CASE("HighlightRule serialises with stable wire keys", "[LogConfigurationManager][highlight_rules]")
 {
     // Wire-format snapshot: a rename would surface here as a
     // missing key rather than as a silent shape change.
     LogConfiguration original;
     original.highlightRules.push_back(
-        LogConfiguration::HighlightRule{
+        HighlightRule{
             .name = "example",
             .enabled = true,
             .columnKeys = {"service"},
-            .type = LogConfiguration::HighlightRule::Type::String,
-            .matchType = LogConfiguration::HighlightRule::Match::RegularExpression,
+            .type = HighlightRule::Type::String,
+            .matchType = HighlightRule::Match::RegularExpression,
             .filterString = "auth.*",
             .foregroundIndex = 1,
             .backgroundIndex = 2,
@@ -2294,7 +2397,7 @@ TEST_CASE(
     CHECK(loaded.highlightRules[0].name == "example");
     CHECK(loaded.highlightRules[0].columnKeys == std::vector<std::string>{"service"});
     REQUIRE(loaded.highlightRules[0].matchType.has_value());
-    CHECK(*loaded.highlightRules[0].matchType == LogConfiguration::HighlightRule::Match::RegularExpression);
+    CHECK(*loaded.highlightRules[0].matchType == HighlightRule::Match::RegularExpression);
     CHECK(loaded.highlightRules[0].bold);
     CHECK(loaded.highlightRules[0].italic);
 }
@@ -2305,18 +2408,10 @@ TEST_CASE("MoveColumn does not rewrite highlightRules[*].columnKeys", "[LogConfi
     // have no index field to remap after `MoveColumn`.
     LogConfigurationManager manager;
     LogConfiguration seed;
-    seed.columns.push_back(
-        LogConfiguration::Column{.header = "time", .keys = {"time"}, .type = LogConfiguration::Type::Time}
-    );
-    seed.columns.push_back(
-        LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
-    );
-    seed.columns.push_back(
-        LogConfiguration::Column{.header = "message", .keys = {"message"}, .type = LogConfiguration::Type::String}
-    );
-    seed.highlightRules.push_back(
-        LogConfiguration::HighlightRule{.name = "auth", .columnKeys = {"service"}, .filterString = "auth"}
-    );
+    seed.columns.push_back(Column{.header = "time", .keys = {"time"}, .type = ColumnType::Time});
+    seed.columns.push_back(Column{.header = "service", .keys = {"service"}, .type = ColumnType::String});
+    seed.columns.push_back(Column{.header = "message", .keys = {"message"}, .type = ColumnType::String});
+    seed.highlightRules.push_back(HighlightRule{.name = "auth", .columnKeys = {"service"}, .filterString = "auth"});
     manager.SetConfiguration(std::move(seed));
 
     manager.MoveColumn(1, 2); // Move `service` from index 1 to index 2
@@ -2328,4 +2423,109 @@ TEST_CASE("MoveColumn does not rewrite highlightRules[*].columnKeys", "[LogConfi
     // Sanity: the move actually happened.
     CHECK(manager.Configuration().columns[1].header == "message");
     CHECK(manager.Configuration().columns[2].header == "service");
+}
+
+TEST_CASE("Full save keeps the pre-v1 JSON key set", "[log_configuration][compat][wire_format]")
+{
+    LogConfiguration original;
+    original.columns.push_back(
+        Column{
+            .header = "msg",
+            .keys = {"msg"},
+            .printFormat = "{}",
+            .type = ColumnType::String,
+            .visible = true,
+            .autoDetect = false,
+        }
+    );
+    original.sort = Sort{.columnIndex = 0, .descending = true};
+    original.source = Source{
+        .kind = Source::Kind::File,
+        .format = Source::Format::Json,
+        .locators = {{"C:/logs/app.json", "c:/logs/app.json"}},
+        .followRotationSiblings = false,
+    };
+    original.anchors.push_back(AnchorEntry{.locator = "c:/logs/app.json", .lineId = 1, .colorIndex = 0, .note = "n"});
+    original.highlightRules.push_back(HighlightRule{.name = "r", .columnKeys = {"msg"}});
+
+    const TestLogConfiguration file("test_log_configuration_wire_keys.json");
+    LogConfigurationManager::Save(original, file.GetFilePath(), SaveScope::Full);
+
+    std::ifstream readBack(file.GetFilePath());
+    REQUIRE(readBack.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(readBack)), std::istreambuf_iterator<char>());
+
+    for (const char *key : {
+             "\"columns\"",      "\"expression\"",
+             "\"sort\"",         "\"source\"",
+             "\"anchors\"",      "\"highlightRules\"",
+             "\"header\"",       "\"keys\"",
+             "\"printFormat\"",  "\"type\"",
+             "\"parseFormats\"", "\"visible\"",
+             "\"autoDetect\"",   "\"levelMapping\"",
+             "\"kind\"",         "\"format\"",
+             "\"locators\"",     "\"locatorDedupKeys\"",
+             "\"regexPattern\"", "\"followRotationSiblings\"",
+             "\"columnIndex\"",  "\"descending\"",
+             "\"lineId\"",       "\"colorIndex\"",
+             "\"note\"",
+         })
+    {
+        CHECK(raw.contains(key));
+    }
+}
+
+TEST_CASE(
+    "Mixed-version JSON fills defaults and ignores unknown nested keys", "[log_configuration][compat][mixed_version]"
+)
+{
+    constexpr std::string_view JSON = R"({
+        "columns": [
+            {
+                "header": "msg",
+                "keys": ["msg"],
+                "printFormat": "{}",
+                "type": "string",
+                "parseFormats": [],
+                "futureColumnHint": "ignore-me"
+            }
+        ],
+        "source": {
+            "kind": "file",
+            "locators": ["C:/Logs/App.json"],
+            "futureSourceHint": 3
+        },
+        "hooks": { "onLoad": "future" }
+    })";
+
+    LogConfigurationManager manager;
+    REQUIRE_NOTHROW(manager.LoadFromString(JSON));
+
+    REQUIRE(manager.Configuration().columns.size() == 1);
+    CHECK(manager.Configuration().columns[0].visible);
+    CHECK(manager.Configuration().columns[0].autoDetect);
+    CHECK(manager.Configuration().columns[0].levelMapping.empty());
+
+    REQUIRE(manager.Configuration().source.has_value());
+    CHECK(manager.Configuration().source->kind == Source::Kind::File);
+    CHECK(manager.Configuration().source->format == Source::Format::Json);
+    CHECK(manager.Configuration().source->followRotationSiblings);
+    CHECK(manager.Configuration().source->regexPattern.empty());
+    REQUIRE(manager.Configuration().source->locators.size() == 1);
+    CHECK(manager.Configuration().source->locators[0].displayPath == "C:/Logs/App.json");
+    CHECK(manager.Configuration().source->locators[0].dedupKey.empty());
+
+    CHECK(manager.Configuration().anchors.empty());
+    CHECK(manager.Configuration().highlightRules.empty());
+    CHECK(IsMatchAll(manager.Configuration().expression));
+    CHECK(manager.Configuration().sort.columnIndex == -1);
+
+    const TestLogConfiguration roundTrip("test_log_configuration_mixed_version_roundtrip.json");
+    manager.Save(roundTrip.GetFilePath(), SaveScope::Full);
+    LogConfigurationManager reloaded;
+    REQUIRE_NOTHROW(reloaded.Load(roundTrip.GetFilePath()));
+    CHECK(reloaded.Configuration().columns[0].header == "msg");
+    REQUIRE(reloaded.Configuration().source.has_value());
+    CHECK(reloaded.Configuration().source->locators[0].displayPath == "C:/Logs/App.json");
+    CHECK(reloaded.Configuration().source->followRotationSiblings);
 }

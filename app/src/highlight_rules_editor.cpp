@@ -102,10 +102,7 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
 } // namespace
 
 HighlightRulesEditor::HighlightRulesEditor(
-    std::vector<loglib::LogConfiguration::HighlightRule> rules,
-    std::vector<loglib::LogConfiguration::Column> columns,
-    ThemeControl *theme,
-    QWidget *parent
+    std::vector<loglib::HighlightRule> rules, std::vector<loglib::Column> columns, ThemeControl *theme, QWidget *parent
 )
     : QWidget(parent, Qt::Window),
       mColumns(std::move(columns)),
@@ -459,7 +456,7 @@ int HighlightRulesEditor::SwatchIconSizePx() const
     return SWATCH_ICON_FALLBACK_PX;
 }
 
-QString HighlightRulesEditor::FormatListLabel(const loglib::LogConfiguration::HighlightRule &rule) const
+QString HighlightRulesEditor::FormatListLabel(const loglib::HighlightRule &rule) const
 {
     QString label = QString::fromStdString(rule.name);
     if (label.isEmpty())
@@ -477,7 +474,7 @@ QString HighlightRulesEditor::FormatListLabel(const loglib::LogConfiguration::Hi
     return label;
 }
 
-QIcon HighlightRulesEditor::FormatListIcon(const loglib::LogConfiguration::HighlightRule &rule, int sizePx) const
+QIcon HighlightRulesEditor::FormatListIcon(const loglib::HighlightRule &rule, int sizePx) const
 {
     if (mTheme == nullptr)
     {
@@ -488,7 +485,7 @@ QIcon HighlightRulesEditor::FormatListIcon(const loglib::LogConfiguration::Highl
     return RenderSwatchIcon(bg, fg, sizePx, true);
 }
 
-int HighlightRulesEditor::ResolveColumnIndex(const loglib::LogConfiguration::HighlightRule &rule) const
+int HighlightRulesEditor::ResolveColumnIndex(const loglib::HighlightRule &rule) const
 {
     if (rule.columnKeys.empty())
     {
@@ -538,14 +535,14 @@ void HighlightRulesEditor::RepopulateColumnCombo()
     }
 }
 
-void HighlightRulesEditor::SetColumns(std::vector<loglib::LogConfiguration::Column> columns)
+void HighlightRulesEditor::SetColumns(std::vector<loglib::Column> columns)
 {
     mColumns = std::move(columns);
     RepopulateColumnCombo();
     RebuildList(mCurrentRow);
 }
 
-void HighlightRulesEditor::SetRules(std::vector<loglib::LogConfiguration::HighlightRule> rules)
+void HighlightRulesEditor::SetRules(std::vector<loglib::HighlightRule> rules)
 {
     // No `ConfirmDiscardEdits` prompt: this is called from
     // `ApplyLoadedConfiguration` after the runtime + config have
@@ -690,7 +687,7 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     mMatchStack->setCurrentIndex(typeIdx);
 
     // Type-specific fields.
-    using RT = loglib::LogConfiguration::HighlightRule::Type;
+    using RT = loglib::HighlightRule::Type;
     switch (rule.type)
     {
     case RT::String:
@@ -791,8 +788,7 @@ void HighlightRulesEditor::UpdateFormEnabled()
     {
         const auto ruleType = mLocalRules[static_cast<std::size_t>(mCurrentRow)].type;
         const bool isReadOnly =
-            (ruleType == loglib::LogConfiguration::HighlightRule::Type::Time ||
-             ruleType == loglib::LogConfiguration::HighlightRule::Type::Enumeration);
+            (ruleType == loglib::HighlightRule::Type::Time || ruleType == loglib::HighlightRule::Type::Enumeration);
         if (isReadOnly)
         {
             mMatchStack->setEnabled(false);
@@ -831,13 +827,13 @@ void HighlightRulesEditor::UpdateListButtons()
     }
 }
 
-QString HighlightRulesEditor::ValidateRule(const loglib::LogConfiguration::HighlightRule &rule) const
+QString HighlightRulesEditor::ValidateRule(const loglib::HighlightRule &rule) const
 {
     if (rule.columnKeys.empty())
     {
         return tr("pick a column to match against.");
     }
-    using RT = loglib::LogConfiguration::HighlightRule::Type;
+    using RT = loglib::HighlightRule::Type;
     switch (rule.type)
     {
     case RT::String:
@@ -1005,7 +1001,7 @@ void HighlightRulesEditor::GatherForm()
         }
     }
 
-    rule.type = static_cast<loglib::LogConfiguration::HighlightRule::Type>(mTypeCombo->currentIndex());
+    rule.type = static_cast<loglib::HighlightRule::Type>(mTypeCombo->currentIndex());
 
     // Only reset fields the editor owns. Time / Enumeration are
     // authored via the config file, so any style / name tweak
@@ -1013,7 +1009,7 @@ void HighlightRulesEditor::GatherForm()
     // Flipping the type to (say) String is still safe: the
     // `String` branch owns and repopulates its own fields, and
     // `CompileRule` reads only the fields relevant to `rule.type`.
-    using RT = loglib::LogConfiguration::HighlightRule::Type;
+    using RT = loglib::HighlightRule::Type;
     switch (rule.type)
     {
     case RT::String:
@@ -1022,7 +1018,7 @@ void HighlightRulesEditor::GatherForm()
         rule.filterMinValue.reset();
         rule.filterMaxValue.reset();
         rule.filterValues.clear();
-        rule.matchType = static_cast<loglib::LogConfiguration::HighlightRule::Match>(mStringMatchCombo->currentIndex());
+        rule.matchType = static_cast<loglib::HighlightRule::Match>(mStringMatchCombo->currentIndex());
         rule.filterString = mStringNeedleEdit->text().toStdString();
         break;
     case RT::Number:
@@ -1075,11 +1071,11 @@ void HighlightRulesEditor::GatherForm()
 
 void HighlightRulesEditor::OnNewClicked()
 {
-    loglib::LogConfiguration::HighlightRule rule;
+    loglib::HighlightRule rule;
     rule.name = "New rule";
     rule.enabled = true;
-    rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
-    rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Contains;
+    rule.type = loglib::HighlightRule::Type::String;
+    rule.matchType = loglib::HighlightRule::Match::Contains;
     // Empty needle keeps the rule inactive until the user types
     // (see `CompileRule` and `ValidateRule`); the line edit's
     // placeholder guides them.
@@ -1101,7 +1097,7 @@ void HighlightRulesEditor::OnDuplicateClicked()
     {
         return;
     }
-    loglib::LogConfiguration::HighlightRule copy = mLocalRules[static_cast<std::size_t>(mCurrentRow)];
+    loglib::HighlightRule copy = mLocalRules[static_cast<std::size_t>(mCurrentRow)];
     copy.name += " (copy)";
     mLocalRules.insert(mLocalRules.begin() + mCurrentRow + 1, std::move(copy));
     RebuildList(mCurrentRow + 1);

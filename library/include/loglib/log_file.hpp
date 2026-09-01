@@ -1,7 +1,5 @@
 #pragma once
 
-#include <mio/mmap.hpp>
-
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -15,7 +13,7 @@ namespace loglib
 {
 
 /**
- * @brief Memory-mapped log file. Owns the mmap so `LogValue` instances can
+ * @brief Memory-mapped log file. Owns the mapping so `LogValue` instances can
  * hold `string_view`s into the content; move keeps the pointer stable.
  * Per-record addressing is `FileLineSource`'s job; `LogFile` only
  * holds the bytes and arenas.
@@ -28,13 +26,20 @@ public:
     /** @brief Map @p storagePath while reporting @p logicalPath as the source. */
     LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath);
 
-    /** @brief Member order unmaps before releasing `mLifetimeAnchor`. */
-    ~LogFile() = default;
+    /**
+     * @brief Out-of-line so the mapping backend can be incomplete. Unmaps
+     * before releasing `mLifetimeAnchor`.
+     */
+    ~LogFile();
 
     LogFile(const LogFile &) = delete;
     LogFile &operator=(const LogFile &) = delete;
 
-    LogFile(LogFile &&) noexcept = default;
+    /**
+     * @brief Transfers the mapping without copying bytes. Views into `Data()`
+     * remain valid.
+     */
+    LogFile(LogFile &&) noexcept;
     /**
      * @brief Deleted because member-wise assignment could release the temp
      * file owner before replacing the active mapping.
@@ -80,7 +85,7 @@ public:
     /** @brief True when at least one multi-line record is registered. */
     [[nodiscard]] bool HasMultiLineRecords() const noexcept
     {
-        return !mMultiLineSpans.empty();
+        return mMultiLineSpans && !mMultiLineSpans->empty();
     }
 
     /**
@@ -107,13 +112,15 @@ public:
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
 private:
+    struct Mapping;
+
     std::filesystem::path mPath;
     std::filesystem::path mStoragePath;
 
-    /** @brief Declared before `mMmap` so reverse destruction unmaps first. */
+    /** @brief Declared before `mMapping` so reverse destruction unmaps first. */
     std::shared_ptr<void> mLifetimeAnchor;
 
-    mio::mmap_source mMmap;
+    std::unique_ptr<Mapping> mMapping;
 
     /** @brief Byte offsets of every line boundary plus a one-past-the-last sentinel. */
     std::vector<uint64_t> mLineOffsets;
@@ -124,8 +131,14 @@ private:
      */
     std::string mOwnedStrings;
 
-    /** @brief Maps each multi-line header to its final physical line. */
-    std::unordered_map<size_t, size_t> mMultiLineSpans;
+    /**
+     * @brief Maps each multi-line header to its final physical line.
+     * Held by `unique_ptr` so `LogFile`'s defaulted move is noexcept;
+     * `unordered_map`'s move constructor can throw.
+     */
+    std::unique_ptr<std::unordered_map<size_t, size_t>> mMultiLineSpans{
+        std::make_unique<std::unordered_map<size_t, size_t>>()
+    };
 };
 
 } // namespace loglib

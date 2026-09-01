@@ -1,6 +1,11 @@
 #pragma once
 
+#include "loglib/anchor_entry.hpp"
+#include "loglib/column_schema.hpp"
 #include "loglib/filter_expression.hpp"
+#include "loglib/highlight_rule.hpp"
+#include "loglib/session_view.hpp"
+#include "loglib/source_descriptor.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -17,256 +22,25 @@ namespace loglib
 // Forward-declared so consumers don't pull in the full `log_data.hpp` chain.
 class LogData;
 
+/**
+ * @brief Serializable configuration root.
+ *
+ * Value groups are named types with one responsibility each:
+ * `Column` / `ColumnType` (schema), `Source` / `SourceLocator`
+ * (persisted source), `SessionView` (`expression` + `Sort`),
+ * `AnchorEntry`, and `HighlightRule`. Nested aliases keep existing
+ * `LogConfiguration::Column` spellings compiling. JSON keys stay
+ * flat on this root.
+ */
 struct LogConfiguration
 {
-    /**
-     * @brief Per-column rendering / detection type. Auto-detection is gated
-     * by `Column::autoDetect`: a column is a detector candidate iff
-     * `type == Any && autoDetect`. JSON wire format uses lowerCamelCase
-     * keys; see `internal/log_configuration_glaze_meta.hpp`.
-     *   - `Any`         - default for fresh keys (with `autoDetect`)
-     *                     and the bail bucket for unclassifiable
-     *                     values. With `autoDetect=false`, the
-     *                     explicit "treat as text" opt-out. Sorts /
-     *                     filters as string.
-     *   - `String`      - inferred string column.
-     *   - `Boolean`     - JSON `true`/`false`; false < true.
-     *   - `Integer`     - only Int64/UInt64 observed.
-     *   - `Floating`    - only Double observed.
-     *   - `Number`      - mix of integer and floating.
-     *   - `Time`        - timestamp column.
-     *   - `Enumeration` - small fixed vocabulary stored as `DictRef`.
-     *   - `Level`       - Enumeration subtype for log-level columns;
-     *                     sorts / filters / styles by severity rank.
-     */
-    enum class Type
-    {
-        Any,
-        String,
-        Boolean,
-        Integer,
-        Floating,
-        Number,
-        Time,
-        Enumeration,
-        Level
-    };
-
-    struct Column
-    {
-        std::string header;
-        std::vector<std::string> keys;
-        std::string printFormat;
-        /**
-         * @brief Defaults to the detector-candidate state (paired with
-         * `autoDetect=true` below). Time promotion is destructive
-         * (only `Reset()` reverts); enum promotion can demote on
-         * overflow, but only while `autoDetect` is on.
-         */
-        Type type = Type::Any;
-        std::vector<std::string> parseFormats;
-        /**
-         * @brief Hidden columns stay in the table (data, sort, and filters
-         * keep working); only the view toggles `setSectionHidden`.
-         * Defaults to `true` so saved JSON without this field loads as visible.
-         */
-        bool visible = true;
-        /**
-         * @brief Per-column alias overrides for `Type::Level` columns. Each
-         * entry is `(alias, canonicalName)`: aliases match the raw
-         * user string case-insensitively, canonical names must spell
-         * a `LogLevel` (`"Info"`, `"Warn"`, ...). Augments the
-         * built-in alias table. Ignored for non-Level columns.
-         */
-        std::vector<std::pair<std::string, std::string>> levelMapping;
-        /**
-         * @brief `true`: the auto-detector owns the column (scans `Any`
-         * candidates, demotes overflowing enums). `false`: the user
-         * has pinned the column; no automatic promotion or demotion.
-         * Defaults to `true` so unedited columns stay auto-detected.
-         */
-        bool autoDetect = true;
-    };
-
-    /**
-     * @brief Persisted sort. `columnIndex == -1` means "no sort applied";
-     * positive indices index `columns` and are remapped by
-     * `MoveColumn`.
-     */
-    struct Sort
-    {
-        int columnIndex = -1;
-        bool descending = false;
-    };
-
-    /**
-     * @brief Persisted source descriptor. `nullopt` means "no source bound".
-     * On load the app may re-open this; rebind failure is non-fatal
-     * (columns and filters still apply). Legacy JSON using the
-     * pre-widening `"locator"` field loses its source binding but
-     * keeps the rest, courtesy of
-     * `error_on_unknown_keys=false` (see `log_configuration_glaze_opts.hpp`).
-     *
-     * `locators` and `locatorDedupKeys` are parallel arrays:
-     * - `locators[i]` is the human-facing path (original case;
-     *   what the user sees and what `QFile::open` consumes).
-     * - `locatorDedupKeys[i]` is the normalised dedup form
-     *   (lower-cased on Windows). Equality between locators is
-     *   compared on the dedup key.
-     *
-     * Mutate both vectors together via `AppendLocator` /
-     * `ClearLocators`; direct `push_back` on either alone breaks
-     * the invariant.
-     */
-    struct Source
-    {
-        enum class Kind
-        {
-            File,
-            NetworkStream,
-            /**
-             * @brief Standard-input pipe (`StructuredLogViewer -` / `--stdin`).
-             * One-shot per session; not persisted for auto-reopen
-             * (see `MainWindow::ShouldAutoSaveSession`). Locator is
-             * the synthetic display name `<stdin>`.
-             */
-            Stdin
-        };
-
-        /**
-         * @brief Parser the source was opened with. Persisted because
-         * network streams have nothing to sniff at restore time and
-         * live-tail sessions commit to a parser before the first
-         * byte arrives. Defaults to `Json` for a fresh `Source`.
-         *
-         * Serialised as stable strings (`"json"`, `"logfmt"`, `"csv"`,
-         * ...) by `log_configuration_glaze_meta.hpp`. Append at the
-         * end, never reorder existing values.
-         */
-        enum class Format
-        {
-            Json,
-            Logfmt,
-            Csv,
-            /**
-             * @brief PCRE2 regex parser. The pattern is carried in
-             * `regexPattern` below; the parser refuses to run
-             * without one when `format == Regex`.
-             */
-            Regex
-        };
-
-        Kind kind = Kind::File;
-        Format format = Format::Json;
-        std::vector<std::string> locators;
-        std::vector<std::string> locatorDedupKeys;
-        /**
-         * @brief PCRE2 pattern with `(?<Name>...)` named capture groups.
-         * Only meaningful when `format == Format::Regex`; empty
-         * otherwise. Persisted so reopened sessions / network
-         * streams keep parsing under the same template. The
-         * matching template name (if any) is resolved at display
-         * time via `loglib::FindTemplateByPattern`.
-         */
-        std::string regexPattern;
-
-        /**
-         * @brief Whether future file additions should include rotation siblings.
-         * Restores use the persisted `locators` without rescanning.
-         * Missing values default to `true` for older configurations.
-         */
-        bool followRotationSiblings = true;
-    };
-
-    /**
-     * @brief A persisted bookmark on one log line.
-     *
-     * Identified by `(locator, lineId)`: `lineId` is the parser's
-     * monotonic per-`LineSource` id; `locator` disambiguates files
-     * in a multi-file session (empty for single-file / network).
-     * `colorIndex` indexes `Theme::anchorPalette`; out-of-range
-     * values are dropped on load.
-     *
-     * `note` is a one-line free-form annotation surfaced in the
-     * Anchors dock, row tooltips, and the record-detail view.
-     * Empty for anchors saved by older builds -- Glaze's
-     * `error_on_unknown_keys=false` + default-on-missing lets
-     * them load cleanly. Multi-line values are legal on disk but
-     * the editors sanitise on commit, so the on-disk shape is a
-     * single line by construction.
-     */
-    struct AnchorEntry
-    {
-        std::string locator;
-        uint64_t lineId = 0;
-        uint8_t colorIndex = 0;
-        std::string note;
-
-        friend bool operator==(const AnchorEntry &, const AnchorEntry &) = default;
-    };
-
-    /**
-     * @brief A user-defined row-highlighting rule.
-     *
-     * Configuration-scope: persisted alongside `columns` so a
-     * rule bound to `service == "auth"` roams with the column
-     * schema. Filters, by contrast, are session-scope.
-     *
-     * Bound by `columnKeys` (matching `Column::keys`) so rules
-     * survive `MoveColumn`, cross-source apply, and unrelated
-     * column additions. Unresolvable rules are inert at match
-     * time (editor greys them out).
-     *
-     * The `type` / `matchType` / `filter*` fields mirror `LeafRule`
-     * so the shared `CompileLeaf` step applies uniformly to
-     * filters and highlight rules (the app-side compile builds a
-     * `LeafRule` shim from `HighlightRule` and passes it to the
-     * same factory). Rules apply in vector order, last match wins
-     * per row.
-     */
-    struct HighlightRule
-    {
-        /**
-         * @brief Aliased so filter-side and highlight-side rules share a
-         * single canonical `Type` / `Match` enum without changing
-         * the on-disk JSON.
-         */
-        using Type = loglib::LeafRule::Type;
-        using Match = loglib::LeafRule::Match;
-
-        /** @brief User-visible label. Free-form. */
-        std::string name;
-
-        /**
-         * @brief Disabled rules stay in the list but don't paint, so a
-         * triage playbook can pause a rule without deleting it.
-         */
-        bool enabled = true;
-
-        /**
-         * @brief Column identity (subset-matched against `Column::keys`).
-         * Empty = no column bound (rule is inert). Usually a
-         * single-entry vector.
-         */
-        std::vector<std::string> columnKeys;
-
-        Type type = Type::String;
-        std::optional<Match> matchType;
-        std::optional<std::string> filterString;
-        std::optional<int64_t> filterBegin;
-        std::optional<int64_t> filterEnd;
-        std::optional<double> filterMinValue;
-        std::optional<double> filterMaxValue;
-        std::vector<std::string> filterValues;
-
-        /** @brief 0 = inherit; 1..`HIGHLIGHT_PALETTE_SIZE` = theme slot. */
-        uint8_t foregroundIndex = 0;
-        uint8_t backgroundIndex = 0;
-        bool bold = false;
-        bool italic = false;
-
-        friend bool operator==(const HighlightRule &, const HighlightRule &) = default;
-    };
+    using Type = ColumnType;
+    using Column = loglib::Column;
+    using Sort = loglib::Sort;
+    using SourceLocator = loglib::SourceLocator;
+    using Source = loglib::Source;
+    using AnchorEntry = loglib::AnchorEntry;
+    using HighlightRule = loglib::HighlightRule;
 
     /** @brief Required: drives the column layout for every consumer. */
     std::vector<Column> columns;
@@ -309,81 +83,11 @@ struct LogConfiguration
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
 /**
- * @brief Default `parseFormats` seed for freshly-detected `Type::Time`
- * columns and for editor-driven pins that leave the list empty.
- * Kept in a single place so the three seed sites
- * (`LogConfigurationManager::Update`, `::AppendKeys`, and
- * `LogTable::OnUserChangedColumnType`) never drift.
- *
- * Order matters: the promotion loop tries formats in list order and
- * stops on the first match. ISO 8601 variants come first because
- * they cover the JSON / logfmt / RFC 5424 lion's share (fast path
- * via `Iso8601_T` / `Iso8601_Space` -- see
- * `ClassifyTimestampFormat`). Non-ISO tail formats target the
- * shipped regex-template shapes so their timestamps promote to
- * `Type::Timestamp` without the user editing the column:
- *   * `%d/%b/%Y:%H:%M:%S %z` -- Apache/nginx CLF (Combined + Common
- *     + AWS CloudFront and every downstream that inherits CLF).
- *   * `%b %e %H:%M:%S` / `%b %d %H:%M:%S` -- RFC 3164 syslog
- *     header (Mmm  D HH:MM:SS, space- or zero-padded day; no year).
- *     Routes to the `SyslogRfc3164NoYear` fast path which injects
- *     the current year via the standard month-rollover heuristic.
- *
- * Each addition here widens the auto-parse net; keep new entries
- * specific enough that `date::from_stream` fails deterministically
- * on non-matching inputs (character-class-level anchors: literal
- * `/`, `:`, `-`, ...). A too-permissive format at the tail can
- * misclassify a numeric column as `Type::Time`.
- */
-[[nodiscard]] inline std::vector<std::string> DefaultTimeParseFormats()
-{
-    return {
-        "%FT%T%Ez",
-        "%F %T%Ez",
-        "%FT%T",
-        "%F %T",
-        "%d/%b/%Y:%H:%M:%S %z",
-        "%b %e %H:%M:%S",
-        "%b %d %H:%M:%S",
-    };
-}
-
-/**
  * @brief Index of the first `Type::Time` column in @p configuration, or -1.
  * Single source of truth for "which column is the canonical timestamp"
  * (Record Details summary, row right-click time-filter menu, ...).
  */
 [[nodiscard]] int FirstTimeColumnIndex(const LogConfiguration &configuration);
-
-/**
- * @brief "Source is actionable" predicate. Centralises the
- * `has_value() && !locators.empty()` gate so the half-checked form
- * can't sneak through one call site at a time.
- */
-[[nodiscard]] inline bool HasLocators(const std::optional<LogConfiguration::Source> &source) noexcept
-{
-    return source.has_value() && !source->locators.empty();
-}
-
-/**
- * @brief Append a locator, keeping `locators` and `locatorDedupKeys` in
- * lockstep. All call sites that mutate `Source::locators` MUST go
- * through this helper (or `ClearLocators`). @p dedupKey is taken
- * pre-computed because canonicalisation lives in the application
- * layer (the library has no Qt dependency).
- */
-inline void AppendLocator(LogConfiguration::Source &target, std::string displayPath, std::string dedupKey)
-{
-    target.locators.push_back(std::move(displayPath));
-    target.locatorDedupKeys.push_back(std::move(dedupKey));
-}
-
-/** @brief Drop every locator, keeping the parallel arrays in lockstep. */
-inline void ClearLocators(LogConfiguration::Source &target)
-{
-    target.locators.clear();
-    target.locatorDedupKeys.clear();
-}
 
 /**
  * @brief Selects which fields `Save` writes. Both shapes share one JSON
@@ -466,7 +170,7 @@ public:
      * @brief Flip the type of the column at @p columnIndex; caller
      * back-fills row data. No-op out of range.
      */
-    void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
+    void SetColumnType(size_t columnIndex, ColumnType type);
 
     /**
      * @brief Toggle `Column::autoDetect`. `true` hands the column to the
@@ -480,7 +184,7 @@ public:
      * this so observers never see an intermediate `(newType,
      * staleAutoDetect)` pair. No-op out of range.
      */
-    void SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect);
+    void SetColumnTypePair(size_t columnIndex, ColumnType type, bool autoDetect);
 
     /**
      * @brief Toggle `Column::visible`. The column stays in the table; only
@@ -521,20 +225,20 @@ public:
      * @brief Replace `LogConfiguration::sort`. Called by the session-state
      * mirror before a `Full` save.
      */
-    void SetSort(LogConfiguration::Sort sort);
+    void SetSort(Sort sort);
 
     /** @brief Replace `LogConfiguration::source`. `nullopt` clears the binding. */
-    void SetSource(std::optional<LogConfiguration::Source> source);
+    void SetSource(std::optional<Source> source);
 
     /** @brief Replace `LogConfiguration::anchors`. Empty clears them all. */
-    void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
+    void SetAnchors(std::vector<AnchorEntry> anchors);
 
     /**
      * @brief Replace `LogConfiguration::highlightRules` wholesale. Rules
      * bind by column keys, so no `MoveColumn` remap is needed
      * afterwards.
      */
-    void SetHighlightRules(std::vector<LogConfiguration::HighlightRule> rules);
+    void SetHighlightRules(std::vector<HighlightRule> rules);
 
     /**
      * @brief Apply `(srcIndex -> destIndex)` to a stored column index.

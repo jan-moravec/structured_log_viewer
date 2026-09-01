@@ -51,7 +51,7 @@ private:
 /**
  * @brief Three-way row comparator over a single column (<0, 0, >0).
  *
- * Dispatch by `LogConfiguration::Type`:
+ * Dispatch by `ColumnType`:
  *   - `Boolean`              -- bool compare; `false < true`.
  *   - `Integer`              -- int64_t compare; uint64_t > INT64_MAX
  *                               clamps to INT64_MAX.

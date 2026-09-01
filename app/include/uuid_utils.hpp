@@ -55,7 +55,7 @@ namespace logapp
 /// the form persisted on `Source::locators`, shown in tooltips,
 /// and passed to `QFile::open`. Pair every `CanonicalLocator`
 /// call with a matching `CanonicalDisplayPath` (push both via
-/// `loglib::AppendLocator` to keep the parallel arrays in step).
+/// `loglib::AppendLocator`).
 [[nodiscard]] inline QString CanonicalDisplayPath(const QString &locator)
 {
     if (locator.isEmpty())
@@ -69,27 +69,23 @@ namespace logapp
     return absolute;
 }
 
-/// Ensure `Source::locatorDedupKeys` has exactly one entry per
-/// `Source::locators`. Idempotent (no-op when the arrays already
-/// match). Used after loading a session JSON predating the
-/// schema split, and by test fixtures that build `Source` via
-/// designated initialisers without setting the dedup-keys vector.
-inline void BackfillLocatorDedupKeys(loglib::LogConfiguration::Source &source)
+/// Ensure every locator has a dedup key. Idempotent when keys are already
+/// populated. Used after loading session JSON that omitted
+/// `locatorDedupKeys`, and by test fixtures that set only display paths.
+inline void BackfillLocatorDedupKeys(loglib::Source &source)
 {
-    if (source.locators.size() == source.locatorDedupKeys.size())
+    for (loglib::SourceLocator &locator : source.locators)
     {
-        return;
-    }
-    source.locatorDedupKeys.clear();
-    source.locatorDedupKeys.reserve(source.locators.size());
-    for (const std::string &display : source.locators)
-    {
-        source.locatorDedupKeys.push_back(CanonicalLocator(QString::fromStdString(display)).toStdString());
+        if (!locator.dedupKey.empty())
+        {
+            continue;
+        }
+        locator.dedupKey = CanonicalLocator(QString::fromStdString(locator.displayPath)).toStdString();
     }
 }
 
 /// Optional overload. No-op when unset.
-inline void BackfillLocatorDedupKeys(std::optional<loglib::LogConfiguration::Source> &source)
+inline void BackfillLocatorDedupKeys(std::optional<loglib::Source> &source)
 {
     if (source.has_value())
     {

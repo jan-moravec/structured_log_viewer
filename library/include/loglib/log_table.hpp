@@ -1,6 +1,8 @@
 #pragma once
 
+#include "column_type_health.hpp"
 #include "enum_dictionary.hpp"
+#include "enum_inference.hpp"
 #include "key_index.hpp"
 #include "line_source.hpp"
 #include "log_configuration.hpp"
@@ -8,14 +10,12 @@
 #include "log_file.hpp"
 #include "log_level.hpp"
 #include "log_parse_sink.hpp"
-#include "transparent_string_hash.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -24,8 +24,17 @@ namespace loglib
 {
 
 /**
- * @brief Row-range backed by `std::vector<LogLine>` for static and live-tail
- * sessions. Each row's `LineSource *` resolves its values.
+ * @brief Row-range facade backed by `std::vector<LogLine>` for static and
+ * live-tail sessions. Each row's `LineSource *` resolves its values.
+ *
+ * Independently changing work lives on named collaborators:
+ * `EnumInference` (type inference, dictionary encode/demote, level
+ * rank cache; owns those maps and borrows `LogData` /
+ * `LogConfigurationManager` per pass), `ColumnTypeHealth` /
+ * `ComputeColumnTypeHealth` (stateless diagnostics), and
+ * `internal::RefreshColumnKeyIds` (stateless cache rewrite).
+ * Streaming batch splice, timestamp snapshot keys, and FIFO
+ * eviction stay here because they own the row storage.
  */
 class LogTable
 {
@@ -39,8 +48,8 @@ public:
 
     /**
      * @brief Move re-runs `RewireSourceRegistries()` because each `LineSource`
-     * caches a pointer to `mEnumDictionaries`. Per-batch bookkeeping
-     * (notably `mLastBatchDemotedKeys`) follows the move so a table
+     * caches a pointer to `mEnum.Dictionaries()`. Per-batch bookkeeping
+     * (notably `LastBatchDemotedKeys()`) follows the move so a table
      * moved between `AppendBatch` and the `LogModel`-side consumer
      * keeps a faithful `Demoted`-reason trail.
      */
@@ -161,6 +170,13 @@ public:
 
     [[nodiscard]] size_t RowCount() const;
 
+    /**
+     * @brief Borrowed row/source storage. Mutation is restricted to splice,
+     * merge, and eviction paths (`AppendBatch`, `Update`, `Reset`,
+     * `EvictPrefixRows`) plus tests that assemble fixtures. Callers
+     * must not insert rows that skip `AppendBatch`'s timestamp
+     * back-fill and enum pass.
+     */
     [[nodiscard]] const LogData &Data() const noexcept;
     [[nodiscard]] LogData &Data() noexcept;
 
@@ -170,7 +186,12 @@ public:
      */
     void EvictPrefixRows(size_t count);
 
-    /** @brief Mutable `KeyIndex` for worker-thread `GetOrInsert`. */
+    /**
+     * @brief Session `KeyIndex`. The mutable overload exists so parse
+     * workers can intern keys before `AppendBatch`; it is the same
+     * intern table `Data().Keys()` returns. Do not replace or clear
+     * it independently of the rows that cite those `KeyId`s.
+     */
     KeyIndex &Keys();
     const KeyIndex &Keys() const;
 
@@ -285,7 +306,7 @@ public:
      * accumulated health budget). Idempotent within a type.
      * Out-of-range @p columnIndex is a silent no-op.
      */
-    void OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType);
+    void OnUserChangedColumnType(size_t columnIndex, ColumnType previousType);
 
     /**
      * @brief Re-sync per-column caches with `mConfiguration` after an
@@ -307,32 +328,15 @@ public:
      * the table is empty, or @p columnIndex is out of range.
      * Returns the post-rescan column type for transition signalling.
      */
-    LogConfiguration::Type RescanColumnForAutoDetection(size_t columnIndex);
+    ColumnType RescanColumnForAutoDetection(size_t columnIndex);
+
+    /** @brief Nested alias so existing `LogTable::ColumnTypeHealth` spellings compile. */
+    using ColumnTypeHealth = loglib::ColumnTypeHealth;
 
     /**
      * @brief "Does this column's data match its configured `Type`?"
-     * Computed on demand for the diagnostics UI; one column-walk
-     * per call, no hot-path bookkeeping.
+     * Delegates to the stateless `loglib::ComputeColumnTypeHealth`.
      */
-    struct ColumnTypeHealth
-    {
-        // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-        /** @brief Total rows in the table. */
-        size_t totalSlots = 0;
-        /** @brief Rows where this column carries any (non-monostate) value. */
-        size_t presentSlots = 0;
-        /**
-         * @brief Present slots whose variant matches the configured `Type`.
-         * `Type::Any` matches every present slot. For
-         * `Enumeration` / `Level`, `DictRef` slots match; unencoded
-         * raw-string slots count as present-but-not-matching (this
-         * is how user-pinned dict columns expose over-cap values).
-         */
-        size_t matchingSlots = 0;
-        // NOLINTEND(misc-non-private-member-variables-in-classes)
-
-        [[nodiscard]] constexpr bool operator==(const ColumnTypeHealth &) const = default;
-    };
     [[nodiscard]] ColumnTypeHealth ComputeColumnTypeHealth(size_t columnIndex) const;
 
     const LogConfigurationManager &Configuration() const;
@@ -340,148 +344,14 @@ public:
     LogConfigurationManager &Configuration();
 
 private:
-    /**
-     * @brief Per-column tracker for enum auto-detection. Holds up to `cap`
-     * distinct values (hard cap, no tolerance). Long values accrue
-     * in `longValueCount`; numeric-tag counters route the no-string
-     * bail to a numeric type rather than `string`. `presenceCount`
-     * and `rowsObserved` are separate so sparse columns aren't
-     * bailed before their first observation.
-     */
-    // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-    // Private nested aggregate POD: public members are intentional;
-    // accessors would only obscure the per-row hot path.
-    struct EnumCandidateTracker
-    {
-        /** @brief Distinct values seen so far (insertion order, capped at `cap`). */
-        std::vector<std::string> values;
-        /**
-         * @brief O(1) membership index over `values`. Transparent hashing
-         * avoids the per-row `std::string` materialisation a
-         * non-transparent `unordered_set<string>` would force on
-         * every `string_view` lookup.
-         */
-        std::unordered_set<std::string, loglib::TransparentStringHash, loglib::TransparentStringEqual> seen;
-        uint32_t valueMaxLen = 0;
-        uint16_t size = 0;
-        uint16_t cap = DEFAULT_ENUM_VALUE_CAP;
-        size_t rowsObserved = 0;
-        size_t presenceCount = 0;
-        size_t longValueCount = 0;
-        size_t intObservations = 0;
-        size_t uintObservations = 0;
-        size_t doubleObservations = 0;
-        size_t boolObservations = 0;
-        bool killed = false;
-
-        EnumCandidateTracker() = default;
-        EnumCandidateTracker(uint16_t capValue, uint32_t valueMaxLenValue) noexcept
-            : valueMaxLen(valueMaxLenValue), cap(capValue)
-        {
-            values.reserve(capValue);
-            seen.reserve(capValue);
-        }
-
-        /**
-         * @brief Caller has already incremented `presenceCount`. Updates
-         * state and flips `killed` on tolerance breach or hard-cap
-         * overflow.
-         */
-        void Observe(std::string_view bytes);
-    };
-    // NOLINTEND(misc-non-private-member-variables-in-classes)
-
-    /**
-     * @brief Cumulative health for an active enum column; long values and
-     * wrong-type slots share one budget.
-     */
-    // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-    // Private nested aggregate POD: public data members are intentional.
-    struct EnumColumnHealth
-    {
-        size_t totalSlots = 0;
-        size_t longValueSlots = 0;
-        size_t wrongTypeSlots = 0;
-
-        [[nodiscard]] bool ShouldDemote(double tolerance, size_t minSamples) const noexcept;
-    };
-    // NOLINTEND(misc-non-private-member-variables-in-classes)
-
     static std::string FormatLogValue(const std::string &format, const LogValue &value);
 
     void RefreshColumnKeyIds();
     void RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys);
     void RefreshSnapshotTimeKeys();
-    void RefreshSnapshotEnumKeys();
 
-    /** @brief Point every owned `LineSource` at `mEnumDictionaries`. */
+    /** @brief Point every owned `LineSource` at `mEnum.Dictionaries()`. */
     void RewireSourceRegistries();
-
-    /**
-     * @brief Enum pass over `[oldLineCount, Lines().size())`: encode active
-     * columns, demote overflowing ones, auto-promote quiescent
-     * candidates. Extends @p firstBackfilled / @p lastBackfilled.
-     */
-    void RunEnumPassForAppendBatch(
-        size_t oldLineCount, std::optional<size_t> &firstBackfilled, std::optional<size_t> &lastBackfilled
-    );
-
-    /**
-     * @brief Promote @p columnIndex to `Type::Enumeration`, encoding every
-     * existing row's slot as `DictRef`.
-     */
-    void PromoteColumnToEnum(size_t columnIndex);
-
-    /**
-     * @brief Promote @p columnIndex from `Type::Enumeration` to `Type::Level`
-     * when (a) its key matches `IsLogLevelKey` and (b) the dictionary
-     * has at most one unrecognized entry per `LEVEL_DICT_TOLERANCE_RATIO`
-     * canonical ones. Dict-weighted, so re-evaluation only matters
-     * when the dictionary grows. No-op otherwise. `O(dict size)`.
-     *
-     * The canonical-position bubble is *not* applied inline; the
-     * `KeyId` is queued on `mPendingLevelBubbleKeys` for the
-     * consumer to drain (see `TakePendingLevelBubbleKeys` /
-     * `ApplyPendingLevelBubbles`).
-     */
-    void MaybePromoteToLevel(size_t columnIndex);
-
-    /**
-     * @brief Rebuild / extend the `EnumValueId -> LogLevel` cache. Idempotent;
-     * safe to call after dictionary growth. No-op for non-Level columns.
-     */
-    void RefreshLevelRankCache(size_t columnIndex);
-
-    /**
-     * @brief Demote @p columnIndex to `Type::String`, materialising every
-     * `DictRef` into `OwnedString` and dropping the dictionary. Also
-     * handles the `Type::Level -> Type::String` path: a Level column
-     * that breaches the enum health budget drops straight to terminal
-     * String (kill-once-stay-killed -- bouncing back to Enumeration
-     * would just cycle into another demote). The level rank cache is
-     * torn down here so no stale metadata trails the column.
-     *
-     * @p recordForBatch (default `true`): record the demoted column
-     * in `mLastBatchDemotedKeys` for the streaming auto-detect
-     * path. The editor path passes `false` because it emits its own
-     * `enumColumnsChanged(Demoted)` signal -- adding to the batch
-     * vector would double-signal.
-     */
-    void DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch = true);
-
-    /**
-     * @brief Encode column slots in `[rowBegin, rowEnd)` as `DictRef`. Returns
-     * false on hard cap overflow; long/wrong-type slots accrue in @p health.
-     */
-    bool EncodeColumnRangeAsEnum(
-        const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
-    );
-
-    /**
-     * @brief Shared encode loop. @p aliasKeys[0] is the canonical dictionary key.
-     * Returns false on hard cap overflow.
-     */
-    bool EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health);
 
     LogData mData;
     LogConfigurationManager mConfiguration;
@@ -493,59 +363,13 @@ private:
     /** @brief `Type::Time` KeyIds discovered post-snapshot. */
     std::unordered_set<KeyId> mPostSnapshotTimeKeys;
 
-    /** @brief Per-column enum dictionaries. Owned `LineSource`s point here. */
-    EnumDictionaryRegistry mEnumDictionaries;
-
-    uint16_t mEnumValueCap = DEFAULT_ENUM_VALUE_CAP;
-
-    /** @brief Per-value byte-length cap (`0` disables). */
-    uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
-
     /**
-     * @brief Promotion candidates, keyed by canonical `KeyId` of the
-     * column. Keying by id (not `column.header`) so a user-driven
-     * header rename cannot orphan the running tracker and reset
-     * the budget. Live while the column is `(Any, autoDetect)`.
+     * @brief Type inference, dictionary encode/demote, and level rank cache.
+     * Owns dictionaries; `LineSource`s borrow `Dictionaries()`.
      */
-    std::unordered_map<KeyId, EnumCandidateTracker> mEnumTrackers;
-
-    /**
-     * @brief Cumulative health for active enum columns, keyed by canonical
-     * `KeyId` for the same rename-safety reason as `mEnumTrackers`.
-     */
-    std::unordered_map<KeyId, EnumColumnHealth> mEnumColumnHealth;
-
-    /**
-     * @brief True between `BeginStreaming` and `FinalizeAutoDetection`; switches
-     * to stream-mode thresholds and disables the cardinality bail.
-     */
-    bool mIsStreaming = false;
+    EnumInference mEnum;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
-
-    /**
-     * @brief Canonical KeyIds demoted away from `Type::Enumeration` during
-     * the in-progress (or most recent) batch. Populated by
-     * `DemoteColumnFromEnum` *before* it erases the registry entry
-     * so the id stays stable; consumed by `LogModel` to scope its
-     * `enumColumnsChanged(Demoted)` emit.
-     */
-    std::vector<KeyId> mLastBatchDemotedKeys;
-
-    /**
-     * @brief `EnumValueId -> LogLevel` cache, one entry per `Type::Level`
-     * column. Keyed by canonical `KeyId` (matches the dictionary
-     * registry), so column reorders are automatic and same-header
-     * columns with different keys cannot alias each other.
-     */
-    std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
-
-    /**
-     * @brief Pending canonical-position bubbles for columns recently
-     * promoted to `Type::Level`. See `MaybePromoteToLevel` and
-     * `TakePendingLevelBubbleKeys`.
-     */
-    std::vector<KeyId> mPendingLevelBubbleKeys;
 };
 
 } // namespace loglib

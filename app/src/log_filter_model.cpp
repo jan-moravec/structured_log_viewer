@@ -333,7 +333,7 @@ void LogFilterModel::ApplySortPermutation()
     }
 
     const loglib::EnumDictRank *rank = nullptr;
-    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::LogConfiguration::Type::Enumeration)
+    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::ColumnType::Enumeration)
     {
         rank = EnumRankFor(mSortColumn);
     }
@@ -372,7 +372,7 @@ bool LogFilterModel::LessThanSourceRows(int leftSource, int rightSource) const
         return leftSource < rightSource;
     }
     const loglib::EnumDictRank *rank = nullptr;
-    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::LogConfiguration::Type::Enumeration)
+    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::ColumnType::Enumeration)
     {
         rank = EnumRankFor(mSortColumn);
     }

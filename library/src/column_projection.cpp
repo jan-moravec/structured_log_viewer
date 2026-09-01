@@ -6,7 +6,7 @@ namespace loglib
 namespace
 {
 
-std::vector<std::size_t> CollectVisible(std::span<const LogConfiguration::Column> columns)
+std::vector<std::size_t> CollectVisible(std::span<const Column> columns)
 {
     std::vector<std::size_t> indices;
     indices.reserve(columns.size());
@@ -22,13 +22,13 @@ std::vector<std::size_t> CollectVisible(std::span<const LogConfiguration::Column
 
 } // namespace
 
-ColumnProjection::ColumnProjection(std::span<const LogConfiguration::Column> columns)
+ColumnProjection::ColumnProjection(std::span<const Column> columns)
     : mIndices(CollectVisible(columns))
 {
 }
 
 ColumnProjection::ColumnProjection(const LogConfiguration &configuration)
-    : ColumnProjection(std::span<const LogConfiguration::Column>(configuration.columns))
+    : ColumnProjection(std::span<const Column>(configuration.columns))
 {
 }
 

@@ -305,10 +305,10 @@ struct StreamSink : loglib::LogParseSink
 inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguration()
 {
     loglib::LogConfiguration baseConfig;
-    loglib::LogConfiguration::Column timestampColumn;
+    loglib::Column timestampColumn;
     timestampColumn.header = "timestamp";
     timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = loglib::LogConfiguration::Type::Time;
+    timestampColumn.type = loglib::ColumnType::Time;
     timestampColumn.parseFormats = {"%FT%T"};
     timestampColumn.printFormat = "%F %H:%M:%S";
     baseConfig.columns.push_back(std::move(timestampColumn));

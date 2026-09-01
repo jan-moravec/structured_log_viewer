@@ -17,7 +17,7 @@ namespace loglib
  * `Column::keys`), so leaves survive `MoveColumn`, cross-source
  * apply, and column additions without any remap step. Empty
  * `columnKeys` -> inert at compile time. Mirrors the binding
- * used by `LogConfiguration::HighlightRule`.
+ * used by `HighlightRule`.
  *
  * Only the `filter*` fields relevant to the selected `type` are
  * read at compile time; the rest stay defaulted.
