@@ -89,7 +89,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
         {.header = std::string(columnKey),
          .keys = {std::string(columnKey)},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {},
          .levelMapping = {}}
     );
@@ -151,7 +151,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Level,
+         .type = ColumnType::Level,
          .parseFormats = {},
          .levelMapping = {}}
     );
@@ -207,7 +207,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
         {.header = "msg",
          .keys = {"msg"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::String,
+         .type = ColumnType::String,
          .parseFormats = {},
          .levelMapping = {}}
     );
@@ -631,7 +631,7 @@ TEST_CASE(
 
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
 
     std::vector<size_t> logRows(ROW_COUNT);
     std::iota(logRows.begin(), logRows.end(), size_t{0});
@@ -704,7 +704,7 @@ TEST_CASE(
     LargeTable owned = BuildLargeLevelTable(fixture, ROW_COUNT);
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
 
     std::vector<size_t> indices(ROW_COUNT);
     std::iota(indices.begin(), indices.end(), size_t{0});

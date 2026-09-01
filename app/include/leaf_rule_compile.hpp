@@ -18,7 +18,7 @@ class LogTable;
 /// @p keys, or -1 if none matches or @p keys is empty. Shared by
 /// filter leaves and highlight rules so both bind identically.
 [[nodiscard]] int ResolveLeafColumnByKeys(
-    const std::vector<std::string> &keys, const std::vector<loglib::LogConfiguration::Column> &columns
+    const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns
 ) noexcept;
 
 /// Compile @p rule to a `RowPredicate`, or `nullopt` when it is
@@ -33,13 +33,13 @@ class LogTable;
 [[nodiscard]] std::optional<loglib::RowPredicate> CompileLeaf(
     const loglib::LeafRule &rule,
     int resolvedColumn,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 );
 
 /// Field-by-field copy of a `HighlightRule` into a `LeafRule` so
 /// both feed the same `CompileLeaf`.
-[[nodiscard]] loglib::LeafRule ToLeafRule(const loglib::LogConfiguration::HighlightRule &rule);
+[[nodiscard]] loglib::LeafRule ToLeafRule(const loglib::HighlightRule &rule);
 
 /// Compile @p expression into a `CompiledFilterExpression`. Every
 /// `And`/`Or` node's children are sorted cheap-first by
@@ -47,6 +47,6 @@ class LogTable;
 /// rejecting/accepting leaf first.
 [[nodiscard]] loglib::CompiledFilterExpression CompileExpression(
     const loglib::FilterExpression &expression,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 );

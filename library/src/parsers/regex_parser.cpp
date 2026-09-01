@@ -9,6 +9,7 @@
 #include "loglib/internal/regex_template_probe_list.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
+#include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_parser.hpp"

@@ -218,29 +218,21 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
 namespace
 {
 
-/// Process-lifetime cache of the "assumed current" year and month used
-/// by the RFC 3164 year-injection heuristic. Sampled once at first
-/// use (viewer sessions rarely span year boundaries, and a stale
-/// value at most shifts a Dec / Jan boundary by one calendar year --
-/// same failure mode the heuristic already has for logs older than
-/// twelve months).
+/// Year and month used by the RFC 3164 year-injection heuristic.
 struct AssumedNowFields
 {
     int year;
     unsigned month;
 };
 
-AssumedNowFields AssumedNow()
+AssumedNowFields AssumedNow(std::chrono::system_clock::time_point referenceNow)
 {
-    static const AssumedNowFields CACHED = []() {
-        const auto today = date::floor<date::days>(std::chrono::system_clock::now());
-        const date::year_month_day ymd{today};
-        return AssumedNowFields{
-            .year = static_cast<int>(ymd.year()),
-            .month = static_cast<unsigned>(ymd.month()),
-        };
-    }();
-    return CACHED;
+    const auto today = date::floor<date::days>(referenceNow);
+    const date::year_month_day ymd{today};
+    return AssumedNowFields{
+        .year = static_cast<int>(ymd.year()),
+        .month = static_cast<unsigned>(ymd.month()),
+    };
 }
 
 /// Case-sensitive lookup for RFC 3164's English month abbreviations.
@@ -268,7 +260,9 @@ unsigned MatchSyslogMonth(std::string_view sv) noexcept
 
 } // namespace
 
-bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
+bool TryParseSyslogRfc3164Timestamp(
+    std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
+)
 {
     // Shortest legal shape is `Jan  1 00:00:00` = 15 bytes.
     constexpr size_t MIN_LEN = 15;
@@ -365,7 +359,7 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
     // months, which is an inherent limitation of the year-less
     // header shape -- users with longer horizons should switch the
     // sender to RFC 5424.
-    const AssumedNowFields now = AssumedNow();
+    const AssumedNowFields now = AssumedNow(referenceNow);
     int year = now.year;
     if (month > now.month)
     {
@@ -385,6 +379,11 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
                          );
     out = TimeStamp{totalUs};
     return true;
+}
+
+bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
+{
+    return TryParseSyslogRfc3164Timestamp(sv, out, std::chrono::system_clock::now());
 }
 
 bool TryParseGenericTimestamp(
@@ -428,27 +427,6 @@ bool TryParseTimestamp(
     }
 }
 
-const date::time_zone *CurrentZone()
-{
-    static const date::time_zone *tz = date::current_zone();
-    return tz;
-}
-
-void Initialize(const std::filesystem::path &tzdata)
-{
-    // Validate the path up front. `date::set_install` only fails lazily,
-    // and `date::current_zone()` memoizes the first successful result, so
-    // a later `Initialize(bad_path)` in a process that already initialized
-    // would silently succeed. Checking here keeps the precondition
-    // independent of date's internal cache.
-    if (!std::filesystem::exists(tzdata) || !std::filesystem::is_directory(tzdata))
-    {
-        throw std::runtime_error("tzdata directory does not exist: " + tzdata.string());
-    }
-    date::set_install(tzdata.string());
-    static_cast<void>(date::current_zone());
-}
-
 namespace
 {
 
@@ -456,7 +434,7 @@ namespace
 /// overloads. Returns `false` when @p lines is empty, in which case the
 /// caller should bail out (the spec arrays are not built).
 bool MakeBackfillState(
-    const LogConfiguration::Column &column,
+    const Column &column,
     std::span<LogLine> lines,
     std::array<internal::TimeColumnSpec, 1> &specsOut,
     std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
@@ -508,7 +486,7 @@ std::string_view OwnedArenaForBackfill(const LogLine & /*line*/) noexcept
 
 } // namespace
 
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
+std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines)
 {
     std::vector<std::string> errors;
     std::array<internal::TimeColumnSpec, 1> specs;
@@ -535,9 +513,7 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
     return errors;
 }
 
-void BackfillTimestampColumn(
-    const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
-)
+void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors)
 {
     static_cast<void>(discardErrors);
     std::array<internal::TimeColumnSpec, 1> specs;
@@ -562,7 +538,7 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 
     for (const auto &column : configuration.columns)
     {
-        if (column.type == LogConfiguration::Type::Time)
+        if (column.type == ColumnType::Time)
         {
             auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
             if (!columnErrors.empty())
@@ -576,76 +552,64 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
     return errors;
 }
 
+int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp, const TimeZoneContext &timeZone)
+{
+    return timeZone.ToLocalMilliseconds(timeStamp);
+}
+
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp)
 {
-    const auto zonedTime = date::zoned_time{CurrentZone(), timeStamp};
-    const auto localTime = zonedTime.get_local_time();
-    return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.time_since_epoch()).count();
+    return TimeStampToLocalMillisecondsSinceEpoch(timeStamp, ProcessDefaultTimeZone());
+}
+
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.UtcMicrosecondsToLocalMilliseconds(microseconds);
 }
 
 int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds)
 {
-    const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
-        std::chrono::microseconds{microseconds}
-    };
-    const date::zoned_time localTime{CurrentZone(), utcTime};
-    return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.get_local_time().time_since_epoch()).count();
+    return UtcMicrosecondsToLocalMilliseconds(microseconds, ProcessDefaultTimeZone());
+}
+
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.LocalMillisecondsToUtc(milliseconds);
 }
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
 {
-    const auto localTime = date::local_time<std::chrono::microseconds>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(milliseconds))
-    );
-    const auto systemTime = CurrentZone()->to_sys(localTime);
-    return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
+    return LocalMillisecondsSinceEpochToTimeStamp(milliseconds, ProcessDefaultTimeZone());
 }
 
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::time_zone *zone)
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone)
 {
-    if (zone == nullptr)
-    {
-        return localMicroseconds;
-    }
-    const date::local_time<std::chrono::microseconds> localTime{std::chrono::microseconds{localMicroseconds}};
-    try
-    {
-        // `choose::earliest` resolves DST edge cases without
-        // throwing: ambiguous fall-back hour -> earlier candidate;
-        // spring-forward gap -> the transition boundary. We do
-        // NOT catch `nonexistent_local_time` /
-        // `ambiguous_local_time` because the `choose` overload
-        // never throws them.
-        const auto systemTime = zone->to_sys(localTime, date::choose::earliest);
-        return systemTime.time_since_epoch().count();
-    }
-    catch (const std::exception &)
-    {
-        // Reachable for far-future dates past the tzdata table
-        // and corrupt zone entries. Falling back to the naive
-        // value keeps the Goto Timestamp slot exception-safe.
-        return localMicroseconds;
-    }
+    return timeZone.LocalMicrosecondsToUtc(localMicroseconds);
 }
 
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
 {
-    return LocalMicrosecondsSinceEpochToUtc(localMicroseconds, CurrentZone());
+    return LocalMicrosecondsSinceEpochToUtc(localMicroseconds, ProcessDefaultTimeZone());
+}
+
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.FormatUtcMicroseconds(microseconds);
 }
 
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
 {
-    const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
-        std::chrono::microseconds{microseconds}
-    };
-    const date::zoned_time localTime{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(utcTime)};
-    return date::format("%F %T", localTime);
+    return UtcMicrosecondsToDateTimeString(microseconds, ProcessDefaultTimeZone());
+}
+
+std::string TimeStampToDateTimeString(TimeStamp timeStamp, const TimeZoneContext &timeZone)
+{
+    return timeZone.FormatTimeStamp(timeStamp);
 }
 
 std::string TimeStampToDateTimeString(TimeStamp timeStamp)
 {
-    const date::zoned_time localTime{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(timeStamp)};
-    return date::format("%F %T", localTime);
+    return TimeStampToDateTimeString(timeStamp, ProcessDefaultTimeZone());
 }
 
 } // namespace loglib

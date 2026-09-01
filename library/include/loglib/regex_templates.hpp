@@ -49,7 +49,7 @@ enum class ContinuationMode : uint8_t
  * named capture groups.
  *
  * Patterns use PCRE2 syntax with `(?<Name>...)` named groups.
- * Each named group becomes a `LogConfiguration::Column` whose
+ * Each named group becomes a `Column` whose
  * `keys[0]` is the group name; anonymous groups are ignored.
  *
  * `sampleLines` doubles as test fixture and auto-detection data:

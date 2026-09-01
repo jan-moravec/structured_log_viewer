@@ -151,15 +151,12 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     {
         return QString::fromStdString(locator);
     }
-    const auto &dedupKeys = configurationSource->locatorDedupKeys;
-    const auto &displayPaths = configurationSource->locators;
-    // `min` guards against the two arrays desyncing.
-    const std::size_t count = std::min(dedupKeys.size(), displayPaths.size());
-    for (std::size_t i = 0; i < count; ++i)
+    const auto &entries = configurationSource->locators;
+    for (const auto &entry : entries)
     {
-        if (dedupKeys[i] == locator)
+        if (entry.dedupKey == locator)
         {
-            return QString::fromStdString(displayPaths[i]);
+            return QString::fromStdString(entry.displayPath);
         }
     }
     return QString::fromStdString(locator);
@@ -217,11 +214,7 @@ public:
 /// `COLUMN_NOTE` would clobber the in-flight text. Full-rebuild
 /// callers set the note cell separately after this call.
 void PopulateAnchorCellForEntry(
-    QTreeWidgetItem *item,
-    const loglib::LogConfiguration::AnchorEntry &entry,
-    const LogModel *model,
-    ThemeControl *theme,
-    int swatchPx
+    QTreeWidgetItem *item, const loglib::AnchorEntry &entry, const LogModel *model, ThemeControl *theme, int swatchPx
 )
 {
     const QString displayPath = DisplayPathForLocator(model, entry.locator);
@@ -881,7 +874,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
     // changed, on insert the new item starts empty (matching what
     // `SetAnchor` seeds); the note flow goes through
     // `OnAnchorNoteChanged` instead.
-    const loglib::LogConfiguration::AnchorEntry entry{
+    const loglib::AnchorEntry entry{
         .locator = key.locator,
         .lineId = key.lineId,
         .colorIndex = *colourOpt,

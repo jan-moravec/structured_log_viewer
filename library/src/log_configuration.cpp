@@ -88,12 +88,69 @@ int FirstTimeColumnIndex(const LogConfiguration &configuration)
 {
     for (size_t i = 0; i < configuration.columns.size(); ++i)
     {
-        if (configuration.columns[i].type == LogConfiguration::Type::Time)
+        if (configuration.columns[i].type == ColumnType::Time)
         {
             return static_cast<int>(i);
         }
     }
     return -1;
+}
+
+void Source::ReplaceDisplayPaths(std::vector<std::string> paths)
+{
+    std::vector<std::string> stagedKeys = std::move(pendingDedupKeys);
+    pendingDedupKeys.clear();
+    std::vector<SourceLocator> next(paths.size());
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        next[i].displayPath = std::move(paths[i]);
+        if (i < stagedKeys.size())
+        {
+            next[i].dedupKey = std::move(stagedKeys[i]);
+        }
+        else if (i < locators.size())
+        {
+            next[i].dedupKey = std::move(locators[i].dedupKey);
+        }
+    }
+    locators = std::move(next);
+}
+
+void Source::ReplaceDedupKeys(std::vector<std::string> keys)
+{
+    if (locators.empty())
+    {
+        pendingDedupKeys = std::move(keys);
+        return;
+    }
+    pendingDedupKeys.clear();
+    const size_t n = std::min(locators.size(), keys.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+        locators[i].dedupKey = std::move(keys[i]);
+    }
+}
+
+std::vector<std::string> Source::DisplayPaths() const
+{
+    std::vector<std::string> paths;
+    paths.reserve(locators.size());
+    for (const SourceLocator &locator : locators)
+    {
+        paths.push_back(locator.displayPath);
+    }
+    return paths;
+}
+
+std::vector<std::string> Source::DedupKeys() const
+{
+    std::vector<std::string> keys;
+    keys.reserve(locators.size());
+    for (const SourceLocator &locator : locators)
+    {
+        keys.push_back(locator.dedupKey);
+    }
+    return keys;
 }
 
 } // namespace loglib
@@ -115,8 +172,8 @@ struct ColumnsOnlyDocument
     // null; `Save` is the only construction site and holds the
     // source vectors for the synchronous `glz::write` call.
     // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
-    const std::vector<loglib::LogConfiguration::Column> &columns;
-    const std::vector<loglib::LogConfiguration::HighlightRule> &highlightRules;
+    const std::vector<loglib::Column> &columns;
+    const std::vector<loglib::HighlightRule> &highlightRules;
     // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
 };
 
@@ -275,11 +332,11 @@ void LogConfigurationManager::Update(const LogData &logData)
             if (IsTimestampKey(key))
             {
                 mConfiguration.columns.push_back(
-                    LogConfiguration::Column{
+                    Column{
                         .header = key,
                         .keys = {key},
                         .printFormat = "%F %H:%M:%S",
-                        .type = LogConfiguration::Type::Time,
+                        .type = ColumnType::Time,
                         .parseFormats = DefaultTimeParseFormats(),
                     }
                 );
@@ -295,12 +352,8 @@ void LogConfigurationManager::Update(const LogData &logData)
             else
             {
                 mConfiguration.columns.push_back(
-                    LogConfiguration::Column{
-                        .header = key,
-                        .keys = {key},
-                        .printFormat = "{}",
-                        .type = LogConfiguration::Type::Any,
-                        .parseFormats = {}
+                    Column{
+                        .header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}
                     }
                 );
             }
@@ -322,11 +375,11 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         if (IsTimestampKey(key))
         {
             mConfiguration.columns.push_back(
-                LogConfiguration::Column{
+                Column{
                     .header = key,
                     .keys = {key},
                     .printFormat = "%F %H:%M:%S",
-                    .type = LogConfiguration::Type::Time,
+                    .type = ColumnType::Time,
                     .parseFormats = DefaultTimeParseFormats(),
                 }
             );
@@ -334,13 +387,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         else
         {
             mConfiguration.columns.push_back(
-                LogConfiguration::Column{
-                    .header = key,
-                    .keys = {key},
-                    .printFormat = "{}",
-                    .type = LogConfiguration::Type::Any,
-                    .parseFormats = {}
-                }
+                Column{.header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
             );
         }
         mKeysInColumns.insert(key);
@@ -368,7 +415,7 @@ bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex)
     // `level` and `severity`). Without this, draining multiple
     // bubbles would shuffle the slot's occupant.
     if (CANONICAL_LEVEL_COLUMN_INDEX < config.columns.size() &&
-        config.columns[CANONICAL_LEVEL_COLUMN_INDEX].type == LogConfiguration::Type::Level)
+        config.columns[CANONICAL_LEVEL_COLUMN_INDEX].type == ColumnType::Level)
     {
         return false;
     }
@@ -390,7 +437,7 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
     {
         return;
     }
-    using Diff = std::vector<LogConfiguration::Column>::difference_type;
+    using Diff = std::vector<Column>::difference_type;
     auto begin = mConfiguration.columns.begin();
     if (srcIndex > destIndex)
     {
@@ -448,7 +495,7 @@ int LogConfigurationManager::RemapColumnIndexAfterMove(int columnIndex, int srcI
     return columnIndex;
 }
 
-void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration::Type type)
+void LogConfigurationManager::SetColumnType(size_t columnIndex, ColumnType type)
 {
     if (columnIndex >= mConfiguration.columns.size())
     {
@@ -466,7 +513,7 @@ void LogConfigurationManager::SetColumnAutoDetect(size_t columnIndex, bool autoD
     mConfiguration.columns[columnIndex].autoDetect = autoDetect;
 }
 
-void LogConfigurationManager::SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect)
+void LogConfigurationManager::SetColumnTypePair(size_t columnIndex, ColumnType type, bool autoDetect)
 {
     if (columnIndex >= mConfiguration.columns.size())
     {
@@ -518,22 +565,22 @@ void LogConfigurationManager::SetExpression(FilterExpression expression)
     mConfiguration.expression = std::move(expression);
 }
 
-void LogConfigurationManager::SetSort(LogConfiguration::Sort sort)
+void LogConfigurationManager::SetSort(Sort sort)
 {
     mConfiguration.sort = sort;
 }
 
-void LogConfigurationManager::SetSource(std::optional<LogConfiguration::Source> source)
+void LogConfigurationManager::SetSource(std::optional<Source> source)
 {
     mConfiguration.source = std::move(source);
 }
 
-void LogConfigurationManager::SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors)
+void LogConfigurationManager::SetAnchors(std::vector<AnchorEntry> anchors)
 {
     mConfiguration.anchors = std::move(anchors);
 }
 
-void LogConfigurationManager::SetHighlightRules(std::vector<LogConfiguration::HighlightRule> rules)
+void LogConfigurationManager::SetHighlightRules(std::vector<HighlightRule> rules)
 {
     mConfiguration.highlightRules = std::move(rules);
 }
@@ -576,7 +623,7 @@ void LogConfigurationManager::EnsureKeyCacheBuilt() const
     }
     mKeysInColumns.clear();
     mKeysInColumns.reserve(mConfiguration.columns.size() * 4);
-    for (const LogConfiguration::Column &column : mConfiguration.columns)
+    for (const Column &column : mConfiguration.columns)
     {
         for (const std::string &key : column.keys)
         {

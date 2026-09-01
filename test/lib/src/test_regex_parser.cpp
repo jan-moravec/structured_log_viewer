@@ -279,11 +279,10 @@ TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [
     file.Write("info hello\nwarn world\n");
 
     auto config = std::make_shared<LogConfiguration>();
-    config->source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File,
-        .format = LogConfiguration::Source::Format::Regex,
-        .locators = {file.GetFilePath()},
-        .locatorDedupKeys = {file.GetFilePath()},
+    config->source = Source{
+        .kind = Source::Kind::File,
+        .format = Source::Format::Regex,
+        .locators = {{file.GetFilePath(), file.GetFilePath()}},
         .regexPattern = R"(^(?<level>\w+)\s+(?<message>.*)$)",
     };
 
@@ -1235,11 +1234,10 @@ TEST_CASE("RegexParser static overload with explicit pattern overrides configura
     file.Write("info hello\nwarn world\n");
 
     auto config = std::make_shared<LogConfiguration>();
-    config->source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File,
-        .format = LogConfiguration::Source::Format::Regex,
-        .locators = {file.GetFilePath()},
-        .locatorDedupKeys = {file.GetFilePath()},
+    config->source = Source{
+        .kind = Source::Kind::File,
+        .format = Source::Format::Regex,
+        .locators = {{file.GetFilePath(), file.GetFilePath()}},
         // Deliberately wrong: if the overload ever falls back to
         // this pattern the columns would come out as (`k`, `v`)
         // and neither of the fixture lines would match at all.

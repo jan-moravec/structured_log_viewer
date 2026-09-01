@@ -20,7 +20,9 @@
 #include <utility>
 #include <vector>
 
+using loglib::Column;
 using loglib::ColumnProjection;
+using loglib::ColumnType;
 using loglib::LogConfiguration;
 using loglib::LogConfigurationManager;
 using loglib::exports::ExportFormat;
@@ -29,13 +31,13 @@ using loglib::exports::RowSource;
 namespace
 {
 
-LogConfiguration::Column MakeColumn(std::string header, std::string key, bool visible = true)
+Column MakeColumn(std::string header, std::string key, bool visible = true)
 {
     return {
         .header = std::move(header),
         .keys = {std::move(key)},
         .printFormat = "{}",
-        .type = LogConfiguration::Type::String,
+        .type = ColumnType::String,
         .parseFormats = {},
         .visible = visible
     };
@@ -130,7 +132,7 @@ TEST_CASE("column_projection: mixed hidden columns are omitted", "[column_projec
     const ColumnProjection fromConfig(config);
     REQUIRE(fromConfig.Indices() == std::vector<std::size_t>{0, 2});
 
-    const ColumnProjection fromSpan(std::span<const LogConfiguration::Column>(config.columns));
+    const ColumnProjection fromSpan(std::span<const Column>(config.columns));
     REQUIRE(fromSpan.Indices() == fromConfig.Indices());
 }
 

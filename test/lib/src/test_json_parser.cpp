@@ -972,10 +972,10 @@ TEST_CASE(
     // `lastValidTimestamp` cache collapses the per-line work to one
     // `date::parse` call after the first sighting.
     auto configuration = std::make_shared<LogConfiguration>();
-    LogConfiguration::Column timestampColumn;
+    Column timestampColumn;
     timestampColumn.header = "timestamp";
     timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = LogConfiguration::Type::Time;
+    timestampColumn.type = ColumnType::Time;
     timestampColumn.parseFormats = {"%FT%T"};
     configuration->columns.push_back(std::move(timestampColumn));
 
@@ -1037,10 +1037,10 @@ TEST_CASE(
     );
 
     auto configuration = std::make_shared<LogConfiguration>();
-    LogConfiguration::Column timestampColumn;
+    Column timestampColumn;
     timestampColumn.header = "timestamp";
     timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = LogConfiguration::Type::Time;
+    timestampColumn.type = ColumnType::Time;
     timestampColumn.parseFormats = {"%FT%T"};
     configuration->columns.push_back(std::move(timestampColumn));
 

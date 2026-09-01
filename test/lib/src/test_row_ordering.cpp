@@ -45,7 +45,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
 LogTable BuildSingleColumnTable(
     const TestLogFile &testFile,
     const std::string &columnKey,
-    LogConfiguration::Type type,
+    ColumnType type,
     const std::vector<LogValue> &perRowValues
 )
 {
@@ -135,7 +135,7 @@ TEST_CASE("RowOrdering Compare and Permute match CompareRows / SortPermutationBy
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {int64_t{42}, std::monostate{}, int64_t{-1}, nan, int64_t{0}, int64_t{42}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
     const auto logRows = IotaRows(values.size());
 
     for (const SortDirection direction : {SortDirection::Ascending, SortDirection::Descending})
@@ -153,7 +153,7 @@ TEST_CASE("RowOrdering Floating NaN and monostate join the tail bucket", "[row_o
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {1.5, nan, std::monostate{}, -2.0, 0.0};
-    const LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "x", ColumnType::Floating, values);
     const auto logRows = IotaRows(values.size());
     const RowOrdering ordering(0, SortDirection::Ascending);
     RequireCompareMatchesCompareRows(table, values.size(), ordering);
@@ -168,7 +168,7 @@ TEST_CASE("RowOrdering Boolean false < true and sinks non-bool to tail", "[row_o
     const TestLogFile fixture("row_ordering_bool.json");
     fixture.Write("");
     const std::vector<LogValue> values = {true, std::monostate{}, false, true, std::string("x")};
-    const LogTable table = BuildSingleColumnTable(fixture, "ok", LogConfiguration::Type::Boolean, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "ok", ColumnType::Boolean, values);
     const auto logRows = IotaRows(values.size());
     const RowOrdering ordering(0, SortDirection::Ascending);
     RequireCompareMatchesCompareRows(table, values.size(), ordering);
@@ -181,7 +181,7 @@ TEST_CASE("RowOrdering String missing slots are monostate tail", "[row_ordering]
     const TestLogFile fixture("row_ordering_string.json");
     fixture.Write("");
     const std::vector<LogValue> values = {std::string("b"), std::monostate{}, std::string("a"), std::string("b")};
-    const LogTable table = BuildSingleColumnTable(fixture, "s", LogConfiguration::Type::String, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "s", ColumnType::String, values);
     const auto logRows = IotaRows(values.size());
     const RowOrdering ordering(0, SortDirection::Ascending);
     RequireCompareMatchesCompareRows(table, values.size(), ordering);
@@ -195,7 +195,7 @@ TEST_CASE("RowOrdering Time compares microseconds-since-epoch", "[row_ordering][
     const TimeStamp t0{std::chrono::microseconds(1)};
     const TimeStamp t1{std::chrono::microseconds(100)};
     const std::vector<LogValue> values = {t1, std::monostate{}, t0, t1};
-    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", ColumnType::Time, values);
     const auto logRows = IotaRows(values.size());
     const RowOrdering ordering(0, SortDirection::Ascending);
     RequireCompareMatchesCompareRows(table, values.size(), ordering);
@@ -213,7 +213,7 @@ TEST_CASE("RowOrdering Enumeration uses EnumDictRank and keeps input-index ties"
         {.header = "category",
          .keys = {"category"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -270,11 +270,7 @@ TEST_CASE("RowOrdering Level uses canonical severity, not byte order", "[row_ord
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = LogConfiguration::Type::Level,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -314,10 +310,10 @@ TEST_CASE("RowOrdering mixed-column table sorts the requested column only", "[ro
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "n", .keys = {"n"}, .printFormat = "{}", .type = LogConfiguration::Type::Integer, .parseFormats = {}}
+        {.header = "n", .keys = {"n"}, .printFormat = "{}", .type = ColumnType::Integer, .parseFormats = {}}
     );
     cfg.columns.push_back(
-        {.header = "s", .keys = {"s"}, .printFormat = "{}", .type = LogConfiguration::Type::String, .parseFormats = {}}
+        {.header = "s", .keys = {"s"}, .printFormat = "{}", .type = ColumnType::String, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -361,7 +357,7 @@ TEST_CASE("RowOrdering input-index tie-break is stable across direction", "[row_
     const TestLogFile fixture("row_ordering_stable.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{1}, int64_t{1}, int64_t{1}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
     const std::vector<std::size_t> logRows = {2, 0, 1};
 
     for (const SortDirection direction : {SortDirection::Ascending, SortDirection::Descending})

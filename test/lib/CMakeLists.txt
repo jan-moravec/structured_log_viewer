@@ -16,9 +16,12 @@ add_executable(
     "src/common.cpp"
     "src/test_auto_detect_parser.cpp"
     "src/test_column_projection.cpp"
+    "src/test_column_key_id_cache.cpp"
+    "src/test_column_type_health.cpp"
     "src/test_csv_parser.cpp"
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
+    "src/test_enum_inference.cpp"
     "src/test_exports.cpp"
     "src/test_file_line_source.cpp"
     "src/test_format_detection.cpp"
@@ -66,6 +69,8 @@ endif()
 target_include_directories(tests PRIVATE include)
 
 # TBB linked directly here for the concurrent KeyIndex test; loglib keeps it PRIVATE.
+# fmt is linked directly so TUs that include `loglib/internal/**` pipeline headers
+# (which use `fmt::format`) still see the header. loglib keeps fmt PRIVATE.
 # The compression codecs are linked directly too so the decompression tests can
 # build reference compressed fixtures with the same libraries loglib decodes.
 target_link_libraries(
@@ -76,6 +81,7 @@ target_link_libraries(
         Catch2::Catch2WithMain
         project_warnings
         TBB::tbb
+        fmt::fmt
         ZLIB::ZLIB
         BZip2::BZip2
         LibLZMA::LibLZMA
@@ -93,7 +99,7 @@ endif()
 # Enable KeyIndex call-count instrumentation; PUBLIC so the test TU and
 # `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
 # at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
-target_compile_definitions(loglib PUBLIC LOGLIB_KEY_INDEX_INSTRUMENTATION)
+target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
 
 # On Windows the TBB runtime DLL must sit next to the test executable for both
 # `catch_discover_tests` (which runs `tests.exe --list-test-names-only` at build

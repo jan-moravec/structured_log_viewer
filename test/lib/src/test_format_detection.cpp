@@ -13,8 +13,8 @@
 using loglib::DetectedFormat;
 using loglib::DetectFormatForPath;
 using loglib::DetectFormatFromBytes;
-using loglib::LogConfiguration;
 using loglib::MakeParserForFormat;
+using loglib::Source;
 using test_common::TempDir;
 
 TEST_CASE("DetectFormatFromBytes parity with DetectFormatForPath", "[FormatDetection]")
@@ -29,22 +29,22 @@ TEST_CASE("DetectFormatFromBytes parity with DetectFormatForPath", "[FormatDetec
     {
         const char *name;
         std::string_view bytes;
-        LogConfiguration::Source::Format expected;
+        Source::Format expected;
     };
     const Case cases[] = {
         {.name = "json.log",
          .bytes = R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
 {"timestamp":"2026-01-01T00:00:01Z","level":"warn","message":"there"}
 )",
-         .expected = LogConfiguration::Source::Format::Json},
+         .expected = Source::Format::Json},
         {.name = "logfmt.log",
          .bytes = R"(time=2026-01-01T00:00:00Z level=info message=hi
 time=2026-01-01T00:00:01Z level=warn message=there
 )",
-         .expected = LogConfiguration::Source::Format::Logfmt},
+         .expected = Source::Format::Logfmt},
         {.name = "csv.log",
          .bytes = "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
-         .expected = LogConfiguration::Source::Format::Csv},
+         .expected = Source::Format::Csv},
     };
 
     for (const Case &c : cases)
@@ -84,8 +84,8 @@ TEST_CASE("DetectFormatFromBytes and DetectFormatForPath agree on regex-format b
         CAPTURE(c.name);
         const DetectedFormat byPath = DetectFormatForPath(dir.Write(c.name, c.bytes));
         const DetectedFormat byBytes = DetectFormatFromBytes(c.bytes);
-        CHECK(byPath.format == LogConfiguration::Source::Format::Regex);
-        CHECK(byBytes.format == LogConfiguration::Source::Format::Regex);
+        CHECK(byPath.format == Source::Format::Regex);
+        CHECK(byBytes.format == Source::Format::Regex);
         CHECK_FALSE(byBytes.regexPattern.empty());
         CHECK(byPath.regexPattern == byBytes.regexPattern);
     }
@@ -116,7 +116,7 @@ TEST_CASE(
         "2026-01-01 12:00:00,789 ERROR [pool-1-thread-3] com.example.Worker$Inner - Task failed\n";
 
     const DetectedFormat detected = DetectFormatFromBytes(JAVA_STREAM);
-    CHECK(detected.format == LogConfiguration::Source::Format::Regex);
+    CHECK(detected.format == Source::Format::Regex);
     CHECK_FALSE(detected.regexPattern.empty());
 }
 
@@ -128,7 +128,7 @@ TEST_CASE("DetectFormatForPath on a missing file falls back to default Json", "[
     REQUIRE_FALSE(std::filesystem::exists(missing));
 
     const DetectedFormat detected = DetectFormatForPath(missing);
-    CHECK(detected.format == LogConfiguration::Source::Format::Json);
+    CHECK(detected.format == Source::Format::Json);
     CHECK(detected.regexPattern.empty());
 }
 
@@ -139,7 +139,7 @@ TEST_CASE("DetectFormatFromBytes on empty buffer yields default Json", "[FormatD
     // rest of the streaming pipeline (which cannot early-out on
     // "unknown format") still spins up a usable parser.
     const DetectedFormat detected = DetectFormatFromBytes({});
-    CHECK(detected.format == LogConfiguration::Source::Format::Json);
+    CHECK(detected.format == Source::Format::Json);
     CHECK(detected.regexPattern.empty());
 }
 
@@ -151,15 +151,15 @@ TEST_CASE("MakeParserForFormat returns a usable parser for every format", "[Form
     // isn't a stub.
     struct Case
     {
-        LogConfiguration::Source::Format format;
+        Source::Format format;
         std::string_view probe;
     };
     const Case cases[] = {
-        {.format = LogConfiguration::Source::Format::Json, .probe = R"({"a":1}
+        {.format = Source::Format::Json, .probe = R"({"a":1}
 {"b":2}
 )"},
-        {.format = LogConfiguration::Source::Format::Logfmt, .probe = "a=1 b=2\nc=3 d=4\n"},
-        {.format = LogConfiguration::Source::Format::Csv, .probe = "a,b\n1,2\n3,4\n"},
+        {.format = Source::Format::Logfmt, .probe = "a=1 b=2\nc=3 d=4\n"},
+        {.format = Source::Format::Csv, .probe = "a,b\n1,2\n3,4\n"},
     };
 
     for (const Case &c : cases)

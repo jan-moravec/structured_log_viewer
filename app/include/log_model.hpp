@@ -320,7 +320,7 @@ public:
     /// needed), emit `enumColumnsChanged` when the edit crosses the
     /// enum/level boundary, and refresh `ColumnHealth`. Out-of-range
     /// index is a silent no-op.
-    void ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect);
+    void ApplyColumnTypeEdit(int columnIndex, loglib::ColumnType newType, bool newAutoDetect);
 
     /// Canonical-level -> raw-dictionary-bytes mapping captured just
     /// before a `Type::Level` column lost its dictionary in the most

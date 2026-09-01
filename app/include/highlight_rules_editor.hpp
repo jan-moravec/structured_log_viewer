@@ -53,8 +53,8 @@ public:
     /// icons. `MainWindow` owns the shared state that outlives the
     /// editor.
     HighlightRulesEditor(
-        std::vector<loglib::LogConfiguration::HighlightRule> rules,
-        std::vector<loglib::LogConfiguration::Column> columns,
+        std::vector<loglib::HighlightRule> rules,
+        std::vector<loglib::Column> columns,
         ThemeControl *theme,
         QWidget *parent = nullptr
     );
@@ -62,7 +62,7 @@ public:
     /// Refresh the column picker after `LogConfiguration::columns`
     /// changes (`AppendKeys`, type pinning). Preserves the current
     /// rule selection.
-    void SetColumns(std::vector<loglib::LogConfiguration::Column> columns);
+    void SetColumns(std::vector<loglib::Column> columns);
 
     /**
      * @brief Replaces the rule buffer after an external mutation (e.g.
@@ -74,7 +74,7 @@ public:
      *
      * @param rules Committed rules that become both the local buffer and the baseline.
      */
-    void SetRules(std::vector<loglib::LogConfiguration::HighlightRule> rules);
+    void SetRules(std::vector<loglib::HighlightRule> rules);
 
     /**
      * @brief Captures the in-progress buffer, including unsaved form fields.
@@ -106,7 +106,7 @@ signals:
     /// Fired on Save. Vector order matters (last-match-wins).
     /// `MainWindow` mirrors the result into both the runtime
     /// `HighlightRuleSet` and the persistent config.
-    void rulesSaved(std::vector<loglib::LogConfiguration::HighlightRule> rules);
+    void rulesSaved(std::vector<loglib::HighlightRule> rules);
 
     /**
      * @brief Emitted when the user discards unsaved edits by closing the editor.
@@ -145,8 +145,8 @@ private:
 
     /// List label: rule name + optional `[disabled]` / `[inactive]`
     /// badges. Icon is a paired fg/bg swatch.
-    [[nodiscard]] QString FormatListLabel(const loglib::LogConfiguration::HighlightRule &rule) const;
-    [[nodiscard]] QIcon FormatListIcon(const loglib::LogConfiguration::HighlightRule &rule, int sizePx) const;
+    [[nodiscard]] QString FormatListLabel(const loglib::HighlightRule &rule) const;
+    [[nodiscard]] QIcon FormatListIcon(const loglib::HighlightRule &rule, int sizePx) const;
 
     /// Rebuild the list from `mLocalRules` and reload the form.
     /// Use `RefreshListItem` for per-keystroke updates so the
@@ -182,7 +182,7 @@ private:
 
     /// Column index for @p rule's keys, or -1 (drives the
     /// `[inactive]` badge).
-    [[nodiscard]] int ResolveColumnIndex(const loglib::LogConfiguration::HighlightRule &rule) const;
+    [[nodiscard]] int ResolveColumnIndex(const loglib::HighlightRule &rule) const;
 
     /// Populate the column combo from `mColumns`.
     void RepopulateColumnCombo();
@@ -191,20 +191,20 @@ private:
     /// Guards: missing column, empty String needle, unbounded
     /// Number rule, Boolean rule with neither true nor false.
     /// Save is disabled while any rule fails.
-    [[nodiscard]] QString ValidateRule(const loglib::LogConfiguration::HighlightRule &rule) const;
+    [[nodiscard]] QString ValidateRule(const loglib::HighlightRule &rule) const;
 
     /// First invalid rule as `(index, message)`, or `(-1, "")`.
     [[nodiscard]] std::pair<int, QString> FirstInvalidRule() const;
 
-    std::vector<loglib::LogConfiguration::Column> mColumns;
+    std::vector<loglib::Column> mColumns;
     ThemeControl *mTheme = nullptr;
 
     /// Local edit buffer; a copy of what `MainWindow` passed in.
-    std::vector<loglib::LogConfiguration::HighlightRule> mLocalRules;
+    std::vector<loglib::HighlightRule> mLocalRules;
 
     /// Baseline for `IsDirty` / Revert. Updated on construction,
     /// `SetRules`, and Save.
-    std::vector<loglib::LogConfiguration::HighlightRule> mBaseline;
+    std::vector<loglib::HighlightRule> mBaseline;
 
     /// Selected row, or -1 (empty list / no selection).
     int mCurrentRow = -1;

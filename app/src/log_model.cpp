@@ -649,7 +649,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         loglib::KeyId kid;
         int columnIndex;
         uint16_t sizeBefore;
-        loglib::LogConfiguration::Type typeBefore;
+        loglib::ColumnType typeBefore;
         std::unordered_map<loglib::LogLevel, std::vector<std::string>> levelToRawBytes;
     };
     std::vector<EnumSnapshotEntry> enumSnapshotBefore;
@@ -663,8 +663,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             // Snapshot enum and level columns the same way: level is
             // an enumeration subtype and shares the dictionary, so
             // `Grew` / `Demoted` apply identically.
-            if ((column.type != loglib::LogConfiguration::Type::Enumeration &&
-                 column.type != loglib::LogConfiguration::Type::Level) ||
+            if ((column.type != loglib::ColumnType::Enumeration && column.type != loglib::ColumnType::Level) ||
                 column.keys.empty())
             {
                 continue;
@@ -686,7 +685,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 .typeBefore = column.type,
                 .levelToRawBytes = {},
             };
-            if (column.type == loglib::LogConfiguration::Type::Level)
+            if (column.type == loglib::ColumnType::Level)
             {
                 const std::vector<loglib::LogLevel> *ranks = mLogTable.LevelRankCache(columnIndex);
                 if (ranks != nullptr)
@@ -770,7 +769,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 // into raw dictionary entries before the post-demote
                 // rebuild. Plain enum demotes need no translation
                 // (`levelToRawBytes` is empty there).
-                if (entry.typeBefore == loglib::LogConfiguration::Type::Level && !entry.levelToRawBytes.empty())
+                if (entry.typeBefore == loglib::ColumnType::Level && !entry.levelToRawBytes.empty())
                 {
                     mLastBatchLevelDemoteMapping[entry.columnIndex] = std::move(entry.levelToRawBytes);
                 }
@@ -780,8 +779,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             const auto columnIndexSz = static_cast<size_t>(entry.columnIndex);
             const auto typeAfter =
                 (columnIndexSz < columnsAfter.size()) ? columnsAfter[columnIndexSz].type : entry.typeBefore;
-            if (entry.typeBefore == loglib::LogConfiguration::Type::Enumeration &&
-                typeAfter == loglib::LogConfiguration::Type::Level)
+            if (entry.typeBefore == loglib::ColumnType::Enumeration && typeAfter == loglib::ColumnType::Level)
             {
                 // Sub-promotion supersedes `Grew`: receivers re-read
                 // the column type, so one signal covers both new
@@ -841,8 +839,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 continue;
             }
             const auto colType = columns[static_cast<size_t>(columnIndex)].type;
-            if (colType != loglib::LogConfiguration::Type::Enumeration &&
-                colType != loglib::LogConfiguration::Type::Level)
+            if (colType != loglib::ColumnType::Enumeration && colType != loglib::ColumnType::Level)
             {
                 continue;
             }
@@ -865,7 +862,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         std::vector<int> newTimestampColumnIndices;
         for (int columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
         {
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Time)
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::ColumnType::Time)
             {
                 newTimestampColumnIndices.push_back(columnIndex);
             }
@@ -925,7 +922,7 @@ void LogModel::EndStreaming(bool cancelled)
         // dictionary contents so a Level -> ... demote can populate
         // `mLastBatchLevelDemoteMapping` the same way the per-batch
         // path does.
-        std::vector<loglib::LogConfiguration::Type> typesBefore;
+        std::vector<loglib::ColumnType> typesBefore;
         std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>> levelMappingsBefore;
         {
             const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
@@ -936,7 +933,7 @@ void LogModel::EndStreaming(bool cancelled)
             {
                 const auto &column = columnsBefore[i];
                 typesBefore.push_back(column.type);
-                if (column.type != loglib::LogConfiguration::Type::Level || column.keys.empty())
+                if (column.type != loglib::ColumnType::Level || column.keys.empty())
                 {
                     continue;
                 }
@@ -983,10 +980,10 @@ void LogModel::EndStreaming(bool cancelled)
         {
             const auto typeAfter = columnsAfter[i].type;
             const auto typeBefore = typesBefore[i];
-            const bool isEnumLikeAfter = typeAfter == loglib::LogConfiguration::Type::Enumeration ||
-                                         typeAfter == loglib::LogConfiguration::Type::Level;
-            const bool wasEnumLikeBefore = typeBefore == loglib::LogConfiguration::Type::Enumeration ||
-                                           typeBefore == loglib::LogConfiguration::Type::Level;
+            const bool isEnumLikeAfter =
+                typeAfter == loglib::ColumnType::Enumeration || typeAfter == loglib::ColumnType::Level;
+            const bool wasEnumLikeBefore =
+                typeBefore == loglib::ColumnType::Enumeration || typeBefore == loglib::ColumnType::Level;
             // Fresh promotion to any enum-like type.
             if (!wasEnumLikeBefore && isEnumLikeAfter)
             {
@@ -995,8 +992,7 @@ void LogModel::EndStreaming(bool cancelled)
             }
             // Sub-promotion `Enumeration -> Level`: same signal so
             // the filter UI re-renders against the level picker.
-            if (typeBefore == loglib::LogConfiguration::Type::Enumeration &&
-                typeAfter == loglib::LogConfiguration::Type::Level)
+            if (typeBefore == loglib::ColumnType::Enumeration && typeAfter == loglib::ColumnType::Level)
             {
                 emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                 continue;
@@ -1016,8 +1012,7 @@ void LogModel::EndStreaming(bool cancelled)
             }
             // Sub-demote `Level -> Enumeration`: same handling as a
             // full demote so saved Level filters get rewritten.
-            if (typeBefore == loglib::LogConfiguration::Type::Level &&
-                typeAfter == loglib::LogConfiguration::Type::Enumeration)
+            if (typeBefore == loglib::ColumnType::Level && typeAfter == loglib::ColumnType::Enumeration)
             {
                 auto mappingIt = levelMappingsBefore.find(static_cast<int>(i));
                 if (mappingIt != levelMappingsBefore.end())
@@ -1065,9 +1060,9 @@ int LogModel::columnCount(const QModelIndex &parent) const
 
 namespace
 {
-QString FormatTypeName(loglib::LogConfiguration::Type type, bool autoDetect)
+QString FormatTypeName(loglib::ColumnType type, bool autoDetect)
 {
-    using Type = loglib::LogConfiguration::Type;
+    using Type = loglib::ColumnType;
     QString base;
     switch (type)
     {
@@ -1107,7 +1102,7 @@ QString FormatTypeName(loglib::LogConfiguration::Type type, bool autoDetect)
 }
 
 QString BuildHeaderTooltip(
-    const loglib::LogConfiguration::Column &column,
+    const loglib::Column &column,
     std::optional<loglib::LogTable::ColumnTypeHealth> health,
     const QStringList &filterTitles
 )
@@ -1284,7 +1279,7 @@ void LogModel::NotifyColumnEdited(int columnIndex)
     }
 }
 
-void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect)
+void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::ColumnType newType, bool newAutoDetect)
 {
     if (columnIndex < 0 || columnIndex >= columnCount())
     {
@@ -1312,7 +1307,7 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
     // Picking "Auto-detect" on already-loaded rows parks at
     // `(Any, autoDetect)`; rescan so the column actually resolves
     // instead of rendering as raw `any` forever.
-    if (newType == loglib::LogConfiguration::Type::Any && newAutoDetect)
+    if (newType == loglib::ColumnType::Any && newAutoDetect)
     {
         mLogTable.RescanColumnForAutoDetection(static_cast<size_t>(columnIndex));
     }
@@ -1321,7 +1316,7 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
     // route to a different terminal type than `newType`.
     const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
     const auto effectiveType = columnsAfter[static_cast<size_t>(columnIndex)].type;
-    using Type = loglib::LogConfiguration::Type;
+    using Type = loglib::ColumnType;
     const bool wasEnumLike = previousType == Type::Enumeration || previousType == Type::Level;
     const bool isEnumLike = effectiveType == Type::Enumeration || effectiveType == Type::Level;
     // Promote: entering the enum family, or sub-promote
@@ -1464,7 +1459,7 @@ int LogModel::ComputeFirstLevelColumnIndex() const noexcept
     const auto &columns = Configuration().columns;
     for (size_t i = 0; i < columns.size(); ++i)
     {
-        if (columns[i].type == loglib::LogConfiguration::Type::Level)
+        if (columns[i].type == loglib::ColumnType::Level)
         {
             return static_cast<int>(i);
         }

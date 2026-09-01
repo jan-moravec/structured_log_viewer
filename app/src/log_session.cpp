@@ -166,11 +166,11 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         {
             switch (mCurrentSource->kind)
             {
-            case loglib::LogConfiguration::Source::Kind::Stdin:
+            case loglib::Source::Kind::Stdin:
                 return SessionSourceMode::Stdin;
-            case loglib::LogConfiguration::Source::Kind::NetworkStream:
+            case loglib::Source::Kind::NetworkStream:
                 return SessionSourceMode::Network;
-            case loglib::LogConfiguration::Source::Kind::File:
+            case loglib::Source::Kind::File:
                 break;
             }
         }
@@ -216,8 +216,8 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         ops |= static_cast<std::uint32_t>(SessionOperationState::Exporting);
     }
     const bool isNetworkOrStdin =
-        mCurrentSource.has_value() && (mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::NetworkStream ||
-                                       mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin);
+        mCurrentSource.has_value() && (mCurrentSource->kind == loglib::Source::Kind::NetworkStream ||
+                                       mCurrentSource->kind == loglib::Source::Kind::Stdin);
     if (mSourceWaiting)
     {
         if (isNetworkOrStdin)
@@ -301,7 +301,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     {
         // Restorability requires a concrete file locator and non-tail mode.
         const auto &source = *mCurrentSource;
-        const bool isFile = source.kind == loglib::LogConfiguration::Source::Kind::File;
+        const bool isFile = source.kind == loglib::Source::Kind::File;
         const bool hasLocators = !source.locators.empty();
         snapshot.dirty.restorableInPlace = isFile && hasLocators && mMode != Mode::LiveTail;
         // Stdin / network can't be reopened from a saved locator, and a
@@ -318,12 +318,12 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     // stdin producers. A workspace-restored placeholder can keep a
     // captured fallback name.
     if (mCurrentSource.has_value() && !mCurrentSource->locators.empty() &&
-        mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+        mCurrentSource->kind == loglib::Source::Kind::File)
     {
         loglib::LogConfiguration named;
         named.source = mCurrentSource;
         snapshot.shortLabel = SessionHistoryManager::BuildLabel(named);
-        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front());
+        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front().displayPath);
         snapshot.sourceLabel = snapshot.tooltip;
         if (snapshot.tooltip.isEmpty() && !mStreamingFileName.isEmpty())
         {
@@ -574,7 +574,7 @@ void LogSession::MirrorSortToConfiguration()
     const int proxySortColumn = mSortFilterProxyModel->SortColumn();
     if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
     {
-        loglib::LogConfiguration::Sort sort;
+        loglib::Sort sort;
         sort.columnIndex = proxySortColumn;
         sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
         mModel->ConfigurationManager().SetSort(sort);
@@ -789,7 +789,7 @@ void LogSession::ResetStreamingProgress()
     }
 }
 
-void LogSession::SetCurrentSource(std::optional<loglib::LogConfiguration::Source> source)
+void LogSession::SetCurrentSource(std::optional<loglib::Source> source)
 {
     // Source has no equality operator, so value-bearing writes always fan out.
     const bool hadValue = mCurrentSource.has_value();
@@ -965,7 +965,7 @@ bool LogSession::ShouldAutoSaveAfterStreaming(Mode justFinishedMode) const noexc
     // analyser cannot trace through the helper.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto &source = *mCurrentSource;
-    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
+    if (source.kind != loglib::Source::Kind::File)
     {
         // Network streams: locator is a producer URI, not a path.
         return false;
@@ -991,7 +991,7 @@ bool LogSession::CanPersistRestorableSnapshot() const noexcept
         return !mAutoSaveUuid.isEmpty();
     }
     const auto &source = *mCurrentSource;
-    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
+    if (source.kind != loglib::Source::Kind::File)
     {
         return false;
     }
@@ -1035,7 +1035,7 @@ QString LogSession::RestorableSessionUuid() const noexcept
         return mAutoSaveUuid;
     }
     const auto &source = *mCurrentSource;
-    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
+    if (source.kind != loglib::Source::Kind::File)
     {
         // Stream sources cannot be re-bound from a saved locator.
         return {};

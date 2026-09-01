@@ -21,7 +21,7 @@
 /// (note text edits), and `anchorsReset` (bulk mutation).
 ///
 /// Key layout:
-/// - `locator`: canonical file path (matches `Source::locatorDedupKeys`);
+/// - `locator`: canonical file path (matches `SourceLocator::dedupKey`);
 ///   empty for in-memory streams.
 /// - `lineId`: monotonic parser id, unique within a `LineSource`.
 ///
@@ -129,7 +129,7 @@ public:
     /// @returns the number of colour-clamped entries, surfaced to
     /// the user by `MainWindow::TryLoadAsConfiguration` via the
     /// status bar so a downgrade is visible.
-    [[nodiscard]] std::size_t Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries);
+    [[nodiscard]] std::size_t Replace(const std::vector<loglib::AnchorEntry> &entries);
 
     /// Anchor colour for @p key, or nullopt if not anchored.
     [[nodiscard]] std::optional<uint8_t> ColorFor(const Key &key) const noexcept;
@@ -146,11 +146,11 @@ public:
     /// `lineId` is not stable across sessions and would collide
     /// with unrelated ids on reload. Use
     /// `EntriesIncludingRuntimeOnly` for diagnostics.
-    [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> Entries() const;
+    [[nodiscard]] std::vector<loglib::AnchorEntry> Entries() const;
 
     /// Like `Entries` but keeps runtime-only anchors. Diagnostics
     /// and tests only; save paths must use `Entries`.
-    [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> EntriesIncludingRuntimeOnly() const;
+    [[nodiscard]] std::vector<loglib::AnchorEntry> EntriesIncludingRuntimeOnly() const;
 
     [[nodiscard]] std::size_t Count() const noexcept;
 
@@ -193,7 +193,7 @@ private:
     /// When @p dropRuntimeOnly is true, entries with an empty
     /// `locator` are excluded. Sort key is `(locator, lineId)` so
     /// on-disk JSON stays byte-stable regardless of hash-map order.
-    [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> BuildSortedEntries(bool dropRuntimeOnly) const;
+    [[nodiscard]] std::vector<loglib::AnchorEntry> BuildSortedEntries(bool dropRuntimeOnly) const;
 
     std::unordered_map<Key, Value, KeyHash> mAnchors;
 };

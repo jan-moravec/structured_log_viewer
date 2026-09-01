@@ -386,10 +386,10 @@ jobs:
     env:
       # Single source for the choco install version and the path probe.
       # slproweb's installer mirror only hosts the latest few versions;
-      # 3.6.2 was rotated off when 4.0.1 shipped on Jun 9 2026 (CI
+      # 4.0.1 was rotated off when 4.0.2 shipped on Aug 26 2026 (CI
       # started 404-ing in `Install OpenSSL`). Bump in lockstep with
       # the Chocolatey roster: https://community.chocolatey.org/packages/openssl.
-      OPENSSL_VERSION: "4.0.1"
+      OPENSSL_VERSION: "4.0.2"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

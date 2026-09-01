@@ -235,17 +235,14 @@ public:
     ~MainWindow();
 
     /**
-     * @brief Locate the staged `tzdata/` directory and initialise loglib's
-     * timezone database from it. Idempotent.
+     * @brief Locate the staged `tzdata/` directory and load loglib's
+     * process-default `TimeZoneContext` from it. Idempotent.
      *
-     * Must be called before any timestamp-formatting code path.
      * `main()` calls this before constructing the primary window
      * and before the restore-on-launch flow; the test fixture
-     * mirrors the call in `initTestCase`. Without this ordering
-     * the first `loglib::CurrentZone()` (triggered by loading a
-     * session with a time-range filter) probes the date library's
-     * platform default path (on Windows: `<profile>/Downloads/tzdata`)
-     * and fails with a misleading "Error Parsing Configuration".
+     * mirrors the call in `initTestCase`. Formatting helpers that
+     * use `ProcessDefaultTimeZone()` then observe the display zone.
+     * Core conversion APIs still take an explicit context.
      *
      * Returns true on success. On failure logs a `qCritical`
      * diagnostic and returns false; `main()` propagates that as a
@@ -969,7 +966,7 @@ public:
      * (`%FT%T`, `%F %T`), and the relative shortcuts `-Nh` /
      * `-Nm`. Naive inputs (no `%z` / `%Z` in the winning format)
      * are shifted from the table's display time zone
-     * (`loglib::CurrentZone()`) to UTC before the search. Lands
+     * (`ProcessDefaultTimeZone()`) to UTC before the search. Lands
      * on the first matching row via `FindFirstRowAtOrAfter` +
      * `SelectSourceRow`, or status-bar-hints if none qualifies.
      */
@@ -1210,14 +1207,14 @@ public:
      * without running a real open path.
      * @param source The `source` value.
      */
-    void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
+    void SetCurrentSourceForTest(std::optional<loglib::Source> source);
 
     /**
      * @brief Test-only read accessor for `mCurrentSource`; lets tests
      * inspect the descriptor after an open or load.
      * @return The result described above.
      */
-    [[nodiscard]] const std::optional<loglib::LogConfiguration::Source> &CurrentSourceForTest() const noexcept;
+    [[nodiscard]] const std::optional<loglib::Source> &CurrentSourceForTest() const noexcept;
 
     /**
      * @brief Test-only accessor for the source label used by

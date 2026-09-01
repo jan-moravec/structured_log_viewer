@@ -278,7 +278,7 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
     mRowComboBox->setCurrentIndex(row);
     const auto &columns = mModel.Configuration().columns;
     const bool isLevel = row >= 0 && static_cast<size_t>(row) < columns.size() &&
-                         columns[static_cast<size_t>(row)].type == LogConfiguration::Type::Level;
+                         columns[static_cast<size_t>(row)].type == ColumnType::Level;
     if (isLevel)
     {
         PopulateLevelValues(row);
@@ -642,7 +642,7 @@ void FilterEditor::OnOkClicked()
 
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
 
-    if (column.type == LogConfiguration::Type::Time)
+    if (column.type == ColumnType::Time)
     {
         // At least one bound must stay engaged; both unbounded would
         // match every row, so paint the checkboxes red and stop.
@@ -663,7 +663,7 @@ void FilterEditor::OnOkClicked()
                          : std::optional<qint64>{ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())};
         emit FilterTimeStampSubmitted(mFilterID, index, beginMicros, endMicros);
     }
-    else if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
+    else if (column.type == ColumnType::Enumeration || column.type == ColumnType::Level)
     {
         const QStringList selected = GetSelectedEnumValues();
         if (selected.isEmpty())
@@ -677,8 +677,7 @@ void FilterEditor::OnOkClicked()
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
     else if (
-        column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
-        column.type == LogConfiguration::Type::Number
+        column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number
     )
     {
         // An empty edit means "unbounded" on that side. Insist on
@@ -738,7 +737,7 @@ void FilterEditor::OnOkClicked()
         }
         emit FilterNumericRangeSubmitted(mFilterID, index, minValue, maxValue);
     }
-    else if (column.type == LogConfiguration::Type::Boolean)
+    else if (column.type == ColumnType::Boolean)
     {
         const bool includeTrue = mBoolIncludeTrue->isChecked();
         const bool includeFalse = mBoolIncludeFalse->isChecked();
@@ -773,7 +772,7 @@ void FilterEditor::UpdateSelectedColumn(int index)
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
     switch (column.type)
     {
-    case LogConfiguration::Type::Time:
+    case ColumnType::Time:
     {
         mStackedWidget->setCurrentIndex(PAGE_TIME);
         const auto minMax = mModel.GetMinMaxValues<qint64>(index);
@@ -783,24 +782,24 @@ void FilterEditor::UpdateSelectedColumn(int index)
         }
         break;
     }
-    case LogConfiguration::Type::Enumeration:
+    case ColumnType::Enumeration:
         mStackedWidget->setCurrentIndex(PAGE_ENUM);
         PopulateEnumValues(index);
         break;
-    case LogConfiguration::Type::Level:
+    case ColumnType::Level:
         mStackedWidget->setCurrentIndex(PAGE_ENUM);
         PopulateLevelValues(index);
         break;
-    case LogConfiguration::Type::Integer:
-    case LogConfiguration::Type::Floating:
-    case LogConfiguration::Type::Number:
+    case ColumnType::Integer:
+    case ColumnType::Floating:
+    case ColumnType::Number:
         mStackedWidget->setCurrentIndex(PAGE_NUMERIC);
         break;
-    case LogConfiguration::Type::Boolean:
+    case ColumnType::Boolean:
         mStackedWidget->setCurrentIndex(PAGE_BOOLEAN);
         break;
-    case LogConfiguration::Type::Any:
-    case LogConfiguration::Type::String:
+    case ColumnType::Any:
+    case ColumnType::String:
     default:
         mStackedWidget->setCurrentIndex(PAGE_STRING);
         break;
@@ -822,7 +821,7 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
         return;
     }
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
-    if (column.type != LogConfiguration::Type::Enumeration)
+    if (column.type != ColumnType::Enumeration)
     {
         UpdateEnumSelectionCount();
         return;
@@ -878,7 +877,7 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
         return;
     }
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
-    if (column.type != LogConfiguration::Type::Level)
+    if (column.type != ColumnType::Level)
     {
         UpdateEnumSelectionCount();
         return;

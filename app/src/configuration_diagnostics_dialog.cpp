@@ -51,9 +51,9 @@ constexpr int COL_MATCHING = 5;
 constexpr int COL_MISMATCHED = 6;
 constexpr int COL_PERCENT = 7;
 
-QString FormatType(loglib::LogConfiguration::Type type)
+QString FormatType(loglib::ColumnType type)
 {
-    using Type = loglib::LogConfiguration::Type;
+    using Type = loglib::ColumnType;
     switch (type)
     {
     case Type::Any:
@@ -78,7 +78,7 @@ QString FormatType(loglib::LogConfiguration::Type type)
     return QStringLiteral("?");
 }
 
-QString FormatColumnHeader(const loglib::LogConfiguration::Column &column)
+QString FormatColumnHeader(const loglib::Column &column)
 {
     QString text = QString::fromStdString(column.header);
     if (column.keys.size() > 1)

@@ -496,7 +496,7 @@ int HistogramModel::ComputeTimeColumnIndex() const
     const auto &config = mLogModel->Configuration();
     for (std::size_t i = 0; i < config.columns.size(); ++i)
     {
-        if (config.columns[i].type == loglib::LogConfiguration::Type::Time)
+        if (config.columns[i].type == loglib::ColumnType::Time)
         {
             return static_cast<int>(i);
         }
@@ -513,7 +513,7 @@ int HistogramModel::ComputeLevelColumnIndex() const
     const auto &config = mLogModel->Configuration();
     for (std::size_t i = 0; i < config.columns.size(); ++i)
     {
-        if (config.columns[i].type == loglib::LogConfiguration::Type::Level)
+        if (config.columns[i].type == loglib::ColumnType::Level)
         {
             return static_cast<int>(i);
         }

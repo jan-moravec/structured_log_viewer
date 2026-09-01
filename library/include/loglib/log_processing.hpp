@@ -4,11 +4,10 @@
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 #include "log_line.hpp"
+#include "time_zone_context.hpp"
 
-#include <date/tz.h>
-
+#include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -79,8 +78,14 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
  * path would depend on the process locale and break on non-`C`
  * hosts. Year is injected via the standard "if parsed month is
  * later than current month, roll back one year" heuristic since
- * the RFC 3164 header omits a year field.
+ * the RFC 3164 header omits a year field. @p referenceNow supplies
+ * that "current" year and month; it is not cached process-wide.
  */
+bool TryParseSyslogRfc3164Timestamp(
+    std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
+);
+
+/** @brief RFC 3164 fast path using `system_clock::now()` as the reference. */
 bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out);
 
 /** @brief Slow-path `date::parse` fallback; reuses @p scratch across calls. */
@@ -97,15 +102,6 @@ bool TryParseTimestamp(
     TimeStamp &out
 );
 
-/**
- * @brief Installs the timezone database. Must be called before any other timestamp
- * helper in this header.
- */
-void Initialize(const std::filesystem::path &tzdata);
-
-/** @brief Process-wide cached current IANA zone. Non-null after successful `Initialize`. */
-const date::time_zone *CurrentZone();
-
 /** @brief Promotes timestamp columns in @p logData; returns per-line failure messages. */
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 
@@ -115,7 +111,7 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
  * restrict the back-fill to a slice of a larger vector (e.g. only the rows
  * just appended in a streaming batch). Returns per-line failure messages.
  */
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines);
+std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines);
 
 /**
  * @brief Tag selecting the `void` overload that skips per-line "Failed to parse"
@@ -127,42 +123,45 @@ enum class BackfillErrors : uint8_t
 };
 
 /** @brief `void` overload of `BackfillTimestampColumn` that drops error messages. */
-void BackfillTimestampColumn(
-    const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
-);
+void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors);
 
+int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp, const TimeZoneContext &timeZone);
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);
 
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone);
 int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone);
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
 /**
  * @brief Convert @p localMicroseconds -- interpreted as a wall-clock
- * instant in @p zone -- to UTC epoch microseconds. Returns the
- * input unchanged if @p zone is null. DST edge cases resolve via
- * `date::to_sys(local, choose::earliest)`:
+ * instant in @p timeZone -- to UTC epoch microseconds.
+ *
+ * DST edge cases resolve via earliest-instant choice:
  *   * Ambiguous "fall-back" hour: the earlier candidate.
  *   * Non-existent "spring-forward" gap: the transition boundary
  *     (the first real instant after the gap).
  * Non-DST exceptions (far-future dates past the tzdata table,
- * corrupt zone entries) are caught and yield the naive value so
- * the Goto Timestamp slot stays exception-safe. The @p zone
- * argument exists for deterministic tests; production uses the
- * overload below.
+ * corrupt zone entries) yield the naive value so the Goto Timestamp
+ * slot stays exception-safe. UTC contexts pass the value through.
  */
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::time_zone *zone);
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone);
 
 /**
- * @brief Convenience overload equivalent to
- * `LocalMicrosecondsSinceEpochToUtc(local, CurrentZone())`.
+ * @brief Convenience overload using `ProcessDefaultTimeZone()`.
+ *
+ * That default is process-wide convenience, not a prerequisite for
+ * the explicit-context overload.
  */
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
 
 /** @brief Formats UTC microseconds since epoch as a `%F %T`-style local-time string. */
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone);
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
 
 /** @brief Formats a `TimeStamp` as a `%F %T`-style local-time string. */
+std::string TimeStampToDateTimeString(TimeStamp timeStamp, const TimeZoneContext &timeZone);
 std::string TimeStampToDateTimeString(TimeStamp timeStamp);
 
 } // namespace loglib

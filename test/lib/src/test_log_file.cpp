@@ -58,10 +58,22 @@ TEST_CASE("Throw runtime error when opening a non-existent file", "[LogFile]")
     CHECK_THROWS_AS(LogFile("non_existent_file.txt"), std::runtime_error);
 }
 
-// The mmap pointer must survive move so downstream `LogValue`s keep
+TEST_CASE("LogFile opens an empty file without mapping bytes", "[LogFile]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write("");
+
+    const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    CHECK(logFile->GetPath() == testLogFile.GetFilePath());
+    CHECK(logFile->Size() == 0);
+    CHECK(logFile->GetLineCount() == 0);
+    CHECK_THROWS_AS(logFile->GetLine(0), std::out_of_range);
+}
+
+// The mapped pointer must survive move so downstream `LogValue`s keep
 // their `string_view`s into the content alive across ownership
 // changes (e.g. `LogModel` taking ownership). Pins the contract in
-// case a future `mio` upgrade drops it.
+// case a future mapping-backend change copies instead of transferring.
 TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-stability]")
 {
     const TestLogFile testLogFile;
@@ -80,7 +92,7 @@ TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-sta
 
     const LogFile moved = std::move(*original);
 
-    // `mio::mmap_source` transfers its handle on move; guard against
+    // The mapping backend transfers its handle on move; guard against
     // a silent switch to a copying implementation.
     CHECK(moved.Data() == originalData);
     CHECK(moved.Size() == originalSize);

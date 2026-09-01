@@ -60,7 +60,7 @@ LogTable BuildEnumTable(
         {.header = columnKey,
          .keys = {columnKey},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -104,7 +104,7 @@ LogTable BuildStringTable(
         {.header = columnKey,
          .keys = {columnKey},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Any,
+         .type = ColumnType::Any,
          .parseFormats = {},
          .visible = true,
          .levelMapping = {},
@@ -147,7 +147,7 @@ LogTable BuildTimeTable(
         {.header = columnKey,
          .keys = {columnKey},
          .printFormat = "{:%FT%T}",
-         .type = LogConfiguration::Type::Time,
+         .type = ColumnType::Time,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -207,7 +207,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
     fixture.Write("");
     const std::vector<std::string> values = {"info", "warn", "error"};
     LogTable table = BuildEnumTable(fixture, "category", values, 12);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const EnumDictionary *dict = FindDictionary(table, "category");
     REQUIRE(dict != nullptr);
 
@@ -252,7 +252,7 @@ TEST_CASE(
     fixture.Write("");
     const std::vector<std::string> values = {"alpha", "beta", "gamma", "alpha", "beta"};
     LogTable table = BuildStringTable(fixture, "label", values);
-    REQUIRE(table.Configuration().Configuration().columns[0].type != LogConfiguration::Type::Enumeration);
+    REQUIRE(table.Configuration().Configuration().columns[0].type != ColumnType::Enumeration);
 
     const std::vector<std::string> selected = {"alpha", "gamma"};
     const std::vector<std::string_view> selectedViews = ToViews(selected);
@@ -554,7 +554,7 @@ namespace
 LogTable BuildSingleColumnTable(
     const TestLogFile &testFile,
     const std::string &columnKey,
-    LogConfiguration::Type type,
+    ColumnType type,
     const std::vector<LogValue> &perRowValues
 )
 {
@@ -598,7 +598,7 @@ TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_fil
     const std::vector<LogValue> values = {
         int64_t{-5}, int64_t{0}, int64_t{5}, int64_t{10}, int64_t{15}, std::monostate{}
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     const NumericRangeRowPredicate predicate(0, 0.0, 10.0);
     CHECK_FALSE(predicate.MatchesRow(table, 0)); // -5 < 0
@@ -617,7 +617,7 @@ TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals
     const TestLogFile fixture("log_filter_numeric_single_point.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{4}, int64_t{5}, int64_t{6}, 5.0};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Number, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Number, values);
 
     const NumericRangeRowPredicate predicate(0, 5.0, 5.0);
     CHECK_FALSE(predicate.MatchesRow(table, 0)); // 4 != 5
@@ -631,7 +631,7 @@ TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][nume
     const TestLogFile fixture("log_filter_numeric_unbounded.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{-100}, int64_t{0}, int64_t{100}, int64_t{1000}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     SECTION("unbounded min keeps everything <= max")
     {
@@ -668,7 +668,7 @@ TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[log_fi
     const std::vector<LogValue> values = {
         int64_t{1}, uint64_t{2}, 3.5, std::numeric_limits<double>::quiet_NaN(), std::string("not-a-number")
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Number, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Number, values);
 
     const NumericRangeRowPredicate predicate(0, 1.0, 4.0);
     CHECK(predicate.MatchesRow(table, 0));       // int 1
@@ -683,7 +683,7 @@ TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[log_filte
     const TestLogFile fixture("log_filter_numeric_nan_bounds.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{-50}, int64_t{0}, int64_t{50}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const NumericRangeRowPredicate predicate(0, nan, nan);
@@ -707,7 +707,7 @@ TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[l
         static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1U, // just past
         std::numeric_limits<uint64_t>::max()                             // far past
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", ColumnType::Time, values);
 
     const TimeRangeRowPredicate predicate(0, /*begin=*/0, /*end=*/std::numeric_limits<int64_t>::max());
     CHECK(predicate.MatchesRow(table, 0));
@@ -721,7 +721,7 @@ TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
     const TestLogFile fixture("log_filter_boolean.json");
     fixture.Write("");
     const std::vector<LogValue> values = {true, false, true, false, std::monostate{}};
-    const LogTable table = BuildSingleColumnTable(fixture, "flag", LogConfiguration::Type::Boolean, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "flag", ColumnType::Boolean, values);
 
     SECTION("only true")
     {
@@ -778,11 +778,7 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = LogConfiguration::Type::Level,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -803,7 +799,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("level");
     table.AppendBatch(std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
     const auto *ranks = table.LevelRankCache(0);
     REQUIRE(ranks != nullptr);
     const auto &registry = table.EnumDictionaries();
@@ -989,14 +985,14 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
         {.header = "category",
          .keys = {"category"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     cfg.columns.push_back(
         {.header = "region",
          .keys = {"region"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1079,14 +1075,14 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
         {.header = "category",
          .keys = {"category"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     cfg.columns.push_back(
         {.header = "region",
          .keys = {"region"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;

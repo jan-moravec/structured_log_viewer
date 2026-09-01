@@ -113,7 +113,7 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
 /// position on `numeric < string`). Caller handles monostate.
 ///
 /// The mixed-type fallback is dead code on the production hot path:
-/// `LogConfiguration::Type` pins which slot variants a column holds,
+/// `ColumnType` pins which slot variants a column holds,
 /// and the typed `Compare*` helpers consume them before we get here.
 /// It exists so unit / corruption tests still see deterministic
 /// output, and so a future type whose `CompareRows` dispatch falls
@@ -405,25 +405,25 @@ int CompareRows(
     {
         return 0;
     }
-    const LogConfiguration::Type type = columns[columnIndex].type;
+    const ColumnType type = columns[columnIndex].type;
 
     switch (type)
     {
-    case LogConfiguration::Type::Boolean:
+    case ColumnType::Boolean:
         return CompareBool(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
-    case LogConfiguration::Type::Integer:
+    case ColumnType::Integer:
         return CompareInteger(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
-    case LogConfiguration::Type::Floating:
-    case LogConfiguration::Type::Number:
+    case ColumnType::Floating:
+    case ColumnType::Number:
         return CompareFloating(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
-    case LogConfiguration::Type::Time:
+    case ColumnType::Time:
         return CompareTime(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
-    case LogConfiguration::Type::Enumeration:
+    case ColumnType::Enumeration:
         return CompareEnum(table, lhsRow, rhsRow, columnIndex, rankForEnumColumn);
-    case LogConfiguration::Type::Level:
+    case ColumnType::Level:
         return CompareLevel(table, lhsRow, rhsRow, columnIndex);
-    case LogConfiguration::Type::String:
-    case LogConfiguration::Type::Any:
+    case ColumnType::String:
+    case ColumnType::Any:
     default:
         return CompareString(table, lhsRow, rhsRow, columnIndex);
     }
@@ -449,8 +449,8 @@ std::vector<size_t> SortPermutationByColumn(
 
     const auto &columns = table.Configuration().Configuration().columns;
     const bool columnInRange = columnIndex < columns.size();
-    const bool isEnum = columnInRange && columns[columnIndex].type == LogConfiguration::Type::Enumeration;
-    const bool isLevel = columnInRange && columns[columnIndex].type == LogConfiguration::Type::Level;
+    const bool isEnum = columnInRange && columns[columnIndex].type == ColumnType::Enumeration;
+    const bool isLevel = columnInRange && columns[columnIndex].type == ColumnType::Level;
 
     // Fast path: enum column with a precomputed rank table. Pre-
     // materialise a `uint16_t` rank per row in parallel; the sort
