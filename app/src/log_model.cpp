@@ -478,11 +478,11 @@ loglib::StopToken LogModel::BeginStreaming(
     options.stopToken = stopToken;
 
     // Live-tail is never unbounded: load the user's retention from
-    // `StreamingControl` (fallback to `DEFAULT_RETENTION_LINES`).
+    // `StreamingControl` (fallback to `loglib::DEFAULT_RETENTION_LINES`).
     size_t cap = StreamingControl::RetentionLines();
     if (cap == 0)
     {
-        cap = StreamingControl::DEFAULT_RETENTION_LINES;
+        cap = loglib::DEFAULT_RETENTION_LINES;
     }
     mRetentionCap = cap;
     mSink->SetRetentionCap(mRetentionCap);

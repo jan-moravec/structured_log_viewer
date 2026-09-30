@@ -64,6 +64,7 @@ add_library(
     src/query_parser.cpp
     src/rotation_siblings.cpp
     src/source_plan.cpp
+    src/user_paths.cpp
     src/row_ordering.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
@@ -146,6 +147,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/time_zone_context.hpp
     include/loglib/transparent_string_hash.hpp
     include/loglib/udp_server_producer.hpp
+    include/loglib/user_paths.hpp
     include/loglib/user_timestamp.hpp
 )
 

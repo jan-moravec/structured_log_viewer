@@ -239,6 +239,15 @@ add_test(
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_session_tabs>
 )
 
+qt_add_executable(apptest_user_data_directory src/test_user_data_directory.cpp)
+target_link_libraries(apptest_user_data_directory PRIVATE Qt6::Test loglib)
+target_include_directories(apptest_user_data_directory PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_user_data_directory
+    COMMAND apptest_user_data_directory
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_user_data_directory>
+)
+
 qt_add_executable(apptest_workspace_persistence src/workspace_persistence_test.cpp)
 target_link_libraries(apptest_workspace_persistence PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_workspace_persistence PRIVATE ${CMAKE_SOURCE_DIR}/library/include)

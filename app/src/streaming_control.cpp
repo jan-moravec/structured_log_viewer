@@ -32,7 +32,7 @@ void StreamingControl::LoadConfiguration()
     {
         bool ok = false;
         const qulonglong raw = value.toULongLong(&ok);
-        if (ok && raw >= MIN_RETENTION_LINES && raw <= MAX_RETENTION_LINES)
+        if (ok && raw >= loglib::MIN_RETENTION_LINES && raw <= loglib::MAX_RETENTION_LINES)
         {
             mConfiguration.retentionLines = static_cast<size_t>(raw);
         }
@@ -41,12 +41,12 @@ void StreamingControl::LoadConfiguration()
             // Drop a corrupt / out-of-range value so it can't wedge
             // the spinbox.
             settings.remove(QLatin1String(CONFIGURATION_RETENTION_LINES));
-            mConfiguration.retentionLines = DEFAULT_RETENTION_LINES;
+            mConfiguration.retentionLines = loglib::DEFAULT_RETENTION_LINES;
         }
     }
     else
     {
-        mConfiguration.retentionLines = DEFAULT_RETENTION_LINES;
+        mConfiguration.retentionLines = loglib::DEFAULT_RETENTION_LINES;
     }
 
     if (const QVariant value = settings.value(QLatin1String(CONFIGURATION_NEWEST_FIRST)); value.isValid())
@@ -75,7 +75,7 @@ size_t StreamingControl::RetentionLines()
 
 void StreamingControl::SetRetentionLines(size_t value)
 {
-    mConfiguration.retentionLines = std::clamp(value, MIN_RETENTION_LINES, MAX_RETENTION_LINES);
+    mConfiguration.retentionLines = std::clamp(value, loglib::MIN_RETENTION_LINES, loglib::MAX_RETENTION_LINES);
 }
 
 bool StreamingControl::IsNewestFirst()

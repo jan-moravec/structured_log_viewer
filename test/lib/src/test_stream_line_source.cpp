@@ -1,4 +1,5 @@
 #include <loglib/bytes_producer.hpp>
+#include <loglib/line_source.hpp>
 #include <loglib/stream_line_source.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -222,6 +223,12 @@ TEST_CASE("StreamLineSource: Producer() is null when constructed without one", "
 {
     StreamLineSource source(std::filesystem::path("s.log"), nullptr);
     CHECK(source.Producer() == nullptr);
+}
+
+TEST_CASE("Retention bounds stay ordered", "[line_source]")
+{
+    CHECK(loglib::MIN_RETENTION_LINES <= loglib::DEFAULT_RETENTION_LINES);
+    CHECK(loglib::DEFAULT_RETENTION_LINES <= loglib::MAX_RETENTION_LINES);
 }
 
 TEST_CASE("StreamLineSource: OwnedMemoryBytes accounts for line text and per-line arenas", "[StreamLineSource]")

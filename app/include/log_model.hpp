@@ -229,7 +229,7 @@ public:
     ///   - Paused: trim the paused buffer so visible+buffered <= cap.
     ///   - Idle: record for the next session.
     /// `cap == 0` means unbounded; live-tail substitutes
-    /// `StreamingControl::DEFAULT_RETENTION_LINES` if still 0.
+    /// `loglib::DEFAULT_RETENTION_LINES` if still 0.
     void SetRetentionCap(size_t cap);
 
     /// Current retention cap (`0` means unbounded). GUI thread only.
