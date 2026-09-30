@@ -45,9 +45,9 @@ struct StringMatcherCase
         {"exactly-form-feed", Match::Exactly, "a b", "a\fb", true},
 
         // Exactly — UTF-8, NUL, invalid UTF-8 (both sides become U+FFFD).
-        {"exactly-utf8-equal", Match::Exactly, "caf\xc3\xa9", "caf\xc3\xa9", true},
-        {"exactly-utf8-unequal", Match::Exactly, "caf\xc3\xa9", "cafe", false},
-        {"exactly-utf8-case", Match::Exactly, "CAF\xc3\x89", "caf\xc3\xa9", false},
+        {"exactly-utf8-equal", Match::Exactly, "q\xc3\xa9", "q\xc3\xa9", true},
+        {"exactly-utf8-unequal", Match::Exactly, "q\xc3\xa9", "qe", false},
+        {"exactly-utf8-case", Match::Exactly, "Q\xc3\x89", "q\xc3\xa9", false},
         {"exactly-nul", Match::Exactly, std::string_view("a\0b", 3), std::string_view("a\0b", 3), true},
         {"exactly-nul-vs-without", Match::Exactly, "ab", std::string_view("a\0b", 3), false},
         {"exactly-nul-adjacent", Match::Exactly, std::string_view("\0ab", 3), std::string_view("\0ab", 3), true},
@@ -106,7 +106,7 @@ struct StringMatcherCase
         {"regex-invalid-star", Match::RegularExpression, "*", "x", false},
         {"regex-empty-pattern", Match::RegularExpression, "", "abc", true},
         {"regex-empty-both", Match::RegularExpression, "", "", true},
-        {"regex-utf8", Match::RegularExpression, "caf\xc3\xa9", "xxcaf\xc3\xa9yy", true},
+        {"regex-utf8", Match::RegularExpression, "q\xc3\xa9", "xxq\xc3\xa9yy", true},
 
         // Wildcards. Anchored; `*` and `?` do not match `/` or `\`.
         {"wildcard-exact", Match::Wildcard, "error", "error", true},
@@ -130,7 +130,7 @@ struct StringMatcherCase
         {"wildcard-plus-is-literal", Match::Wildcard, "a+b", "a+b", true},
         {"wildcard-plus-not-any", Match::Wildcard, "a+b", "axb", false},
         {"wildcard-case", Match::Wildcard, "Error*", "error", false},
-        {"wildcard-utf8-question", Match::Wildcard, "caf?", "caf\xc3\xa9", true},
+        {"wildcard-utf8-question", Match::Wildcard, "q?", "q\xc3\xa9", true},
         {"wildcard-question-two", Match::Wildcard, "?", "ab", false},
         {"wildcard-empty", Match::Wildcard, "", "", true},
         {"wildcard-empty-miss", Match::Wildcard, "", "a", false},
