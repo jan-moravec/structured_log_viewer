@@ -49,6 +49,7 @@ add_executable(
     "src/test_rotation_siblings.cpp"
     "src/test_row_ordering.cpp"
     "src/test_session_bundle.cpp"
+    "src/test_source_plan.cpp"
     "src/test_stdin_bytes_producer.cpp"
     "src/test_stdin_peek.cpp"
     "src/test_stream_line_source.cpp"

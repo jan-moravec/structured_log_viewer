@@ -63,6 +63,7 @@ add_library(
     src/normalized_json_row.cpp
     src/query_parser.cpp
     src/rotation_siblings.cpp
+    src/source_plan.cpp
     src/row_ordering.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
@@ -134,6 +135,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/session_bundle.hpp
     include/loglib/session_view.hpp
     include/loglib/source_descriptor.hpp
+    include/loglib/source_plan.hpp
     include/loglib/stdin_bytes_producer.hpp
     include/loglib/stdin_peek.hpp
     include/loglib/stop_token.hpp

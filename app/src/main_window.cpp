@@ -48,8 +48,8 @@
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
-#include <loglib/rotation_siblings.hpp>
 #include <loglib/session_bundle.hpp>
+#include <loglib/source_plan.hpp>
 #include <loglib/stdin_bytes_producer.hpp>
 #include <loglib/stdin_peek.hpp>
 #include <loglib/stop_token.hpp>
@@ -4061,20 +4061,17 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
     }
 
     // Deduplicate only against locators still visible in this session.
-    std::unordered_set<std::string> alreadyLoaded;
+    std::vector<std::string> suppressKeys;
     if (consultDedup && currentSource.has_value())
     {
-        alreadyLoaded.reserve(currentSource->locators.size());
+        suppressKeys.reserve(currentSource->locators.size());
         for (const auto &locator : currentSource->locators)
         {
-            alreadyLoaded.insert(locator.dedupKey);
+            suppressKeys.push_back(locator.dedupKey);
         }
     }
 
     // Bundles bypass rotation-family expansion.
-    QStringList expanded;
-    expanded.reserve(logPaths.size());
-
     std::vector<std::filesystem::path> fsPaths;
     fsPaths.reserve(logPaths.size());
     QStringList nonExpandableInputs;
@@ -4099,69 +4096,28 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
         return logPaths;
     }
 
-    const loglib::PartitionedSelection partitioned =
-        loglib::PartitionAsRotationSeries(std::span<const std::filesystem::path>(fsPaths));
+    loglib::SourcePlanOptions options;
+    options.rotationHistory = true;
+    options.suppressKeys = suppressKeys;
+    const std::vector<loglib::ResolvedSource> plan =
+        loglib::ResolveSourcePlan(std::span<const std::filesystem::path>(fsPaths), options);
 
-    std::unordered_set<std::string> emittedKeys;
-    emittedKeys.reserve(fsPaths.size());
-
-    // Count only paths absent from the caller's canonical input set;
-    // caller-selected companions must not enable the expansion Undo.
-    std::unordered_set<std::string> userSelectedKeys;
-    userSelectedKeys.reserve(fsPaths.size());
-    for (const std::filesystem::path &fp : fsPaths)
+    QStringList expanded;
+    expanded.reserve(static_cast<qsizetype>(plan.size()) + nonExpandableInputs.size());
+    for (const loglib::ResolvedSource &entry : plan)
     {
-        userSelectedKeys.insert(loglib::CanonicalKeyForPath(fp));
-    }
-
-    // Emit each series oldest-first while preserving family order.
-    for (const loglib::RotationSeries &series : partitioned.series)
-    {
-        int seriesAdded = 0;
-        // Keep the actual family primary for the status message.
-        const QString seriesPrimaryDisplay = logapp::CanonicalDisplayPath(logapp::FsPathToQString(series.primary));
-        for (const loglib::RotatedFile &rf : series.files)
+        // Preserve native Windows encoding when returning paths to Qt.
+        expanded.append(logapp::CanonicalDisplayPath(logapp::FsPathToQString(entry.path)));
+        if (!entry.autoAdded)
         {
-            if (alreadyLoaded.contains(rf.canonicalKey))
-            {
-                continue;
-            }
-            if (!emittedKeys.insert(rf.canonicalKey).second)
-            {
-                continue;
-            }
-            // Preserve native Windows encoding when returning paths to Qt.
-            const QString display = logapp::CanonicalDisplayPath(logapp::FsPathToQString(rf.path));
-            expanded.append(display);
-            // Count only detected siblings not explicitly selected.
-            const bool autoDiscoveredByRotationDetection = rf.origin == loglib::RotatedFile::Origin::NumberedSuffix ||
-                                                           rf.origin == loglib::RotatedFile::Origin::DatedSuffix;
-            if (autoDiscoveredByRotationDetection && !userSelectedKeys.contains(rf.canonicalKey))
-            {
-                ++seriesAdded;
-            }
+            continue;
         }
-        addedOut += seriesAdded;
+        ++addedOut;
         // Use the first family that contributed an added sibling.
-        if (primaryOut != nullptr && seriesAdded > 0 && primaryOut->isEmpty())
+        if (primaryOut != nullptr && primaryOut->isEmpty())
         {
-            *primaryOut = seriesPrimaryDisplay;
+            *primaryOut = logapp::CanonicalDisplayPath(logapp::FsPathToQString(entry.familyPrimary));
         }
-    }
-
-    // Residual paths (no siblings, unrelated files) preserve order.
-    for (const std::filesystem::path &rp : partitioned.residual)
-    {
-        const std::string key = loglib::CanonicalKeyForPath(rp);
-        if (alreadyLoaded.contains(key))
-        {
-            continue;
-        }
-        if (!emittedKeys.insert(key).second)
-        {
-            continue;
-        }
-        expanded.append(logapp::CanonicalDisplayPath(logapp::FsPathToQString(rp)));
     }
 
     // Reattach non-expandable inputs for the upstream classifier.
