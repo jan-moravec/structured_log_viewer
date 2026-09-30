@@ -73,6 +73,9 @@ TEST_CASE("string matcher differential corpus covers the required axes", "[strin
     }
 }
 
+namespace
+{
+
 /// `*` → `.*` and `?` → `.`, so these three Qt "path wildcard" cases match.
 bool Pcre2ExpectsMatch(const StringMatcherCase &entry)
 {
@@ -83,6 +86,8 @@ bool Pcre2ExpectsMatch(const StringMatcherCase &entry)
     }
     return entry.expected;
 }
+
+} // namespace
 
 TEST_CASE("PCRE2 string matcher matches the Qt corpus except separator wildcards", "[string_matcher]")
 {
