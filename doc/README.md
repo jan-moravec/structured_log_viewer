@@ -505,7 +505,7 @@ Highlight rules let you paint whole rows in a custom foreground / background col
 
 Each rule targets exactly one column, identified by its stable *key* (not by its current visual position, so [reordering columns](#column-management) never disturbs a rule). The v1 editor exposes three shapes:
 
-- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's compact single-line rendering. Embedded line breaks are normalized to spaces before matching.
+- **Text (string)** — Exactly, Contains, Regular expression (PCRE2), or Wildcard against the column's compact single-line rendering. Embedded line breaks are normalized to spaces before matching. Wildcard `*` and `?` match `/` and `\`, and the pattern must match the whole value.
 - **Number** — an optional minimum and maximum. Rows whose column value falls inside the interval match; leaving a bound empty makes it unbounded on that side.
 - **Boolean** — pick whether **true** and / or **false** should highlight.
 
@@ -633,8 +633,8 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 | --------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
 | `col:value`     | *Contains* — substring match for strings    | `service:auth`                                                               |
 | `col="..."`     | *Exactly* — quoted string, exact match      | `service="auth-service"`                                                     |
-| `col~/.../`     | *Regular expression* (Qt regex flavour)     | `msg ~ /err(or)?/`                                                           |
-| `col%"..."`     | *Wildcard* (`*` / `?` glob)                 | `path % "*.log"`                                                             |
+| `col~/.../`     | *Regular expression* (PCRE2)                | `msg ~ /err(or)?/`                                                           |
+| `col%"..."`     | *Wildcard* (`*` / `?`, whole string)        | `path % "*.log"`                                                             |
 | `col=42`        | Numeric equality (bare number, no quotes)   | `latency=42`                                                                 |
 | `col>=N`        | Numeric one-sided (`>`, `>=`, `<`, `<=`)    | `latency >= 100`                                                             |
 | `col=true`      | Boolean equality                            | `succeeded=false`                                                            |
@@ -645,6 +645,8 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
 
 String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use an inline regex flag to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum aliases are case-insensitive. Folded multi-line values are matched through their compact single-line rendering, with line breaks normalized to spaces.
+
+A wildcard matches the whole value. `*` is any sequence and `?` is one character, and both match `/` and `\`. `.` and `+` are literal. An unclosed `[` matches nothing.
 
 Value lists and ranges must carry a payload: `col IN []` and `col IN [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency IN [100..10]`.
 

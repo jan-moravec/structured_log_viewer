@@ -159,22 +159,22 @@ add_test(
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_highlight_rules>
 )
 
-# Focused tests for the shared `leaf_rule_compile` translation unit
-# (`ResolveLeafColumnByKeys`, `CompileLeaf`, `CompileExpression`).
-# Same concern-per-binary pattern as the tests above; drills into
-# each `CompileLeaf` arm's absent-branch and the combinator
-# propagation rules so a regression in a single arm surfaces here
-# instead of as a distant model-rebuild diff.
-qt_add_executable(apptest_leaf_rule_compile src/test_leaf_rule_compile.cpp)
+# Re-runs the string-matcher corpus against loglib. Expected flags are the
+# Qt 6.11 oracle except the three separator wildcards, which PCRE2 matches.
 
-target_link_libraries(apptest_leaf_rule_compile PRIVATE Qt6::Test Qt6::Widgets logapp)
+qt_add_executable(apptest_log_string_matcher src/test_log_string_matcher.cpp)
 
-target_include_directories(apptest_leaf_rule_compile PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_link_libraries(apptest_log_string_matcher PRIVATE Qt6::Test loglib)
+
+target_include_directories(
+    apptest_log_string_matcher
+    PRIVATE ${CMAKE_SOURCE_DIR}/library/include ${CMAKE_SOURCE_DIR}/test/lib/include
+)
 
 add_test(
-    NAME apptest_leaf_rule_compile
-    COMMAND apptest_leaf_rule_compile
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_leaf_rule_compile>
+    NAME apptest_log_string_matcher
+    COMMAND apptest_log_string_matcher
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_log_string_matcher>
 )
 
 # ScopedConnections RAII helper (task 1.4). Pure QObject / signal

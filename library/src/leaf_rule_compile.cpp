@@ -1,15 +1,12 @@
-#include "leaf_rule_compile.hpp"
+#include "loglib/leaf_rule_compile.hpp"
 
-#include "log_string_matcher.hpp"
-
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_table.hpp>
-
-#include <QString>
+#include "loglib/enum_dictionary.hpp"
+#include "loglib/filter_expression.hpp"
+#include "loglib/log_configuration.hpp"
+#include "loglib/log_filter.hpp"
+#include "loglib/log_level.hpp"
+#include "loglib/log_string_matcher.hpp"
+#include "loglib/log_table.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -23,6 +20,9 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+namespace loglib
+{
 
 int ResolveLeafColumnByKeys(const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns) noexcept
 {
@@ -217,7 +217,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         return loglib::RowPredicate{
             std::in_place_type<loglib::CallbackStringRowPredicate>,
             column,
-            MakeStringMatcher(QString::fromStdString(*rule.filterString), *rule.matchType)
+            MakeStringMatcher(*rule.filterString, *rule.matchType)
         };
     }
     }
@@ -421,3 +421,5 @@ loglib::CompiledFilterExpression CompileExpression(
     result.referencedColumns = std::move(referencedColumns);
     return result;
 }
+
+} // namespace loglib

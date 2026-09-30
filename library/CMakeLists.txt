@@ -54,7 +54,9 @@ add_library(
     src/log_level.cpp
     src/log_line.cpp
     src/log_parser.cpp
+    src/leaf_rule_compile.cpp
     src/log_processing.cpp
+    src/log_string_matcher.cpp
     src/time_zone_context.cpp
     src/user_timestamp.cpp
     src/log_table.cpp
@@ -103,6 +105,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/highlight_rule.hpp
     include/loglib/histogram_bucket_index.hpp
     include/loglib/key_index.hpp
+    include/loglib/leaf_rule_compile.hpp
     include/loglib/line_source.hpp
     include/loglib/log_compare.hpp
     include/loglib/log_configuration.hpp
@@ -115,6 +118,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/log_parse_sink.hpp
     include/loglib/log_parser.hpp
     include/loglib/log_processing.hpp
+    include/loglib/log_string_matcher.hpp
     include/loglib/log_table.hpp
     include/loglib/log_value.hpp
     include/loglib/parse_file.hpp
@@ -193,9 +197,10 @@ target_link_libraries(
     # no efsw type appears in any public loglib header, so it stays PRIVATE.
     # asio is used by Tcp/UdpServerProducer; no Asio type leaks through the public
     # loglib headers (pimpl), so it stays PRIVATE.
-    # PCRE2 backs the regex-template parser (RegexParser). All PCRE2 includes
-    # are confined to `library/src/parsers/regex_parser.cpp`; no `pcre2_*`
-    # type appears in any public loglib header. PRIVATE link.
+    # PCRE2 backs the regex-template parser (RegexParser) and
+    # `MakeStringMatcher`. Includes stay in `regex_parser.cpp` and
+    # `log_string_matcher.cpp`; no `pcre2_*` type appears in any public
+    # loglib header. PRIVATE link.
     # zlib / bzip2 / liblzma / zstd back `loglib::internal::DecompressingByteSource`
     # for transparent decompression of the four canonical codecs. All codec
     # includes are confined to `library/src/decompressing_byte_source.cpp`;

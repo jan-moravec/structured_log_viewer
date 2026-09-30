@@ -11,11 +11,9 @@
 #include "highlight_rules_editor.hpp"
 #include "histogram_model.hpp"
 #include "icon_loader.hpp"
-#include "leaf_rule_compile.hpp"
 #include "level_cell_delegate.hpp"
 #include "log_session.hpp"
 #include "log_session_view.hpp"
-#include "log_string_matcher.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qstring_path.hpp"
@@ -39,6 +37,7 @@
 #include <loglib/exports/row_exporter.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
+#include <loglib/leaf_rule_compile.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -161,7 +160,7 @@ namespace
         [&columns]<class N>(const N &node) -> bool {
             if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
             {
-                return ResolveLeafColumnByKeys(node.rule.columnKeys, columns) < 0;
+                return loglib::ResolveLeafColumnByKeys(node.rule.columnKeys, columns) < 0;
             }
             else if constexpr (
                 std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
@@ -501,7 +500,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     using LeafType = loglib::LeafRule::Type;
     using ColumnType = loglib::ColumnType;
 
-    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columns);
+    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
     if (resolvedRow < 0)
     {
         return FilterValidationFailure{
@@ -8006,7 +8005,7 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     entries.reserve(Filters().size());
     for (const auto &[id, filter] : Filters())
     {
-        const int row = ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
+        const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
         QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
                                   ? labels[static_cast<size_t>(row)]
                                   // Filter pointing at a column that no
@@ -9969,7 +9968,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                 for (auto &kv : mSession->MutableSimpleLeaves())
                 {
                     loglib::LeafRule &filter = kv.second;
-                    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+                    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
                     if (resolvedRow != columnIndex)
                     {
                         continue;
@@ -10022,7 +10021,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
         {
             return true;
         }
-        return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
+        return loglib::ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
     };
     bool rebuild = false;
     switch (reason)
@@ -10740,7 +10739,8 @@ void MainWindow::AddFilter(
     {
         // Column keys are the wire identity; the editor needs a
         // live column index, so resolve once here and forward.
-        const int editorRow = ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
+        const int editorRow =
+            loglib::ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
         if (resolvedFilter->type == loglib::LeafRule::Type::Time)
         {
             // At least one bound must be set; the other side may be
@@ -10940,7 +10940,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // `mSimpleLeaves`; safe because `isSimpleRepresentable` already
     // proved the resolve.
     const auto promoteToColumnKeys = [&columns](loglib::LeafRule rule) {
-        const int resolved = ResolveLeafColumnByKeys(rule.columnKeys, columns);
+        const int resolved = loglib::ResolveLeafColumnByKeys(rule.columnKeys, columns);
         if (resolved >= 0)
         {
             rule.columnKeys = columns[static_cast<std::size_t>(resolved)].keys;
@@ -11410,7 +11410,7 @@ void MainWindow::SyncColumnFilterIndicators()
         const auto &columns = mModel->Configuration().columns;
         for (const auto &[id, filter] : Filters())
         {
-            const int row = ResolveLeafColumnByKeys(filter.columnKeys, columns);
+            const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
             if (row < 0 || row >= cols)
             {
                 // Column keys don't resolve (dropped/renamed); hide
@@ -11624,7 +11624,7 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
         return true;
     }
     const auto &columnsCfg = mModel->Configuration().columns;
-    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
     if (resolvedRow < 0)
     {
         // Column keys don't resolve; leaf is inert and doesn't
@@ -11672,7 +11672,7 @@ void MainWindow::UpdateFilters(LogSession *session)
     // predicate construction, level-column expansion, and
     // cost-based ordering).
     loglib::CompiledFilterExpression compiled =
-        CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
+        loglib::CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
     filter->SetFilterExpression(std::move(compiled));
 }
 
@@ -11983,7 +11983,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     const auto &columnsForResolve = mModel->Configuration().columns;
     for (const auto &entry : Filters())
     {
-        if (ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
+        if (loglib::ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
         {
             filtersForColumn.push_back(
                 {.id = entry.first, .title = BuildFilterTitle(entry.second), .type = entry.second.type}
