@@ -5,9 +5,17 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <utility>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace loglib::exports
 {
@@ -78,6 +86,49 @@ std::filesystem::path TempPathFor(const std::filesystem::path &destination)
     auto tempPath = destination;
     tempPath += ".tmp";
     return tempPath;
+}
+
+struct StreamIoStatus
+{
+    int err = 0;
+    bool streamError = false;
+#ifdef _WIN32
+    unsigned long winError = 0;
+#endif
+};
+
+void PrepareStreamIo()
+{
+    errno = 0;
+#ifdef _WIN32
+    ::SetLastError(0);
+#endif
+}
+
+StreamIoStatus CaptureStreamIoStatus(std::FILE *file)
+{
+    StreamIoStatus status;
+    status.err = errno;
+#ifdef _WIN32
+    status.winError = ::GetLastError();
+#endif
+    status.streamError = std::ferror(file) != 0;
+    return status;
+}
+
+// POSIX: a failed `fwrite` / `fflush` sets the stream error indicator
+// and `errno` to `EPIPE`. Windows `WriteFile` reports
+// `ERROR_BROKEN_PIPE` or `ERROR_NO_DATA`; the CRT usually also sets
+// `errno` to `EPIPE`.
+bool IsBrokenPipe(const StreamIoStatus &status)
+{
+#ifdef _WIN32
+    if (status.winError == ERROR_BROKEN_PIPE || status.winError == ERROR_NO_DATA)
+    {
+        return true;
+    }
+#endif
+    return status.streamError && status.err == EPIPE;
 }
 
 } // namespace
@@ -190,6 +241,71 @@ void FileSink::Finish()
                 "Failed to rename '" + mTempPath.string() + "' to '" + mDestination.string() + "': " + ec.message()
             );
         }
+    }
+    mFinished = true;
+}
+
+StreamSink::StreamSink(std::FILE *file)
+    : mFile(file)
+{
+    if (mFile == nullptr)
+    {
+        throw std::runtime_error("StreamSink requires an open FILE");
+    }
+}
+
+void StreamSink::Write(std::string_view bytes)
+{
+    if (mFinished || mFile == nullptr)
+    {
+        throw std::runtime_error("StreamSink::Write on a closed sink");
+    }
+    while (!bytes.empty())
+    {
+        PrepareStreamIo();
+        const size_t written = std::fwrite(bytes.data(), 1, bytes.size(), mFile);
+        if (written == bytes.size())
+        {
+            return;
+        }
+        const StreamIoStatus status = CaptureStreamIoStatus(mFile);
+        if (IsBrokenPipe(status))
+        {
+            throw BrokenPipe();
+        }
+        if (status.err == EINTR)
+        {
+            bytes.remove_prefix(written);
+            continue;
+        }
+        if (written > 0 && !status.streamError)
+        {
+            bytes.remove_prefix(written);
+            continue;
+        }
+        throw std::runtime_error("Failed to write to stream: " + DescribeErrno(status.err));
+    }
+}
+
+void StreamSink::Finish()
+{
+    if (mFinished)
+    {
+        return;
+    }
+    if (mFile == nullptr)
+    {
+        throw std::runtime_error("StreamSink::Finish on a closed sink");
+    }
+    PrepareStreamIo();
+    if (std::fflush(mFile) != 0)
+    {
+        const StreamIoStatus status = CaptureStreamIoStatus(mFile);
+        if (IsBrokenPipe(status))
+        {
+            throw BrokenPipe();
+        }
+        throw std::runtime_error("Failed to flush stream: " + DescribeErrno(status.err));
     }
     mFinished = true;
 }
