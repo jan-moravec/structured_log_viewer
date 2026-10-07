@@ -107,7 +107,7 @@ jobs:
           cache: true
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb # v4.4.2
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libxcb-cursor0: offscreen QPA.
@@ -132,7 +132,7 @@ jobs:
         # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
         id: cpp-linter
-        uses: cpp-linter/cpp-linter-action@dacf512996b9cfe9d9bcc7b326d1f3a64ab7b91f # v2.22.0
+        uses: cpp-linter/cpp-linter-action@8120e05c7fbd25fa09fa93424ec49f55f7b304ab # v2.23.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -242,7 +242,7 @@ jobs:
           cache: true
 
       - name: Install CMake
-        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb # v4.4.2
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
@@ -404,7 +404,7 @@ jobs:
           cache: true
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb # v4.4.2
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
 
       - name: Set up MSVC environment
         # vswhere-based discovery so we don't hard-code a VS edition path
@@ -552,7 +552,7 @@ jobs:
           cache: true
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb # v4.4.2
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
 
       - name: Install OpenSSL
         # No-op when present. Keg prefix varies by arch; resolved next step.
