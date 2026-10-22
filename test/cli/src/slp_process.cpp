@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 
 #ifdef _WIN32
@@ -46,7 +47,7 @@ namespace
     return buffer.str();
 }
 
-void WriteFile(const std::filesystem::path &path, std::string_view bytes)
+void WritePathBytes(const std::filesystem::path &path, std::string_view bytes)
 {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -135,14 +136,23 @@ std::string DescribeByteDiff(std::string_view expected, std::string_view actual)
     return message.str();
 }
 
-#ifdef _WIN32
-CommandResult RunSlp(const std::vector<std::string> &args)
+namespace
 {
-    const std::filesystem::path outPath = std::filesystem::temp_directory_path() / "slp_e2e_out.txt";
-    const std::filesystem::path errPath = std::filesystem::temp_directory_path() / "slp_e2e_err.txt";
-    std::error_code ec;
-    std::filesystem::remove(outPath, ec);
-    std::filesystem::remove(errPath, ec);
+
+#ifdef _WIN32
+[[nodiscard]] std::filesystem::path UniqueTempPath(const wchar_t *prefix)
+{
+    wchar_t directory[MAX_PATH];
+    REQUIRE(GetTempPathW(MAX_PATH, directory) != 0);
+    wchar_t file[MAX_PATH];
+    REQUIRE(GetTempFileNameW(directory, prefix, 0, file) != 0);
+    return std::filesystem::path(file);
+}
+
+[[nodiscard]] CommandResult RunSlpImpl(const std::vector<std::string> &args, HANDLE stdinHandle)
+{
+    const std::filesystem::path outPath = UniqueTempPath(L"slpo");
+    const std::filesystem::path errPath = UniqueTempPath(L"slpe");
 
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
@@ -181,7 +191,7 @@ CommandResult RunSlp(const std::vector<std::string> &args)
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdInput = stdinHandle;
     startup.hStdOutput = outFile;
     startup.hStdError = errFile;
 
@@ -200,16 +210,28 @@ CommandResult RunSlp(const std::vector<std::string> &args)
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
 
-    return CommandResult{.exitCode = static_cast<int>(code), .out = ReadFile(outPath), .err = ReadFile(errPath)};
-}
-#else
-CommandResult RunSlp(const std::vector<std::string> &args)
-{
-    const std::filesystem::path outPath = std::filesystem::temp_directory_path() / "slp_e2e_out.txt";
-    const std::filesystem::path errPath = std::filesystem::temp_directory_path() / "slp_e2e_err.txt";
+    CommandResult result{.exitCode = static_cast<int>(code), .out = ReadFile(outPath), .err = ReadFile(errPath)};
     std::error_code ec;
     std::filesystem::remove(outPath, ec);
     std::filesystem::remove(errPath, ec);
+    return result;
+}
+#else
+[[nodiscard]] std::filesystem::path UniqueTempPath(const char *prefix)
+{
+    const std::filesystem::path pattern =
+        std::filesystem::temp_directory_path() / (std::string(prefix) + "XXXXXX");
+    std::string mutablePattern = pattern.string();
+    const int fd = ::mkstemp(mutablePattern.data());
+    REQUIRE(fd >= 0);
+    ::close(fd);
+    return std::filesystem::path(mutablePattern);
+}
+
+[[nodiscard]] CommandResult RunSlpImpl(const std::vector<std::string> &args, int stdinFd)
+{
+    const std::filesystem::path outPath = UniqueTempPath("slpo");
+    const std::filesystem::path errPath = UniqueTempPath("slpe");
 
     std::vector<std::string> storage;
     storage.reserve(args.size() + 1);
@@ -233,6 +255,11 @@ CommandResult RunSlp(const std::vector<std::string> &args)
         {
             _exit(127);
         }
+        if (stdinFd >= 0)
+        {
+            dup2(stdinFd, STDIN_FILENO);
+            close(stdinFd);
+        }
         dup2(outFd, STDOUT_FILENO);
         dup2(errFd, STDERR_FILENO);
         close(outFd);
@@ -241,10 +268,184 @@ CommandResult RunSlp(const std::vector<std::string> &args)
         _exit(127);
     }
 
+    if (stdinFd >= 0)
+    {
+        close(stdinFd);
+    }
     int status = 0;
     waitpid(pid, &status, 0);
     const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-    return CommandResult{.exitCode = code, .out = ReadFile(outPath), .err = ReadFile(errPath)};
+    CommandResult result{.exitCode = code, .out = ReadFile(outPath), .err = ReadFile(errPath)};
+    std::error_code ec;
+    std::filesystem::remove(outPath, ec);
+    std::filesystem::remove(errPath, ec);
+    return result;
+}
+#endif
+
+} // namespace
+
+#ifdef _WIN32
+CommandResult RunSlp(const std::vector<std::string> &args)
+{
+    return RunSlpImpl(args, GetStdHandle(STD_INPUT_HANDLE));
+}
+
+CommandResult RunSlpWithStdin(const std::vector<std::string> &args, std::string_view stdinBytes)
+{
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    REQUIRE(CreatePipe(&readPipe, &writePipe, &security, 0));
+    REQUIRE(SetHandleInformation(writePipe, HANDLE_FLAG_INHERIT, 0));
+
+    // Launch first so a large payload cannot fill the pipe before the
+    // child has started consuming. Write after CreateProcess returns.
+    const std::filesystem::path outPath = UniqueTempPath(L"slpo");
+    const std::filesystem::path errPath = UniqueTempPath(L"slpe");
+
+    SECURITY_ATTRIBUTES fileSecurity{};
+    fileSecurity.nLength = sizeof(fileSecurity);
+    fileSecurity.bInheritHandle = TRUE;
+
+    HANDLE outFile = CreateFileW(
+        outPath.wstring().c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        &fileSecurity,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    HANDLE errFile = CreateFileW(
+        errPath.wstring().c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        &fileSecurity,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    REQUIRE(outFile != INVALID_HANDLE_VALUE);
+    REQUIRE(errFile != INVALID_HANDLE_VALUE);
+
+    std::wstring command = L"\"" + SlpBinary().wstring() + L"\"";
+    for (const std::string &arg : args)
+    {
+        command.push_back(L' ');
+        command.push_back(L'"');
+        command.append(arg.begin(), arg.end());
+        command.push_back(L'"');
+    }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = readPipe;
+    startup.hStdOutput = outFile;
+    startup.hStdError = errFile;
+
+    PROCESS_INFORMATION process{};
+    std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+    mutableCommand.push_back(L'\0');
+    const BOOL created =
+        CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup, &process);
+    CloseHandle(outFile);
+    CloseHandle(errFile);
+    CloseHandle(readPipe);
+    REQUIRE(created);
+
+    std::size_t offset = 0;
+    while (offset < stdinBytes.size())
+    {
+        DWORD written = 0;
+        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(stdinBytes.size() - offset, 1 << 16));
+        REQUIRE(::WriteFile(writePipe, stdinBytes.data() + offset, chunk, &written, nullptr));
+        offset += written;
+    }
+    CloseHandle(writePipe);
+
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+
+    CommandResult result{.exitCode = static_cast<int>(code), .out = ReadFile(outPath), .err = ReadFile(errPath)};
+    std::error_code ec;
+    std::filesystem::remove(outPath, ec);
+    std::filesystem::remove(errPath, ec);
+    return result;
+}
+#else
+CommandResult RunSlp(const std::vector<std::string> &args)
+{
+    return RunSlpImpl(args, -1);
+}
+
+CommandResult RunSlpWithStdin(const std::vector<std::string> &args, std::string_view stdinBytes)
+{
+    int pipefds[2] = {-1, -1};
+    REQUIRE(::pipe(pipefds) == 0);
+
+    const std::filesystem::path outPath = UniqueTempPath("slpo");
+    const std::filesystem::path errPath = UniqueTempPath("slpe");
+
+    std::vector<std::string> storage;
+    storage.reserve(args.size() + 1);
+    storage.push_back(SlpBinary().string());
+    storage.insert(storage.end(), args.begin(), args.end());
+    std::vector<char *> argv;
+    argv.reserve(storage.size() + 1);
+    for (std::string &value : storage)
+    {
+        argv.push_back(value.data());
+    }
+    argv.push_back(nullptr);
+
+    const pid_t pid = fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0)
+    {
+        close(pipefds[1]);
+        const int outFd = ::open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        const int errFd = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (outFd < 0 || errFd < 0)
+        {
+            _exit(127);
+        }
+        dup2(pipefds[0], STDIN_FILENO);
+        close(pipefds[0]);
+        dup2(outFd, STDOUT_FILENO);
+        dup2(errFd, STDERR_FILENO);
+        close(outFd);
+        close(errFd);
+        execv(argv[0], argv.data());
+        _exit(127);
+    }
+
+    close(pipefds[0]);
+    std::size_t offset = 0;
+    while (offset < stdinBytes.size())
+    {
+        const ssize_t written =
+            ::write(pipefds[1], stdinBytes.data() + offset, stdinBytes.size() - offset);
+        REQUIRE(written > 0);
+        offset += static_cast<std::size_t>(written);
+    }
+    close(pipefds[1]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    CommandResult result{.exitCode = code, .out = ReadFile(outPath), .err = ReadFile(errPath)};
+    std::error_code ec;
+    std::filesystem::remove(outPath, ec);
+    std::filesystem::remove(errPath, ec);
+    return result;
 }
 #endif
 
@@ -253,7 +454,7 @@ void RequireGolden(std::string_view relativeName, std::string_view actual)
     const std::filesystem::path path = GoldenDir() / std::string(relativeName);
     if (EnvIsSet("SLP_UPDATE_GOLDEN"))
     {
-        WriteFile(path, actual);
+        WritePathBytes(path, actual);
         SUCCEED("updated golden " << path.string());
         return;
     }

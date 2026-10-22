@@ -29,6 +29,12 @@ struct CommandResult
 [[nodiscard]] CommandResult RunSlp(const std::vector<std::string> &args);
 
 /**
+ * @brief Spawns `slp` with @p args, feeds @p stdinBytes to the child's
+ * standard input, and captures both output streams.
+ */
+[[nodiscard]] CommandResult RunSlpWithStdin(const std::vector<std::string> &args, std::string_view stdinBytes);
+
+/**
  * @brief Asserts @p actual matches the golden file at @p relativeName.
  *
  * When `SLP_UPDATE_GOLDEN` is set in the environment, writes @p actual

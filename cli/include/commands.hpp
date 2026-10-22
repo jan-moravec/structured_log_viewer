@@ -42,9 +42,9 @@ struct RuntimeContext
 /**
  * @brief Runs `slp query` over local file sources.
  *
- * Stdin, network, and `.slvbundle` sources are rejected until the
- * later source-resolution work lands. Rotation expansion is not
- * applied here yet.
+ * Local paths expand through `ResolveSourcePlan` (unless
+ * `--no-rotation-history`). Stdin and `.slvbundle` are supported.
+ * Network sources remain `slp tail` only.
  */
 [[nodiscard]] CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime);
 

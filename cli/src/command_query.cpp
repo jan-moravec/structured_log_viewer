@@ -17,10 +17,16 @@
 #include <loglib/log_filter.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/query_parser.hpp>
 #include <loglib/regex_templates.hpp>
 #include <loglib/row_ordering.hpp>
+#include <loglib/session_bundle.hpp>
+#include <loglib/source_plan.hpp>
+#include <loglib/stdin_bytes_producer.hpp>
+#include <loglib/stdin_peek.hpp>
+#include <loglib/stream_line_source.hpp>
 #include <loglib/user_paths.hpp>
 #include <loglib/user_timestamp.hpp>
 
@@ -407,60 +413,110 @@ struct QuerySink final : loglib::LogParseSink
     return detected;
 }
 
-[[nodiscard]] CommandOutput LoadPaths(
+[[nodiscard]] loglib::ParserOptions MakeParserOptions(const Options &options, const RuntimeContext &runtime)
+{
+    loglib::ParserOptions parserOptions;
+    parserOptions.stopToken = runtime.stop;
+    parserOptions.threads = options.threads;
+    parserOptions.multilineLogfmt = !options.noMultilineLogfmt;
+    if (options.batchSizeBytes)
+    {
+        parserOptions.batchSizeBytes = static_cast<std::size_t>(*options.batchSizeBytes);
+    }
+    return parserOptions;
+}
+
+[[nodiscard]] CommandOutput CancelledOutput()
+{
+    CommandOutput cancelled;
+    cancelled.exitCode = static_cast<int>(ExitCode::Cancelled);
+    return cancelled;
+}
+
+[[nodiscard]] CommandOutput OpenFailure(const std::filesystem::path &path, std::string_view reason)
+{
+    return Fail(ExitCode::Input, std::format("source '{}': {}", path.string(), reason));
+}
+
+[[nodiscard]] std::expected<loglib::DetectedFormat, CommandOutput> ResolveFormatFromBytes(
+    const Options &options, std::string_view sniff, std::string_view sourceLabel
+)
+{
+    if (const auto pinned = ToSourceFormat(options.format))
+    {
+        std::string pattern;
+        if (*pinned == loglib::Source::Format::Regex)
+        {
+            auto resolved = ResolveRegexPattern(options);
+            if (!resolved)
+            {
+                return std::unexpected(Fail(ExitCode::Usage, resolved.error()));
+            }
+            pattern = std::move(*resolved);
+        }
+        auto parser = loglib::MakeParserForFormat(*pinned, pattern);
+        if (!parser->IsValidBytes(sniff))
+        {
+            return std::unexpected(Fail(
+                ExitCode::Input,
+                std::format("source '{}' was rejected by the {} parser.", sourceLabel, FormatName(*pinned))
+            ));
+        }
+        return loglib::DetectedFormat{.format = *pinned, .regexPattern = std::move(pattern)};
+    }
+    return loglib::DetectFormatFromBytes(sniff);
+}
+
+[[nodiscard]] CommandOutput ParseFilePath(
     const Options &options,
     const RuntimeContext &runtime,
     loglib::LogTable &table,
+    bool &first,
     std::vector<std::string> &parseErrors,
-    std::vector<std::shared_ptr<loglib::DecompressingByteSource>> &ownedDecompressors
+    std::vector<std::shared_ptr<loglib::DecompressingByteSource>> &ownedDecompressors,
+    const std::filesystem::path &displayPath,
+    bool discardFirstLine
 )
 {
-    CommandOutput side;
-    LoadUserTemplates(options, side);
-    if (options.sources.empty())
+    std::error_code ec;
+    if (!std::filesystem::exists(displayPath, ec) || ec)
     {
-        return Fail(ExitCode::Usage, "query requires at least one source.");
+        return OpenFailure(displayPath, "does not exist");
+    }
+    if (std::filesystem::is_directory(displayPath, ec))
+    {
+        return OpenFailure(displayPath, "is a directory");
     }
 
-    bool first = true;
-    for (const SourceSpec &source : options.sources)
+    try
     {
-        if (source.kind == SourceKind::Stdin)
-        {
-            return Fail(ExitCode::Usage, "stdin ('-') is not implemented for query yet.");
-        }
-        if (source.kind == SourceKind::Tcp || source.kind == SourceKind::Udp)
-        {
-            return Fail(ExitCode::Usage, "network sources are only valid for `slp tail`.");
-        }
-        if (source.kind == SourceKind::Bundle)
-        {
-            return Fail(ExitCode::Usage, ".slvbundle sources are not implemented for query yet.");
-        }
-
-        std::error_code ec;
-        if (!std::filesystem::exists(source.path, ec) || ec)
-        {
-            return Fail(ExitCode::Input, std::format("source '{}' does not exist.", source.path.string()));
-        }
-        if (std::filesystem::is_directory(source.path, ec))
-        {
-            return Fail(ExitCode::Input, std::format("source '{}' is a directory.", source.path.string()));
-        }
-
+        loglib::DecompressingByteSource::Options decompressOptions;
+        decompressOptions.discardFirstLine = discardFirstLine;
         auto decompressor = std::make_shared<loglib::DecompressingByteSource>(
-            source.path, loglib::DecompressingByteSource::ProgressCallback{}, runtime.stop
+            displayPath, loglib::DecompressingByteSource::ProgressCallback{}, runtime.stop, decompressOptions
         );
+        if (discardFirstLine)
+        {
+            const auto metadata = loglib::ParseSessionBundleMetadata(decompressor->DiscardedFirstLine());
+            // Seed the table with the embedded session before the first
+            // BeginStreaming so column pins and filter defaults apply.
+            if (first)
+            {
+                table.Configuration().SetConfiguration(metadata.configuration);
+            }
+        }
+
         const std::filesystem::path effective = decompressor->EffectivePath();
         ownedDecompressors.push_back(decompressor);
 
-        auto format = ResolveFormat(options, effective, side);
+        CommandOutput unused;
+        auto format = ResolveFormat(options, effective, unused);
         if (!format)
         {
             return std::move(format.error());
         }
 
-        auto logFile = std::make_unique<loglib::LogFile>(effective, source.path);
+        auto logFile = std::make_unique<loglib::LogFile>(effective, displayPath);
         logFile->AttachLifetimeAnchor(decompressor);
         auto lineSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
         loglib::FileLineSource *rawSource = lineSource.get();
@@ -476,27 +532,207 @@ struct QuerySink final : loglib::LogParseSink
         }
 
         auto parser = loglib::MakeParserForFormat(format->format, format->regexPattern);
-        loglib::ParserOptions parserOptions;
-        parserOptions.stopToken = runtime.stop;
-        parserOptions.threads = options.threads;
-        parserOptions.multilineLogfmt = !options.noMultilineLogfmt;
-        if (options.batchSizeBytes)
-        {
-            parserOptions.batchSizeBytes = static_cast<std::size_t>(*options.batchSizeBytes);
-        }
-
         QuerySink sink;
         sink.table = &table;
-        parser->ParseStreaming(*rawSource, sink, parserOptions);
+        parser->ParseStreaming(*rawSource, sink, MakeParserOptions(options, runtime));
         parseErrors.insert(parseErrors.end(), sink.errors.begin(), sink.errors.end());
+    }
+    catch (const loglib::DecompressionCancelled &)
+    {
+        return CancelledOutput();
+    }
+    catch (const loglib::DecompressionSizeCapExceeded &ex)
+    {
+        return Fail(ExitCode::Input, ex.what());
+    }
+    catch (const loglib::SessionBundleVersionError &ex)
+    {
+        return Fail(ExitCode::Input, ex.what());
+    }
+    catch (const loglib::SessionBundleReadError &ex)
+    {
+        return Fail(ExitCode::Input, ex.what());
+    }
+    catch (const std::exception &ex)
+    {
+        return OpenFailure(displayPath, ex.what());
+    }
 
-        if (runtime.stop.stop_requested())
+    if (runtime.stop.stop_requested())
+    {
+        return CancelledOutput();
+    }
+    return {};
+}
+
+[[nodiscard]] CommandOutput ParseStdin(
+    const Options &options,
+    const RuntimeContext &runtime,
+    loglib::LogTable &table,
+    bool &first,
+    std::vector<std::string> &parseErrors
+)
+{
+    if (loglib::IsStdinInteractive())
+    {
+        return Fail(
+            ExitCode::Input,
+            "standard input is a terminal; pipe log data into slp or redirect from a file"
+        );
+    }
+
+    constexpr auto kPeekTimeout = std::chrono::milliseconds(500);
+    std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, kPeekTimeout);
+    auto format = ResolveFormatFromBytes(options, peek, "-");
+    if (!format)
+    {
+        return std::move(format.error());
+    }
+
+    std::unique_ptr<loglib::StdinBytesProducer> producer;
+    try
+    {
+        producer = std::make_unique<loglib::StdinBytesProducer>();
+    }
+    catch (const std::exception &ex)
+    {
+        return Fail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what()));
+    }
+
+    auto lineSource = std::make_unique<loglib::StreamLineSource>(std::filesystem::path{"-"}, std::move(producer));
+    loglib::StreamLineSource *rawSource = lineSource.get();
+    if (first)
+    {
+        table.BeginStreaming(std::move(lineSource));
+        first = false;
+    }
+    else
+    {
+        table.AppendStreaming(std::move(lineSource));
+    }
+
+    auto parser = loglib::MakeParserForFormat(format->format, format->regexPattern);
+    auto parserOptions = MakeParserOptions(options, runtime);
+    parserOptions.initialCarry = std::move(peek);
+    QuerySink sink;
+    sink.table = &table;
+    parser->ParseStreaming(*rawSource, sink, parserOptions);
+    parseErrors.insert(parseErrors.end(), sink.errors.begin(), sink.errors.end());
+
+    if (runtime.stop.stop_requested())
+    {
+        return CancelledOutput();
+    }
+    return {};
+}
+
+[[nodiscard]] CommandOutput LoadSources(
+    const Options &options,
+    const RuntimeContext &runtime,
+    loglib::LogTable &table,
+    std::vector<std::string> &parseErrors,
+    std::vector<std::shared_ptr<loglib::DecompressingByteSource>> &ownedDecompressors
+)
+{
+    CommandOutput side;
+    LoadUserTemplates(options, side);
+    if (options.sources.empty())
+    {
+        return Fail(ExitCode::Usage, "query requires at least one source.");
+    }
+
+    bool first = true;
+    std::vector<std::filesystem::path> pendingPaths;
+
+    auto flushPaths = [&]() -> CommandOutput {
+        if (pendingPaths.empty())
         {
-            CommandOutput cancelled;
-            cancelled.exitCode = static_cast<int>(ExitCode::Cancelled);
-            return cancelled;
+            return {};
+        }
+        loglib::SourcePlanOptions planOptions;
+        planOptions.rotationHistory = !options.noRotationHistory;
+        const auto plan = loglib::ResolveSourcePlan(pendingPaths, planOptions);
+        if (options.verbose > 0 && !options.quiet)
+        {
+            for (const auto &entry : plan)
+            {
+                std::string message = "loading " + entry.path.string();
+                if (entry.autoAdded)
+                {
+                    message += " (rotated sibling)";
+                }
+                side.err += FormatWarningLine(message);
+                side.err.push_back('\n');
+            }
+        }
+        for (const auto &entry : plan)
+        {
+            CommandOutput part =
+                ParseFilePath(options, runtime, table, first, parseErrors, ownedDecompressors, entry.path, false);
+            if (part.exitCode != 0)
+            {
+                side.err += part.err;
+                side.exitCode = part.exitCode;
+                return side;
+            }
+        }
+        pendingPaths.clear();
+        return {};
+    };
+
+    for (const SourceSpec &source : options.sources)
+    {
+        if (source.kind == SourceKind::Tcp || source.kind == SourceKind::Udp)
+        {
+            return Fail(
+                ExitCode::Usage, std::format("Network source '{}' is only valid for `slp tail`.", source.text)
+            );
+        }
+        if (source.kind == SourceKind::Path)
+        {
+            pendingPaths.push_back(source.path);
+            continue;
+        }
+
+        CommandOutput flushed = flushPaths();
+        if (flushed.exitCode != 0)
+        {
+            return flushed;
+        }
+        side.err += flushed.err;
+
+        if (source.kind == SourceKind::Stdin)
+        {
+            CommandOutput part = ParseStdin(options, runtime, table, first, parseErrors);
+            if (part.exitCode != 0)
+            {
+                side.err += part.err;
+                side.exitCode = part.exitCode;
+                return side;
+            }
+            continue;
+        }
+
+        if (source.kind == SourceKind::Bundle)
+        {
+            CommandOutput part =
+                ParseFilePath(options, runtime, table, first, parseErrors, ownedDecompressors, source.path, true);
+            if (part.exitCode != 0)
+            {
+                side.err += part.err;
+                side.exitCode = part.exitCode;
+                return side;
+            }
+            continue;
         }
     }
+
+    CommandOutput flushed = flushPaths();
+    if (flushed.exitCode != 0)
+    {
+        return flushed;
+    }
+    side.err += flushed.err;
 
     table.FinalizeAutoDetection();
     table.ApplyPendingLevelBubbles();
@@ -680,7 +916,7 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
     std::vector<std::shared_ptr<loglib::DecompressingByteSource>> ownedDecompressors;
 
     const auto parseStarted = std::chrono::steady_clock::now();
-    CommandOutput loadSide = LoadPaths(options, runtime, table, parseErrors, ownedDecompressors);
+    CommandOutput loadSide = LoadSources(options, runtime, table, parseErrors, ownedDecompressors);
     out.err += loadSide.err;
     if (loadSide.exitCode != 0)
     {

@@ -8,9 +8,22 @@ add_executable(
     src/test_platform.cpp
     src/test_query_e2e.cpp
     src/test_query_golden.cpp
+    src/test_query_sources_e2e.cpp
 )
 
-target_link_libraries(slp_tests PRIVATE slp_core Catch2::Catch2WithMain project_warnings)
+# Compression codecs are linked so the source-matrix e2e cases can
+# build reference .gz/.bz2/.xz/.zst fixtures in-process.
+target_link_libraries(
+    slp_tests
+    PRIVATE
+        slp_core
+        Catch2::Catch2WithMain
+        project_warnings
+        ZLIB::ZLIB
+        BZip2::BZip2
+        LibLZMA::LibLZMA
+        zstd::libzstd
+)
 target_include_directories(slp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # E2E and golden cases shell out to the real `slp` binary.
