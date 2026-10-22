@@ -57,13 +57,13 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] CommandOutput QueryFail(ExitCode code, std::string_view sentence, std::string errExtra = {})
+[[nodiscard]] CommandOutput QueryFail(ExitCode code, std::string_view sentence, std::string_view errExtra = {})
 {
     CommandOutput out;
     out.exitCode = static_cast<int>(code);
     out.err = FormatErrorLine("query", sentence);
     out.err.push_back('\n');
-    out.err += std::move(errExtra);
+    out.err += errExtra;
     return out;
 }
 
@@ -101,9 +101,9 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
         out.exitCode = loadSide.exitCode;
         return out;
     }
-    std::vector<std::shared_ptr<loglib::DecompressingByteSource>> ownedDecompressors =
+    const std::vector<std::shared_ptr<loglib::DecompressingByteSource>> ownedDecompressors =
         std::move(loaded.ownedDecompressors);
-    std::vector<std::string> parseErrors = std::move(loaded.parseErrors);
+    const std::vector<std::string> parseErrors = std::move(loaded.parseErrors);
     loglib::LogTable table = std::move(loaded.table);
     const auto parseMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - parseStarted).count()

@@ -123,12 +123,12 @@ namespace
         }
     }
 
-    std::filesystem::path templateDir =
+    const std::filesystem::path templateDir =
         options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
     if (!templateDir.empty())
     {
         const std::filesystem::path candidate = templateDir / (*options.regexTemplate + ".json");
-        std::ifstream input(candidate, std::ios::binary);
+        const std::ifstream input(candidate, std::ios::binary);
         if (input)
         {
             std::ostringstream buffer;
@@ -157,13 +157,13 @@ namespace
     return std::unexpected(std::format("unknown regex template slug '{}'.", *options.regexTemplate));
 }
 
-[[nodiscard]] CommandOutput Fail(ExitCode code, std::string_view sentence, std::string errExtra = {})
+[[nodiscard]] CommandOutput Fail(ExitCode code, std::string_view sentence, std::string_view errExtra = {})
 {
     CommandOutput out;
     out.exitCode = static_cast<int>(code);
     out.err = FormatErrorLine({}, sentence);
     out.err.push_back('\n');
-    out.err += std::move(errExtra);
+    out.err += errExtra;
     return out;
 }
 
@@ -230,22 +230,22 @@ struct QuerySink final : loglib::LogParseSink
 
 void UpdateLinesConsumedFromErrors(std::uint64_t &linesConsumed, const std::vector<std::string> &errors)
 {
-    constexpr std::string_view kSinglePrefix = "Error on line ";
-    constexpr std::string_view kRangePrefix = "Error on lines ";
+    constexpr std::string_view SINGLE_PREFIX = "Error on line ";
+    constexpr std::string_view RANGE_PREFIX = "Error on lines ";
     for (const std::string &error : errors)
     {
-        if (error.starts_with(kSinglePrefix))
+        if (error.starts_with(SINGLE_PREFIX))
         {
-            const auto parsed = ParseLeadingLineNumber(std::string_view{error}.substr(kSinglePrefix.size()));
+            const auto parsed = ParseLeadingLineNumber(std::string_view{error}.substr(SINGLE_PREFIX.size()));
             if (parsed)
             {
                 linesConsumed = std::max(linesConsumed, *parsed);
             }
             continue;
         }
-        if (error.starts_with(kRangePrefix))
+        if (error.starts_with(RANGE_PREFIX))
         {
-            const std::string_view tail = std::string_view{error}.substr(kRangePrefix.size());
+            const std::string_view tail = std::string_view{error}.substr(RANGE_PREFIX.size());
             const std::size_t dash = tail.find('-');
             if (dash == std::string_view::npos)
             {
@@ -480,8 +480,8 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
         return Fail(ExitCode::Input, "standard input is a terminal; pipe log data into slp or redirect from a file");
     }
 
-    constexpr auto kPeekTimeout = std::chrono::milliseconds(500);
-    std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, kPeekTimeout);
+    constexpr auto PEEK_TIMEOUT = std::chrono::milliseconds(500);
+    std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, PEEK_TIMEOUT);
     auto format = ResolveFormatFromBytes(options, peek, "-");
     if (!format)
     {
@@ -574,7 +574,7 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
         }
         for (const auto &entry : plan)
         {
-            CommandOutput part = ParseFilePath(
+            const CommandOutput part = ParseFilePath(
                 options,
                 runtime,
                 loaded.table,
@@ -619,7 +619,7 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
 
         if (source.kind == SourceKind::Stdin)
         {
-            CommandOutput part = ParseStdin(
+            const CommandOutput part = ParseStdin(
                 options,
                 runtime,
                 loaded.table,
@@ -640,7 +640,7 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
 
         if (source.kind == SourceKind::Bundle)
         {
-            CommandOutput part = ParseFilePath(
+            const CommandOutput part = ParseFilePath(
                 options,
                 runtime,
                 loaded.table,

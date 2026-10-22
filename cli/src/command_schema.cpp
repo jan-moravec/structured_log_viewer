@@ -21,7 +21,7 @@ namespace slp
 namespace
 {
 
-constexpr std::size_t kMaxEnumValuesListed = 64;
+constexpr std::size_t MAX_ENUM_VALUES_LISTED = 64;
 
 [[nodiscard]] std::string_view ColumnTypeName(loglib::ColumnType type) noexcept
 {
@@ -74,10 +74,10 @@ void AppendJsonString(std::string &out, std::string_view text)
         default:
             if (ch < 0x20)
             {
-                constexpr char kHex[] = "0123456789abcdef";
+                constexpr char HEX[] = "0123456789abcdef";
                 out += "\\u00";
-                out.push_back(kHex[ch >> 4]);
-                out.push_back(kHex[ch & 0x0f]);
+                out.push_back(HEX[ch >> 4]);
+                out.push_back(HEX[ch & 0x0f]);
             }
             else
             {
@@ -133,7 +133,7 @@ struct ColumnStats
     if (lookup.dictionary != nullptr)
     {
         stats.enumCardinality = lookup.dictionary->Values().size();
-        if (*stats.enumCardinality <= kMaxEnumValuesListed)
+        if (*stats.enumCardinality <= MAX_ENUM_VALUES_LISTED)
         {
             for (const std::string &value : lookup.dictionary->Values())
             {
@@ -182,13 +182,13 @@ struct ColumnStats
         row.push_back(std::to_string(stats[i].nonNullCount));
         row.push_back(JoinComma(column.keys));
         std::string sampleCell = JoinComma(stats[i].samples);
-        if (stats[i].enumCardinality)
+        if (const auto cardinality = stats[i].enumCardinality)
         {
             if (!sampleCell.empty())
             {
                 sampleCell += " | ";
             }
-            sampleCell += "enum=" + std::to_string(*stats[i].enumCardinality);
+            sampleCell += "enum=" + std::to_string(*cardinality);
             if (!stats[i].enumValues.empty())
             {
                 sampleCell += " [" + JoinComma(stats[i].enumValues) + "]";

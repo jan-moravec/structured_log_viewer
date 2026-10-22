@@ -20,14 +20,14 @@ namespace
 {
 
 [[nodiscard]] CommandOutput FilterFail(
-    std::string_view command, ExitCode code, std::string_view sentence, std::string errExtra = {}
+    std::string_view command, ExitCode code, std::string_view sentence, std::string_view errExtra = {}
 )
 {
     CommandOutput out;
     out.exitCode = static_cast<int>(code);
     out.err = FormatErrorLine(command, sentence);
     out.err.push_back('\n');
-    out.err += std::move(errExtra);
+    out.err += errExtra;
     return out;
 }
 

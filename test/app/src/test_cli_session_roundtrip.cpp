@@ -44,7 +44,7 @@
 namespace
 {
 
-constexpr const char *kFourRows =
+constexpr const char *FOUR_ROWS =
     "{\"ts\":\"2024-01-01T00:00:00Z\",\"level\":\"info\",\"msg\":\"alpha\",\"service\":\"auth\"}\n"
     "{\"ts\":\"2024-01-01T00:00:01Z\",\"level\":\"error\",\"msg\":\"bravo\",\"service\":\"auth\"}\n"
     "{\"ts\":\"2024-01-01T00:00:02Z\",\"level\":\"warn\",\"msg\":\"charlie\",\"service\":\"db\"}\n"
@@ -155,7 +155,7 @@ private slots:
         QVERIFY(mDir.isValid());
         mLogPath = mDir.filePath(QStringLiteral("four_rows.jsonl"));
         std::ofstream output(mLogPath.toStdString(), std::ios::binary);
-        output << kFourRows;
+        output << FOUR_ROWS;
         output.close();
         QVERIFY(output.good());
     }

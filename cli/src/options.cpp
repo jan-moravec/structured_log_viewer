@@ -424,7 +424,7 @@ void AddSources(argparse::ArgumentParser &parser, std::string help)
 
 [[nodiscard]] std::string CommandToken(int argc, char **argv)
 {
-    static constexpr std::array<std::string_view, 7> kCommands = {
+    static constexpr std::array<std::string_view, 7> COMMANDS = {
         "query",
         "stats",
         "schema",
@@ -433,7 +433,7 @@ void AddSources(argparse::ArgumentParser &parser, std::string help)
         "formats",
         "tail",
     };
-    static constexpr std::array<std::string_view, 10> kValueFlags = {
+    static constexpr std::array<std::string_view, 10> VALUE_FLAGS = {
         "--color",
         "--threads",
         "--tz",
@@ -461,14 +461,14 @@ void AddSources(argparse::ArgumentParser &parser, std::string help)
             const auto equals = arg.find('=');
             const std::string_view name = equals == std::string_view::npos ? arg : arg.substr(0, equals);
             const bool takesValue = equals == std::string_view::npos &&
-                                    std::find(kValueFlags.begin(), kValueFlags.end(), name) != kValueFlags.end();
+                                    std::find(VALUE_FLAGS.begin(), VALUE_FLAGS.end(), name) != VALUE_FLAGS.end();
             if (takesValue)
             {
                 ++index;
             }
             continue;
         }
-        if (std::find(kCommands.begin(), kCommands.end(), arg) != kCommands.end())
+        if (std::find(COMMANDS.begin(), COMMANDS.end(), arg) != COMMANDS.end())
         {
             return std::string(arg);
         }
@@ -524,13 +524,13 @@ void AddSources(argparse::ArgumentParser &parser, std::string help)
 
 [[nodiscard]] std::expected<SourceSpec, std::string> ClassifyNetwork(std::string_view text, SourceKind kind)
 {
-    constexpr std::string_view kScheme = "://";
-    const auto scheme = text.find(kScheme);
+    constexpr std::string_view SCHEME = "://";
+    const auto scheme = text.find(SCHEME);
     if (scheme == std::string_view::npos)
     {
         return std::unexpected(std::format("Network source '{}' is missing '://'.", text));
     }
-    const std::string_view rest = text.substr(scheme + kScheme.size());
+    const std::string_view rest = text.substr(scheme + SCHEME.size());
     std::string_view host;
     std::string_view portText;
     if (rest.starts_with('['))
@@ -819,12 +819,12 @@ std::expected<std::chrono::milliseconds, std::string> ParseDurationSuffix(std::s
     {
         return std::unexpected(std::format("Unknown duration suffix '{}'. Use s, m, or h.", unit));
     }
-    constexpr std::uint64_t kMillisPerSecond = 1000;
-    if (seconds > std::numeric_limits<std::uint64_t>::max() / kMillisPerSecond)
+    constexpr std::uint64_t MILLIS_PER_SECOND = 1000;
+    if (seconds > std::numeric_limits<std::uint64_t>::max() / MILLIS_PER_SECOND)
     {
         return std::unexpected(std::format("'{}' overflows a duration.", text));
     }
-    return std::chrono::milliseconds(seconds * kMillisPerSecond);
+    return std::chrono::milliseconds(seconds * MILLIS_PER_SECOND);
 }
 
 std::expected<SourceSpec, std::string> ClassifySource(std::string_view text)
@@ -1168,7 +1168,7 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
     program.add_subparser(formats);
     program.add_subparser(tail);
 
-    UsageMap usage{
+    const UsageMap usage{
         .top = program.usage(),
         .query = query.usage(),
         .stats = stats.usage(),

@@ -21,8 +21,8 @@ namespace slp
 namespace
 {
 
-constexpr int kMaxClosest = 5;
-constexpr int kCloseDistance = 3;
+constexpr int MAX_CLOSEST = 5;
+constexpr int CLOSE_DISTANCE = 3;
 
 struct ListedTemplate
 {
@@ -92,10 +92,10 @@ void AppendJsonString(std::string &out, std::string_view text)
         default:
             if (ch < 0x20)
             {
-                constexpr char kHex[] = "0123456789abcdef";
+                constexpr char HEX[] = "0123456789abcdef";
                 out += "\\u00";
-                out.push_back(kHex[ch >> 4]);
-                out.push_back(kHex[ch & 0x0f]);
+                out.push_back(HEX[ch >> 4]);
+                out.push_back(HEX[ch & 0x0f]);
             }
             else
             {
@@ -178,7 +178,7 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     std::vector<loglib::RegexTemplate> parsed;
     for (const std::filesystem::path &path : files)
     {
-        std::ifstream input(path, std::ios::binary);
+        const std::ifstream input(path, std::ios::binary);
         if (!input)
         {
             loaded.warnings.push_back("skipped unreadable template '" + path.filename().string() + "'.");
@@ -221,7 +221,7 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     {
         const int distance = EditDistance(needle, row.slug);
         const bool contains = row.slug.find(needle) != std::string::npos || needle.find(row.slug) != std::string::npos;
-        if (distance <= kCloseDistance || contains)
+        if (distance <= CLOSE_DISTANCE || contains)
         {
             candidates.push_back(Candidate{distance, row.slug});
         }
@@ -233,9 +233,9 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
         }
         return lhs.slug < rhs.slug;
     });
-    if (static_cast<int>(candidates.size()) > kMaxClosest)
+    if (static_cast<int>(candidates.size()) > MAX_CLOSEST)
     {
-        candidates.resize(static_cast<std::size_t>(kMaxClosest));
+        candidates.resize(static_cast<std::size_t>(MAX_CLOSEST));
     }
     std::string joined;
     for (const Candidate &candidate : candidates)
@@ -438,7 +438,7 @@ CommandOutput RenderFormats(const Options &options)
                 if (user != nullptr)
                 {
                     const std::filesystem::path candidate = userDirectory / (user->slug + ".json");
-                    std::ifstream input(candidate, std::ios::binary);
+                    const std::ifstream input(candidate, std::ios::binary);
                     if (!input)
                     {
                         showError = "could not read template '" + candidate.string() + "'.";

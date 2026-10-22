@@ -18,7 +18,7 @@ using slp::test::RunSlp;
 namespace
 {
 
-constexpr std::string_view kFourRows =
+constexpr std::string_view FOUR_ROWS =
     "{\"ts\":\"2024-01-01T00:00:00Z\",\"level\":\"info\",\"msg\":\"alpha\",\"service\":\"auth\"}\n"
     "{\"ts\":\"2024-01-01T00:00:01Z\",\"level\":\"error\",\"msg\":\"bravo\",\"service\":\"auth\"}\n"
     "{\"ts\":\"2024-01-01T00:00:02Z\",\"level\":\"warn\",\"msg\":\"charlie\",\"service\":\"db\"}\n"
@@ -44,7 +44,7 @@ constexpr std::string_view kFourRows =
             ScratchRoot() /
             ("four_rows_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl");
         std::ofstream output(file, std::ios::binary | std::ios::trunc);
-        output << kFourRows;
+        output << FOUR_ROWS;
         output.close();
         REQUIRE(output.good());
         return file;

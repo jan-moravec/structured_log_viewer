@@ -38,9 +38,9 @@ namespace slp
 namespace
 {
 
-constexpr int kDefaultTextBucketBudget = 60;
-constexpr int kDefaultStructuredBucketBudget = 500;
-constexpr int kDefaultTerminalWidth = 80;
+constexpr int DEFAULT_TEXT_BUCKET_BUDGET = 60;
+constexpr int DEFAULT_STRUCTURED_BUCKET_BUDGET = 500;
+constexpr int DEFAULT_TERMINAL_WIDTH = 80;
 
 [[nodiscard]] CommandOutput StatsFail(ExitCode code, std::string_view sentence)
 {
@@ -76,10 +76,10 @@ void AppendJsonString(std::string &out, std::string_view text)
         default:
             if (ch < 0x20)
             {
-                constexpr char kHex[] = "0123456789abcdef";
+                constexpr char HEX[] = "0123456789abcdef";
                 out += "\\u00";
-                out.push_back(kHex[ch >> 4]);
-                out.push_back(kHex[ch & 0x0f]);
+                out.push_back(HEX[ch >> 4]);
+                out.push_back(HEX[ch & 0x0f]);
             }
             else
             {
@@ -197,7 +197,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     {
         return static_cast<int>(*options.maxBuckets);
     }
-    return structuredOutput ? kDefaultStructuredBucketBudget : kDefaultTextBucketBudget;
+    return structuredOutput ? DEFAULT_STRUCTURED_BUCKET_BUDGET : DEFAULT_TEXT_BUCKET_BUDGET;
 }
 
 struct LevelSummary
@@ -231,7 +231,7 @@ struct LevelSummary
 )
 {
     const bool color = ColorActive(options, stdout);
-    const int termWidth = TerminalWidth(stdout, kDefaultTerminalWidth);
+    const int termWidth = TerminalWidth(stdout, DEFAULT_TERMINAL_WIDTH);
 
     std::vector<std::string> headers = {"level", "count", "percent", "bar"};
     std::vector<std::vector<std::string>> tableRows;
@@ -314,7 +314,7 @@ struct LevelSummary
             }
             if (c == 0 && color)
             {
-                out << LevelAnsiPrefix(levelForColor) << cells[c] << kAnsiReset;
+                out << LevelAnsiPrefix(levelForColor) << cells[c] << ANSI_RESET;
             }
             else
             {
@@ -565,7 +565,7 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
 )
 {
     const bool color = ColorActive(options, stdout);
-    const int termWidth = TerminalWidth(stdout, kDefaultTerminalWidth);
+    const int termWidth = TerminalWidth(stdout, DEFAULT_TERMINAL_WIDTH);
     const auto widthMicros = histogram.index.BucketWidth().count();
 
     std::vector<std::string> headers = {"bucketStartLocal", "total", "bar"};
@@ -645,7 +645,8 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
                 const std::uint64_t count = buckets[i].counts[static_cast<std::size_t>(level)];
                 if (count > 0)
                 {
-                    bar = std::string(LevelAnsiPrefix(level)) + bar + std::string(kAnsiReset);
+                    bar.insert(0, LevelAnsiPrefix(level));
+                    bar.append(ANSI_RESET);
                     break;
                 }
             }
@@ -872,7 +873,7 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
 
     const auto compiled =
         loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
-    std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
+    const std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
 
     out.exitCode = StatsExitCode(options, sourceRows, rows.size());
     if (out.exitCode != 0)
@@ -937,7 +938,7 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
         const std::size_t timeColumn = static_cast<std::size_t>(timeIndex);
         const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
 
-        TimeHistogram probe =
+        const TimeHistogram probe =
             BuildTimeHistogram(table, rows, timeColumn, levelColumn, loglib::HistogramBucketSize::OneMinute);
         const loglib::HistogramBucketSize bucketSize = ResolveBucketSize(options, structured, probe);
         TimeHistogram histogram = BuildTimeHistogram(table, rows, timeColumn, levelColumn, bucketSize);

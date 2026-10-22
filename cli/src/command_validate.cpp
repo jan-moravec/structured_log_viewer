@@ -30,12 +30,12 @@ struct ParsedError
 {
     ParsedError parsed;
     parsed.message = std::string(text);
-    constexpr std::string_view kPrefix = "Error on line ";
-    if (!text.starts_with(kPrefix))
+    constexpr std::string_view PREFIX = "Error on line ";
+    if (!text.starts_with(PREFIX))
     {
         return parsed;
     }
-    const std::size_t begin = kPrefix.size();
+    const std::size_t begin = PREFIX.size();
     const std::size_t end = text.find_first_not_of("0123456789", begin);
     if (end == begin || end == std::string_view::npos || text[end] != ':')
     {
@@ -82,10 +82,10 @@ void AppendJsonString(std::string &out, std::string_view text)
         default:
             if (ch < 0x20)
             {
-                constexpr char kHex[] = "0123456789abcdef";
+                constexpr char HEX[] = "0123456789abcdef";
                 out += "\\u00";
-                out.push_back(kHex[ch >> 4]);
-                out.push_back(kHex[ch & 0x0f]);
+                out.push_back(HEX[ch >> 4]);
+                out.push_back(HEX[ch & 0x0f]);
             }
             else
             {

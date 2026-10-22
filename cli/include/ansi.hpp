@@ -12,7 +12,7 @@ namespace slp
 {
 
 /** @brief ANSI sequence that ends any styling started by `LevelAnsiPrefix`. */
-inline constexpr std::string_view kAnsiReset = "\033[0m";
+inline constexpr std::string_view ANSI_RESET = "\033[0m";
 
 /**
  * @brief Whether human-readable output to @p stream is colored.

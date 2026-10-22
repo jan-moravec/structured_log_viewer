@@ -58,7 +58,7 @@ namespace
 {
 
 /** @brief Rows held back while a filter or column flag waits for its column; beyond this the run fails. */
-constexpr std::size_t kMaxDeferredRows = 10'000;
+constexpr std::size_t MAX_DEFERRED_ROWS = 10'000;
 
 [[nodiscard]] CommandOutput TailFail(ExitCode code, std::string_view sentence)
 {
@@ -86,12 +86,14 @@ enum class Rendering
 {
 #ifdef _WIN32
     std::FILE *file = nullptr;
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): the stream is closed by `OutputStream`.
     if (_wfopen_s(&file, path.c_str(), L"ab") != 0)
     {
         return nullptr;
     }
     return file;
 #else
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): the stream is closed by `OutputStream`.
     return std::fopen(path.c_str(), "ab");
 #endif
 }
@@ -110,6 +112,7 @@ public:
     {
         if (mOwned && mFile != nullptr)
         {
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): closes the stream `OpenAppend` returned.
             (void)std::fclose(mFile);
         }
     }
@@ -176,7 +179,7 @@ public:
 private:
     void Run()
     {
-        constexpr auto kPoll = std::chrono::milliseconds(10);
+        constexpr auto POLL = std::chrono::milliseconds(10);
         const auto started = std::chrono::steady_clock::now();
         bool stopping = false;
         std::unique_lock<std::mutex> lock(mMutex);
@@ -205,7 +208,7 @@ private:
                     producer->Stop();
                 }
             }
-            mWake.wait_for(lock, kPoll, [this] { return mDone; });
+            mWake.wait_for(lock, POLL, [this] { return mDone; });
         }
     }
 
@@ -277,7 +280,7 @@ struct TextLayout
 }
 
 /** @brief Replaces line breaks so one row stays on one output line. */
-[[nodiscard]] std::string SingleLine(std::string text)
+[[nodiscard]] std::string SingleLine(std::string_view text)
 {
     std::string out;
     out.reserve(text.size());
@@ -357,7 +360,7 @@ void AppendField(std::string &line, std::string_view text)
             {
                 styled.append(prefix);
                 styled.append(value);
-                styled.append(kAnsiReset);
+                styled.append(ANSI_RESET);
             }
             else
             {
@@ -489,8 +492,8 @@ public:
     }
 
 private:
-    /** @brief Resolves the session when the column set changed. Returns whether it is usable. */
-    [[nodiscard]] bool EnsureSession()
+    /** @brief Resolves the session when the column set changed. Returns it, or null when it cannot be resolved yet. */
+    [[nodiscard]] const EffectiveSession *EnsureSession()
     {
         const auto &columns = mTable.Configuration().Configuration().columns;
         std::vector<std::string> headers;
@@ -501,14 +504,14 @@ private:
         }
         if (mSession && headers == mHeaders)
         {
-            return true;
+            return &*mSession;
         }
         auto resolved = ApplySessionConfiguration(mSessionOptions, mTable, mRuntime, "tail");
         if (!resolved)
         {
             mSessionError = std::move(resolved.error());
             mSession.reset();
-            return false;
+            return nullptr;
         }
         if (mMinLevel)
         {
@@ -522,14 +525,14 @@ private:
                     )
                 );
                 mSession.reset();
-                return false;
+                return nullptr;
             }
             mLevelColumn = static_cast<std::size_t>(level - columns.begin());
         }
         mSession = std::move(*resolved);
         mHeaders = std::move(headers);
         mLayout = MakeTextLayout(mTable, mSession->visibleColumns);
-        return true;
+        return &*mSession;
     }
 
     void Fail(CommandOutput failure)
@@ -545,9 +548,10 @@ private:
         {
             return;
         }
-        if (!EnsureSession())
+        const EffectiveSession *const session = EnsureSession();
+        if (session == nullptr)
         {
-            if (final || total - mNextRow > kMaxDeferredRows)
+            if (final || total - mNextRow > MAX_DEFERRED_ROWS)
             {
                 Fail(std::move(mSessionError));
             }
@@ -555,7 +559,7 @@ private:
         }
 
         const auto compiled =
-            loglib::CompileExpression(mSession->expression, mTable.Configuration().Configuration().columns, &mTable);
+            loglib::CompileExpression(session->expression, mTable.Configuration().Configuration().columns, &mTable);
         std::vector<std::size_t> accepted;
         std::string buffer;
         for (std::size_t row = mNextRow; row < total; ++row)
@@ -588,7 +592,7 @@ private:
         }
         if (!accepted.empty())
         {
-            Write(accepted);
+            Write(accepted, *session);
             mEmitted += accepted.size();
         }
         if (mOptions.maxRows && mEmitted >= *mOptions.maxRows)
@@ -598,7 +602,7 @@ private:
         }
     }
 
-    void Write(const std::vector<std::size_t> &rows)
+    void Write(const std::vector<std::size_t> &rows, const EffectiveSession &session)
     {
         loglib::exports::StreamSink sink(mOutput);
         if (mRendering == Rendering::Jsonl)
@@ -606,7 +610,7 @@ private:
             loglib::exports::ExportPlan plan;
             plan.format = loglib::exports::ExportFormat::JsonLines;
             plan.sourceRows = rows;
-            plan.visibleColumns = mSession->visibleColumns;
+            plan.visibleColumns = session.visibleColumns;
             plan.includeAllFieldsForJson = !mOptions.columns.has_value();
             plan.table = &mTable;
             const auto exporter = loglib::exports::MakeExporter(plan.format);
@@ -700,9 +704,12 @@ struct LiveSource
             );
         }
         // The producer pre-fills the last retained rows before it follows the file.
-        const std::size_t prefill = !options.retention        ? loglib::DEFAULT_RETENTION_LINES
-                                    : *options.retention == 0 ? loglib::MAX_RETENTION_LINES
-                                                              : static_cast<std::size_t>(*options.retention);
+        std::size_t prefill = loglib::DEFAULT_RETENTION_LINES;
+        if (options.retention)
+        {
+            prefill =
+                *options.retention == 0 ? loglib::MAX_RETENTION_LINES : static_cast<std::size_t>(*options.retention);
+        }
         try
         {
             live.producer = std::make_unique<loglib::TailingBytesProducer>(spec.path, prefill);

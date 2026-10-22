@@ -43,7 +43,7 @@ namespace
 
 [[nodiscard]] std::string ReadFile(const std::filesystem::path &path)
 {
-    std::ifstream input(path, std::ios::binary);
+    const std::ifstream input(path, std::ios::binary);
     std::ostringstream buffer;
     buffer << input.rdbuf();
     return buffer.str();
@@ -122,9 +122,9 @@ std::string DescribeByteDiff(std::string_view expected, std::string_view actual)
             {
                 out += '\\';
                 out += 'x';
-                constexpr char hex[] = "0123456789abcdef";
-                out.push_back(hex[ch >> 4]);
-                out.push_back(hex[ch & 0x0f]);
+                constexpr char HEX_DIGITS[] = "0123456789abcdef";
+                out.push_back(HEX_DIGITS[ch >> 4]);
+                out.push_back(HEX_DIGITS[ch & 0x0f]);
             }
             else
             {

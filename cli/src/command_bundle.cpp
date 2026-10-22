@@ -199,7 +199,7 @@ CommandOutput RunBundle(const Options &options, const RuntimeContext &runtime)
     catch (const std::exception &ex)
     {
         progress.Finish();
-        CommandOutput failure = BundleFail(
+        const CommandOutput failure = BundleFail(
             ExitCode::Output, std::format("could not write bundle '{}': {}", destination.string(), ex.what())
         );
         out.err += failure.err;

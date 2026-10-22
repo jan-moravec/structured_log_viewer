@@ -30,7 +30,7 @@ namespace
 
 using std::chrono::milliseconds;
 
-constexpr auto kLong = milliseconds(30000);
+constexpr auto LONG_WAIT = milliseconds(30000);
 
 [[nodiscard]] std::filesystem::path ScratchRoot()
 {
@@ -140,7 +140,7 @@ template <class Producer> [[nodiscard]] std::uint16_t FreePort()
 /** @brief Port printed on the `listening on` line of @p child. */
 [[nodiscard]] std::string ListeningLine(const SlpChild &child, std::string_view scheme)
 {
-    REQUIRE(child.WaitForErr(std::string("listening on ") + std::string(scheme) + "://", kLong));
+    REQUIRE(child.WaitForErr(std::string("listening on ") + std::string(scheme) + "://", LONG_WAIT));
     return child.Err();
 }
 
@@ -219,12 +219,12 @@ TEST_CASE("slp tail follows a file and stops at --max-rows", "[cli][tail][e2e]")
     }
 
     SlpChild child(TailArgs({"--max-rows", "4", "--for", "25s", path.string()}));
-    REQUIRE(child.WaitForOut("bravo", kLong));
+    REQUIRE(child.WaitForOut("bravo", LONG_WAIT));
     {
         std::ofstream output(path, std::ios::binary | std::ios::app);
         output << Row("warn", "charlie", 2) << Row("error", "delta", 3);
     }
-    const auto exitCode = child.Wait(kLong);
+    const auto exitCode = child.Wait(LONG_WAIT);
     REQUIRE(exitCode.has_value());
     INFO(child.Err());
     CHECK(*exitCode == 0);
@@ -265,7 +265,7 @@ TEST_CASE("slp tail receives rows over TCP", "[cli][tail][e2e][network]")
         client.Send(Row("warn", "two", 1));
         client.Send(Row("error", "three", 2));
     }
-    const auto exitCode = child.Wait(kLong);
+    const auto exitCode = child.Wait(LONG_WAIT);
     REQUIRE(exitCode.has_value());
     INFO(child.Err());
     CHECK(*exitCode == 0);
@@ -327,12 +327,12 @@ TEST_CASE("slp tail exits 0 on SIGINT after emitting what arrived", "[cli][tail]
         client.Send(Row("info", "before-interrupt", 0));
         client.Send(Row("warn", "also-before", 1));
     }
-    REQUIRE(child.WaitForOut("also-before", kLong));
+    REQUIRE(child.WaitForOut("also-before", LONG_WAIT));
     if (!child.Interrupt())
     {
         SKIP("this platform cannot deliver SIGINT to one child");
     }
-    const auto exitCode = child.Wait(kLong);
+    const auto exitCode = child.Wait(LONG_WAIT);
     REQUIRE(exitCode.has_value());
     INFO(child.Err());
     CHECK(*exitCode == 0);
@@ -349,7 +349,7 @@ TEST_CASE("slp tail says so when a TCP peer speaks TLS", "[cli][tail][e2e][netwo
         // A TLS ClientHello record header followed by binary noise and a line break.
         client.SendRaw(std::string("\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\x8f\x2a\x00\x11\x22", 16) + "\n");
     }
-    const auto exitCode = child.Wait(kLong);
+    const auto exitCode = child.Wait(LONG_WAIT);
     REQUIRE(exitCode.has_value());
     const std::string err = child.Err();
     INFO(err);
@@ -359,16 +359,16 @@ TEST_CASE("slp tail says so when a TCP peer speaks TLS", "[cli][tail][e2e][netwo
 
 TEST_CASE("slp tail emits every row when retention evicts", "[cli][tail][e2e][retention]")
 {
-    constexpr int kRows = 3500;
+    constexpr int ROWS = 3500;
     std::string input;
-    for (int i = 0; i < kRows; ++i)
+    for (int i = 0; i < ROWS; ++i)
     {
         input += "{\"ts\":\"2024-01-01T00:00:00Z\",\"level\":\"info\",\"msg\":\"row-" + std::to_string(i) + "\"}\n";
     }
     const auto result = RunSlpWithStdin(TailArgs({"--retention", "1000", "-"}), input);
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
-    CHECK(CountLines(result.out) == static_cast<std::size_t>(kRows));
+    CHECK(CountLines(result.out) == static_cast<std::size_t>(ROWS));
     CHECK(Contains(result.out, "\"msg\":\"row-0\""));
     CHECK(Contains(result.out, "\"msg\":\"row-1000\""));
     CHECK(Contains(result.out, "\"msg\":\"row-3499\""));
