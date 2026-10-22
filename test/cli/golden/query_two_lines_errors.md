@@ -1,0 +1,3 @@
+| level | msg |
+| --- | --- |
+| error | boom |

@@ -189,34 +189,43 @@ function(bundle_third_party_licenses target_name)
     list(LENGTH LICENSE_ENTRIES n_entries)
     message(STATUS "BundleLicenses: aggregated ${GENERATED_OUT} from ${n_entries} dependencies")
 
-    # Stage next to the binary so packaging (linuxdeploy / CPack /
-    # zip) picks it up automatically.
-    add_custom_command(
-        TARGET ${target_name}
-        POST_BUILD
-        COMMAND
-            ${CMAKE_COMMAND} -E copy_if_different "${GENERATED_OUT}"
-            "$<TARGET_FILE_DIR:${target_name}>/THIRD_PARTY_LICENSES.txt"
-        COMMAND
-            ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE"
-            "$<TARGET_FILE_DIR:${target_name}>/LICENSE"
-        COMMENT "Staging THIRD_PARTY_LICENSES.txt + LICENSE next to ${target_name}"
-        VERBATIM
-    )
+    # StructuredLogViewer and slp share CMAKE_RUNTIME_OUTPUT_DIRECTORY.
+    # One custom target owns the copy so a parallel build cannot race
+    # two POST_BUILD steps on the same THIRD_PARTY_LICENSES.txt.
+    if(NOT TARGET slv_stage_runtime_licenses)
+        add_custom_target(
+            slv_stage_runtime_licenses
+            COMMAND
+                ${CMAKE_COMMAND} -E copy_if_different "${GENERATED_OUT}"
+                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/THIRD_PARTY_LICENSES.txt"
+            COMMAND
+                ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE"
+                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/LICENSE"
+            COMMENT "Staging THIRD_PARTY_LICENSES.txt + LICENSE into the runtime directory"
+            VERBATIM
+        )
+    endif()
+    add_dependencies(${target_name} slv_stage_runtime_licenses)
 
     # Install rules: place both files next to the binary in every
-    # packaged artifact. macOS bundle install puts them alongside the
-    # .app for now (the AppleStore-style "inside Resources" dance can
-    # come later if needed).
-    install(
-        FILES "${GENERATED_OUT}" "${CMAKE_SOURCE_DIR}/LICENSE"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}"
-        COMPONENT licenses
-    )
-    if(APPLE)
+    # packaged artifact. Calling the function for a second executable
+    # must not install the same files twice.
+    get_property(_slv_licenses_installed GLOBAL PROPERTY SLV_LICENSES_INSTALL_ADDED)
+    if(NOT _slv_licenses_installed)
+        install(
+            FILES "${GENERATED_OUT}" "${CMAKE_SOURCE_DIR}/LICENSE"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            COMPONENT licenses
+        )
+        set_property(GLOBAL PROPERTY SLV_LICENSES_INSTALL_ADDED TRUE)
+    endif()
+    get_target_property(_slv_is_bundle ${target_name} MACOSX_BUNDLE)
+    if(APPLE AND _slv_is_bundle)
         # Mirror the Resources/tzdata pattern: a POST_BUILD step that
         # drops the licenses inside the .app bundle so a user dragging
         # the bundle out of the DMG also gets the attribution texts.
+        # This destination is per-bundle, so it does not race the
+        # shared runtime-directory copy above.
         add_custom_command(
             TARGET ${target_name}
             POST_BUILD

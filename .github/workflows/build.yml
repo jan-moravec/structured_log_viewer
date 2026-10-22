@@ -153,6 +153,7 @@ jobs:
           extra-args: >-
             -I${{ github.workspace }}/library/include
             -I${{ github.workspace }}/app/include
+            -I${{ github.workspace }}/cli/include
             -I${{ github.workspace }}/test/common/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/fmt-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/robin_map-src/include
@@ -210,6 +211,37 @@ jobs:
           verbose: true
           use_oidc: true
 
+  build-qt-free:
+    needs: pre-commit
+    # Proves `slp` configures, builds, and tests with no Qt installed.
+    # The packaging jobs still build the GUI; this job is the one that
+    # fails if `find_package(Qt6)` leaks out of `app/`.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install newer GCC
+        run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 libssl-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+      - name: Install CMake
+        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb # v4.4.2
+
+      - name: Configure without Qt
+        run: cmake --preset release -DSLV_BUILD_GUI=OFF
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Run tests
+        run: ctest --preset release
+
   build-linux:
     needs: pre-commit
     # Oldest supported runner so the AppImage links against an older glibc
@@ -255,6 +287,16 @@ jobs:
 
       - name: Build
         run: cmake --build --preset release
+
+      - name: Assert slp does not link Qt
+        run: |
+          set -euo pipefail
+          SLP=build/release/bin/Release/slp
+          test -x "$SLP"
+          if ldd "$SLP" | grep -E 'libQt6|Qt6'; then
+            echo "slp links Qt" >&2
+            exit 1
+          fi
 
       - name: Run unit tests
         # release preset excludes the `benchmark` label; benchmarks run below.
@@ -455,6 +497,14 @@ jobs:
       - name: Build
         run: cmake --build --preset release
 
+      - name: Assert slp does not link Qt
+        shell: powershell
+        run: |
+          $slp = "build\release\bin\Release\slp.exe"
+          if (-not (Test-Path $slp)) { throw "slp.exe was not built" }
+          $deps = & dumpbin /dependents $slp | Out-String
+          if ($deps -match 'Qt6') { throw "slp links Qt: $deps" }
+
       - name: Run unit tests
         run: ctest --preset release
 
@@ -576,6 +626,16 @@ jobs:
 
       - name: Build
         run: cmake --build --preset release
+
+      - name: Assert slp does not link Qt
+        run: |
+          set -euo pipefail
+          SLP=build/release/bin/Release/slp
+          test -x "$SLP"
+          if otool -L "$SLP" | grep -E 'Qt6|libQt6'; then
+            echo "slp links Qt" >&2
+            exit 1
+          fi
 
       - name: Run unit tests
         run: ctest --preset release

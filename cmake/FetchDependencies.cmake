@@ -188,7 +188,7 @@ else()
     find_package(TBB 2021.5 REQUIRED)
 endif()
 
-# argparse is only needed by the test/log_generator console helper (header-only)
+# argparse is header-only. `slp` and `test/log_generator` both link it.
 if(NOT USE_SYSTEM_ARGPARSE)
     FetchContent_Declare(
         argparse

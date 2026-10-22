@@ -248,6 +248,28 @@ add_test(
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_user_data_directory>
 )
 
+# GUI Export Filtered Rows vs `slp query` byte parity (tasks-slp-cli 7.17).
+# Loads the shared CLI fixture through LogModel's streaming sink, builds the
+# same ExportPlan the GUI would, and compares bytes with a real `slp` run.
+if(SLV_BUILD_CLI)
+    qt_add_executable(apptest_cli_export_parity src/test_cli_export_parity.cpp)
+    target_link_libraries(apptest_cli_export_parity PRIVATE Qt6::Test Qt6::Widgets logapp)
+    target_include_directories(apptest_cli_export_parity PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+    add_dependencies(apptest_cli_export_parity slp)
+    target_compile_definitions(
+        apptest_cli_export_parity
+        PRIVATE
+            "SLP_EXECUTABLE=\"$<TARGET_FILE:slp>\""
+            "SLP_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/test/cli/fixtures\""
+    )
+    add_test(
+        NAME apptest_cli_export_parity
+        COMMAND apptest_cli_export_parity
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_cli_export_parity>
+    )
+    set_tests_properties(apptest_cli_export_parity PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 qt_add_executable(apptest_workspace_persistence src/workspace_persistence_test.cpp)
 target_link_libraries(apptest_workspace_persistence PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_workspace_persistence PRIVATE ${CMAKE_SOURCE_DIR}/library/include)

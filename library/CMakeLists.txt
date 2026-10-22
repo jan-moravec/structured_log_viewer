@@ -65,6 +65,7 @@ add_library(
     src/rotation_siblings.cpp
     src/source_plan.cpp
     src/user_paths.cpp
+    src/version.cpp
     src/row_ordering.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
@@ -149,6 +150,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/udp_server_producer.hpp
     include/loglib/user_paths.hpp
     include/loglib/user_timestamp.hpp
+    include/loglib/version.hpp
 )
 
 file(
@@ -173,6 +175,10 @@ endif()
 target_sources(loglib PUBLIC FILE_SET HEADERS BASE_DIRS include FILES ${LOGLIB_PUBLIC_HEADERS})
 
 target_compile_features(loglib PUBLIC cxx_std_23)
+
+# `Version()` is the only version surface. The string is private to
+# this target so dependents cannot depend on the macro name.
+target_compile_definitions(loglib PRIVATE "LOGLIB_VERSION_STRING=\"${PROJECT_VERSION}\"")
 
 target_link_libraries(
     loglib
