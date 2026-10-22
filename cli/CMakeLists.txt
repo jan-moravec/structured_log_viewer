@@ -19,6 +19,8 @@ add_library(
     src/command_bundle.cpp
     src/command_tail.cpp
     src/cli_filter.cpp
+    src/console.cpp
+    src/text_util.cpp
     src/load_table.cpp
     src/session_config.cpp
 )

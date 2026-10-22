@@ -1,16 +1,15 @@
 #include "load_table.hpp"
 
-#include "diagnostics.hpp"
+#include "console.hpp"
 #include "session_config.hpp"
+#include "text_util.hpp"
 
 #include <loglib/auto_detect_parser.hpp>
-#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/format_detection.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
+#include <loglib/parse_error_text.hpp>
 #include <loglib/regex_templates.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/source_plan.hpp>
@@ -20,21 +19,14 @@
 #include <loglib/user_paths.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
-#include <cstdint>
-#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <memory>
-#include <optional>
+#include <functional>
 #include <sstream>
-#include <string>
-#include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace slp
 {
@@ -42,46 +34,9 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] std::string AsciiLower(std::string_view text)
+[[nodiscard]] Failure LoadFail(ExitCode code, std::string_view sentence)
 {
-    std::string out(text);
-    for (char &ch : out)
-    {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    return out;
-}
-
-[[nodiscard]] bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) noexcept
-{
-    if (lhs.size() != rhs.size())
-    {
-        return false;
-    }
-    for (std::size_t i = 0; i < lhs.size(); ++i)
-    {
-        if (std::tolower(static_cast<unsigned char>(lhs[i])) != std::tolower(static_cast<unsigned char>(rhs[i])))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-[[nodiscard]] std::string FormatName(loglib::Source::Format format) noexcept
-{
-    switch (format)
-    {
-    case loglib::Source::Format::Json:
-        return "json";
-    case loglib::Source::Format::Logfmt:
-        return "logfmt";
-    case loglib::Source::Format::Csv:
-        return "csv";
-    case loglib::Source::Format::Regex:
-        return "regex";
-    }
-    return "unknown";
+    return MakeFailure(code, {}, sentence);
 }
 
 [[nodiscard]] std::optional<loglib::Source::Format> ToSourceFormat(InputFormat format) noexcept
@@ -102,80 +57,79 @@ namespace
     return std::nullopt;
 }
 
-[[nodiscard]] std::expected<std::string, std::string> ResolveRegexPattern(const Options &options)
+[[nodiscard]] std::filesystem::path TemplateDirectory(const GlobalOptions &global)
 {
-    if (options.regex)
+    return global.templateDir ? *global.templateDir : loglib::UserRegexTemplateDirectory();
+}
+
+/** @brief The pattern named by `--regex` or `--regex-template`. */
+[[nodiscard]] std::expected<std::string, Failure> ResolveRegexPattern(
+    const GlobalOptions &global, const InputOptions &input
+)
+{
+    if (input.regex)
     {
-        return *options.regex;
+        return *input.regex;
     }
-    if (!options.regexTemplate)
+    if (!input.regexTemplate)
     {
-        return std::unexpected(std::string{"'--format regex' requires '--regex' or '--regex-template'."});
+        return std::unexpected(LoadFail(ExitCode::Usage, "'--format regex' requires '--regex' or '--regex-template'."));
     }
 
-    const std::string wanted = AsciiLower(*options.regexTemplate);
-    const auto builtins = loglib::BuiltinRegexTemplateCatalog();
-    for (const auto &entry : builtins)
+    const std::string &slug = *input.regexTemplate;
+    for (const auto &entry : loglib::BuiltinRegexTemplateCatalog())
     {
-        if (AsciiLower(entry.slug) == wanted)
+        if (EqualsIgnoreCase(entry.slug, slug))
         {
             return entry.tmpl.pattern;
         }
     }
 
-    const std::filesystem::path templateDir =
-        options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
+    const std::filesystem::path templateDir = TemplateDirectory(global);
     if (!templateDir.empty())
     {
-        const std::filesystem::path candidate = templateDir / (*options.regexTemplate + ".json");
-        const std::ifstream input(candidate, std::ios::binary);
-        if (input)
+        const std::filesystem::path candidate = templateDir / (slug + ".json");
+        const std::ifstream file(candidate, std::ios::binary);
+        if (file)
         {
             std::ostringstream buffer;
-            buffer << input.rdbuf();
+            buffer << file.rdbuf();
             try
             {
                 return loglib::ParseRegexTemplate(buffer.str()).pattern;
             }
             catch (const std::exception &ex)
             {
-                return std::unexpected(
+                return std::unexpected(LoadFail(
+                    ExitCode::Usage,
                     std::format("could not parse regex template '{}': {}.", candidate.string(), ex.what())
-                );
+                ));
             }
         }
-        const auto loaded = loglib::LoadRegexTemplatesFromDirectory(templateDir);
-        for (const auto &tmpl : loaded.templates)
+        for (const auto &tmpl : loglib::LoadRegexTemplatesFromDirectory(templateDir).templates)
         {
-            if (EqualsIgnoreCase(tmpl.name, *options.regexTemplate))
+            if (EqualsIgnoreCase(tmpl.name, slug))
             {
                 return tmpl.pattern;
             }
         }
     }
 
-    return std::unexpected(std::format("unknown regex template slug '{}'.", *options.regexTemplate));
+    return std::unexpected(LoadFail(ExitCode::Usage, std::format("unknown regex template slug '{}'.", slug)));
 }
 
-[[nodiscard]] CommandOutput Fail(ExitCode code, std::string_view sentence, std::string_view errExtra = {})
+/** @brief Feeds parsed batches into the table and records parse errors and line coverage. */
+class TableSink final : public loglib::LogParseSink
 {
-    CommandOutput out;
-    out.exitCode = static_cast<int>(code);
-    out.err = FormatErrorLine({}, sentence);
-    out.err.push_back('\n');
-    out.err += errExtra;
-    return out;
-}
-
-struct QuerySink final : loglib::LogParseSink
-{
-    loglib::LogTable *table = nullptr;
-    std::vector<std::string> errors;
-    std::uint64_t *linesConsumed = nullptr;
+public:
+    explicit TableSink(LoadedTable &loaded) noexcept
+        : mLoaded(loaded)
+    {
+    }
 
     loglib::KeyIndex &Keys() override
     {
-        return table->Keys();
+        return mLoaded.table.Keys();
     }
 
     void OnStarted() override
@@ -184,503 +138,418 @@ struct QuerySink final : loglib::LogParseSink
 
     void OnBatch(loglib::StreamedBatch batch) override
     {
-        if (!batch.errors.empty())
+        std::uint64_t &consumed = mLoaded.linesConsumed;
+        if (batch.firstLineNumber != 0)
         {
-            errors.insert(
-                errors.end(), std::make_move_iterator(batch.errors.begin()), std::make_move_iterator(batch.errors.end())
-            );
-            batch.errors.clear();
+            consumed = std::max(consumed, static_cast<std::uint64_t>(batch.firstLineNumber));
         }
-
-        if (linesConsumed != nullptr)
+        for (const loglib::LogLine &line : batch.lines)
         {
-            if (batch.firstLineNumber != 0)
-            {
-                *linesConsumed = std::max(*linesConsumed, static_cast<std::uint64_t>(batch.firstLineNumber));
-            }
-            for (const loglib::LogLine &line : batch.lines)
-            {
-                *linesConsumed = std::max(*linesConsumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
-            }
+            consumed = std::max(consumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
         }
-
-        AppendStreamedBatch(*table, std::move(batch));
+        for (std::string &error : batch.errors)
+        {
+            consumed = std::max(consumed, loglib::LocateParseError(error).lastLine);
+            mLoaded.parseErrors.push_back(std::move(error));
+        }
+        batch.errors.clear();
+        mLoaded.table.AppendBatchArranged(std::move(batch));
     }
 
     void OnFinished(bool /*cancelled*/) override
     {
     }
+
+private:
+    LoadedTable &mLoaded;
 };
 
-[[nodiscard]] std::optional<std::uint64_t> ParseLeadingLineNumber(std::string_view text)
+/**
+ * @brief How one source chooses its parser format.
+ *
+ * `accepts` checks a pinned `--format` against the source; `detect`
+ * picks a format when none is pinned.
+ */
+struct FormatProbe
 {
-    std::uint64_t value = 0;
-    std::size_t index = 0;
-    while (index < text.size() && std::isdigit(static_cast<unsigned char>(text[index])) != 0)
-    {
-        value = value * 10 + static_cast<std::uint64_t>(text[index] - '0');
-        ++index;
-    }
-    if (index == 0)
-    {
-        return std::nullopt;
-    }
-    return value;
-}
+    std::string_view label;
+    std::function<bool(const loglib::LogParser &)> accepts;
+    std::function<loglib::DetectedFormat()> detect;
+};
 
-void UpdateLinesConsumedFromErrors(std::uint64_t &linesConsumed, const std::vector<std::string> &errors)
+/** @brief Loads sources one at a time into one table, in the order given. */
+class TableLoader
 {
-    constexpr std::string_view SINGLE_PREFIX = "Error on line ";
-    constexpr std::string_view RANGE_PREFIX = "Error on lines ";
-    for (const std::string &error : errors)
+public:
+    TableLoader(
+        const GlobalOptions &global, const InputOptions &input, const Console &console, const RuntimeContext &runtime
+    )
+        : mGlobal(global), mInput(input), mConsole(console), mRuntime(runtime)
     {
-        if (error.starts_with(SINGLE_PREFIX))
+    }
+
+    /** @brief Seeds the configuration from `--config`. */
+    [[nodiscard]] std::optional<Failure> SeedConfig()
+    {
+        if (!mInput.config)
         {
-            const auto parsed = ParseLeadingLineNumber(std::string_view{error}.substr(SINGLE_PREFIX.size()));
-            if (parsed)
-            {
-                linesConsumed = std::max(linesConsumed, *parsed);
-            }
-            continue;
+            return std::nullopt;
         }
-        if (error.starts_with(RANGE_PREFIX))
-        {
-            const std::string_view tail = std::string_view{error}.substr(RANGE_PREFIX.size());
-            const std::size_t dash = tail.find('-');
-            if (dash == std::string_view::npos)
-            {
-                continue;
-            }
-            const auto endLine = ParseLeadingLineNumber(tail.substr(dash + 1));
-            if (endLine)
-            {
-                linesConsumed = std::max(linesConsumed, *endLine);
-            }
-        }
-    }
-}
-
-[[nodiscard]] std::expected<loglib::DetectedFormat, CommandOutput> ResolveFormat(
-    const Options &options, const std::filesystem::path &effectivePath, CommandOutput &warnings
-)
-{
-    (void)warnings;
-    if (const auto pinned = ToSourceFormat(options.format))
-    {
-        std::string pattern;
-        if (*pinned == loglib::Source::Format::Regex)
-        {
-            auto resolved = ResolveRegexPattern(options);
-            if (!resolved)
-            {
-                return std::unexpected(Fail(ExitCode::Usage, resolved.error()));
-            }
-            pattern = std::move(*resolved);
-        }
-        auto parser = loglib::MakeParserForFormat(*pinned, pattern);
-        if (!parser->IsValid(effectivePath))
-        {
-            return std::unexpected(Fail(
-                ExitCode::Input,
-                std::format("source '{}' was rejected by the {} parser.", effectivePath.string(), FormatName(*pinned))
-            ));
-        }
-        return loglib::DetectedFormat{.format = *pinned, .regexPattern = std::move(pattern)};
-    }
-
-    loglib::DetectedFormat detected = loglib::DetectFormatForPath(effectivePath);
-    if (detected.format == loglib::Source::Format::Regex && detected.regexPattern.empty())
-    {
-        return std::unexpected(
-            Fail(ExitCode::Input, std::format("could not detect a parser for source '{}'.", effectivePath.string()))
-        );
-    }
-    return detected;
-}
-
-[[nodiscard]] loglib::ParserOptions MakeParserOptions(const Options &options, const RuntimeContext &runtime)
-{
-    loglib::ParserOptions parserOptions;
-    parserOptions.stopToken = runtime.stop;
-    parserOptions.threads = options.threads;
-    parserOptions.multilineLogfmt = !options.noMultilineLogfmt;
-    if (options.batchSizeBytes)
-    {
-        parserOptions.batchSizeBytes = static_cast<std::size_t>(*options.batchSizeBytes);
-    }
-    return parserOptions;
-}
-
-[[nodiscard]] CommandOutput CancelledOutput()
-{
-    CommandOutput cancelled;
-    cancelled.exitCode = static_cast<int>(ExitCode::Cancelled);
-    return cancelled;
-}
-
-[[nodiscard]] CommandOutput OpenFailure(const std::filesystem::path &path, std::string_view reason)
-{
-    return Fail(ExitCode::Input, std::format("source '{}': {}", path.string(), reason));
-}
-
-[[nodiscard]] std::expected<loglib::DetectedFormat, CommandOutput> ResolveFormatFromBytes(
-    const Options &options, std::string_view sniff, std::string_view sourceLabel
-)
-{
-    if (const auto pinned = ToSourceFormat(options.format))
-    {
-        std::string pattern;
-        if (*pinned == loglib::Source::Format::Regex)
-        {
-            auto resolved = ResolveRegexPattern(options);
-            if (!resolved)
-            {
-                return std::unexpected(Fail(ExitCode::Usage, resolved.error()));
-            }
-            pattern = std::move(*resolved);
-        }
-        auto parser = loglib::MakeParserForFormat(*pinned, pattern);
-        if (!parser->IsValidBytes(sniff))
-        {
-            return std::unexpected(Fail(
-                ExitCode::Input,
-                std::format("source '{}' was rejected by the {} parser.", sourceLabel, FormatName(*pinned))
-            ));
-        }
-        return loglib::DetectedFormat{.format = *pinned, .regexPattern = std::move(pattern)};
-    }
-    return loglib::DetectFormatFromBytes(sniff);
-}
-
-void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex, const loglib::DetectedFormat &format)
-{
-    if (detectedFormat.empty())
-    {
-        detectedFormat = FormatName(format.format);
-        detectedRegex = format.regexPattern;
-    }
-}
-
-[[nodiscard]] CommandOutput ParseFilePath(
-    const Options &options,
-    const RuntimeContext &runtime,
-    loglib::LogTable &table,
-    bool &first,
-    std::vector<std::string> &parseErrors,
-    std::vector<std::shared_ptr<loglib::DecompressingByteSource>> &ownedDecompressors,
-    const std::filesystem::path &displayPath,
-    bool discardFirstLine,
-    std::string &detectedFormat,
-    std::string &detectedRegex,
-    std::uint64_t &linesConsumed
-)
-{
-    std::error_code ec;
-    if (!std::filesystem::exists(displayPath, ec) || ec)
-    {
-        return OpenFailure(displayPath, "does not exist");
-    }
-    if (std::filesystem::is_directory(displayPath, ec))
-    {
-        return OpenFailure(displayPath, "is a directory");
-    }
-
-    try
-    {
-        loglib::DecompressingByteSource::Options decompressOptions;
-        decompressOptions.discardFirstLine = discardFirstLine;
-        auto decompressor = std::make_shared<loglib::DecompressingByteSource>(
-            displayPath, loglib::DecompressingByteSource::ProgressCallback{}, runtime.stop, decompressOptions
-        );
-        if (discardFirstLine)
-        {
-            const auto metadata = loglib::ParseSessionBundleMetadata(decompressor->DiscardedFirstLine());
-            // Seed the table with the embedded session before the first
-            // BeginStreaming so column pins and filter defaults apply.
-            if (first && !options.config)
-            {
-                table.Configuration().SetConfiguration(metadata.configuration);
-            }
-        }
-
-        const std::filesystem::path effective = decompressor->EffectivePath();
-        ownedDecompressors.push_back(decompressor);
-
-        CommandOutput unused;
-        auto format = ResolveFormat(options, effective, unused);
-        if (!format)
-        {
-            return std::move(format.error());
-        }
-        NoteDetectedFormat(detectedFormat, detectedRegex, *format);
-
-        auto logFile = std::make_unique<loglib::LogFile>(effective, displayPath);
-        logFile->AttachLifetimeAnchor(decompressor);
-        auto lineSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
-        loglib::FileLineSource *rawSource = lineSource.get();
-
-        if (first)
-        {
-            table.BeginStreaming(std::move(lineSource));
-            first = false;
-        }
-        else
-        {
-            table.AppendStreaming(std::move(lineSource));
-        }
-
-        auto parser = loglib::MakeParserForFormat(format->format, format->regexPattern);
-        QuerySink sink;
-        sink.table = &table;
-        sink.linesConsumed = &linesConsumed;
-        parser->ParseStreaming(*rawSource, sink, MakeParserOptions(options, runtime));
-        parseErrors.insert(parseErrors.end(), sink.errors.begin(), sink.errors.end());
-    }
-    catch (const loglib::DecompressionCancelled &)
-    {
-        return CancelledOutput();
-    }
-    catch (const loglib::DecompressionSizeCapExceeded &ex)
-    {
-        return Fail(ExitCode::Input, ex.what());
-    }
-    catch (const loglib::SessionBundleVersionError &ex)
-    {
-        return Fail(ExitCode::Input, ex.what());
-    }
-    catch (const loglib::SessionBundleReadError &ex)
-    {
-        return Fail(ExitCode::Input, ex.what());
-    }
-    catch (const std::exception &ex)
-    {
-        return OpenFailure(displayPath, ex.what());
-    }
-
-    if (runtime.stop.stop_requested())
-    {
-        return CancelledOutput();
-    }
-    return {};
-}
-
-[[nodiscard]] CommandOutput ParseStdin(
-    const Options &options,
-    const RuntimeContext &runtime,
-    loglib::LogTable &table,
-    bool &first,
-    std::vector<std::string> &parseErrors,
-    std::string &detectedFormat,
-    std::string &detectedRegex,
-    std::uint64_t &linesConsumed
-)
-{
-    if (loglib::IsStdinInteractive())
-    {
-        return Fail(ExitCode::Input, "standard input is a terminal; pipe log data into slp or redirect from a file");
-    }
-
-    constexpr auto PEEK_TIMEOUT = std::chrono::milliseconds(500);
-    std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, PEEK_TIMEOUT);
-    auto format = ResolveFormatFromBytes(options, peek, "-");
-    if (!format)
-    {
-        return std::move(format.error());
-    }
-    NoteDetectedFormat(detectedFormat, detectedRegex, *format);
-
-    std::unique_ptr<loglib::StdinBytesProducer> producer;
-    try
-    {
-        producer = std::make_unique<loglib::StdinBytesProducer>();
-    }
-    catch (const std::exception &ex)
-    {
-        return Fail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what()));
-    }
-
-    auto lineSource = std::make_unique<loglib::StreamLineSource>(std::filesystem::path{"-"}, std::move(producer));
-    loglib::StreamLineSource *rawSource = lineSource.get();
-    if (first)
-    {
-        table.BeginStreaming(std::move(lineSource));
-        first = false;
-    }
-    else
-    {
-        table.AppendStreaming(std::move(lineSource));
-    }
-
-    auto parser = loglib::MakeParserForFormat(format->format, format->regexPattern);
-    auto parserOptions = MakeParserOptions(options, runtime);
-    parserOptions.initialCarry = std::move(peek);
-    QuerySink sink;
-    sink.table = &table;
-    sink.linesConsumed = &linesConsumed;
-    parser->ParseStreaming(*rawSource, sink, parserOptions);
-    parseErrors.insert(parseErrors.end(), sink.errors.begin(), sink.errors.end());
-
-    if (runtime.stop.stop_requested())
-    {
-        return CancelledOutput();
-    }
-    return {};
-}
-
-[[nodiscard]] CommandOutput LoadSources(const Options &options, const RuntimeContext &runtime, LoadedTable &loaded)
-{
-    CommandOutput side;
-    LoadUserTemplates(options, side);
-    if (options.sources.empty())
-    {
-        return Fail(ExitCode::Usage, "at least one source is required.");
-    }
-
-    // `--config` replaces any bundle-embedded configuration, so seed it
-    // here and let `ParseFilePath` skip its own bundle seeding.
-    if (options.config)
-    {
-        auto configuration = LoadConfigFile(*options.config);
+        auto configuration = LoadConfigFile(*mInput.config);
         if (!configuration)
         {
-            return Fail(ExitCode::Input, configuration.error());
+            return LoadFail(ExitCode::Input, configuration.error());
         }
-        loaded.table.Configuration().SetConfiguration(std::move(*configuration));
+        mLoaded.table.Configuration().SetConfiguration(std::move(*configuration));
+        return std::nullopt;
     }
 
-    bool first = true;
-    std::vector<std::filesystem::path> pendingPaths;
-
-    auto flushPaths = [&]() -> CommandOutput {
-        if (pendingPaths.empty())
+    /** @brief Loads plain paths, expanded with their rotated siblings. */
+    [[nodiscard]] std::optional<Failure> AddPaths(const std::vector<std::filesystem::path> &paths)
+    {
+        if (paths.empty())
         {
-            return {};
+            return std::nullopt;
         }
         loglib::SourcePlanOptions planOptions;
-        planOptions.rotationHistory = !options.noRotationHistory;
-        const auto plan = loglib::ResolveSourcePlan(pendingPaths, planOptions);
-        if (options.verbose > 0 && !options.quiet)
+        planOptions.rotationHistory = !mGlobal.noRotationHistory;
+        const auto plan = loglib::ResolveSourcePlan(paths, planOptions);
+        if (mConsole.Verbose() > 0)
         {
             for (const auto &entry : plan)
             {
-                std::string message = "loading " + entry.path.string();
-                if (entry.autoAdded)
-                {
-                    message += " (rotated sibling)";
-                }
-                side.err += FormatWarningLine(message);
-                side.err.push_back('\n');
+                mConsole.Warn("loading " + entry.path.string() + (entry.autoAdded ? " (rotated sibling)" : ""));
             }
         }
         for (const auto &entry : plan)
         {
-            const CommandOutput part = ParseFilePath(
-                options,
-                runtime,
-                loaded.table,
-                first,
-                loaded.parseErrors,
-                loaded.ownedDecompressors,
-                entry.path,
-                false,
-                loaded.detectedFormat,
-                loaded.detectedRegexPattern,
-                loaded.linesConsumed
-            );
-            if (part.exitCode != 0)
+            if (auto failure = AddFile(entry.path, false))
             {
-                side.err += part.err;
-                side.exitCode = part.exitCode;
-                return side;
+                return failure;
             }
         }
-        pendingPaths.clear();
-        return {};
-    };
+        return std::nullopt;
+    }
 
-    for (const SourceSpec &source : options.sources)
+    /** @brief Loads one `.slvbundle`, seeding the configuration from it unless `--config` was given. */
+    [[nodiscard]] std::optional<Failure> AddBundle(const std::filesystem::path &path)
     {
-        if (source.kind == SourceKind::Tcp || source.kind == SourceKind::Udp)
-        {
-            return Fail(ExitCode::Usage, std::format("Network source '{}' is only valid for `slp tail`.", source.text));
-        }
-        if (source.kind == SourceKind::Path)
-        {
-            pendingPaths.push_back(source.path);
-            continue;
-        }
+        return AddFile(path, true);
+    }
 
-        CommandOutput flushed = flushPaths();
-        if (flushed.exitCode != 0)
+    /** @brief Loads standard input to its end. */
+    [[nodiscard]] std::optional<Failure> AddStdin()
+    {
+        if (loglib::IsStdinInteractive())
         {
-            return flushed;
-        }
-        side.err += flushed.err;
-
-        if (source.kind == SourceKind::Stdin)
-        {
-            const CommandOutput part = ParseStdin(
-                options,
-                runtime,
-                loaded.table,
-                first,
-                loaded.parseErrors,
-                loaded.detectedFormat,
-                loaded.detectedRegexPattern,
-                loaded.linesConsumed
+            return LoadFail(
+                ExitCode::Input, "standard input is a terminal; pipe log data into slp or redirect from a file"
             );
-            if (part.exitCode != 0)
-            {
-                side.err += part.err;
-                side.exitCode = part.exitCode;
-                return side;
-            }
-            continue;
         }
 
-        if (source.kind == SourceKind::Bundle)
-        {
-            const CommandOutput part = ParseFilePath(
-                options,
-                runtime,
-                loaded.table,
-                first,
-                loaded.parseErrors,
-                loaded.ownedDecompressors,
-                source.path,
-                true,
-                loaded.detectedFormat,
-                loaded.detectedRegexPattern,
-                loaded.linesConsumed
-            );
-            if (part.exitCode != 0)
-            {
-                side.err += part.err;
-                side.exitCode = part.exitCode;
-                return side;
+        constexpr auto PEEK_TIMEOUT = std::chrono::milliseconds(500);
+        std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, PEEK_TIMEOUT);
+        const std::string_view sniff = peek;
+        auto format = ResolveFormat(
+            FormatProbe{
+                .label = "-",
+                .accepts = [sniff](const loglib::LogParser &parser) { return parser.IsValidBytes(sniff); },
+                .detect = [sniff] { return loglib::DetectFormatFromBytes(sniff); },
             }
-            continue;
+        );
+        if (!format)
+        {
+            return std::move(format.error());
+        }
+
+        std::unique_ptr<loglib::StdinBytesProducer> producer;
+        try
+        {
+            producer = std::make_unique<loglib::StdinBytesProducer>();
+        }
+        catch (const std::exception &ex)
+        {
+            return LoadFail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what()));
+        }
+
+        auto lineSource = std::make_unique<loglib::StreamLineSource>(std::filesystem::path{"-"}, std::move(producer));
+        loglib::StreamLineSource &source = *lineSource;
+        Attach(std::move(lineSource));
+
+        loglib::ParserOptions parserOptions = MakeParserOptions(mGlobal, mInput, mRuntime.stop);
+        parserOptions.initialCarry = std::move(peek);
+        try
+        {
+            Parse(*format, source, parserOptions);
+        }
+        catch (const std::exception &ex)
+        {
+            return LoadFail(ExitCode::Input, std::format("standard input: {}", ex.what()));
+        }
+        return StopCheck();
+    }
+
+    /** @brief Completes deferred type detection and returns the loaded table. */
+    [[nodiscard]] LoadedTable Finish()
+    {
+        mLoaded.table.FinalizeAutoDetection();
+        mLoaded.table.ApplyPendingLevelBubbles();
+        return std::move(mLoaded);
+    }
+
+private:
+    [[nodiscard]] std::optional<Failure> AddFile(const std::filesystem::path &displayPath, bool bundle)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(displayPath, ec) || ec)
+        {
+            return OpenFailure(displayPath, "does not exist");
+        }
+        if (std::filesystem::is_directory(displayPath, ec))
+        {
+            return OpenFailure(displayPath, "is a directory");
+        }
+
+        try
+        {
+            loglib::DecompressingByteSource::Options decompressOptions;
+            decompressOptions.discardFirstLine = bundle;
+            auto decompressor = std::make_shared<loglib::DecompressingByteSource>(
+                displayPath, loglib::DecompressingByteSource::ProgressCallback{}, mRuntime.stop, decompressOptions
+            );
+            if (bundle)
+            {
+                const auto metadata = loglib::ParseSessionBundleMetadata(decompressor->DiscardedFirstLine());
+                // Seed the embedded session before the first BeginStreaming so
+                // column pins and filter defaults apply.
+                if (mFirst && !mInput.config)
+                {
+                    mLoaded.table.Configuration().SetConfiguration(metadata.configuration);
+                }
+            }
+
+            const std::filesystem::path effective = decompressor->EffectivePath();
+            mLoaded.ownedDecompressors.push_back(decompressor);
+
+            const std::string label = displayPath.string();
+            auto format = ResolveFormat(
+                FormatProbe{
+                    .label = label,
+                    .accepts = [&effective](const loglib::LogParser &parser) { return parser.IsValid(effective); },
+                    .detect = [&effective] { return loglib::DetectFormatForPath(effective); },
+                }
+            );
+            if (!format)
+            {
+                return std::move(format.error());
+            }
+
+            auto logFile = std::make_unique<loglib::LogFile>(effective, displayPath);
+            logFile->AttachLifetimeAnchor(decompressor);
+            auto lineSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
+            loglib::FileLineSource &source = *lineSource;
+            Attach(std::move(lineSource));
+            Parse(*format, source, MakeParserOptions(mGlobal, mInput, mRuntime.stop));
+        }
+        catch (const loglib::DecompressionCancelled &)
+        {
+            return CancelledFailure();
+        }
+        catch (const loglib::DecompressionSizeCapExceeded &ex)
+        {
+            return LoadFail(ExitCode::Input, ex.what());
+        }
+        catch (const loglib::SessionBundleVersionError &ex)
+        {
+            return LoadFail(ExitCode::Input, ex.what());
+        }
+        catch (const loglib::SessionBundleReadError &ex)
+        {
+            return LoadFail(ExitCode::Input, ex.what());
+        }
+        catch (const std::exception &ex)
+        {
+            return OpenFailure(displayPath, ex.what());
+        }
+        return StopCheck();
+    }
+
+    /**
+     * @brief Resolves the parser format for one source.
+     *
+     * A pinned `--format` must accept the probe; otherwise the probe detects it.
+     */
+    [[nodiscard]] std::expected<loglib::DetectedFormat, Failure> ResolveFormat(const FormatProbe &probe)
+    {
+        loglib::DetectedFormat resolved;
+        if (const auto pinned = ToSourceFormat(mInput.format))
+        {
+            resolved.format = *pinned;
+            if (*pinned == loglib::Source::Format::Regex)
+            {
+                auto pattern = ResolveRegexPattern(mGlobal, mInput);
+                if (!pattern)
+                {
+                    return std::unexpected(std::move(pattern.error()));
+                }
+                resolved.regexPattern = std::move(*pattern);
+            }
+            const auto parser = loglib::MakeParserForFormat(resolved.format, resolved.regexPattern);
+            if (!probe.accepts(*parser))
+            {
+                return std::unexpected(LoadFail(
+                    ExitCode::Input,
+                    std::format("source '{}' was rejected by the {} parser.", probe.label, FormatName(*pinned))
+                ));
+            }
+        }
+        else
+        {
+            resolved = probe.detect();
+            if (resolved.format == loglib::Source::Format::Regex && resolved.regexPattern.empty())
+            {
+                return std::unexpected(
+                    LoadFail(ExitCode::Input, std::format("could not detect a parser for source '{}'.", probe.label))
+                );
+            }
+        }
+        if (!mLoaded.format)
+        {
+            mLoaded.format = resolved;
+        }
+        return resolved;
+    }
+
+    template <typename Source> void Attach(std::unique_ptr<Source> source)
+    {
+        if (mFirst)
+        {
+            mLoaded.table.BeginStreaming(std::move(source));
+            mFirst = false;
+        }
+        else
+        {
+            mLoaded.table.AppendStreaming(std::move(source));
         }
     }
 
-    CommandOutput flushed = flushPaths();
-    if (flushed.exitCode != 0)
+    template <typename Source>
+    void Parse(const loglib::DetectedFormat &format, Source &source, const loglib::ParserOptions &parserOptions)
     {
-        return flushed;
+        const auto parser = loglib::MakeParserForFormat(format.format, format.regexPattern);
+        TableSink sink(mLoaded);
+        parser->ParseStreaming(source, sink, parserOptions);
     }
-    side.err += flushed.err;
 
-    loaded.table.FinalizeAutoDetection();
-    loaded.table.ApplyPendingLevelBubbles();
-    UpdateLinesConsumedFromErrors(loaded.linesConsumed, loaded.parseErrors);
-    return side;
-}
+    [[nodiscard]] std::optional<Failure> StopCheck() const
+    {
+        if (mRuntime.stop.stop_requested())
+        {
+            return CancelledFailure();
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] static Failure OpenFailure(const std::filesystem::path &path, std::string_view reason)
+    {
+        return LoadFail(ExitCode::Input, std::format("source '{}': {}", path.string(), reason));
+    }
+
+    const GlobalOptions &mGlobal;
+    const InputOptions &mInput;
+    const Console &mConsole;
+    const RuntimeContext &mRuntime;
+    LoadedTable mLoaded;
+    bool mFirst = true;
+};
 
 } // namespace
 
-void LoadUserTemplates(const Options &options, CommandOutput &out)
+std::string_view FormatName(loglib::Source::Format format) noexcept
 {
-    const std::filesystem::path dir = options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
+    switch (format)
+    {
+    case loglib::Source::Format::Json:
+        return "json";
+    case loglib::Source::Format::Logfmt:
+        return "logfmt";
+    case loglib::Source::Format::Csv:
+        return "csv";
+    case loglib::Source::Format::Regex:
+        return "regex";
+    }
+    return "unknown";
+}
+
+std::expected<LoadedTable, Failure> LoadTable(
+    const GlobalOptions &global, const InputOptions &input, const Console &console, const RuntimeContext &runtime
+)
+{
+    LoadUserTemplates(global, console);
+    if (input.sources.empty())
+    {
+        return std::unexpected(LoadFail(ExitCode::Usage, "at least one source is required."));
+    }
+
+    TableLoader loader(global, input, console, runtime);
+    if (auto failure = loader.SeedConfig())
+    {
+        return std::unexpected(std::move(*failure));
+    }
+
+    // Consecutive plain paths are planned together so rotation siblings
+    // expand and deduplicate across them.
+    std::vector<std::filesystem::path> pendingPaths;
+    auto flushPaths = [&]() {
+        auto failure = loader.AddPaths(pendingPaths);
+        pendingPaths.clear();
+        return failure;
+    };
+
+    for (const SourceSpec &source : input.sources)
+    {
+        std::optional<Failure> failure;
+        switch (source.kind)
+        {
+        case SourceKind::Path:
+            pendingPaths.push_back(source.path);
+            continue;
+        case SourceKind::Stdin:
+            failure = flushPaths();
+            if (!failure)
+            {
+                failure = loader.AddStdin();
+            }
+            break;
+        case SourceKind::Bundle:
+            failure = flushPaths();
+            if (!failure)
+            {
+                failure = loader.AddBundle(source.path);
+            }
+            break;
+        case SourceKind::Tcp:
+        case SourceKind::Udp:
+            failure = LoadFail(
+                ExitCode::Usage, std::format("Network source '{}' is only valid for `slp tail`.", source.text)
+            );
+            break;
+        }
+        if (failure)
+        {
+            return std::unexpected(std::move(*failure));
+        }
+    }
+    if (auto failure = flushPaths())
+    {
+        return std::unexpected(std::move(*failure));
+    }
+    return loader.Finish();
+}
+
+void LoadUserTemplates(const GlobalOptions &global, const Console &console)
+{
+    const std::filesystem::path dir = TemplateDirectory(global);
     if (dir.empty())
     {
         return;
@@ -688,8 +557,7 @@ void LoadUserTemplates(const Options &options, CommandOutput &out)
     const auto loaded = loglib::LoadRegexTemplatesFromDirectory(dir);
     for (const std::string &error : loaded.errors)
     {
-        out.err += FormatWarningLine(error);
-        out.err.push_back('\n');
+        console.Warn(error);
     }
     if (!loaded.templates.empty())
     {
@@ -697,40 +565,11 @@ void LoadUserTemplates(const Options &options, CommandOutput &out)
     }
 }
 
-void AppendStreamedBatch(loglib::LogTable &table, loglib::StreamedBatch batch)
+std::expected<std::unique_ptr<loglib::LogParser>, Failure> MakeStreamParser(
+    const GlobalOptions &global, const InputOptions &input
+)
 {
-    const std::size_t oldColumnCount = table.ColumnCount();
-    table.AppendBatch(std::move(batch));
-    const std::size_t newColumnCount = table.ColumnCount();
-
-    // Match LogModel::AppendBatch: bubble each newly appended Time column to index 0.
-    if (newColumnCount > oldColumnCount)
-    {
-        const auto &columns = table.Configuration().Configuration().columns;
-        std::vector<std::size_t> timeColumns;
-        for (std::size_t columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
-        {
-            if (columns[columnIndex].type == loglib::ColumnType::Time)
-            {
-                timeColumns.push_back(columnIndex);
-            }
-        }
-        for (const std::size_t srcIndex : timeColumns)
-        {
-            if (srcIndex == 0)
-            {
-                continue;
-            }
-            table.MoveColumn(srcIndex, 0);
-        }
-    }
-
-    table.ApplyPendingLevelBubbles();
-}
-
-std::expected<std::unique_ptr<loglib::LogParser>, CommandOutput> MakeStreamParser(const Options &options)
-{
-    const auto pinned = ToSourceFormat(options.format);
+    const auto pinned = ToSourceFormat(input.format);
     if (!pinned)
     {
         return std::make_unique<loglib::AutoDetectParser>();
@@ -738,30 +577,29 @@ std::expected<std::unique_ptr<loglib::LogParser>, CommandOutput> MakeStreamParse
     std::string pattern;
     if (*pinned == loglib::Source::Format::Regex)
     {
-        auto resolved = ResolveRegexPattern(options);
+        auto resolved = ResolveRegexPattern(global, input);
         if (!resolved)
         {
-            return std::unexpected(Fail(ExitCode::Usage, resolved.error()));
+            return std::unexpected(std::move(resolved.error()));
         }
         pattern = std::move(*resolved);
     }
     return loglib::MakeParserForFormat(*pinned, pattern);
 }
 
-loglib::ParserOptions StreamParserOptions(const Options &options, const loglib::StopToken &stop)
+loglib::ParserOptions MakeParserOptions(
+    const GlobalOptions &global, const InputOptions &input, const loglib::StopToken &stop
+)
 {
     loglib::ParserOptions parserOptions;
     parserOptions.stopToken = stop;
-    parserOptions.threads = options.threads;
-    parserOptions.multilineLogfmt = !options.noMultilineLogfmt;
+    parserOptions.threads = global.threads;
+    parserOptions.multilineLogfmt = !input.noMultilineLogfmt;
+    if (input.batchSizeBytes)
+    {
+        parserOptions.batchSizeBytes = static_cast<std::size_t>(*input.batchSizeBytes);
+    }
     return parserOptions;
-}
-
-std::pair<LoadedTable, CommandOutput> LoadTable(const Options &options, const RuntimeContext &runtime)
-{
-    LoadedTable loaded;
-    CommandOutput side = LoadSources(options, runtime, loaded);
-    return {std::move(loaded), std::move(side)};
 }
 
 } // namespace slp

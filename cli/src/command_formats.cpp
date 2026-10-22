@@ -1,13 +1,14 @@
 #include "commands.hpp"
 
+#include "console.hpp"
 #include "diagnostics.hpp"
+#include "text_util.hpp"
 
 #include <loglib/regex_templates.hpp>
 #include <loglib/user_paths.hpp>
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -67,46 +68,6 @@ struct ListedTemplate
     return previous.back();
 }
 
-void AppendJsonString(std::string &out, std::string_view text)
-{
-    out.push_back('"');
-    for (const unsigned char ch : text)
-    {
-        switch (ch)
-        {
-        case '"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            if (ch < 0x20)
-            {
-                constexpr char HEX[] = "0123456789abcdef";
-                out += "\\u00";
-                out.push_back(HEX[ch >> 4]);
-                out.push_back(HEX[ch & 0x0f]);
-            }
-            else
-            {
-                out.push_back(static_cast<char>(ch));
-            }
-            break;
-        }
-    }
-    out.push_back('"');
-}
-
 [[nodiscard]] std::string ContinuationOf(const loglib::RegexTemplate &tmpl)
 {
     return std::string(loglib::ContinuationModeName(tmpl.continuationMode));
@@ -163,11 +124,7 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
             loaded.warnings.push_back("could not read template directory '" + directory.string() + "'.");
             return loaded;
         }
-        std::string extension = entry.path().extension().string();
-        std::ranges::transform(extension, extension.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
-        if (!entry.is_regular_file() || extension != ".json")
+        if (!entry.is_regular_file() || !EqualsIgnoreCase(entry.path().extension().string(), ".json"))
         {
             continue;
         }
@@ -392,12 +349,11 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
 
 } // namespace
 
-CommandOutput RenderFormats(const Options &options)
+ExitCode RunFormats(const FormatsOptions &options, const GlobalOptions &global, Console &console)
 {
-    CommandOutput result;
     const std::vector<ListedTemplate> builtins = BuiltinList();
     const bool loadUser = options.listUserTemplates || options.showSlug.has_value();
-    const std::filesystem::path userDirectory = options.templateDir.value_or(loglib::UserRegexTemplateDirectory());
+    const std::filesystem::path userDirectory = global.templateDir.value_or(loglib::UserRegexTemplateDirectory());
     UserLoad users;
     if (loadUser)
     {
@@ -410,13 +366,9 @@ CommandOutput RenderFormats(const Options &options)
             users.warnings.push_back(std::string("could not read user templates: ") + ex.what());
         }
     }
-    if (!options.quiet)
+    for (const std::string &warning : users.warnings)
     {
-        for (const std::string &warning : users.warnings)
-        {
-            result.err += FormatWarningLine(warning);
-            result.err.push_back('\n');
-        }
+        console.Warn(warning);
     }
 
     if (options.showSlug.has_value())
@@ -465,10 +417,7 @@ CommandOutput RenderFormats(const Options &options)
         }
         if (!showError.empty())
         {
-            result.exitCode = static_cast<int>(ExitCode::Usage);
-            result.err += FormatErrorLine("formats", showError);
-            result.err.push_back('\n');
-            return result;
+            return console.Report(console.Fail(ExitCode::Usage, showError));
         }
         if (!json.has_value())
         {
@@ -484,28 +433,23 @@ CommandOutput RenderFormats(const Options &options)
             {
                 message += "; closest matches are " + closest + ".";
             }
-            result.exitCode = static_cast<int>(ExitCode::Usage);
-            result.err += FormatErrorLine("formats", message);
-            result.err.push_back('\n');
-            return result;
+            return console.Report(console.Fail(ExitCode::Usage, message));
         }
-        result.out = *json;
-        if (result.out.empty() || result.out.back() != '\n')
+        if (json->empty() || json->back() != '\n')
         {
-            result.out.push_back('\n');
+            json->push_back('\n');
         }
-        return result;
+        console.Print(*json);
+        return ExitCode::Success;
     }
 
-    if (options.outputFormat == "json")
-    {
-        result.out = RenderJson(builtins, options.listUserTemplates ? users.templates : std::vector<ListedTemplate>{});
-    }
-    else
-    {
-        result.out = RenderText(builtins, options.listUserTemplates ? users.templates : std::vector<ListedTemplate>{});
-    }
-    return result;
+    const std::vector<ListedTemplate> listedUsers =
+        options.listUserTemplates ? users.templates : std::vector<ListedTemplate>{};
+    console.Print(
+        options.outputFormat == ReportFormat::Json ? RenderJson(builtins, listedUsers)
+                                                   : RenderText(builtins, listedUsers)
+    );
+    return ExitCode::Success;
 }
 
 } // namespace slp

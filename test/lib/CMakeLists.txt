@@ -40,6 +40,7 @@ add_executable(
     "src/test_log_string_matcher.cpp"
     "src/test_log_table.cpp"
     "src/test_logfmt_parser.cpp"
+    "src/test_parse_error_text.cpp"
     "src/test_parser_pipeline.cpp"
     "src/test_query_parser.cpp"
     "src/test_regex_parser.cpp"

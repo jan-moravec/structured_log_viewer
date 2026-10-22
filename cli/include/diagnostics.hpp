@@ -18,8 +18,33 @@ enum class ExitCode : int
     Input = 3,
     Data = 4,
     Output = 5,
+    Internal = 70,
     Cancelled = 130,
 };
+
+/**
+ * @brief A command step that ended the run.
+ *
+ * `text` is the complete stderr report, one or more newline-terminated
+ * lines, or empty when the exit code says enough (cancellation).
+ */
+struct Failure
+{
+    ExitCode code = ExitCode::Internal;
+    std::string text;
+};
+
+/**
+ * @brief Builds a one-line failure, `slp <command>: <sentence>.`
+ *
+ * @param code Exit code of the failure.
+ * @param command Subcommand name, or empty for the bare `slp:` prefix.
+ * @param sentence Reason without the prefix.
+ */
+[[nodiscard]] Failure MakeFailure(ExitCode code, std::string_view command, std::string_view sentence);
+
+/** @brief Failure for a cancelled run; it prints nothing and exits 130. */
+[[nodiscard]] Failure CancelledFailure();
 
 /**
  * @brief Exit-code table printed at the end of every `--help` text.
@@ -47,18 +72,6 @@ void WriteUsage(const UsageError &error);
 
 /** @brief Writes an error line to stderr. `--quiet` does not suppress it. */
 void WriteError(std::string_view command, std::string_view sentence);
-
-/**
- * @brief Writes a warning line to stderr unless @p quiet is set.
- *
- * Warnings never change the process exit code.
- */
-void WriteWarning(bool quiet, std::string_view sentence);
-
-/**
- * @brief Writes a stage line when @p verboseLevel is greater than zero.
- */
-void WriteStage(int verboseLevel, std::string_view stage, std::uint64_t rows, std::uint64_t milliseconds);
 
 /**
  * @brief Formats a malformed `--filter` diagnostic with a caret line.

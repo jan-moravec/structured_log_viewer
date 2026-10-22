@@ -1,9 +1,11 @@
 #include "commands.hpp"
 
+#include "console.hpp"
 #include "diagnostics.hpp"
 #include "load_table.hpp"
 #include "platform.hpp"
 #include "session_config.hpp"
+#include "text_util.hpp"
 
 #include <loglib/column_projection.hpp>
 #include <loglib/filter_expression.hpp>
@@ -31,35 +33,22 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] CommandOutput BundleFail(ExitCode code, std::string_view sentence)
-{
-    CommandOutput out;
-    out.exitCode = static_cast<int>(code);
-    out.err = FormatErrorLine("bundle", sentence);
-    out.err.push_back('\n');
-    return out;
-}
-
 /** @brief Appends `.slvbundle` unless @p path already ends with it, ignoring case. */
 [[nodiscard]] std::filesystem::path WithBundleExtension(std::filesystem::path path)
 {
-    std::string extension = path.extension().string();
-    std::ranges::transform(extension, extension.begin(), [](char ch) {
-        return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    });
-    if (extension != loglib::SESSION_BUNDLE_EXTENSION)
+    if (!EqualsIgnoreCase(path.extension().string(), loglib::SESSION_BUNDLE_EXTENSION))
     {
         path += loglib::SESSION_BUNDLE_EXTENSION;
     }
     return path;
 }
 
-/** @brief One stderr line rewritten in place; inert unless @p enabled. */
+/** @brief One line of @p stream rewritten in place; inert unless @p enabled. */
 class ProgressLine
 {
 public:
-    explicit ProgressLine(bool enabled) noexcept
-        : mEnabled(enabled)
+    ProgressLine(std::FILE *stream, bool enabled) noexcept
+        : mStream(stream), mEnabled(enabled)
     {
     }
 
@@ -71,13 +60,13 @@ public:
         }
         const unsigned percent = total == 0 ? 100U : static_cast<unsigned>(written * 100U / total);
         std::fprintf(
-            stderr,
+            mStream,
             "\rbundle: %llu/%llu rows (%u%%)",
             static_cast<unsigned long long>(written),
             static_cast<unsigned long long>(total),
             percent
         );
-        std::fflush(stderr);
+        std::fflush(mStream);
         mDirty = true;
     }
 
@@ -86,13 +75,14 @@ public:
     {
         if (mDirty)
         {
-            std::fputc('\n', stderr);
-            std::fflush(stderr);
+            std::fputc('\n', mStream);
+            std::fflush(mStream);
             mDirty = false;
         }
     }
 
 private:
+    std::FILE *mStream;
     bool mEnabled;
     bool mDirty = false;
 };
@@ -122,28 +112,20 @@ void RetainRows(loglib::LogTable &table, std::vector<std::size_t> rows)
 
 } // namespace
 
-CommandOutput RunBundle(const Options &options, const RuntimeContext &runtime)
+ExitCode RunBundle(
+    const BundleOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
 {
-    CommandOutput out;
-    if (options.output == "-")
+    auto loaded = LoadTable(global, options.input, console, runtime);
+    if (!loaded)
     {
-        return BundleFail(ExitCode::Usage, "'--output' must be a file path; a bundle cannot be written to stdout.");
+        return console.Report(loaded.error());
     }
 
-    auto [loaded, loadSide] = LoadTable(options, runtime);
-    out.err += loadSide.err;
-    if (loadSide.exitCode != 0)
-    {
-        out.exitCode = loadSide.exitCode;
-        return out;
-    }
-
-    auto session = ApplySessionConfiguration(options, loaded.table, runtime, "bundle");
+    auto session = ApplySessionConfiguration(options.filter, options.view, loaded->table, runtime, BundleOptions::NAME);
     if (!session)
     {
-        out.err += session.error().err;
-        out.exitCode = session.error().exitCode;
-        return out;
+        return console.Report(session.error());
     }
 
     loglib::LogConfiguration configuration = session->configuration;
@@ -152,31 +134,17 @@ CommandOutput RunBundle(const Options &options, const RuntimeContext &runtime)
     if (options.filteredRows)
     {
         const auto compiled = loglib::CompileExpression(
-            session->expression, loaded.table.Configuration().Configuration().columns, &loaded.table
+            session->expression, loaded->table.Configuration().Configuration().columns, &loaded->table
         );
-        RetainRows(loaded.table, loglib::FilterAcceptedRows(loaded.table, compiled));
+        RetainRows(loaded->table, loglib::FilterAcceptedRows(loaded->table, compiled));
         configuration.expression = loglib::FilterExpression{};
     }
 
-    if (!loaded.parseErrors.empty() && !options.quiet)
-    {
-        out.err += FormatErrorLine(
-            {}, std::format("{} lines could not be parsed (use --verbose to list)", loaded.parseErrors.size())
-        );
-        out.err.push_back('\n');
-        if (options.verbose > 0)
-        {
-            for (const std::string &error : loaded.parseErrors)
-            {
-                out.err += FormatWarningLine(error);
-                out.err.push_back('\n');
-            }
-        }
-    }
+    console.ParseErrors(loaded->parseErrors);
 
-    const std::filesystem::path destination = WithBundleExtension(std::filesystem::path(options.output));
+    const std::filesystem::path destination = WithBundleExtension(options.output);
 
-    ProgressLine progress(!options.quiet && IsTerminal(stderr));
+    ProgressLine progress(console.Err(), !console.Quiet() && IsTerminal(console.Err()));
     loglib::SessionBundleWriteOptions writeOptions;
     writeOptions.compressionLevel = options.compressionLevel;
     writeOptions.totalWorkers = static_cast<int>(options.bundleThreads);
@@ -188,26 +156,22 @@ CommandOutput RunBundle(const Options &options, const RuntimeContext &runtime)
 
     try
     {
-        loglib::WriteSessionBundle(loaded.table, configuration, destination, writeOptions);
+        loglib::WriteSessionBundle(loaded->table, configuration, destination, writeOptions);
     }
     catch (const loglib::SessionBundleCancelled &)
     {
         progress.Finish();
-        out.exitCode = static_cast<int>(ExitCode::Cancelled);
-        return out;
+        return ExitCode::Cancelled;
     }
     catch (const std::exception &ex)
     {
         progress.Finish();
-        const CommandOutput failure = BundleFail(
+        return console.Report(console.Fail(
             ExitCode::Output, std::format("could not write bundle '{}': {}", destination.string(), ex.what())
-        );
-        out.err += failure.err;
-        out.exitCode = failure.exitCode;
-        return out;
+        ));
     }
     progress.Finish();
-    return out;
+    return ExitCode::Success;
 }
 
 } // namespace slp

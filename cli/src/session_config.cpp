@@ -2,6 +2,7 @@
 
 #include "cli_filter.hpp"
 #include "diagnostics.hpp"
+#include "text_util.hpp"
 
 #include <loglib/column_projection.hpp>
 #include <loglib/filter_expression.hpp>
@@ -19,52 +20,9 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] CommandOutput SessionFail(std::string_view command, ExitCode code, std::string_view sentence)
+[[nodiscard]] Failure SessionFail(std::string_view command, std::string_view sentence)
 {
-    CommandOutput out;
-    out.exitCode = static_cast<int>(code);
-    out.err = FormatErrorLine(command, sentence);
-    out.err.push_back('\n');
-    return out;
-}
-
-[[nodiscard]] bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) noexcept
-{
-    return std::ranges::equal(lhs, rhs, [](char a, char b) {
-        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
-    });
-}
-
-[[nodiscard]] std::vector<std::string> SplitCsv(std::string_view text)
-{
-    std::vector<std::string> parts;
-    std::size_t begin = 0;
-    while (begin <= text.size())
-    {
-        const std::size_t comma = text.find(',', begin);
-        const std::string_view part =
-            comma == std::string_view::npos ? text.substr(begin) : text.substr(begin, comma - begin);
-        std::size_t start = 0;
-        std::size_t end = part.size();
-        while (start < end && std::isspace(static_cast<unsigned char>(part[start])) != 0)
-        {
-            ++start;
-        }
-        while (end > start && std::isspace(static_cast<unsigned char>(part[end - 1])) != 0)
-        {
-            --end;
-        }
-        if (start < end)
-        {
-            parts.emplace_back(part.substr(start, end - start));
-        }
-        if (comma == std::string_view::npos)
-        {
-            break;
-        }
-        begin = comma + 1;
-    }
-    return parts;
+    return MakeFailure(ExitCode::Usage, command, sentence);
 }
 
 /** @brief First line of @p text with trailing sentence punctuation removed. */
@@ -82,13 +40,8 @@ namespace
     return std::string(text);
 }
 
-[[nodiscard]] bool OnlyInvertRequested(const Options &options) noexcept
-{
-    return options.invert && options.filters.empty() && !options.since && !options.until && !options.minLevel;
-}
-
 /** @brief Parses `--sort` as `column[:asc|:desc]` against @p columns. */
-[[nodiscard]] std::expected<SortChoice, CommandOutput> ParseSortFlag(
+[[nodiscard]] std::expected<SortChoice, Failure> ParseSortFlag(
     std::string_view spec, const std::vector<loglib::Column> &columns, std::string_view command
 )
 {
@@ -112,7 +65,6 @@ namespace
     {
         return std::unexpected(SessionFail(
             command,
-            ExitCode::Usage,
             std::format("unresolvable sort column '{}'; available columns are {}.", spec, AvailableColumnList(columns))
         ));
     }
@@ -121,7 +73,7 @@ namespace
 }
 
 /** @brief Resolves `--columns` names to unique table indices in the order given. */
-[[nodiscard]] std::expected<std::vector<std::size_t>, CommandOutput> ParseColumnsFlag(
+[[nodiscard]] std::expected<std::vector<std::size_t>, Failure> ParseColumnsFlag(
     std::string_view spec, const std::vector<loglib::Column> &columns, std::string_view command
 )
 {
@@ -133,7 +85,6 @@ namespace
         {
             return std::unexpected(SessionFail(
                 command,
-                ExitCode::Usage,
                 std::format("unresolvable column '{}'; available columns are {}.", name, AvailableColumnList(columns))
             ));
         }
@@ -145,12 +96,10 @@ namespace
 [[nodiscard]] std::string LowerIfCaseInsensitiveFs(std::string text)
 {
 #ifdef _WIN32
-    for (char &ch : text)
-    {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-#endif
+    return AsciiLower(text);
+#else
     return text;
+#endif
 }
 
 [[nodiscard]] std::string AbsoluteGenericPath(const std::filesystem::path &path)
@@ -164,37 +113,18 @@ namespace
     return absolute.lexically_normal().generic_string();
 }
 
-[[nodiscard]] std::optional<loglib::Source::Format> FormatFromName(std::string_view name) noexcept
-{
-    if (name == "json")
-    {
-        return loglib::Source::Format::Json;
-    }
-    if (name == "logfmt")
-    {
-        return loglib::Source::Format::Logfmt;
-    }
-    if (name == "csv")
-    {
-        return loglib::Source::Format::Csv;
-    }
-    if (name == "regex")
-    {
-        return loglib::Source::Format::Regex;
-    }
-    return std::nullopt;
-}
-
 /**
  * @brief Builds the persisted source from the sources the user typed.
  *
  * Paths are made absolute with forward slashes, matching the GUI's
  * locator form. Stdin is skipped.
  */
-[[nodiscard]] std::optional<loglib::Source> BuildSavedSource(const Options &options, const LoadedTable &loaded)
+[[nodiscard]] std::optional<loglib::Source> BuildSavedSource(
+    const InputOptions &input, const GlobalOptions &global, const LoadedTable &loaded
+)
 {
     loglib::Source source;
-    for (const SourceSpec &spec : options.sources)
+    for (const SourceSpec &spec : input.sources)
     {
         if (spec.kind != SourceKind::Path && spec.kind != SourceKind::Bundle)
         {
@@ -209,16 +139,19 @@ namespace
         return std::nullopt;
     }
     source.kind = loglib::Source::Kind::File;
-    source.format = FormatFromName(loaded.detectedFormat).value_or(loglib::Source::Format::Json);
-    if (source.format == loglib::Source::Format::Regex)
+    if (loaded.format)
     {
-        source.regexPattern = loaded.detectedRegexPattern;
+        source.format = loaded.format->format;
+        if (source.format == loglib::Source::Format::Regex)
+        {
+            source.regexPattern = loaded.format->regexPattern;
+        }
     }
-    source.followRotationSiblings = !options.noRotationHistory;
+    source.followRotationSiblings = !global.noRotationHistory;
     return source;
 }
 
-[[nodiscard]] std::optional<CommandOutput> WriteOne(
+[[nodiscard]] std::optional<Failure> WriteOne(
     const loglib::LogConfiguration &configuration, const std::filesystem::path &path, loglib::SaveScope scope
 )
 {
@@ -228,13 +161,11 @@ namespace
     }
     catch (const std::exception &ex)
     {
-        CommandOutput out;
-        out.exitCode = static_cast<int>(ExitCode::Output);
-        out.err = FormatErrorLine(
-            {}, std::format("could not write configuration '{}': {}.", path.string(), FirstSentence(ex.what()))
+        return MakeFailure(
+            ExitCode::Output,
+            {},
+            std::format("could not write configuration '{}': {}.", path.string(), FirstSentence(ex.what()))
         );
-        out.err.push_back('\n');
-        return out;
     }
     return std::nullopt;
 }
@@ -264,8 +195,12 @@ std::expected<loglib::LogConfiguration, std::string> LoadConfigFile(const std::f
     return configuration;
 }
 
-std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
-    const Options &options, const loglib::LogTable &table, const RuntimeContext &runtime, std::string_view command
+std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
+    const FilterOptions &filter,
+    const ViewOptions &view,
+    const loglib::LogTable &table,
+    const RuntimeContext &runtime,
+    std::string_view command
 )
 {
     EffectiveSession session;
@@ -274,17 +209,17 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
     auto &columns = session.configuration.columns;
 
     // Row selection: flags replace the configuration's expression.
-    if (!HasActiveRowFilter(options))
+    if (!filter.Active())
     {
         session.expression = session.configuration.expression;
     }
-    else if (OnlyInvertRequested(options))
+    else if (filter.OnlyInvert())
     {
         session.expression = loglib::FilterExpression{loglib::FilterExpression::Not{session.configuration.expression}};
     }
     else
     {
-        auto built = BuildRowFilter(options, table, runtime, command);
+        auto built = BuildRowFilter(filter, table, runtime, command);
         if (!built)
         {
             return std::unexpected(std::move(built.error()));
@@ -293,9 +228,9 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
     }
 
     // Sort: `--sort` replaces the configuration's sort.
-    if (options.sort)
+    if (view.sort)
     {
-        auto parsed = ParseSortFlag(*options.sort, columns, command);
+        auto parsed = ParseSortFlag(*view.sort, columns, command);
         if (!parsed)
         {
             return std::unexpected(std::move(parsed.error()));
@@ -315,7 +250,7 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
 
     // Columns: `--all-columns` beats `--columns` beats the configuration.
     std::vector<std::size_t> order; // new position -> table index; empty keeps the table order.
-    if (options.allColumns)
+    if (view.allColumns)
     {
         for (loglib::Column &column : columns)
         {
@@ -327,9 +262,9 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
             session.visibleColumns[i] = i;
         }
     }
-    else if (options.columns)
+    else if (view.columns)
     {
-        auto selected = ParseColumnsFlag(*options.columns, columns, command);
+        auto selected = ParseColumnsFlag(*view.columns, columns, command);
         if (!selected)
         {
             return std::unexpected(std::move(selected.error()));
@@ -384,22 +319,26 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
     return session;
 }
 
-std::optional<CommandOutput> SaveSessionFiles(
-    const Options &options, const LoadedTable &loaded, const EffectiveSession &session
+std::optional<Failure> SaveSessionFiles(
+    const SaveTargets &targets,
+    const InputOptions &input,
+    const GlobalOptions &global,
+    const LoadedTable &loaded,
+    const EffectiveSession &session
 )
 {
-    if (options.saveSession)
+    if (targets.session)
     {
         loglib::LogConfiguration configuration = session.configuration;
-        configuration.source = BuildSavedSource(options, loaded);
-        if (auto failure = WriteOne(configuration, *options.saveSession, loglib::SaveScope::Full))
+        configuration.source = BuildSavedSource(input, global, loaded);
+        if (auto failure = WriteOne(configuration, *targets.session, loglib::SaveScope::Full))
         {
             return failure;
         }
     }
-    if (options.saveColumns)
+    if (targets.columns)
     {
-        if (auto failure = WriteOne(session.configuration, *options.saveColumns, loglib::SaveScope::ColumnsOnly))
+        if (auto failure = WriteOne(session.configuration, *targets.columns, loglib::SaveScope::ColumnsOnly))
         {
             return failure;
         }

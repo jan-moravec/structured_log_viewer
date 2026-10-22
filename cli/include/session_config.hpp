@@ -1,6 +1,7 @@
 #pragma once
 
 #include "commands.hpp"
+#include "diagnostics.hpp"
 #include "load_table.hpp"
 #include "options.hpp"
 
@@ -77,33 +78,44 @@ struct EffectiveSession
  * `--columns` replaces column visibility, and `--columns` also moves the
  * listed columns first in the written configuration.
  *
- * @param options Parsed invocation.
+ * @param filter Row flags.
+ * @param view Sort and column flags.
  * @param table Loaded table whose configuration holds layers 1 and 2.
  * @param runtime Process context for time zone resolution.
  * @param command Subcommand name for error lines.
- * @return The merged session, or a failing `CommandOutput`.
+ * @return The merged session, or a usage failure.
  */
-[[nodiscard]] std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
-    const Options &options, const loglib::LogTable &table, const RuntimeContext &runtime, std::string_view command
+[[nodiscard]] std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
+    const FilterOptions &filter,
+    const ViewOptions &view,
+    const loglib::LogTable &table,
+    const RuntimeContext &runtime,
+    std::string_view command
 );
 
 /**
  * @brief Writes `--save-session` and `--save-columns` when requested.
  *
  * The session file gets `SaveScope::Full` with `source` set to the
- * user-facing locators from `options.sources`: the primary path, not
+ * user-facing locators from `input.sources`: the primary path, not
  * rotated siblings, and the compressed file, not its decompressed
  * copy. Standard input is omitted. When no locator remains the
  * `source` is empty. The columns file gets `SaveScope::ColumnsOnly`.
  *
- * @param options Parsed invocation.
+ * @param targets Files to write.
+ * @param input Sources the user named.
+ * @param global Global flags that supply `--no-rotation-history`.
  * @param loaded Load result that supplies the detected format.
  * @param session Effective session to persist.
- * @return `std::nullopt` on success, or a failing `CommandOutput`
- * (exit 5) naming the file that could not be written.
+ * @return `std::nullopt` on success, or an output failure (exit 5)
+ * naming the file that could not be written.
  */
-[[nodiscard]] std::optional<CommandOutput> SaveSessionFiles(
-    const Options &options, const LoadedTable &loaded, const EffectiveSession &session
+[[nodiscard]] std::optional<Failure> SaveSessionFiles(
+    const SaveTargets &targets,
+    const InputOptions &input,
+    const GlobalOptions &global,
+    const LoadedTable &loaded,
+    const EffectiveSession &session
 );
 
 } // namespace slp

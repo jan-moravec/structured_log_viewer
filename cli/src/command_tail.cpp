@@ -2,10 +2,12 @@
 
 #include "ansi.hpp"
 #include "cli_filter.hpp"
+#include "console.hpp"
 #include "diagnostics.hpp"
 #include "load_table.hpp"
 #include "platform.hpp"
 #include "session_config.hpp"
+#include "text_util.hpp"
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/exports/export_sink.hpp>
@@ -19,7 +21,6 @@
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
-#include <loglib/query_parser.hpp>
 #include <loglib/stdin_bytes_producer.hpp>
 #include <loglib/stdin_peek.hpp>
 #include <loglib/stop_token.hpp>
@@ -40,10 +41,10 @@
 #include <expected>
 #include <filesystem>
 #include <format>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -59,21 +60,6 @@ namespace
 
 /** @brief Rows held back while a filter or column flag waits for its column; beyond this the run fails. */
 constexpr std::size_t MAX_DEFERRED_ROWS = 10'000;
-
-[[nodiscard]] CommandOutput TailFail(ExitCode code, std::string_view sentence)
-{
-    CommandOutput out;
-    out.exitCode = static_cast<int>(code);
-    out.err = FormatErrorLine("tail", sentence);
-    out.err.push_back('\n');
-    return out;
-}
-
-/** @brief Writes @p text to stderr at once; a long-running tail cannot wait for the final report. */
-void Say(std::string_view text)
-{
-    std::cerr << text << std::flush;
-}
 
 enum class Rendering
 {
@@ -137,7 +123,9 @@ private:
  *
  * Polls the signal token and the `--for` deadline, and when either
  * fires requests stop on the local source and stops the attached
- * producer so a parked read returns at once.
+ * producer so a parked read returns at once. It polls because the
+ * POSIX signal handler requests stop, and a callback run from that
+ * handler could not safely lock or stop a producer.
  */
 class StopWatcher
 {
@@ -243,12 +231,9 @@ struct TextLayout
     std::vector<std::size_t> rest;
 };
 
-[[nodiscard]] bool IsMessageHeader(std::string_view header) noexcept
+[[nodiscard]] bool IsMessageHeader(std::string_view header)
 {
-    std::string lowered(header);
-    std::ranges::transform(lowered, lowered.begin(), [](char ch) {
-        return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    });
+    const std::string lowered = AsciiLower(header);
     return lowered == "message" || lowered == "msg" || lowered == "text" || lowered == "event";
 }
 
@@ -402,7 +387,7 @@ class TailSink final : public loglib::LogParseSink
 {
 public:
     TailSink(
-        const Options &options,
+        const TailOptions &options,
         const RuntimeContext &runtime,
         loglib::LogTable &table,
         std::FILE *output,
@@ -419,12 +404,12 @@ public:
           mColor(color),
           mRetentionCap(retentionCap),
           mStop(stop),
-          mSessionOptions(options)
+          mSessionFilter(options.filter)
     {
-        mSessionOptions.minLevel.reset();
-        if (options.minLevel)
+        mSessionFilter.minLevel.reset();
+        if (options.filter.minLevel)
         {
-            mMinLevel = loglib::ParseLevelName(*options.minLevel);
+            mMinLevel = loglib::ParseLevelName(*options.filter.minLevel);
         }
     }
 
@@ -452,7 +437,7 @@ public:
             );
             batch.errors.clear();
         }
-        AppendStreamedBatch(mTable, std::move(batch));
+        mTable.AppendBatchArranged(std::move(batch));
         Process(false);
         Evict();
     }
@@ -476,7 +461,7 @@ public:
         }
     }
 
-    [[nodiscard]] const std::optional<CommandOutput> &Failure() const noexcept
+    [[nodiscard]] const std::optional<slp::Failure> &Failed() const noexcept
     {
         return mFailure;
     }
@@ -506,7 +491,7 @@ private:
         {
             return &*mSession;
         }
-        auto resolved = ApplySessionConfiguration(mSessionOptions, mTable, mRuntime, "tail");
+        auto resolved = ApplySessionConfiguration(mSessionFilter, mOptions.view, mTable, mRuntime, TailOptions::NAME);
         if (!resolved)
         {
             mSessionError = std::move(resolved.error());
@@ -518,8 +503,9 @@ private:
             const auto level = std::ranges::find_if(columns, IsLevelColumn);
             if (level == columns.end())
             {
-                mSessionError = TailFail(
+                mSessionError = MakeFailure(
                     ExitCode::Usage,
+                    TailOptions::NAME,
                     std::format(
                         "'--min-level' needs a level column; available columns are {}.", AvailableColumnList(columns)
                     )
@@ -535,7 +521,7 @@ private:
         return &*mSession;
     }
 
-    void Fail(CommandOutput failure)
+    void Fail(slp::Failure failure)
     {
         mFailure = std::move(failure);
         mStop.request_stop();
@@ -574,7 +560,7 @@ private:
                 const auto level = loglib::ParseLevelName(mTable.GetValueOrFormatted(row, mLevelColumn, buffer));
                 levelOk = level && *level != loglib::LogLevel::Unknown && *level >= *mMinLevel;
             }
-            const bool match = mOptions.invert ? (expressionMatch || !levelOk) : (expressionMatch && levelOk);
+            const bool match = mOptions.filter.invert ? (expressionMatch || !levelOk) : (expressionMatch && levelOk);
             if (match)
             {
                 accepted.push_back(row);
@@ -604,6 +590,19 @@ private:
 
     void Write(const std::vector<std::size_t> &rows, const EffectiveSession &session)
     {
+        try
+        {
+            WriteRows(rows, session);
+        }
+        catch (const std::runtime_error &ex)
+        {
+            Fail(MakeFailure(ExitCode::Output, TailOptions::NAME, ex.what()));
+        }
+    }
+
+    /** @brief Writes @p rows as one flushed chunk. A closed pipe throws `BrokenPipe`. */
+    void WriteRows(const std::vector<std::size_t> &rows, const EffectiveSession &session)
+    {
         loglib::exports::StreamSink sink(mOutput);
         if (mRendering == Rendering::Jsonl)
         {
@@ -611,7 +610,7 @@ private:
             plan.format = loglib::exports::ExportFormat::JsonLines;
             plan.sourceRows = rows;
             plan.visibleColumns = session.visibleColumns;
-            plan.includeAllFieldsForJson = !mOptions.columns.has_value();
+            plan.includeAllFieldsForJson = !mOptions.view.columns.has_value();
             plan.table = &mTable;
             const auto exporter = loglib::exports::MakeExporter(plan.format);
             exporter->Run(plan.View(), sink, loglib::StopToken{});
@@ -650,7 +649,7 @@ private:
         mNextRow -= drop;
     }
 
-    const Options &mOptions;
+    const TailOptions &mOptions;
     const RuntimeContext &mRuntime;
     loglib::LogTable &mTable;
     std::FILE *mOutput;
@@ -658,16 +657,16 @@ private:
     bool mColor;
     std::size_t mRetentionCap;
     loglib::StopSource &mStop;
-    /** @brief `options` without `--min-level`, which the sink applies itself. */
-    Options mSessionOptions;
+    /** @brief Row flags without `--min-level`, which the sink applies itself. */
+    FilterOptions mSessionFilter;
     std::optional<loglib::LogLevel> mMinLevel;
     std::size_t mLevelColumn = 0;
 
     std::optional<EffectiveSession> mSession;
     std::vector<std::string> mHeaders;
     TextLayout mLayout;
-    CommandOutput mSessionError;
-    std::optional<CommandOutput> mFailure;
+    slp::Failure mSessionError;
+    std::optional<slp::Failure> mFailure;
     std::vector<std::string> mErrors;
     std::size_t mNextRow = 0;
     std::uint64_t mEmitted = 0;
@@ -683,7 +682,9 @@ struct LiveSource
     bool network = false;
 };
 
-[[nodiscard]] std::expected<LiveSource, CommandOutput> OpenLiveSource(const Options &options, const SourceSpec &spec)
+[[nodiscard]] std::expected<LiveSource, slp::Failure> OpenLiveSource(
+    const TailOptions &options, const Console &console, const SourceSpec &spec
+)
 {
     LiveSource live;
     switch (spec.kind)
@@ -694,13 +695,13 @@ struct LiveSource
         if (!std::filesystem::exists(spec.path, ec) || ec)
         {
             return std::unexpected(
-                TailFail(ExitCode::Input, std::format("source '{}': does not exist", spec.path.string()))
+                console.Fail(ExitCode::Input, std::format("source '{}': does not exist", spec.path.string()))
             );
         }
         if (std::filesystem::is_directory(spec.path, ec))
         {
             return std::unexpected(
-                TailFail(ExitCode::Input, std::format("source '{}': is a directory", spec.path.string()))
+                console.Fail(ExitCode::Input, std::format("source '{}': is a directory", spec.path.string()))
             );
         }
         // The producer pre-fills the last retained rows before it follows the file.
@@ -717,7 +718,7 @@ struct LiveSource
         catch (const std::exception &ex)
         {
             return std::unexpected(
-                TailFail(ExitCode::Input, std::format("source '{}': {}", spec.path.string(), ex.what()))
+                console.Fail(ExitCode::Input, std::format("source '{}': {}", spec.path.string(), ex.what()))
             );
         }
         live.displayName = spec.path;
@@ -728,7 +729,7 @@ struct LiveSource
     {
         if (loglib::IsStdinInteractive())
         {
-            return std::unexpected(TailFail(
+            return std::unexpected(console.Fail(
                 ExitCode::Input, "standard input is a terminal; pipe log data into slp or redirect from a file"
             ));
         }
@@ -738,7 +739,9 @@ struct LiveSource
         }
         catch (const std::exception &ex)
         {
-            return std::unexpected(TailFail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what())));
+            return std::unexpected(
+                console.Fail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what()))
+            );
         }
         live.displayName = "-";
         live.label = "-";
@@ -767,7 +770,7 @@ struct LiveSource
         }
         catch (const std::exception &ex)
         {
-            return std::unexpected(TailFail(
+            return std::unexpected(console.Fail(
                 ExitCode::Input,
                 std::format(
                     "cannot listen on {}://{}:{}: {}",
@@ -784,91 +787,76 @@ struct LiveSource
         break;
     }
     case SourceKind::Bundle:
-        return std::unexpected(TailFail(ExitCode::Usage, "a .slvbundle cannot be followed; use `slp query` instead."));
+        return std::unexpected(
+            console.Fail(ExitCode::Usage, "a .slvbundle cannot be followed; use `slp query` instead.")
+        );
     }
     return live;
 }
 
 } // namespace
 
-CommandOutput RunTail(const Options &options, const RuntimeContext &runtime)
+ExitCode RunTail(
+    const TailOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
 {
-    CommandOutput templates;
-    LoadUserTemplates(options, templates);
-    Say(templates.err);
+    LoadUserTemplates(global, console);
 
-    if (options.sources.size() != 1)
+    if (options.input.sources.size() != 1)
     {
-        return TailFail(ExitCode::Usage, "tail follows exactly one source.");
+        return console.Report(console.Fail(ExitCode::Usage, "tail follows exactly one source."));
     }
-    const SourceSpec &spec = options.sources.front();
+    const SourceSpec &spec = options.input.sources.front();
 
     // Reject malformed flags before any socket is bound or file is opened.
-    for (const std::string &query : options.filters)
+    if (auto failure = CheckFilterSyntax(options.filter))
     {
-        if (auto parsed = loglib::ParseQuery(query); !parsed)
-        {
-            CommandOutput out;
-            out.exitCode = static_cast<int>(ExitCode::Usage);
-            out.err = FormatFilterParseDiagnostic(query, parsed.error().offset, parsed.error().message);
-            out.err.push_back('\n');
-            return out;
-        }
-    }
-    if (options.minLevel)
-    {
-        const auto level = loglib::ParseLevelName(*options.minLevel);
-        if (!level || *level == loglib::LogLevel::Unknown)
-        {
-            return TailFail(
-                ExitCode::Usage,
-                std::format(
-                    "'--min-level' expects trace, debug, info, warn, error, or fatal, not '{}'.", *options.minLevel
-                )
-            );
-        }
+        return console.Report(*failure);
     }
     if (options.maxRows && *options.maxRows == 0)
     {
-        return {};
+        return ExitCode::Success;
     }
 
-    const bool toStdout = options.output == "-" || options.output.empty();
+    const bool toStdout = !options.output.has_value();
     Rendering rendering = Rendering::Jsonl;
-    if (options.outputFormat == "text" || (options.outputFormat == "auto" && toStdout && IsTerminal(stdout)))
+    if (options.outputFormat == TailFormat::Text ||
+        (options.outputFormat == TailFormat::Auto && toStdout && IsTerminal(console.Out())))
     {
         rendering = Rendering::Text;
     }
-    const bool color =
-        rendering == Rendering::Text && (toStdout ? ColorActive(options, stdout) : options.color == ColorMode::Always);
+    const bool color = rendering == Rendering::Text &&
+                       (toStdout ? console.ColorFor(console.Out()) : console.Color() == ColorMode::Always);
 
     std::unique_ptr<OutputStream> fileOutput;
-    std::FILE *stream = stdout;
+    std::FILE *stream = console.Out();
     if (!toStdout)
     {
-        std::FILE *file = OpenAppend(std::filesystem::path(options.output));
+        std::FILE *file = OpenAppend(*options.output);
         if (file == nullptr)
         {
-            return TailFail(ExitCode::Output, std::format("could not open output '{}' for appending.", options.output));
+            return console.Report(console.Fail(
+                ExitCode::Output, std::format("could not open output '{}' for appending.", options.output->string())
+            ));
         }
         fileOutput = std::make_unique<OutputStream>(file, true);
         stream = file;
     }
 
-    auto parser = MakeStreamParser(options);
+    auto parser = MakeStreamParser(global, options.input);
     if (!parser)
     {
-        return std::move(parser.error());
+        return console.Report(parser.error());
     }
 
-    auto live = OpenLiveSource(options, spec);
+    auto live = OpenLiveSource(options, console, spec);
     if (!live)
     {
-        return std::move(live.error());
+        return console.Report(live.error());
     }
-    if (live->network && !options.quiet)
+    if (live->network)
     {
-        Say(std::format("slp tail: listening on {}\n", live->label));
+        console.Note(std::format("slp tail: listening on {}\n", live->label));
     }
 
     loglib::StopSource stop;
@@ -888,53 +876,31 @@ CommandOutput RunTail(const Options &options, const RuntimeContext &runtime)
     StopWatcher watcher(runtime.stop, stop, options.duration);
     watcher.Attach(producer);
 
-    parser.value()->ParseStreaming(*rawSource, sink, StreamParserOptions(options, stop.get_token()));
+    parser.value()->ParseStreaming(*rawSource, sink, MakeParserOptions(global, options.input, stop.get_token()));
     sink.Finish();
 
-    CommandOutput out;
-    if (sink.Failure())
+    if (sink.Failed())
     {
-        out.err = sink.Failure()->err;
-        out.exitCode = sink.Failure()->exitCode;
-        return out;
+        return console.Report(*sink.Failed());
     }
 
     const auto &parseErrors = sink.ParseErrors();
-    if (!parseErrors.empty())
+    if (parseErrors.empty())
     {
-        if (!options.quiet)
-        {
-            out.err += FormatErrorLine(
-                {}, std::format("{} lines could not be parsed (use --verbose to list)", parseErrors.size())
-            );
-            out.err.push_back('\n');
-            if (options.verbose > 0)
-            {
-                for (const std::string &error : parseErrors)
-                {
-                    out.err += FormatWarningLine(error);
-                    out.err.push_back('\n');
-                }
-            }
-        }
-        if (spec.kind == SourceKind::Tcp && sink.Emitted() == 0 && table.RowCount() == 0)
-        {
-            out.err += FormatErrorLine(
-                "tail",
-                std::format(
-                    "no rows could be parsed from '{}'; if the peer connects over TLS, note that slp tail does not "
-                    "support TLS, so a TLS-only peer cannot be read",
-                    live->label
-                )
-            );
-            out.err.push_back('\n');
-        }
-        if (options.strict)
-        {
-            out.exitCode = static_cast<int>(ExitCode::Data);
-        }
+        return ExitCode::Success;
     }
-    return out;
+    console.ParseErrors(parseErrors);
+    if (spec.kind == SourceKind::Tcp && sink.Emitted() == 0 && table.RowCount() == 0)
+    {
+        console.Error(
+            std::format(
+                "no rows could be parsed from '{}'; if the peer connects over TLS, note that slp tail does not "
+                "support TLS, so a TLS-only peer cannot be read",
+                live->label
+            )
+        );
+    }
+    return options.strict ? ExitCode::Data : ExitCode::Success;
 }
 
 } // namespace slp

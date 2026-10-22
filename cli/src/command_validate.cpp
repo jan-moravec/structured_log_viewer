@@ -1,12 +1,14 @@
 #include "commands.hpp"
 
+#include "console.hpp"
 #include "diagnostics.hpp"
 #include "load_table.hpp"
+#include "text_util.hpp"
 
 #include <loglib/column_type_health.hpp>
+#include <loglib/parse_error_text.hpp>
 
 #include <algorithm>
-#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <sstream>
@@ -20,81 +22,9 @@ namespace slp
 namespace
 {
 
-struct ParsedError
+[[nodiscard]] std::string_view DetectedFormatName(const LoadedTable &loaded) noexcept
 {
-    std::optional<std::uint64_t> line;
-    std::string message;
-};
-
-[[nodiscard]] ParsedError SplitParseError(std::string_view text)
-{
-    ParsedError parsed;
-    parsed.message = std::string(text);
-    constexpr std::string_view PREFIX = "Error on line ";
-    if (!text.starts_with(PREFIX))
-    {
-        return parsed;
-    }
-    const std::size_t begin = PREFIX.size();
-    const std::size_t end = text.find_first_not_of("0123456789", begin);
-    if (end == begin || end == std::string_view::npos || text[end] != ':')
-    {
-        return parsed;
-    }
-    std::uint64_t line = 0;
-    const auto [ptr, ec] = std::from_chars(text.data() + begin, text.data() + end, line);
-    if (ec != std::errc{} || ptr != text.data() + end)
-    {
-        return parsed;
-    }
-    parsed.line = line;
-    std::string_view rest = text.substr(end + 1);
-    while (!rest.empty() && rest.front() == ' ')
-    {
-        rest.remove_prefix(1);
-    }
-    parsed.message = std::string(rest);
-    return parsed;
-}
-
-void AppendJsonString(std::string &out, std::string_view text)
-{
-    out.push_back('"');
-    for (const unsigned char ch : text)
-    {
-        switch (ch)
-        {
-        case '"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            if (ch < 0x20)
-            {
-                constexpr char HEX[] = "0123456789abcdef";
-                out += "\\u00";
-                out.push_back(HEX[ch >> 4]);
-                out.push_back(HEX[ch & 0x0f]);
-            }
-            else
-            {
-                out.push_back(static_cast<char>(ch));
-            }
-            break;
-        }
-    }
-    out.push_back('"');
+    return loaded.format ? FormatName(loaded.format->format) : "unknown";
 }
 
 [[nodiscard]] double ErrorRatePercent(std::uint64_t errors, std::uint64_t lines) noexcept
@@ -106,7 +36,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     return (100.0 * static_cast<double>(errors)) / static_cast<double>(lines);
 }
 
-[[nodiscard]] bool WithinErrorBudget(const Options &options, std::uint64_t errors, std::uint64_t lines) noexcept
+[[nodiscard]] bool WithinErrorBudget(const ValidateOptions &options, std::uint64_t errors, std::uint64_t lines) noexcept
 {
     if (errors == 0)
     {
@@ -119,7 +49,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     return ErrorRatePercent(errors, lines) <= *options.maxErrorRate;
 }
 
-[[nodiscard]] std::string RenderText(const LoadedTable &loaded, const Options &options)
+[[nodiscard]] std::string RenderText(const LoadedTable &loaded, const ValidateOptions &options)
 {
     const std::uint64_t rows = loaded.table.RowCount();
     const std::uint64_t errors = loaded.parseErrors.size();
@@ -127,7 +57,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     const double rate = ErrorRatePercent(errors, lines);
 
     std::ostringstream out;
-    out << "format: " << (loaded.detectedFormat.empty() ? "unknown" : loaded.detectedFormat) << '\n';
+    out << "format: " << DetectedFormatName(loaded) << '\n';
     out << "lines: " << lines << '\n';
     out << "rows: " << rows << '\n';
     out << "errors: " << errors << '\n';
@@ -162,7 +92,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     return out.str();
 }
 
-[[nodiscard]] std::string RenderJson(const LoadedTable &loaded, const Options &options)
+[[nodiscard]] std::string RenderJson(const LoadedTable &loaded, const ValidateOptions &options)
 {
     const std::uint64_t rows = loaded.table.RowCount();
     const std::uint64_t errors = loaded.parseErrors.size();
@@ -170,7 +100,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     const double rate = ErrorRatePercent(errors, lines);
 
     std::string out = "{\n  \"format\": ";
-    AppendJsonString(out, loaded.detectedFormat.empty() ? "unknown" : loaded.detectedFormat);
+    AppendJsonString(out, DetectedFormatName(loaded));
     out += ",\n  \"linesConsumed\": ";
     out += std::to_string(lines);
     out += ",\n  \"rowsProduced\": ";
@@ -189,16 +119,22 @@ void AppendJsonString(std::string &out, std::string_view text)
         {
             out += ",\n";
         }
-        const ParsedError parsed = SplitParseError(loaded.parseErrors[i]);
+        const loglib::ParseErrorLocation location = loglib::LocateParseError(loaded.parseErrors[i]);
         out += "    {\n";
-        if (parsed.line)
+        if (location.firstLine != 0)
         {
             out += "      \"line\": ";
-            out += std::to_string(*parsed.line);
+            out += std::to_string(location.firstLine);
+            out += ",\n";
+        }
+        if (location.lastLine != location.firstLine)
+        {
+            out += "      \"lastLine\": ";
+            out += std::to_string(location.lastLine);
             out += ",\n";
         }
         out += "      \"message\": ";
-        AppendJsonString(out, parsed.message);
+        AppendJsonString(out, location.message);
         out += "\n    }";
     }
     out += "\n  ],\n  \"columnHealth\": [\n";
@@ -230,32 +166,23 @@ void AppendJsonString(std::string &out, std::string_view text)
 
 } // namespace
 
-CommandOutput RunValidate(const Options &options, const RuntimeContext &runtime)
+ExitCode RunValidate(
+    const ValidateOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
 {
-    auto [loaded, side] = LoadTable(options, runtime);
-    CommandOutput out;
-    out.err = std::move(side.err);
-    if (side.exitCode != 0)
+    const auto loaded = LoadTable(global, options.input, console, runtime);
+    if (!loaded)
     {
-        out.exitCode = side.exitCode;
-        return out;
+        return console.Report(loaded.error());
     }
+    console.Print(
+        options.outputFormat == ReportFormat::Json ? RenderJson(*loaded, options) : RenderText(*loaded, options)
+    );
 
-    if (options.outputFormat == "json")
-    {
-        out.out = RenderJson(loaded, options);
-    }
-    else
-    {
-        out.out = RenderText(loaded, options);
-    }
-
-    const std::uint64_t rows = loaded.table.RowCount();
-    const std::uint64_t errors = loaded.parseErrors.size();
-    const std::uint64_t lines = loaded.linesConsumed == 0 ? rows + errors : loaded.linesConsumed;
-    out.exitCode = WithinErrorBudget(options, errors, lines) ? static_cast<int>(ExitCode::Success)
-                                                             : static_cast<int>(ExitCode::Data);
-    return out;
+    const std::uint64_t rows = loaded->table.RowCount();
+    const std::uint64_t errors = loaded->parseErrors.size();
+    const std::uint64_t lines = loaded->linesConsumed == 0 ? rows + errors : loaded->linesConsumed;
+    return WithinErrorBudget(options, errors, lines) ? ExitCode::Success : ExitCode::Data;
 }
 
 } // namespace slp

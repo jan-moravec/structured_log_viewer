@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #ifdef _WIN32
@@ -114,6 +115,14 @@ private:
     return slp::ParseArguments(static_cast<int>(argv.size()), argv.data());
 }
 
+/** @brief The options of command @p T in @p parsed, which must hold that command. */
+template <typename T> [[nodiscard]] const T &As(const std::expected<slp::Options, slp::UsageError> &parsed)
+{
+    REQUIRE(parsed.has_value());
+    REQUIRE(std::holds_alternative<T>(parsed->command));
+    return std::get<T>(parsed->command);
+}
+
 } // namespace
 
 TEST_CASE("top-level help and version", "[cli][options]")
@@ -157,13 +166,13 @@ TEST_CASE("global flags work before and after the subcommand", "[cli][options]")
     const auto after = Parse({"slp", "query", "-q", "--threads", "4", "app.log"});
     REQUIRE(before.has_value());
     REQUIRE(after.has_value());
-    CHECK(before->quiet);
-    CHECK(after->quiet);
-    CHECK(before->threads == 4);
-    CHECK(after->threads == 4);
-    CHECK(before->command == slp::Command::Query);
-    REQUIRE(before->sources.size() == 1);
-    CHECK(before->sources[0].kind == slp::SourceKind::Path);
+    CHECK(before->global.quiet);
+    CHECK(after->global.quiet);
+    CHECK(before->global.threads == 4);
+    CHECK(after->global.threads == 4);
+    const auto &query = As<slp::QueryOptions>(before);
+    REQUIRE(query.input.sources.size() == 1);
+    CHECK(query.input.sources[0].kind == slp::SourceKind::Path);
 }
 
 TEST_CASE("NO_COLOR forces never and the template directory flag wins", "[cli][options]")
@@ -175,22 +184,22 @@ TEST_CASE("NO_COLOR forces never and the template directory flag wins", "[cli][o
 
     const auto forced = Parse({"slp", "formats", "--color", "always"});
     REQUIRE(forced.has_value());
-    CHECK(forced->color == slp::ColorMode::Never);
+    CHECK(forced->global.color == slp::ColorMode::Never);
 
     UnsetEnv("NO_COLOR");
     const auto always = Parse({"slp", "formats", "--color", "always"});
     REQUIRE(always.has_value());
-    CHECK(always->color == slp::ColorMode::Always);
+    CHECK(always->global.color == slp::ColorMode::Always);
 
     const auto fromEnv = Parse({"slp", "formats"});
     REQUIRE(fromEnv.has_value());
-    REQUIRE(fromEnv->templateDir.has_value());
-    CHECK(fromEnv->templateDir->filename() == "from-env");
+    REQUIRE(fromEnv->global.templateDir.has_value());
+    CHECK(fromEnv->global.templateDir->filename() == "from-env");
 
     const auto fromFlag = Parse({"slp", "--template-dir", "from-flag", "formats"});
     REQUIRE(fromFlag.has_value());
-    REQUIRE(fromFlag->templateDir.has_value());
-    CHECK(fromFlag->templateDir->filename() == "from-flag");
+    REQUIRE(fromFlag->global.templateDir.has_value());
+    CHECK(fromFlag->global.templateDir->filename() == "from-flag");
 }
 
 TEST_CASE("mutual exclusions and source rules exit as usage errors", "[cli][options]")
@@ -227,6 +236,10 @@ TEST_CASE("mutual exclusions and source rules exit as usage errors", "[cli][opti
     REQUIRE_FALSE(bundle.has_value());
     CHECK(bundle.error().message.find("--output") != std::string::npos);
 
+    const auto bundleToStdout = Parse({"slp", "bundle", "-o", "-", "a.log"});
+    REQUIRE_FALSE(bundleToStdout.has_value());
+    CHECK(bundleToStdout.error().message.find("stdout") != std::string::npos);
+
     const auto strict = Parse({"slp", "validate", "--strict", "a.log"});
     REQUIRE_FALSE(strict.has_value());
     CHECK(strict.error().message.find("--max-error-rate") != std::string::npos);
@@ -234,6 +247,10 @@ TEST_CASE("mutual exclusions and source rules exit as usage errors", "[cli][opti
     const auto rate = Parse({"slp", "query", "--max-error-rate", "1", "a.log"});
     REQUIRE_FALSE(rate.has_value());
     CHECK(rate.error().message.find("--strict") != std::string::npos);
+
+    const auto tailRate = Parse({"slp", "tail", "--max-error-rate=1", "a.log"});
+    REQUIRE_FALSE(tailRate.has_value());
+    CHECK(tailRate.error().message.find("--strict") != std::string::npos);
 
     const auto column = Parse({"slp", "stats", "--by", "column", "a.log"});
     REQUIRE_FALSE(column.has_value());
@@ -246,29 +263,30 @@ TEST_CASE("mutual exclusions and source rules exit as usage errors", "[cli][opti
 
 TEST_CASE("tail accepts network sources and retention bounds", "[cli][options]")
 {
-    const auto tail = Parse({"slp", "tail", "tcp://127.0.0.1:514", "udp://:9", "app.slvbundle"});
-    REQUIRE(tail.has_value());
-    REQUIRE(tail->sources.size() == 3);
-    CHECK(tail->sources[0].kind == slp::SourceKind::Tcp);
-    CHECK(tail->sources[0].host == "127.0.0.1");
-    CHECK(tail->sources[0].port == 514);
-    CHECK(tail->sources[1].kind == slp::SourceKind::Udp);
-    CHECK(tail->sources[1].host.empty());
-    CHECK(tail->sources[1].port == 9);
-    CHECK(tail->sources[2].kind == slp::SourceKind::Bundle);
-    CHECK(tail->outputFormat == "auto");
+    const auto parsed = Parse({"slp", "tail", "tcp://127.0.0.1:514", "udp://:9", "app.slvbundle"});
+    const auto &tail = As<slp::TailOptions>(parsed);
+    REQUIRE(tail.input.sources.size() == 3);
+    CHECK(tail.input.sources[0].kind == slp::SourceKind::Tcp);
+    CHECK(tail.input.sources[0].host == "127.0.0.1");
+    CHECK(tail.input.sources[0].port == 514);
+    CHECK(tail.input.sources[1].kind == slp::SourceKind::Udp);
+    CHECK(tail.input.sources[1].host.empty());
+    CHECK(tail.input.sources[1].port == 9);
+    CHECK(tail.input.sources[2].kind == slp::SourceKind::Bundle);
+    CHECK(tail.outputFormat == slp::TailFormat::Auto);
+    CHECK_FALSE(tail.output.has_value());
 
-    const auto unbounded = Parse({"slp", "tail", "--retention", "0", "-"});
-    REQUIRE(unbounded.has_value());
-    REQUIRE(unbounded->retention.has_value());
-    CHECK(*unbounded->retention == 0);
-    REQUIRE(unbounded->sources.size() == 1);
-    CHECK(unbounded->sources[0].kind == slp::SourceKind::Stdin);
+    const auto unboundedParsed = Parse({"slp", "tail", "--retention", "0", "-"});
+    const auto &unbounded = As<slp::TailOptions>(unboundedParsed);
+    REQUIRE(unbounded.retention.has_value());
+    CHECK(*unbounded.retention == 0);
+    REQUIRE(unbounded.input.sources.size() == 1);
+    CHECK(unbounded.input.sources[0].kind == slp::SourceKind::Stdin);
 
-    const auto duration = Parse({"slp", "tail", "--for", "30s", "a.log"});
-    REQUIRE(duration.has_value());
-    REQUIRE(duration->duration.has_value());
-    CHECK(*duration->duration == std::chrono::seconds(30));
+    const auto durationParsed = Parse({"slp", "tail", "--for", "30s", "a.log"});
+    const auto &duration = As<slp::TailOptions>(durationParsed);
+    REQUIRE(duration.duration.has_value());
+    CHECK(*duration.duration == std::chrono::seconds(30));
 }
 
 TEST_CASE("size and duration suffixes", "[cli][options]")
@@ -296,10 +314,36 @@ TEST_CASE("size and duration suffixes", "[cli][options]")
     CHECK_FALSE(slp::ParseDurationSuffix("1d").has_value());
     CHECK_FALSE(slp::ParseDurationSuffix("30").has_value());
 
-    const auto batch = Parse({"slp", "query", "--batch-size", "1KiB", "a.log"});
-    REQUIRE(batch.has_value());
-    REQUIRE(batch->batchSizeBytes.has_value());
-    CHECK(*batch->batchSizeBytes == 1024);
+    const auto batchParsed = Parse({"slp", "query", "--batch-size", "1KiB", "a.log"});
+    const auto &batch = As<slp::QueryOptions>(batchParsed);
+    REQUIRE(batch.input.batchSizeBytes.has_value());
+    CHECK(*batch.input.batchSizeBytes == 1024);
+
+    const auto tailBatchParsed = Parse({"slp", "tail", "--batch-size", "2KiB", "-"});
+    const auto &tailBatch = As<slp::TailOptions>(tailBatchParsed);
+    REQUIRE(tailBatch.input.batchSizeBytes.has_value());
+    CHECK(*tailBatch.input.batchSizeBytes == 2048);
+}
+
+TEST_CASE("command defaults come from the options structs", "[cli][options]")
+{
+    const auto statsParsed = Parse({"slp", "stats", "a.log"});
+    const auto &stats = As<slp::StatsOptions>(statsParsed);
+    CHECK(stats.by == slp::StatsAxis::Level);
+    CHECK(stats.top == slp::StatsOptions{}.top);
+    CHECK(stats.outputFormat == slp::ReportFormat::Text);
+
+    const auto queryParsed = Parse({"slp", "query", "-t", "csv", "--save-session", "s.json", "a.log"});
+    const auto &query = As<slp::QueryOptions>(queryParsed);
+    CHECK(query.output == "-");
+    CHECK(query.outputFormat == slp::QueryFormat::Csv);
+    REQUIRE(query.save.session.has_value());
+    CHECK(query.save.session->filename() == "s.json");
+    CHECK(slp::CommandName(queryParsed->command) == "query");
+
+    const auto statsHelp = Parse({"slp", "stats", "--help"});
+    REQUIRE(statsHelp.has_value());
+    CHECK(statsHelp->helpText.find("The default is 20.") != std::string::npos);
 }
 
 TEST_CASE("diagnostics lines keep data and errors apart", "[cli][options]")

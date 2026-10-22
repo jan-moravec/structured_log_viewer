@@ -17,6 +17,7 @@ constexpr std::string_view EXIT_CODE_HELP =
     "  3    Input error: the source is missing, unreadable, undetectable, or failed to decompress.\n"
     "  4    Data error: parse errors under --strict, or validate found errors.\n"
     "  5    Output error: the destination is unwritable, exists without --force, or the disk is full.\n"
+    "  70   Internal error: an unexpected failure inside slp. Please report it.\n"
     "  130  Cancelled by SIGINT.\n"
     "\n"
     "Sources concatenate in the order given. Rotated siblings load oldest first with the named file last.\n"
@@ -35,6 +36,18 @@ std::string Prefix(std::string_view command)
 }
 
 } // namespace
+
+Failure MakeFailure(ExitCode code, std::string_view command, std::string_view sentence)
+{
+    Failure failure{.code = code, .text = FormatErrorLine(command, sentence)};
+    failure.text.push_back('\n');
+    return failure;
+}
+
+Failure CancelledFailure()
+{
+    return Failure{.code = ExitCode::Cancelled, .text = {}};
+}
 
 std::string_view ExitCodeHelpEpilog() noexcept
 {
@@ -74,24 +87,6 @@ void WriteUsage(const UsageError &error)
 void WriteError(std::string_view command, std::string_view sentence)
 {
     std::cerr << FormatErrorLine(command, sentence) << '\n';
-}
-
-void WriteWarning(bool quiet, std::string_view sentence)
-{
-    if (quiet)
-    {
-        return;
-    }
-    std::cerr << FormatWarningLine(sentence) << '\n';
-}
-
-void WriteStage(int verboseLevel, std::string_view stage, std::uint64_t rows, std::uint64_t milliseconds)
-{
-    if (verboseLevel <= 0)
-    {
-        return;
-    }
-    std::cerr << FormatStageLine(stage, rows, milliseconds) << '\n';
 }
 
 std::string FormatFilterParseDiagnostic(std::string_view query, std::size_t offset, std::string_view message)

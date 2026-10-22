@@ -1,9 +1,8 @@
 #include "commands.hpp"
 
-#include "diagnostics.hpp"
+#include "console.hpp"
 
-#include <iostream>
-#include <string_view>
+#include <variant>
 
 namespace slp
 {
@@ -11,88 +10,49 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] std::string_view Name(Command command) noexcept
+/** @brief Calls the `Run*` function that matches each options type. */
+struct Dispatch
 {
-    switch (command)
+    const GlobalOptions &global;
+    Console &console;
+    const RuntimeContext &runtime;
+
+    ExitCode operator()(const QueryOptions &options) const
     {
-    case Command::Query:
-        return "query";
-    case Command::Stats:
-        return "stats";
-    case Command::Schema:
-        return "schema";
-    case Command::Validate:
-        return "validate";
-    case Command::Bundle:
-        return "bundle";
-    case Command::Formats:
-        return "formats";
-    case Command::Tail:
-        return "tail";
-    case Command::None:
-        return {};
+        return RunQuery(options, global, console, runtime);
     }
-    return {};
-}
+    ExitCode operator()(const StatsOptions &options) const
+    {
+        return RunStats(options, global, console, runtime);
+    }
+    ExitCode operator()(const SchemaOptions &options) const
+    {
+        return RunSchema(options, global, console, runtime);
+    }
+    ExitCode operator()(const ValidateOptions &options) const
+    {
+        return RunValidate(options, global, console, runtime);
+    }
+    ExitCode operator()(const BundleOptions &options) const
+    {
+        return RunBundle(options, global, console, runtime);
+    }
+    ExitCode operator()(const FormatsOptions &options) const
+    {
+        return RunFormats(options, global, console);
+    }
+    ExitCode operator()(const TailOptions &options) const
+    {
+        return RunTail(options, global, console, runtime);
+    }
+};
 
 } // namespace
 
 int Execute(const Options &options, const RuntimeContext &runtime)
 {
-    if (options.command == Command::Formats)
-    {
-        const CommandOutput rendered = RenderFormats(options);
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-    if (options.command == Command::Query)
-    {
-        const CommandOutput rendered = RunQuery(options, runtime);
-        // Row bytes for `-` go through StreamSink(stdout) inside RunQuery.
-        // Only `--count` (and similar) leave payload in `out`.
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-    if (options.command == Command::Schema)
-    {
-        const CommandOutput rendered = RunSchema(options, runtime);
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-    if (options.command == Command::Validate)
-    {
-        const CommandOutput rendered = RunValidate(options, runtime);
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-    if (options.command == Command::Bundle)
-    {
-        const CommandOutput rendered = RunBundle(options, runtime);
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-    if (options.command == Command::Tail)
-    {
-        const CommandOutput rendered = RunTail(options, runtime);
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-    if (options.command == Command::Stats)
-    {
-        const CommandOutput rendered = RunStats(options, runtime);
-        std::cout << rendered.out;
-        std::cerr << rendered.err;
-        return rendered.exitCode;
-    }
-
-    WriteError(Name(options.command), "this command is not implemented yet");
-    return static_cast<int>(ExitCode::Usage);
+    Console console(stdout, stderr, CommandName(options.command), options.global);
+    return static_cast<int>(std::visit(Dispatch{options.global, console, runtime}, options.command));
 }
 
 } // namespace slp

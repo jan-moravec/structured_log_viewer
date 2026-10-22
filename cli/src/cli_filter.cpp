@@ -1,17 +1,19 @@
 #include "cli_filter.hpp"
 
+#include "text_util.hpp"
+
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/query_parser.hpp>
 #include <loglib/user_timestamp.hpp>
 
-#include <cctype>
+#include <algorithm>
 #include <chrono>
 #include <format>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace slp
 {
@@ -19,16 +21,16 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] CommandOutput FilterFail(
-    std::string_view command, ExitCode code, std::string_view sentence, std::string_view errExtra = {}
-)
+[[nodiscard]] Failure FilterFail(std::string_view command, std::string_view sentence)
 {
-    CommandOutput out;
-    out.exitCode = static_cast<int>(code);
-    out.err = FormatErrorLine(command, sentence);
-    out.err.push_back('\n');
-    out.err += errExtra;
-    return out;
+    return MakeFailure(ExitCode::Usage, command, sentence);
+}
+
+[[nodiscard]] Failure FilterSyntaxFailure(std::string_view query, const loglib::QueryParseError &error)
+{
+    Failure failure{.code = ExitCode::Usage, .text = FormatFilterParseDiagnostic(query, error.offset, error.message)};
+    failure.text.push_back('\n');
+    return failure;
 }
 
 } // namespace
@@ -39,16 +41,13 @@ std::string AvailableColumnList(const std::vector<loglib::Column> &columns)
     {
         return "(none)";
     }
-    std::ostringstream out;
-    for (std::size_t i = 0; i < columns.size(); ++i)
+    std::vector<std::string> headers;
+    headers.reserve(columns.size());
+    for (const loglib::Column &column : columns)
     {
-        if (i != 0)
-        {
-            out << ", ";
-        }
-        out << columns[i].header;
+        headers.push_back(column.header);
     }
-    return out.str();
+    return JoinComma(headers);
 }
 
 int FindColumnByName(const std::vector<loglib::Column> &columns, std::string_view name)
@@ -62,53 +61,20 @@ int FindColumnByName(const std::vector<loglib::Column> &columns, std::string_vie
     }
     for (std::size_t i = 0; i < columns.size(); ++i)
     {
-        for (const std::string &key : columns[i].keys)
+        if (std::ranges::find(columns[i].keys, name) != columns[i].keys.end())
         {
-            if (key == name)
-            {
-                return static_cast<int>(i);
-            }
+            return static_cast<int>(i);
         }
     }
     for (std::size_t i = 0; i < columns.size(); ++i)
     {
-        if (columns[i].header.size() == name.size())
+        const bool match = EqualsIgnoreCase(columns[i].header, name) ||
+                           std::ranges::any_of(columns[i].keys, [name](const std::string &key) {
+                               return EqualsIgnoreCase(key, name);
+                           });
+        if (match)
         {
-            bool match = true;
-            for (std::size_t j = 0; j < name.size(); ++j)
-            {
-                if (std::tolower(static_cast<unsigned char>(columns[i].header[j])) !=
-                    std::tolower(static_cast<unsigned char>(name[j])))
-                {
-                    match = false;
-                    break;
-                }
-            }
-            if (match)
-            {
-                return static_cast<int>(i);
-            }
-        }
-        for (const std::string &key : columns[i].keys)
-        {
-            if (key.size() != name.size())
-            {
-                continue;
-            }
-            bool match = true;
-            for (std::size_t j = 0; j < name.size(); ++j)
-            {
-                if (std::tolower(static_cast<unsigned char>(key[j])) !=
-                    std::tolower(static_cast<unsigned char>(name[j])))
-                {
-                    match = false;
-                    break;
-                }
-            }
-            if (match)
-            {
-                return static_cast<int>(i);
-            }
+            return static_cast<int>(i);
         }
     }
     return -1;
@@ -126,41 +92,47 @@ int FirstColumnOfType(const std::vector<loglib::Column> &columns, loglib::Column
     return -1;
 }
 
-bool HasActiveRowFilter(const Options &options) noexcept
+bool IsPresent(const loglib::LogValue &value) noexcept
 {
-    return !options.filters.empty() || options.since.has_value() || options.until.has_value() ||
-           options.minLevel.has_value() || options.invert;
+    return !std::holds_alternative<std::monostate>(value);
 }
 
-std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
-    const Options &options, const loglib::LogTable &table, const RuntimeContext &runtime, std::string_view command
+std::optional<Failure> CheckFilterSyntax(const FilterOptions &filter)
+{
+    for (const std::string &query : filter.filters)
+    {
+        if (auto parsed = loglib::ParseQuery(query); !parsed)
+        {
+            return FilterSyntaxFailure(query, parsed.error());
+        }
+    }
+    return std::nullopt;
+}
+
+std::expected<loglib::FilterExpression, Failure> BuildRowFilter(
+    const FilterOptions &filter, const loglib::LogTable &table, const RuntimeContext &runtime, std::string_view command
 )
 {
     const auto &columns = table.Configuration().Configuration().columns;
     loglib::FilterExpression::And combined;
 
-    for (const std::string &query : options.filters)
+    for (const std::string &query : filter.filters)
     {
         auto parsed = loglib::ParseQuery(query);
         if (!parsed)
         {
-            CommandOutput out;
-            out.exitCode = static_cast<int>(ExitCode::Usage);
-            out.err = FormatFilterParseDiagnostic(query, parsed.error().offset, parsed.error().message);
-            out.err.push_back('\n');
-            return std::unexpected(std::move(out));
+            return std::unexpected(FilterSyntaxFailure(query, parsed.error()));
         }
         combined.children.push_back(std::move(*parsed));
     }
 
-    if (options.since || options.until)
+    if (filter.since || filter.until)
     {
         const int timeIndex = FirstColumnOfType(columns, loglib::ColumnType::Time);
         if (timeIndex < 0)
         {
             return std::unexpected(FilterFail(
                 command,
-                ExitCode::Usage,
                 std::format(
                     "'--since' and '--until' need a time column; available columns are {}.",
                     AvailableColumnList(columns)
@@ -171,14 +143,13 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
         const auto now = std::chrono::system_clock::now();
         std::optional<std::int64_t> begin;
         std::optional<std::int64_t> end;
-        auto parseBound = [&](std::string_view text,
-                              std::string_view flag) -> std::expected<std::int64_t, CommandOutput> {
+        auto parseBound = [&](std::string_view text, std::string_view flag) -> std::expected<std::int64_t, Failure> {
             const auto parsed = loglib::ParseUserTimestamp(text, timeColumn.parseFormats, now);
             if (!parsed)
             {
-                return std::unexpected(FilterFail(
-                    command, ExitCode::Usage, std::format("'{}' could not parse timestamp '{}'.", flag, text)
-                ));
+                return std::unexpected(
+                    FilterFail(command, std::format("'{}' could not parse timestamp '{}'.", flag, text))
+                );
             }
             std::int64_t micros = parsed->micros;
             if (parsed->isNaive)
@@ -187,18 +158,18 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
             }
             return micros;
         };
-        if (options.since)
+        if (filter.since)
         {
-            auto value = parseBound(*options.since, "--since");
+            auto value = parseBound(*filter.since, "--since");
             if (!value)
             {
                 return std::unexpected(std::move(value.error()));
             }
             begin = *value;
         }
-        if (options.until)
+        if (filter.until)
         {
-            auto value = parseBound(*options.until, "--until");
+            auto value = parseBound(*filter.until, "--until");
             if (!value)
             {
                 return std::unexpected(std::move(value.error()));
@@ -207,9 +178,7 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
         }
         if (begin && end && *end < *begin)
         {
-            return std::unexpected(
-                FilterFail(command, ExitCode::Usage, "'--until' must not be earlier than '--since'.")
-            );
+            return std::unexpected(FilterFail(command, "'--until' must not be earlier than '--since'."));
         }
         loglib::LeafRule rule;
         rule.type = loglib::LeafRule::Type::Time;
@@ -219,27 +188,25 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
         combined.children.push_back(loglib::FilterExpression{loglib::FilterExpression::Leaf{std::move(rule)}});
     }
 
-    if (options.minLevel)
+    if (filter.minLevel)
     {
         const int levelIndex = FirstColumnOfType(columns, loglib::ColumnType::Level);
         if (levelIndex < 0)
         {
             return std::unexpected(FilterFail(
                 command,
-                ExitCode::Usage,
                 std::format(
                     "'--min-level' needs a level column; available columns are {}.", AvailableColumnList(columns)
                 )
             ));
         }
-        const auto level = loglib::ParseLevelName(*options.minLevel);
+        const auto level = loglib::ParseLevelName(*filter.minLevel);
         if (!level || *level == loglib::LogLevel::Unknown)
         {
             return std::unexpected(FilterFail(
                 command,
-                ExitCode::Usage,
                 std::format(
-                    "'--min-level' expects trace, debug, info, warn, error, or fatal, not '{}'.", *options.minLevel
+                    "'--min-level' expects trace, debug, info, warn, error, or fatal, not '{}'.", *filter.minLevel
                 )
             ));
         }
@@ -254,7 +221,7 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
     }
 
     loglib::FilterExpression expression{std::move(combined)};
-    if (options.invert)
+    if (filter.invert)
     {
         expression = loglib::FilterExpression{loglib::FilterExpression::Not{std::move(expression)}};
     }

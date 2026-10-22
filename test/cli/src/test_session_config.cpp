@@ -1,5 +1,6 @@
 #include "slp_process.hpp"
 
+#include "console.hpp"
 #include "load_table.hpp"
 #include "options.hpp"
 #include "session_config.hpp"
@@ -16,10 +17,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 using slp::test::FixturesDir;
@@ -123,14 +126,19 @@ struct Resolved
     auto options = slp::ParseArguments(static_cast<int>(argv.size()), argv.data());
     REQUIRE(options.has_value());
 
+    const auto &query = std::get<slp::QueryOptions>(options->command);
     slp::RuntimeContext runtime;
-    auto [loaded, side] = slp::LoadTable(*options, runtime);
-    INFO(side.err);
-    REQUIRE(side.exitCode == 0);
-    auto session = slp::ApplySessionConfiguration(*options, loaded.table, runtime, "query");
+    const slp::Console console(stdout, stderr, slp::QueryOptions::NAME, options->global);
+    auto load = slp::LoadTable(options->global, query.input, console, runtime);
+    if (!load)
+    {
+        FAIL(load.error().text);
+    }
+    slp::LoadedTable loaded = std::move(*load);
+    auto session = slp::ApplySessionConfiguration(query.filter, query.view, loaded.table, runtime, "query");
     if (!session)
     {
-        FAIL(session.error().err);
+        FAIL(session.error().text);
     }
 
     const auto compiled = loglib::CompileExpression(

@@ -1,7 +1,10 @@
 #include "commands.hpp"
 
+#include "cli_filter.hpp"
+#include "console.hpp"
 #include "diagnostics.hpp"
 #include "load_table.hpp"
+#include "text_util.hpp"
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/log_value.hpp>
@@ -47,51 +50,6 @@ constexpr std::size_t MAX_ENUM_VALUES_LISTED = 64;
         return "level";
     }
     return "any";
-}
-
-void AppendJsonString(std::string &out, std::string_view text)
-{
-    out.push_back('"');
-    for (const unsigned char ch : text)
-    {
-        switch (ch)
-        {
-        case '"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            if (ch < 0x20)
-            {
-                constexpr char HEX[] = "0123456789abcdef";
-                out += "\\u00";
-                out.push_back(HEX[ch >> 4]);
-                out.push_back(HEX[ch & 0x0f]);
-            }
-            else
-            {
-                out.push_back(static_cast<char>(ch));
-            }
-            break;
-        }
-    }
-    out.push_back('"');
-}
-
-[[nodiscard]] bool IsPresent(const loglib::LogValue &value) noexcept
-{
-    return !std::holds_alternative<std::monostate>(value);
 }
 
 [[nodiscard]] std::string FormatSample(const loglib::LogTable &table, std::size_t row, std::size_t column)
@@ -142,20 +100,6 @@ struct ColumnStats
         }
     }
     return stats;
-}
-
-[[nodiscard]] std::string JoinComma(const std::vector<std::string> &parts)
-{
-    std::ostringstream out;
-    for (std::size_t i = 0; i < parts.size(); ++i)
-    {
-        if (i != 0)
-        {
-            out << ", ";
-        }
-        out << parts[i];
-    }
-    return out.str();
 }
 
 [[nodiscard]] std::string RenderText(const loglib::LogTable &table, std::uint64_t sampleLimit)
@@ -313,35 +257,24 @@ struct ColumnStats
 
 } // namespace
 
-CommandOutput RunSchema(const Options &options, const RuntimeContext &runtime)
+ExitCode RunSchema(
+    const SchemaOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
 {
-    auto [loaded, side] = LoadTable(options, runtime);
-    CommandOutput out;
-    out.err = std::move(side.err);
-    if (side.exitCode != 0)
+    const auto loaded = LoadTable(global, options.input, console, runtime);
+    if (!loaded)
     {
-        out.exitCode = side.exitCode;
-        return out;
+        return console.Report(loaded.error());
     }
-
-    if (loaded.table.ColumnCount() == 0)
+    if (loaded->table.ColumnCount() == 0)
     {
-        out.exitCode = static_cast<int>(ExitCode::Input);
-        out.err += FormatErrorLine("schema", "source produced no columns");
-        out.err.push_back('\n');
-        return out;
+        return console.Report(console.Fail(ExitCode::Input, "source produced no columns"));
     }
-
-    if (options.outputFormat == "json")
-    {
-        out.out = RenderJson(loaded.table, options.sample);
-    }
-    else
-    {
-        out.out = RenderText(loaded.table, options.sample);
-    }
-    out.exitCode = static_cast<int>(ExitCode::Success);
-    return out;
+    console.Print(
+        options.outputFormat == ReportFormat::Json ? RenderJson(loaded->table, options.sample)
+                                                   : RenderText(loaded->table, options.sample)
+    );
+    return ExitCode::Success;
 }
 
 } // namespace slp

@@ -1,4 +1,5 @@
 #include "commands.hpp"
+#include "console.hpp"
 #include "diagnostics.hpp"
 #include "options.hpp"
 #include "platform.hpp"
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <iostream>
 #include <system_error>
 
@@ -40,6 +42,11 @@ public:
     return {};
 }
 
+[[nodiscard]] int Exit(slp::ExitCode code) noexcept
+{
+    return static_cast<int>(code);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -55,22 +62,21 @@ int main(int argc, char **argv)
         if (!parsed)
         {
             slp::WriteUsage(parsed.error());
-            return static_cast<int>(slp::ExitCode::Usage);
+            return Exit(slp::ExitCode::Usage);
         }
-        if (parsed->kind == slp::ParseKind::Help)
+        switch (parsed->kind)
         {
+        case slp::ParseKind::Help:
             std::cout << parsed->helpText;
-            return static_cast<int>(slp::ExitCode::Success);
-        }
-        if (parsed->kind == slp::ParseKind::Version)
-        {
+            return Exit(slp::ExitCode::Success);
+        case slp::ParseKind::Version:
             std::cout << slp::VersionLine() << '\n';
-            return static_cast<int>(slp::ExitCode::Success);
-        }
-        if (parsed->kind == slp::ParseKind::MissingCommand)
-        {
+            return Exit(slp::ExitCode::Success);
+        case slp::ParseKind::MissingCommand:
             std::cout << parsed->helpText;
-            return static_cast<int>(slp::ExitCode::Usage);
+            return Exit(slp::ExitCode::Usage);
+        case slp::ParseKind::Run:
+            break;
         }
 
         std::vector<std::filesystem::path> searched;
@@ -79,15 +85,15 @@ int main(int argc, char **argv)
         const std::filesystem::path tzdata = slp::FindTzdataDirectory(
             slp::CurrentExecutable().parent_path(), cwdError ? std::filesystem::path{} : cwd, AppImageDir(), searched
         );
-        const slp::TimeZoneSetup zone = slp::ResolveTimeZone(parsed->timeZone, tzdata);
+        const slp::TimeZoneSetup zone = slp::ResolveTimeZone(parsed->global.timeZone, tzdata);
         if (!zone.error.empty())
         {
             slp::WriteError({}, zone.error);
-            return static_cast<int>(slp::ExitCode::Usage);
+            return Exit(slp::ExitCode::Usage);
         }
         if (!zone.warning.empty())
         {
-            slp::WriteWarning(parsed->quiet, zone.warning);
+            slp::Console(stdout, stderr, {}, parsed->global).Warn(zone.warning);
         }
         loglib::SetProcessDefaultTimeZone(zone.context);
         const slp::RuntimeContext runtime{.stop = stop.get_token(), .timeZone = zone.context};
@@ -95,48 +101,30 @@ int main(int argc, char **argv)
     }
     catch (const loglib::exports::BrokenPipe &)
     {
-        return static_cast<int>(slp::ExitCode::Success);
+        return Exit(slp::ExitCode::Success);
     }
     catch (const loglib::DecompressionCancelled &)
     {
-        return static_cast<int>(slp::ExitCode::Cancelled);
-    }
-    catch (const loglib::DecompressionSizeCapExceeded &ex)
-    {
-        slp::WriteError({}, ex.what());
-        return static_cast<int>(slp::ExitCode::Input);
-    }
-    catch (const loglib::SessionBundleVersionError &ex)
-    {
-        slp::WriteError({}, ex.what());
-        return static_cast<int>(slp::ExitCode::Input);
-    }
-    catch (const loglib::SessionBundleReadError &ex)
-    {
-        slp::WriteError({}, ex.what());
-        return static_cast<int>(slp::ExitCode::Input);
+        return Exit(slp::ExitCode::Cancelled);
     }
     catch (const loglib::exports::ExportCancelled &)
     {
-        return static_cast<int>(slp::ExitCode::Cancelled);
+        return Exit(slp::ExitCode::Cancelled);
     }
     catch (const loglib::SessionBundleCancelled &)
     {
-        return static_cast<int>(slp::ExitCode::Cancelled);
-    }
-    catch (const std::runtime_error &ex)
-    {
-        slp::WriteError({}, ex.what());
-        return static_cast<int>(slp::ExitCode::Output);
+        return Exit(slp::ExitCode::Cancelled);
     }
     catch (const std::exception &ex)
     {
-        slp::WriteError({}, ex.what());
-        return static_cast<int>(slp::ExitCode::Output);
+        // Commands map expected input and output failures to their own
+        // exit codes; anything that reaches here is a defect in slp.
+        slp::WriteError({}, std::format("internal error: {}", ex.what()));
+        return Exit(slp::ExitCode::Internal);
     }
     catch (...)
     {
-        slp::WriteError({}, "an unexpected error occurred");
-        return static_cast<int>(slp::ExitCode::Output);
+        slp::WriteError({}, "internal error: an unexpected exception was thrown");
+        return Exit(slp::ExitCode::Internal);
     }
 }

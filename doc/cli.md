@@ -179,9 +179,12 @@ Output is flushed once per batch. Filters apply per arriving batch. Rows are emi
 | 3    | Input error: source missing, unreadable, undetectable, failed to decompress, or a listener could not bind. |
 | 4    | Data error: parse errors under `--strict`, or `validate` found errors.                                     |
 | 5    | Output error: destination unwritable, exists without `--force`, or disk full.                              |
+| 70   | Internal error: an unexpected failure inside `slp`. Please report it.                                      |
 | 130  | Cancelled by `SIGINT` (every command except `tail`, which exits 0).                                        |
 
 A closed stdout pipe (`slp query … | head`) ends the run quietly with exit 0.
+
+Warnings, verbose stage lines, and the parse-error summary go to stderr as they happen. `--quiet` drops warnings and the parse-error summary; errors always print.
 
 ## Pipeline order
 

@@ -2,10 +2,12 @@
 
 #include "ansi.hpp"
 #include "cli_filter.hpp"
+#include "console.hpp"
 #include "diagnostics.hpp"
 #include "load_table.hpp"
 #include "platform.hpp"
 #include "session_config.hpp"
+#include "text_util.hpp"
 
 #include <loglib/filter_expression.hpp>
 #include <loglib/histogram_bucket_index.hpp>
@@ -42,55 +44,6 @@ constexpr int DEFAULT_TEXT_BUCKET_BUDGET = 60;
 constexpr int DEFAULT_STRUCTURED_BUCKET_BUDGET = 500;
 constexpr int DEFAULT_TERMINAL_WIDTH = 80;
 
-[[nodiscard]] CommandOutput StatsFail(ExitCode code, std::string_view sentence)
-{
-    CommandOutput out;
-    out.exitCode = static_cast<int>(code);
-    out.err = FormatErrorLine("stats", sentence);
-    out.err.push_back('\n');
-    return out;
-}
-
-void AppendJsonString(std::string &out, std::string_view text)
-{
-    out.push_back('"');
-    for (const unsigned char ch : text)
-    {
-        switch (ch)
-        {
-        case '"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            if (ch < 0x20)
-            {
-                constexpr char HEX[] = "0123456789abcdef";
-                out += "\\u00";
-                out.push_back(HEX[ch >> 4]);
-                out.push_back(HEX[ch & 0x0f]);
-            }
-            else
-            {
-                out.push_back(static_cast<char>(ch));
-            }
-            break;
-        }
-    }
-    out.push_back('"');
-}
-
 [[nodiscard]] std::string FormatPercent(double value)
 {
     std::ostringstream out;
@@ -98,46 +51,41 @@ void AppendJsonString(std::string &out, std::string_view text)
     return out.str();
 }
 
-[[nodiscard]] std::string FormatSources(const Options &options)
+[[nodiscard]] std::string FormatSources(const InputOptions &input)
 {
-    if (options.sources.empty())
+    if (input.sources.empty())
     {
         return "-";
     }
     std::ostringstream out;
-    for (std::size_t i = 0; i < options.sources.size(); ++i)
+    for (std::size_t i = 0; i < input.sources.size(); ++i)
     {
         if (i != 0)
         {
             out << ", ";
         }
-        out << options.sources[i].text;
+        out << input.sources[i].text;
     }
     return out.str();
 }
 
 /** @brief Basenames only so JSON stays stable across absolute source paths. */
-[[nodiscard]] std::string FormatSourcesJson(const Options &options)
+[[nodiscard]] std::string FormatSourcesJson(const InputOptions &input)
 {
-    if (options.sources.empty())
+    if (input.sources.empty())
     {
         return "-";
     }
     std::ostringstream out;
-    for (std::size_t i = 0; i < options.sources.size(); ++i)
+    for (std::size_t i = 0; i < input.sources.size(); ++i)
     {
         if (i != 0)
         {
             out << ", ";
         }
-        out << std::filesystem::path(options.sources[i].text).filename().string();
+        out << std::filesystem::path(input.sources[i].text).filename().string();
     }
     return out.str();
-}
-
-[[nodiscard]] bool IsPresent(const loglib::LogValue &value) noexcept
-{
-    return !std::holds_alternative<std::monostate>(value);
 }
 
 [[nodiscard]] std::optional<loglib::TimeStamp> TimeStampForRow(
@@ -191,7 +139,7 @@ void AppendJsonString(std::string &out, std::string_view text)
     return std::nullopt;
 }
 
-[[nodiscard]] int BucketBudget(const Options &options, bool structuredOutput)
+[[nodiscard]] int BucketBudget(const StatsOptions &options, bool structuredOutput)
 {
     if (options.maxBuckets)
     {
@@ -227,11 +175,11 @@ struct LevelSummary
 }
 
 [[nodiscard]] std::string RenderLevelText(
-    const Options &options, const LevelSummary &summary, const std::string &sources, const std::string &spanLine
+    const Console &console, const LevelSummary &summary, const std::string &sources, const std::string &spanLine
 )
 {
-    const bool color = ColorActive(options, stdout);
-    const int termWidth = TerminalWidth(stdout, DEFAULT_TERMINAL_WIDTH);
+    const bool color = console.ColorFor(console.Out());
+    const int termWidth = TerminalWidth(console.Out(), DEFAULT_TERMINAL_WIDTH);
 
     std::vector<std::string> headers = {"level", "count", "percent", "bar"};
     std::vector<std::vector<std::string>> tableRows;
@@ -448,7 +396,7 @@ struct TimeHistogram
 }
 
 [[nodiscard]] loglib::HistogramBucketSize ResolveBucketSize(
-    const Options &options, bool structuredOutput, const TimeHistogram &histogram
+    const StatsOptions &options, bool structuredOutput, const TimeHistogram &histogram
 )
 {
     if (options.bucket != "auto")
@@ -557,15 +505,15 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
 }
 
 [[nodiscard]] std::string RenderTimeText(
-    const Options &options,
+    const Console &console,
     const TimeHistogram &histogram,
     const RuntimeContext &runtime,
     const std::string &sources,
     const std::string &spanLine
 )
 {
-    const bool color = ColorActive(options, stdout);
-    const int termWidth = TerminalWidth(stdout, DEFAULT_TERMINAL_WIDTH);
+    const bool color = console.ColorFor(console.Out());
+    const int termWidth = TerminalWidth(console.Out(), DEFAULT_TERMINAL_WIDTH);
     const auto widthMicros = histogram.index.BucketWidth().count();
 
     std::vector<std::string> headers = {"bucketStartLocal", "total", "bar"};
@@ -685,36 +633,63 @@ struct ColumnValueStats
     return stats;
 }
 
-[[nodiscard]] std::string RenderColumnText(
-    const ColumnValueStats &stats,
-    const Options &options,
-    const std::string &sources,
-    const std::string &columnName,
-    const std::string &spanLine
+/** @brief The @p top most frequent values, most frequent first, ties by value. */
+[[nodiscard]] std::vector<std::pair<std::string, std::uint64_t>> RankValues(
+    const ColumnValueStats &stats, std::uint64_t top
 )
 {
     std::vector<std::pair<std::string, std::uint64_t>> ranked(stats.counts.begin(), stats.counts.end());
-    std::sort(ranked.begin(), ranked.end(), [](const auto &lhs, const auto &rhs) {
+    std::ranges::sort(ranked, [](const auto &lhs, const auto &rhs) {
         if (lhs.second != rhs.second)
         {
             return lhs.second > rhs.second;
         }
         return lhs.first < rhs.first;
     });
-    if (ranked.size() > options.top)
+    if (ranked.size() > top)
     {
-        ranked.resize(options.top);
+        ranked.resize(static_cast<std::size_t>(top));
     }
+    return ranked;
+}
+
+[[nodiscard]] double ValuePercent(const ColumnValueStats &stats, std::uint64_t count) noexcept
+{
+    return stats.presentRows == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(stats.presentRows);
+}
+
+/** @brief Quotes @p value as one CSV field, doubling embedded quotes. */
+[[nodiscard]] std::string CsvField(std::string_view value)
+{
+    std::string field = "\"";
+    for (const char ch : value)
+    {
+        if (ch == '"')
+        {
+            field.push_back('"');
+        }
+        field.push_back(ch);
+    }
+    field.push_back('"');
+    return field;
+}
+
+[[nodiscard]] std::string RenderColumnText(
+    const ColumnValueStats &stats,
+    const StatsOptions &options,
+    const std::string &sources,
+    const std::string &columnName,
+    const std::string &spanLine
+)
+{
+    const auto ranked = RankValues(stats, options.top);
 
     std::vector<std::string> headers = {"value", "count", "percent"};
     std::vector<std::vector<std::string>> rows;
     rows.reserve(ranked.size());
     for (const auto &[value, count] : ranked)
     {
-        const double percent = stats.presentRows == 0
-                                   ? 0.0
-                                   : (100.0 * static_cast<double>(count)) / static_cast<double>(stats.presentRows);
-        rows.push_back({value, std::to_string(count), FormatPercent(percent)});
+        rows.push_back({value, std::to_string(count), FormatPercent(ValuePercent(stats, count))});
     }
 
     std::vector<std::size_t> widths(headers.size(), 0);
@@ -761,24 +736,13 @@ struct ColumnValueStats
 
 [[nodiscard]] std::string RenderColumnJson(
     const ColumnValueStats &stats,
-    const Options &options,
+    const StatsOptions &options,
     const std::string &sources,
     const std::string &columnName,
     std::uint64_t rowCount
 )
 {
-    std::vector<std::pair<std::string, std::uint64_t>> ranked(stats.counts.begin(), stats.counts.end());
-    std::sort(ranked.begin(), ranked.end(), [](const auto &lhs, const auto &rhs) {
-        if (lhs.second != rhs.second)
-        {
-            return lhs.second > rhs.second;
-        }
-        return lhs.first < rhs.first;
-    });
-    if (ranked.size() > options.top)
-    {
-        ranked.resize(options.top);
-    }
+    const auto ranked = RankValues(stats, options.top);
 
     std::string out = "{\n  \"by\": \"column\",\n  \"sources\": [";
     AppendJsonString(out, sources);
@@ -795,9 +759,7 @@ struct ColumnValueStats
         {
             out += ",\n";
         }
-        const double percent = stats.presentRows == 0 ? 0.0
-                                                      : (100.0 * static_cast<double>(ranked[i].second)) /
-                                                            static_cast<double>(stats.presentRows);
+        const double percent = ValuePercent(stats, ranked[i].second);
         out += "    {\"value\": ";
         AppendJsonString(out, ranked[i].first);
         out += ", \"count\": ";
@@ -832,108 +794,116 @@ struct ColumnValueStats
     return out.str();
 }
 
-[[nodiscard]] int StatsExitCode(const Options &options, std::uint64_t sourceRows, std::size_t filteredRows)
+[[nodiscard]] std::string RenderColumnCsv(
+    const ColumnValueStats &stats, const StatsOptions &options, const std::string &columnName, std::uint64_t rowCount
+)
 {
-    if (sourceRows == 0)
+    std::ostringstream csv;
+    csv << "by,column\nrowCount," << rowCount << "\ncolumn," << columnName << "\ncardinality," << stats.counts.size()
+        << "\nvalue,count,percent\n";
+    for (const auto &[value, count] : RankValues(stats, options.top))
     {
-        return static_cast<int>(ExitCode::Success);
+        csv << CsvField(value) << ',' << count << ',' << FormatPercent(ValuePercent(stats, count)) << '\n';
     }
-    if (filteredRows == 0 && !options.filters.empty())
+    return csv.str();
+}
+
+[[nodiscard]] std::string RenderLevelCsv(const LevelSummary &summary, std::uint64_t rowCount)
+{
+    std::ostringstream csv;
+    csv << "by,level\nrowCount," << rowCount << "\nlevel,count,percent\n";
+    const auto percentOf = [&summary](std::uint64_t count) {
+        return summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
+    };
+    for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
+         ++value)
     {
-        return static_cast<int>(ExitCode::Empty);
+        const auto level = static_cast<loglib::LogLevel>(value);
+        const std::uint64_t count = summary.counts[static_cast<std::size_t>(level)];
+        if (count != 0)
+        {
+            csv << loglib::CanonicalLevelName(level) << ',' << count << ',' << FormatPercent(percentOf(count)) << '\n';
+        }
     }
-    return static_cast<int>(ExitCode::Success);
+    if (summary.unresolvable > 0)
+    {
+        csv << "Unknown," << summary.unresolvable << ',' << FormatPercent(percentOf(summary.unresolvable)) << '\n';
+    }
+    return csv.str();
+}
+
+/** @brief A `--filter` that matches nothing in a non-empty source exits 1. */
+[[nodiscard]] ExitCode StatsExitCode(const StatsOptions &options, std::uint64_t sourceRows, std::size_t filteredRows)
+{
+    if (sourceRows != 0 && filteredRows == 0 && !options.filter.filters.empty())
+    {
+        return ExitCode::Empty;
+    }
+    return ExitCode::Success;
 }
 
 } // namespace
 
-CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
+ExitCode RunStats(
+    const StatsOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
 {
-    CommandOutput out;
-    auto [loaded, loadSide] = LoadTable(options, runtime);
-    out.err += loadSide.err;
-    if (loadSide.exitCode != 0)
+    auto loaded = LoadTable(global, options.input, console, runtime);
+    if (!loaded)
     {
-        out.exitCode = loadSide.exitCode;
-        return out;
+        return console.Report(loaded.error());
     }
 
-    loglib::LogTable &table = loaded.table;
+    loglib::LogTable &table = loaded->table;
     const std::uint64_t sourceRows = table.RowCount();
-    const std::string sources = FormatSources(options);
-    const std::string sourcesJson = FormatSourcesJson(options);
+    const std::string sources = FormatSources(options.input);
+    const std::string sourcesJson = FormatSourcesJson(options.input);
 
-    auto session = ApplySessionConfiguration(options, table, runtime, "stats");
+    auto session = ApplySessionConfiguration(options.filter, ViewOptions{}, table, runtime, StatsOptions::NAME);
     if (!session)
     {
-        out.err += session.error().err;
-        out.exitCode = session.error().exitCode;
-        return out;
+        return console.Report(session.error());
     }
 
     const auto compiled =
         loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     const std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
 
-    out.exitCode = StatsExitCode(options, sourceRows, rows.size());
-    if (out.exitCode != 0)
+    const ExitCode exitCode = StatsExitCode(options, sourceRows, rows.size());
+    if (exitCode != ExitCode::Success)
     {
-        return out;
+        return exitCode;
     }
 
-    const bool structured = options.outputFormat == "json" || options.outputFormat == "csv";
+    const bool structured = options.outputFormat != ReportFormat::Text;
     const auto &columns = table.Configuration().Configuration().columns;
 
-    if (options.statsBy == "level")
+    switch (options.by)
+    {
+    case StatsAxis::Level:
     {
         const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
         const LevelSummary summary = SummarizeLevels(table, rows, levelColumn);
-        const std::string span = std::format("span: {} row(s)", rows.size());
-        if (options.outputFormat == "json")
+        switch (options.outputFormat)
         {
-            out.out = RenderLevelJson(summary, sourcesJson, rows.size());
+        case ReportFormat::Json:
+            console.Print(RenderLevelJson(summary, sourcesJson, rows.size()));
+            break;
+        case ReportFormat::Csv:
+            console.Print(RenderLevelCsv(summary, rows.size()));
+            break;
+        case ReportFormat::Text:
+            console.Print(RenderLevelText(console, summary, sources, std::format("span: {} row(s)", rows.size())));
+            break;
         }
-        else if (options.outputFormat == "csv")
-        {
-            std::ostringstream csv;
-            csv << "by,level\nrowCount," << rows.size() << "\nlevel,count,percent\n";
-            for (int value = static_cast<int>(loglib::LogLevel::Trace);
-                 value <= static_cast<int>(loglib::LogLevel::Fatal);
-                 ++value)
-            {
-                const auto level = static_cast<loglib::LogLevel>(value);
-                const std::uint64_t count = summary.counts[static_cast<std::size_t>(level)];
-                if (count == 0)
-                {
-                    continue;
-                }
-                const double percent = summary.total == 0
-                                           ? 0.0
-                                           : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
-                csv << loglib::CanonicalLevelName(level) << ',' << count << ',' << FormatPercent(percent) << '\n';
-            }
-            if (summary.unresolvable > 0)
-            {
-                const double percent = summary.total == 0 ? 0.0
-                                                          : (100.0 * static_cast<double>(summary.unresolvable)) /
-                                                                static_cast<double>(summary.total);
-                csv << "Unknown," << summary.unresolvable << ',' << FormatPercent(percent) << '\n';
-            }
-            out.out = csv.str();
-        }
-        else
-        {
-            out.out = RenderLevelText(options, summary, sources, span);
-        }
-        return out;
+        return ExitCode::Success;
     }
-
-    if (options.statsBy == "time")
+    case StatsAxis::Time:
     {
         const int timeIndex = FirstColumnOfType(columns, loglib::ColumnType::Time);
         if (timeIndex < 0)
         {
-            return StatsFail(ExitCode::Usage, "this source has no time column for --by time.");
+            return console.Report(console.Fail(ExitCode::Usage, "this source has no time column for --by time."));
         }
         const std::size_t timeColumn = static_cast<std::size_t>(timeIndex);
         const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
@@ -941,7 +911,7 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
         const TimeHistogram probe =
             BuildTimeHistogram(table, rows, timeColumn, levelColumn, loglib::HistogramBucketSize::OneMinute);
         const loglib::HistogramBucketSize bucketSize = ResolveBucketSize(options, structured, probe);
-        TimeHistogram histogram = BuildTimeHistogram(table, rows, timeColumn, levelColumn, bucketSize);
+        const TimeHistogram histogram = BuildTimeHistogram(table, rows, timeColumn, levelColumn, bucketSize);
 
         std::string span = std::format("span: {} row(s)", rows.size());
         if (histogram.minTs.has_value() && histogram.maxTs.has_value())
@@ -954,80 +924,51 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
             );
         }
 
-        if (options.outputFormat == "json")
+        switch (options.outputFormat)
         {
-            out.out = RenderTimeJson(histogram, runtime, sourcesJson, rows.size());
+        case ReportFormat::Json:
+            console.Print(RenderTimeJson(histogram, runtime, sourcesJson, rows.size()));
+            break;
+        case ReportFormat::Csv:
+            console.Print(RenderTimeCsv(histogram, runtime, rows.size()));
+            break;
+        case ReportFormat::Text:
+            console.Print(RenderTimeText(console, histogram, runtime, sources, span));
+            break;
         }
-        else if (options.outputFormat == "csv")
-        {
-            out.out = RenderTimeCsv(histogram, runtime, rows.size());
-        }
-        else
-        {
-            out.out = RenderTimeText(options, histogram, runtime, sources, span);
-        }
-        return out;
+        return ExitCode::Success;
     }
-
-    if (options.statsBy == "column")
+    case StatsAxis::Column:
     {
-        if (!options.column)
-        {
-            return StatsFail(ExitCode::Usage, "--column is required with --by column.");
-        }
-        const int columnIndex = FindColumnByName(columns, *options.column);
+        const std::string name = options.column.value_or(std::string{});
+        const int columnIndex = FindColumnByName(columns, name);
         if (columnIndex < 0)
         {
-            return StatsFail(
+            return console.Report(console.Fail(
                 ExitCode::Usage,
-                std::format(
-                    "unresolvable column '{}'; available columns are {}.", *options.column, AvailableColumnList(columns)
-                )
-            );
+                std::format("unresolvable column '{}'; available columns are {}.", name, AvailableColumnList(columns))
+            ));
         }
         const ColumnValueStats columnStats = SummarizeColumn(table, rows, static_cast<std::size_t>(columnIndex));
-        const std::string span = std::format("span: {} row(s)", rows.size());
         const std::string &header = columns[static_cast<std::size_t>(columnIndex)].header;
-        if (options.outputFormat == "json")
+        switch (options.outputFormat)
         {
-            out.out = RenderColumnJson(columnStats, options, sourcesJson, header, rows.size());
-        }
-        else if (options.outputFormat == "csv")
-        {
-            std::ostringstream csv;
-            csv << "by,column\nrowCount," << rows.size() << "\ncolumn," << header << "\ncardinality,"
-                << columnStats.counts.size() << "\nvalue,count,percent\n";
-            std::vector<std::pair<std::string, std::uint64_t>> ranked(
-                columnStats.counts.begin(), columnStats.counts.end()
+        case ReportFormat::Json:
+            console.Print(RenderColumnJson(columnStats, options, sourcesJson, header, rows.size()));
+            break;
+        case ReportFormat::Csv:
+            console.Print(RenderColumnCsv(columnStats, options, header, rows.size()));
+            break;
+        case ReportFormat::Text:
+            console.Print(
+                RenderColumnText(columnStats, options, sources, header, std::format("span: {} row(s)", rows.size()))
             );
-            std::sort(ranked.begin(), ranked.end(), [](const auto &lhs, const auto &rhs) {
-                if (lhs.second != rhs.second)
-                {
-                    return lhs.second > rhs.second;
-                }
-                return lhs.first < rhs.first;
-            });
-            if (ranked.size() > options.top)
-            {
-                ranked.resize(options.top);
-            }
-            for (const auto &[value, count] : ranked)
-            {
-                const double percent = columnStats.presentRows == 0 ? 0.0
-                                                                    : (100.0 * static_cast<double>(count)) /
-                                                                          static_cast<double>(columnStats.presentRows);
-                csv << '"' << value << '"' << ',' << count << ',' << FormatPercent(percent) << '\n';
-            }
-            out.out = csv.str();
+            break;
         }
-        else
-        {
-            out.out = RenderColumnText(columnStats, options, sources, header, span);
-        }
-        return out;
+        return ExitCode::Success;
     }
-
-    return StatsFail(ExitCode::Usage, std::format("'--by' expects level, time, or column, not '{}'.", options.statsBy));
+    }
+    return ExitCode::Success;
 }
 
 } // namespace slp
