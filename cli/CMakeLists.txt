@@ -13,6 +13,11 @@ add_library(
     src/commands.cpp
     src/command_formats.cpp
     src/command_query.cpp
+    src/command_schema.cpp
+    src/command_validate.cpp
+    src/command_stats.cpp
+    src/cli_filter.cpp
+    src/load_table.cpp
 )
 
 target_include_directories(slp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/generated)

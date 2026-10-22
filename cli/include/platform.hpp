@@ -17,6 +17,14 @@ namespace slp
 [[nodiscard]] bool IsTerminal(std::FILE *stream) noexcept;
 
 /**
+ * @brief Best-effort width of @p stream in character columns.
+ *
+ * Returns @p fallback when @p stream is not a terminal or the width
+ * cannot be determined.
+ */
+[[nodiscard]] int TerminalWidth(std::FILE *stream, int fallback) noexcept;
+
+/**
  * @brief Puts stdout in binary mode and, when stdout is a console,
  * switches that console to UTF-8.
  *

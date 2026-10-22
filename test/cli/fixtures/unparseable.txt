@@ -1,0 +1,2 @@
+???? not a log format the auto detector accepts as structured rows
+still garbage on line two

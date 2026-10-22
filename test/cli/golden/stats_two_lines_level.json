@@ -1,0 +1,11 @@
+{
+  "by": "level",
+  "sources": ["two_lines.jsonl"],
+  "rowCount": 2,
+  "total": 2,
+  "unresolvableLevelCount": 0,
+  "levels": [
+    {"level": "Info", "count": 1, "percent": 50.0},
+    {"level": "Error", "count": 1, "percent": 50.0}
+  ]
+}

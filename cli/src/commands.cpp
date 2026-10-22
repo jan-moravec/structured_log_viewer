@@ -55,6 +55,27 @@ int Execute(const Options &options, const RuntimeContext &runtime)
         std::cerr << rendered.err;
         return rendered.exitCode;
     }
+    if (options.command == Command::Schema)
+    {
+        const CommandOutput rendered = RunSchema(options, runtime);
+        std::cout << rendered.out;
+        std::cerr << rendered.err;
+        return rendered.exitCode;
+    }
+    if (options.command == Command::Validate)
+    {
+        const CommandOutput rendered = RunValidate(options, runtime);
+        std::cout << rendered.out;
+        std::cerr << rendered.err;
+        return rendered.exitCode;
+    }
+    if (options.command == Command::Stats)
+    {
+        const CommandOutput rendered = RunStats(options, runtime);
+        std::cout << rendered.out;
+        std::cerr << rendered.err;
+        return rendered.exitCode;
+    }
 
     WriteError(Name(options.command), "this command is not implemented yet");
     return static_cast<int>(ExitCode::Usage);

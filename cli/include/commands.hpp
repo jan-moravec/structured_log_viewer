@@ -49,10 +49,35 @@ struct RuntimeContext
 [[nodiscard]] CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime);
 
 /**
+ * @brief Runs `slp schema` over the same sources as `query`.
+ *
+ * Text and JSON renderings list columns, types, visibility, and
+ * optional sample values. Exit 3 when the source yields no columns.
+ */
+[[nodiscard]] CommandOutput RunSchema(const Options &options, const RuntimeContext &runtime);
+
+/**
+ * @brief Runs `slp validate` and reports parse / column-type health.
+ *
+ * Exit 0 when there are no parse errors, or when `--max-error-rate`
+ * covers the observed rate. Otherwise exit 4.
+ */
+[[nodiscard]] CommandOutput RunValidate(const Options &options, const RuntimeContext &runtime);
+
+/**
+ * @brief Runs `slp stats` over the same sources as `query`.
+ *
+ * Summarises by level, time bucket, or column value frequency.
+ * Exit 1 when a `--filter` matches no rows; exit 0 on an empty source.
+ */
+[[nodiscard]] CommandOutput RunStats(const Options &options, const RuntimeContext &runtime);
+
+/**
  * @brief Runs the parsed command.
  *
- * `formats` and `query` are implemented. Every other command
- * reports that it is not available yet and returns exit code 2.
+ * `formats`, `query`, `schema`, `validate`, and `stats` are implemented.
+ * Every other command reports that it is not available yet and
+ * returns exit code 2.
  */
 [[nodiscard]] int Execute(const Options &options, const RuntimeContext &runtime);
 

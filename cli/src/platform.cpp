@@ -18,6 +18,7 @@
 #include <windows.h>
 #else
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #endif
 
@@ -92,6 +93,40 @@ bool IsTerminal(std::FILE *stream) noexcept
     return _isatty(_fileno(stream)) != 0;
 #else
     return ::isatty(fileno(stream)) != 0;
+#endif
+}
+
+int TerminalWidth(std::FILE *stream, int fallback) noexcept
+{
+    if (!IsTerminal(stream))
+    {
+        return fallback;
+    }
+#ifdef _WIN32
+    const HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (handle != nullptr && handle != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(handle, &info) != 0)
+    {
+        const int width = static_cast<int>(info.srWindow.Right - info.srWindow.Left + 1);
+        return width > 0 ? width : fallback;
+    }
+    return fallback;
+#else
+    if (const char *columns = std::getenv("COLUMNS"))
+    {
+        char *end = nullptr;
+        const long parsed = std::strtol(columns, &end, 10);
+        if (end != columns && parsed > 0)
+        {
+            return static_cast<int>(parsed);
+        }
+    }
+    struct winsize size {};
+    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0)
+    {
+        return static_cast<int>(size.ws_col);
+    }
+    return fallback;
 #endif
 }
 

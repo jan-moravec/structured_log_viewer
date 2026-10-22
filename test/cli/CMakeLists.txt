@@ -9,6 +9,8 @@ add_executable(
     src/test_query_e2e.cpp
     src/test_query_golden.cpp
     src/test_query_sources_e2e.cpp
+    src/test_schema_validate_e2e.cpp
+    src/test_stats_e2e.cpp
 )
 
 # Compression codecs are linked so the source-matrix e2e cases can
