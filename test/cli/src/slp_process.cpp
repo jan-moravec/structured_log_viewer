@@ -14,9 +14,9 @@
 #endif
 #include <windows.h>
 #else
-#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -188,9 +188,8 @@ CommandResult RunSlp(const std::vector<std::string> &args)
     PROCESS_INFORMATION process{};
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
-    const BOOL created = CreateProcessW(
-        nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup, &process
-    );
+    const BOOL created =
+        CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup, &process);
     CloseHandle(outFile);
     CloseHandle(errFile);
     REQUIRE(created);

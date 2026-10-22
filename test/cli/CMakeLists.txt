@@ -39,7 +39,9 @@ catch_discover_tests(slp_tests PROPERTIES LABELS "cli")
 # golden-tagged cases. Documented in test/cli/README.md.
 add_custom_target(
     slp-update-goldens
-    COMMAND ${CMAKE_COMMAND} -E env SLP_UPDATE_GOLDEN=1 ${CMAKE_CTEST_COMMAND} --preset release -L cli -R golden --output-on-failure
+    COMMAND
+        ${CMAKE_COMMAND} -E env SLP_UPDATE_GOLDEN=1 ${CMAKE_CTEST_COMMAND} --preset release -L cli -R golden
+        --output-on-failure
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Regenerating slp golden files under test/cli/golden"
     VERBATIM

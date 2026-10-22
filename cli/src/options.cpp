@@ -1043,9 +1043,7 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
             "Exit 0 while the parse-error percentage stays at or below this value. The default is any error exits 4."
         );
     AddSwitch(
-        validate,
-        "--strict",
-        "Not accepted on validate. Use --max-error-rate to relax the default, which is strict."
+        validate, "--strict", "Not accepted on validate. Use --max-error-rate to relax the default, which is strict."
     );
     validate.add_argument("--output-format")
         .default_value(std::string{"text"})

@@ -54,17 +54,7 @@ TEST_CASE("slp query verbose keeps row bytes on stdout", "[cli][e2e][query]")
     const auto fixture = (FixturesDir() / "two_lines.jsonl").string();
     const auto emptyTemplates = (FixturesDir() / "empty_templates").string();
     const auto verbose = RunSlp(
-        {"query",
-         "--tz",
-         "UTC",
-         "--template-dir",
-         emptyTemplates,
-         "-v",
-         "-t",
-         "csv",
-         "--columns",
-         "msg",
-         fixture}
+        {"query", "--tz", "UTC", "--template-dir", emptyTemplates, "-v", "-t", "csv", "--columns", "msg", fixture}
     );
     INFO("stdout:\n" << verbose.out);
     INFO("stderr:\n" << verbose.err);

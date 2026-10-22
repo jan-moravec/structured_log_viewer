@@ -71,4 +71,3 @@ void WriteStage(int verboseLevel, std::string_view stage, std::uint64_t rows, st
 );
 
 } // namespace slp
-

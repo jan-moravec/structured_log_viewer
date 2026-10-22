@@ -258,9 +258,7 @@ if(SLV_BUILD_CLI)
     add_dependencies(apptest_cli_export_parity slp)
     target_compile_definitions(
         apptest_cli_export_parity
-        PRIVATE
-            "SLP_EXECUTABLE=\"$<TARGET_FILE:slp>\""
-            "SLP_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/test/cli/fixtures\""
+        PRIVATE "SLP_EXECUTABLE=\"$<TARGET_FILE:slp>\"" "SLP_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/test/cli/fixtures\""
     )
     add_test(
         NAME apptest_cli_export_parity

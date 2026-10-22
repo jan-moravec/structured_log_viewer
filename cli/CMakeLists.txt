@@ -15,10 +15,7 @@ add_library(
     src/command_query.cpp
 )
 
-target_include_directories(
-    slp_core
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/generated
-)
+target_include_directories(slp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 target_link_libraries(slp_core PUBLIC loglib PRIVATE argparse project_warnings)
 
@@ -52,8 +49,7 @@ if(WIN32 AND MSVC)
         add_custom_command(
             TARGET slp
             POST_BUILD
-            COMMAND
-                ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} $<TARGET_FILE_DIR:slp>
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} $<TARGET_FILE_DIR:slp>
             COMMENT "Copying MSVC runtime DLLs next to slp.exe"
             VERBATIM
         )

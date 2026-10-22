@@ -264,7 +264,9 @@ namespace
             }
             catch (const std::exception &ex)
             {
-                return std::unexpected(std::format("could not parse regex template '{}': {}.", candidate.string(), ex.what()));
+                return std::unexpected(
+                    std::format("could not parse regex template '{}': {}.", candidate.string(), ex.what())
+                );
             }
         }
         const auto loaded = loglib::LoadRegexTemplatesFromDirectory(templateDir);
@@ -282,8 +284,7 @@ namespace
 
 void LoadUserTemplates(const Options &options, CommandOutput &out)
 {
-    const std::filesystem::path dir =
-        options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
+    const std::filesystem::path dir = options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
     if (dir.empty())
     {
         return;
@@ -390,11 +391,7 @@ struct QuerySink final : loglib::LogParseSink
         {
             return std::unexpected(Fail(
                 ExitCode::Input,
-                std::format(
-                    "source '{}' was rejected by the {} parser.",
-                    effectivePath.string(),
-                    FormatName(*pinned)
-                )
+                std::format("source '{}' was rejected by the {} parser.", effectivePath.string(), FormatName(*pinned))
             ));
         }
         return loglib::DetectedFormat{.format = *pinned, .regexPattern = std::move(pattern)};
@@ -403,10 +400,9 @@ struct QuerySink final : loglib::LogParseSink
     loglib::DetectedFormat detected = loglib::DetectFormatForPath(effectivePath);
     if (detected.format == loglib::Source::Format::Regex && detected.regexPattern.empty())
     {
-        return std::unexpected(Fail(
-            ExitCode::Input,
-            std::format("could not detect a parser for source '{}'.", effectivePath.string())
-        ));
+        return std::unexpected(
+            Fail(ExitCode::Input, std::format("could not detect a parser for source '{}'.", effectivePath.string()))
+        );
     }
     return detected;
 }
@@ -452,8 +448,9 @@ struct QuerySink final : loglib::LogParseSink
             return Fail(ExitCode::Input, std::format("source '{}' is a directory.", source.path.string()));
         }
 
-        auto decompressor =
-            std::make_shared<loglib::DecompressingByteSource>(source.path, loglib::DecompressingByteSource::ProgressCallback{}, runtime.stop);
+        auto decompressor = std::make_shared<loglib::DecompressingByteSource>(
+            source.path, loglib::DecompressingByteSource::ProgressCallback{}, runtime.stop
+        );
         const std::filesystem::path effective = decompressor->EffectivePath();
         ownedDecompressors.push_back(decompressor);
 
@@ -544,14 +541,14 @@ struct QuerySink final : loglib::LogParseSink
         const auto now = std::chrono::system_clock::now();
         std::optional<std::int64_t> begin;
         std::optional<std::int64_t> end;
-        auto parseBound = [&](std::string_view text, std::string_view flag
-                          ) -> std::expected<std::int64_t, CommandOutput> {
+        auto parseBound = [&](std::string_view text,
+                              std::string_view flag) -> std::expected<std::int64_t, CommandOutput> {
             const auto parsed = loglib::ParseUserTimestamp(text, timeColumn.parseFormats, now);
             if (!parsed)
             {
-                return std::unexpected(Fail(
-                    ExitCode::Usage, std::format("'{}' could not parse timestamp '{}'.", flag, text)
-                ));
+                return std::unexpected(
+                    Fail(ExitCode::Usage, std::format("'{}' could not parse timestamp '{}'.", flag, text))
+                );
             }
             std::int64_t micros = parsed->micros;
             if (parsed->isNaive)
@@ -745,9 +742,7 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
             return Fail(
                 ExitCode::Usage,
                 std::format(
-                    "unresolvable sort column '{}'; available columns are {}.",
-                    sortSpec,
-                    AvailableColumnList(columns)
+                    "unresolvable sort column '{}'; available columns are {}.", sortSpec, AvailableColumnList(columns)
                 )
             );
         }
@@ -793,10 +788,7 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
     if (!parseErrors.empty())
     {
         out.err += FormatErrorLine(
-            {},
-            std::format(
-                "{} lines could not be parsed (use --verbose to list)", parseErrors.size()
-            )
+            {}, std::format("{} lines could not be parsed (use --verbose to list)", parseErrors.size())
         );
         out.err.push_back('\n');
         if (options.verbose > 0)
@@ -869,8 +861,7 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
         if (std::filesystem::exists(options.output, ec) && !options.force)
         {
             return Fail(
-                ExitCode::Output,
-                std::format("output '{}' already exists; pass --force to overwrite.", options.output)
+                ExitCode::Output, std::format("output '{}' already exists; pass --force to overwrite.", options.output)
             );
         }
         loglib::exports::FileSink sink(options.output);
