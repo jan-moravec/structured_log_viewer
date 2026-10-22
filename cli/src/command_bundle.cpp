@@ -58,7 +58,8 @@ namespace
 class ProgressLine
 {
 public:
-    explicit ProgressLine(bool enabled) noexcept : mEnabled(enabled)
+    explicit ProgressLine(bool enabled) noexcept
+        : mEnabled(enabled)
     {
     }
 
@@ -181,7 +182,9 @@ CommandOutput RunBundle(const Options &options, const RuntimeContext &runtime)
     writeOptions.totalWorkers = static_cast<int>(options.bundleThreads);
     writeOptions.stopToken = runtime.stop;
     writeOptions.canonicalizeSourceLocator = CanonicalSourceLocator;
-    writeOptions.progress = [&progress](std::uint64_t written, std::uint64_t total) { progress.Update(written, total); };
+    writeOptions.progress = [&progress](std::uint64_t written, std::uint64_t total) {
+        progress.Update(written, total);
+    };
 
     try
     {

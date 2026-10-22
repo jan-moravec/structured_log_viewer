@@ -42,7 +42,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [28. Pipe selection to external command](#28-pipe-selection-to-external-command)
   - [29. AI / LLM assistance panel](#29-ai--llm-assistance-panel)
   - [30. ~~Full-session export bundle~~ (shipped)](#30-full-session-export-bundle)
-  - [31. Sibling `slv` CLI](#31-sibling-slv-cli)
+  - [31. Sibling `slp` CLI](#31-sibling-slp-cli)
 - [Explicit non-goals](#explicit-non-goals)
 - [Process](#process)
 - [Comparative feature matrix](#comparative-feature-matrix)
@@ -193,7 +193,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 
 > **Shipped.** Row export lives in `loglib::exports`. `RowOrdering`, `ColumnProjection`, and `ParseUserTimestamp` are public `loglib` APIs with Catch2 coverage. `app/` and `test/app/` include only supported `loglib` headers (`scripts/check-loglib-internal-includes.py`). Workspace restore stays in `app/` as `logapp::persistence`.
 
-**Why.** `loglib` was designed Qt-free and most of the machinery — parsers, decompression, streaming, filter evaluation, session bundles, exports — already lives in the library. A handful of *view* semantics still bleed into `app/`, though: `LogFilterModel`'s display-order sort comparator, the visible-column whitelist, the relative-time / ISO fallback parser behind Goto Timestamp, and the `slv::exports` files that physically live in `app/` despite having zero Qt includes. Before we tag `v1.0` the library should be a clean, self-contained, well-tested triage core — (a) fewer things silently regress when the GUI is refactored, (b) `loglib`'s own tests can exercise sort / projection / timestamp parsing directly without a `QTest` harness, and (c) future sibling hosts (the [`slv` CLI](#31-sibling-slv-cli), a hypothetical read-only web viewer) do not need to fork logic that already exists.
+**Why.** `loglib` was designed Qt-free and most of the machinery — parsers, decompression, streaming, filter evaluation, session bundles, exports — already lives in the library. A handful of *view* semantics still bleed into `app/`, though: `LogFilterModel`'s display-order sort comparator, the visible-column whitelist, the relative-time / ISO fallback parser behind Goto Timestamp, and the `slv::exports` files that physically live in `app/` despite having zero Qt includes. Before we tag `v1.0` the library should be a clean, self-contained, well-tested triage core — (a) fewer things silently regress when the GUI is refactored, (b) `loglib`'s own tests can exercise sort / projection / timestamp parsing directly without a `QTest` harness, and (c) future sibling hosts (the [`slp` CLI](#31-sibling-slp-cli), a hypothetical read-only web viewer) do not need to fork logic that already exists.
 
 **Scope.**
 
@@ -204,7 +204,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 - Audit `app/` for other spots where `loglib`-shaped logic still lives on the Qt side. Anything that fits the "no Qt types in the signature" bar should follow.
 - Add / expand `loglib` unit tests so each extracted piece has direct Catch2 coverage independent of `QTest`, and cover previously GUI-only edge cases (mixed-column sort stability, timestamp TZ round-trips, projection with missing keys) at the library layer.
 
-**Non-goals (v1).** No user-visible feature change. No new codepath. This is a move-and-rename hygiene pass; test parity before and after is the acceptance bar. Actually shipping a headless binary is a separate item — see [31. Sibling `slv` CLI](#31-sibling-slv-cli).
+**Non-goals (v1).** No user-visible feature change. No new codepath. This is a move-and-rename hygiene pass; test parity before and after is the acceptance bar. Actually shipping a headless binary is a separate item — see [31. Sibling `slp` CLI](#31-sibling-slp-cli).
 
 **Approach.** Land the moves and extractions in small PRs — one per bullet — so bisection stays cheap if any test regresses. For each extraction: introduce the `loglib` type first with its Catch2 tests, then thread the Qt code through it in a follow-up. Keep the old `app/`-side symbols behind thin adapters until every caller has migrated, then delete them.
 
@@ -314,11 +314,13 @@ Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is
 
 **Touches.** `loglib`: `session_bundle.hpp`, writer/metadata reader, shared normalized-row serializer, and decompression first-line support. `app`: export action plus bundle detection/config-default handling inside the existing static compressed-file queue.
 
-### 31. Sibling `slv` CLI
+### ~~31. Sibling `slp` CLI~~
 
-**Why.** lnav's `-n` / `-c` flags are the most cited reason engineers script lnav into CI / triage runbooks. A headless companion binary unlocks one-shot triage (`slv --filter 'level=error' --since '-1h' --export errors.jsonl`) without spinning up Qt. This is a **sibling product** to the viewer, not a viewer feature — a user who only opens the GUI gains nothing from it — so it lives outside the release-blocker set. Builds on shipped [item 10](#10-complete-loglibs-qt-independence): with the extraction pass complete, `slv` is a thin argument parser wired to `loglib::ParseFile` / `loglib::RowOrdering` / `loglib::ColumnProjection` / `loglib::exports`.
+**Shipped.** `slp` ships next to the GUI in every package with seven commands (`query`, `stats`, `schema`, `validate`, `bundle`, `formats`, `tail`); see [`doc/cli.md`](doc/cli.md). The scope below is the original proposal and is kept for history.
 
-**Scope.** A standalone `slv` binary that runs the existing `loglib` pipeline against the requested source, applies filters / sort, then writes the result through the [item 7](#7-export-filtered-rows) export path and exits. Flags:
+**Why.** lnav's `-n` / `-c` flags are the most cited reason engineers script lnav into CI / triage runbooks. A headless companion binary unlocks one-shot triage (`slp --filter 'level=error' --since '-1h' --export errors.jsonl`) without spinning up Qt. This is a **sibling product** to the viewer, not a viewer feature — a user who only opens the GUI gains nothing from it — so it lives outside the release-blocker set. Builds on shipped [item 10](#10-complete-loglibs-qt-independence): with the extraction pass complete, `slp` is a thin argument parser wired to `loglib::ParseFile` / `loglib::RowOrdering` / `loglib::ColumnProjection` / `loglib::exports`.
+
+**Scope.** A standalone `slp` binary that runs the existing `loglib` pipeline against the requested source, applies filters / sort, then writes the result through the [item 7](#7-export-filtered-rows) export path and exits. Flags:
 
 - `--source <path | ->` (file, stdin, or `tcp://...` / `udp://...`).
 - `--format <json|logfmt|csv|regex>` (optional override for auto-detect).
@@ -331,11 +333,11 @@ Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is
 
 **Non-goals (v1 of this item).** SQL queries ([item 21](#21-sql-query-interface) — when SQL lands, expose it as `--sql`), live tail in headless (`--follow` defers to a later CLI ticket), interactive prompts, TLS material discovery for `tcp://` sources (spec separately if there is demand).
 
-**Approach.** Build a separate `slv` binary that links against `loglib` only (no Qt dependency). The two binaries — `StructuredLogViewer` GUI, `slv` CLI — ship in the same package. Argument parsing is hand-rolled or via a small header-only library; no Qt.
+**Approach.** Build a separate `slp` binary that links against `loglib` only (no Qt dependency). The two binaries — `StructuredLogViewer` GUI, `slp` CLI — ship in the same package. Argument parsing is hand-rolled or via a small header-only library; no Qt.
 
 **Acceptance bar.** Round-trip parity with the GUI: a filter expression that selects 1234 rows in the GUI exports exactly 1234 rows on the CLI. Cold-start `< 100 ms` overhead vs the raw `loglib` benchmarks.
 
-**Touches.** New `cli/` directory mirroring `app/`'s structure. `cmake/`: a new `slv` target. CI: extend the build matrix to build the CLI on every platform. Packaging: second binary in the installer / MSI / macOS notarisation flows. Docs: a `doc/cli.md` (or a new section in `doc/README.md`).
+**Touches.** New `cli/` directory mirroring `app/`'s structure. `cmake/`: a new `slp` target. CI: extend the build matrix to build the CLI on every platform. Packaging: second binary in the installer / MSI / macOS notarisation flows. Docs: a `doc/cli.md` (or a new section in `doc/README.md`).
 
 ## Explicit non-goals
 
@@ -397,7 +399,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Pattern clustering / similar-line grouping  |                  |           |       |           |             |         |              |           |   ✓   |
 | Time-gap detection                          |                  |           |       |           |             |         |              |           |   ✓   |
 | SQL queries over rows                       |                  |     ✓     |       |           |      ✓      |         |              |           |       |
-| Headless / CLI / scriptable mode            |                  |     ✓     |   ~   |           |      ~      |         |              |     ~     |       |
+| Headless / CLI / scriptable mode            |        ✓         |     ✓     |   ~   |           |      ~      |         |              |     ~     |       |
 | Remote sources (SSH / SFTP / SMB)           | ~ via TCP / UDP  |           |       |           |             |    ✓    |              |           |   ~   |
 | Plugin / extension system                   |                  | ~ scripts |       |     ✓     |      ✓      |    ✓    |              |           |       |
 | Scratchpad / notes panel                    |                  |           |   ✓   |           |             |         |              |           |   ✓   |

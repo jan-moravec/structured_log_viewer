@@ -101,7 +101,8 @@ class OutputStream
 {
 public:
     OutputStream() = default;
-    explicit OutputStream(std::FILE *file, bool owned) noexcept : mFile(file), mOwned(owned)
+    explicit OutputStream(std::FILE *file, bool owned) noexcept
+        : mFile(file), mOwned(owned)
     {
     }
 
@@ -442,7 +443,9 @@ public:
         if (!batch.errors.empty())
         {
             mErrors.insert(
-                mErrors.end(), std::make_move_iterator(batch.errors.begin()), std::make_move_iterator(batch.errors.end())
+                mErrors.end(),
+                std::make_move_iterator(batch.errors.begin()),
+                std::make_move_iterator(batch.errors.end())
             );
             batch.errors.clear();
         }
@@ -551,9 +554,8 @@ private:
             return;
         }
 
-        const auto compiled = loglib::CompileExpression(
-            mSession->expression, mTable.Configuration().Configuration().columns, &mTable
-        );
+        const auto compiled =
+            loglib::CompileExpression(mSession->expression, mTable.Configuration().Configuration().columns, &mTable);
         std::vector<std::size_t> accepted;
         std::string buffer;
         for (std::size_t row = mNextRow; row < total; ++row)
@@ -698,7 +700,7 @@ struct LiveSource
             );
         }
         // The producer pre-fills the last retained rows before it follows the file.
-        const std::size_t prefill = !options.retention  ? loglib::DEFAULT_RETENTION_LINES
+        const std::size_t prefill = !options.retention        ? loglib::DEFAULT_RETENTION_LINES
                                     : *options.retention == 0 ? loglib::MAX_RETENTION_LINES
                                                               : static_cast<std::size_t>(*options.retention);
         try
@@ -729,9 +731,7 @@ struct LiveSource
         }
         catch (const std::exception &ex)
         {
-            return std::unexpected(
-                TailFail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what()))
-            );
+            return std::unexpected(TailFail(ExitCode::Input, std::format("failed to attach to stdin: {}", ex.what())));
         }
         live.displayName = "-";
         live.label = "-";
@@ -761,7 +761,14 @@ struct LiveSource
         catch (const std::exception &ex)
         {
             return std::unexpected(TailFail(
-                ExitCode::Input, std::format("cannot listen on {}://{}:{}: {}", spec.kind == SourceKind::Tcp ? "tcp" : "udp", host, spec.port, ex.what())
+                ExitCode::Input,
+                std::format(
+                    "cannot listen on {}://{}:{}: {}",
+                    spec.kind == SourceKind::Tcp ? "tcp" : "udp",
+                    host,
+                    spec.port,
+                    ex.what()
+                )
             ));
         }
         live.displayName = live.producer->DisplayName();
@@ -825,8 +832,8 @@ CommandOutput RunTail(const Options &options, const RuntimeContext &runtime)
     {
         rendering = Rendering::Text;
     }
-    const bool color = rendering == Rendering::Text &&
-                       (toStdout ? ColorActive(options, stdout) : options.color == ColorMode::Always);
+    const bool color =
+        rendering == Rendering::Text && (toStdout ? ColorActive(options, stdout) : options.color == ColorMode::Always);
 
     std::unique_ptr<OutputStream> fileOutput;
     std::FILE *stream = stdout;
@@ -890,7 +897,9 @@ CommandOutput RunTail(const Options &options, const RuntimeContext &runtime)
     {
         if (!options.quiet)
         {
-            out.err += FormatErrorLine({}, std::format("{} lines could not be parsed (use --verbose to list)", parseErrors.size()));
+            out.err += FormatErrorLine(
+                {}, std::format("{} lines could not be parsed (use --verbose to list)", parseErrors.size())
+            );
             out.err.push_back('\n');
             if (options.verbose > 0)
             {

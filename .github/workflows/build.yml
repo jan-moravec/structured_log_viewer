@@ -330,6 +330,7 @@ jobs:
           mkdir -p $APP_DIR/usr/share/applications
           mkdir -p $APP_DIR/usr/share/icons/hicolor/256x256/apps
           cp build/release/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/
+          cp build/release/bin/Release/slp $APP_DIR/usr/bin/
           cp -r build/release/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
@@ -383,6 +384,11 @@ jobs:
           rm -rf squashfs-root
           "./$APPIMAGE" --appimage-extract >/dev/null
           test -x "squashfs-root/usr/bin/${{ env.APP_NAME }}"
+          test -x "squashfs-root/usr/bin/slp"
+          test -f "squashfs-root/usr/share/doc/${{ env.APP_NAME }}/THIRD_PARTY_LICENSES.txt"
+          # slp resolves tzdata through $APPDIR/usr/share/tzdata, as AppRun sets it.
+          APPDIR="$PWD/squashfs-root" LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" \
+            squashfs-root/usr/bin/slp --version
           test -f "squashfs-root/usr/lib/libQt6Core.so.6"
           test -f "squashfs-root/usr/lib/libQt6Widgets.so.6"
           test -d "squashfs-root/usr/share/tzdata"
@@ -521,6 +527,7 @@ jobs:
           mkdir ${{ env.APP_NAME }}
           cd ${{ env.APP_NAME }}
           mv ../build/release/bin/Release/${{ env.APP_NAME }}.exe .
+          mv ../build/release/bin/Release/slp.exe .
           mv ../build/release/bin/Release/tzdata .
           Move-Item ../build/release/bin/Release/tbb*.dll .
           Move-Item ../build/release/bin/Release/msvcp*.dll .
@@ -550,6 +557,17 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Write-Host "Packaged binary started successfully and was terminated after 5s."
+
+          # slp ships beside the GUI and shares its runtime DLLs and tzdata.
+          & "${{ env.APP_NAME }}\slp.exe" --version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Packaged slp.exe --version exited with code $LASTEXITCODE"
+            exit 1
+          }
+          if (-not (Test-Path "${{ env.APP_NAME }}\THIRD_PARTY_LICENSES.txt")) {
+            Write-Error "THIRD_PARTY_LICENSES.txt missing next to slp.exe"
+            exit 1
+          }
 
       - name: Compute SHA256 checksums
         shell: powershell
@@ -656,8 +674,47 @@ jobs:
             echo "ERROR: THIRD_PARTY_LICENSES.txt missing from bundle Resources" >&2
             exit 1
           fi
-          macdeployqt ${{ env.APP_NAME }}.app -dmg
-          mv ${{ env.APP_NAME }}.dmg "$GITHUB_WORKSPACE/${{ env.APP_NAME }}.dmg"
+          macdeployqt ${{ env.APP_NAME }}.app
+
+          # slp sits next to the .app, not inside it. Its TBB dylib is found
+          # through the build tree's rpath, so stage that dylib beside it.
+          DMG_ROOT="$GITHUB_WORKSPACE/dmg-root"
+          rm -rf "$DMG_ROOT"
+          mkdir -p "$DMG_ROOT"
+          cp -R ${{ env.APP_NAME }}.app "$DMG_ROOT/"
+          cp slp "$DMG_ROOT/slp"
+          cp ${{ env.APP_NAME }}.app/Contents/Resources/THIRD_PARTY_LICENSES.txt "$DMG_ROOT/"
+          for dep in $(otool -L slp | awk '/@rpath\/libtbb/ {print $1}'); do
+            lib="$(basename "$dep")"
+            src="$(find "$GITHUB_WORKSPACE/build/release" -name "$lib" -type f | head -n 1)"
+            if [ -z "$src" ]; then
+              echo "ERROR: could not locate $lib for slp" >&2
+              exit 1
+            fi
+            cp "$src" "$DMG_ROOT/$lib"
+          done
+          install_name_tool -add_rpath @executable_path "$DMG_ROOT/slp" || true
+          hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder "$DMG_ROOT" -ov -format UDZO \
+            "$GITHUB_WORKSPACE/${{ env.APP_NAME }}.dmg"
+
+      - name: Verify slp in the DMG
+        # slp lives beside the .app. There is no tzdata next to it, so this
+        # also exercises the UTC fallback: it must warn once and still run.
+        run: |
+          set -euo pipefail
+          MOUNT="$(mktemp -d)"
+          hdiutil attach "${{ env.APP_NAME }}.dmg" -mountpoint "$MOUNT" -nobrowse -quiet
+          trap 'hdiutil detach "$MOUNT" -quiet || true' EXIT
+          test -x "$MOUNT/slp"
+          test -d "$MOUNT/${{ env.APP_NAME }}.app"
+          test -f "$MOUNT/THIRD_PARTY_LICENSES.txt"
+          if ls "$MOUNT/${{ env.APP_NAME }}.app/Contents/MacOS" | grep -qx slp; then
+            echo "slp must not be inside the .app bundle" >&2
+            exit 1
+          fi
+          "$MOUNT/slp" --version
+          echo '{"msg":"hello"}' | "$MOUNT/slp" query --tz Europe/Prague - 2>slp.stderr
+          test "$(grep -c 'timezone data was not found' slp.stderr)" -eq 1
 
       - name: Smoke-test packaged .app bundle
         # Headless launch so a missing bundled framework / plugin or broken

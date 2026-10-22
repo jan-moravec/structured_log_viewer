@@ -20,10 +20,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <format>
 #include <iomanip>
 #include <map>
-#include <filesystem>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -227,10 +227,7 @@ struct LevelSummary
 }
 
 [[nodiscard]] std::string RenderLevelText(
-    const Options &options,
-    const LevelSummary &summary,
-    const std::string &sources,
-    const std::string &spanLine
+    const Options &options, const LevelSummary &summary, const std::string &sources, const std::string &spanLine
 )
 {
     const bool color = ColorActive(options, stdout);
@@ -247,8 +244,8 @@ struct LevelSummary
         {
             return;
         }
-        const double percent = summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) /
-                                                             static_cast<double>(summary.total);
+        const double percent =
+            summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
         std::vector<std::string> row;
         row.emplace_back(std::string(loglib::CanonicalLevelName(level)));
         row.push_back(std::to_string(count));
@@ -293,7 +290,8 @@ struct LevelSummary
     {
         const std::uint64_t count = std::stoull(tableRows[r][1]);
         const int filled =
-            maxCount == 0 ? 0 : static_cast<int>((static_cast<double>(count) * barWidth) / static_cast<double>(maxCount));
+            maxCount == 0 ? 0
+                          : static_cast<int>((static_cast<double>(count) * barWidth) / static_cast<double>(maxCount));
         tableRows[r][3] = std::string(static_cast<std::size_t>(filled), '#');
     }
 
@@ -352,7 +350,9 @@ struct LevelSummary
     return out.str();
 }
 
-[[nodiscard]] std::string RenderLevelJson(const LevelSummary &summary, const std::string &sources, std::uint64_t rowCount)
+[[nodiscard]] std::string RenderLevelJson(
+    const LevelSummary &summary, const std::string &sources, std::uint64_t rowCount
+)
 {
     std::string out = "{\n  \"by\": \"level\",\n  \"sources\": [";
     AppendJsonString(out, sources);
@@ -379,8 +379,8 @@ struct LevelSummary
             out += ",\n";
         }
         first = false;
-        const double percent = summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) /
-                                                             static_cast<double>(summary.total);
+        const double percent =
+            summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
         out += "    {\"level\": ";
         AppendJsonString(out, loglib::CanonicalLevelName(level));
         out += ", \"count\": ";
@@ -395,10 +395,9 @@ struct LevelSummary
         {
             out += ",\n";
         }
-        const double percent = summary.total == 0
-                                   ? 0.0
-                                   : (100.0 * static_cast<double>(summary.unresolvable)) /
-                                         static_cast<double>(summary.total);
+        const double percent = summary.total == 0 ? 0.0
+                                                  : (100.0 * static_cast<double>(summary.unresolvable)) /
+                                                        static_cast<double>(summary.total);
         out += "    {\"level\": ";
         AppendJsonString(out, "Unknown");
         out += ", \"count\": ";
@@ -516,10 +515,7 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
 }
 
 [[nodiscard]] std::string RenderTimeJson(
-    const TimeHistogram &histogram,
-    const RuntimeContext &runtime,
-    const std::string &sources,
-    std::uint64_t rowCount
+    const TimeHistogram &histogram, const RuntimeContext &runtime, const std::string &sources, std::uint64_t rowCount
 )
 {
     const auto widthMicros = histogram.index.BucketWidth().count();
@@ -607,8 +603,8 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
     std::ostringstream out;
     out << "source: " << sources << '\n';
     out << spanLine << '\n';
-    out << "bucket: " << loglib::HistogramBucketSizeLabel(histogram.index.BucketSize()) << " ("
-        << widthMicros << " us)\n";
+    out << "bucket: " << loglib::HistogramBucketSizeLabel(histogram.index.BucketSize()) << " (" << widthMicros
+        << " us)\n";
 
     auto writeCells = [&](const std::vector<std::string> &cells) {
         for (std::size_t c = 0; c < cells.size(); ++c)
@@ -636,7 +632,8 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
             continue;
         }
         const int filled =
-            maxTotal == 0 ? 0 : static_cast<int>((static_cast<double>(total) * barWidth) / static_cast<double>(maxTotal));
+            maxTotal == 0 ? 0
+                          : static_cast<int>((static_cast<double>(total) * barWidth) / static_cast<double>(maxTotal));
         std::string bar(static_cast<std::size_t>(filled), '#');
         if (color)
         {
@@ -713,9 +710,9 @@ struct ColumnValueStats
     rows.reserve(ranked.size());
     for (const auto &[value, count] : ranked)
     {
-        const double percent = stats.presentRows == 0 ? 0.0
-                                                      : (100.0 * static_cast<double>(count)) /
-                                                            static_cast<double>(stats.presentRows);
+        const double percent = stats.presentRows == 0
+                                   ? 0.0
+                                   : (100.0 * static_cast<double>(count)) / static_cast<double>(stats.presentRows);
         rows.push_back({value, std::to_string(count), FormatPercent(percent)});
     }
 
@@ -873,7 +870,8 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
         return out;
     }
 
-    const auto compiled = loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
+    const auto compiled =
+        loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
 
     out.exitCode = StatsExitCode(options, sourceRows, rows.size());
@@ -898,7 +896,8 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
         {
             std::ostringstream csv;
             csv << "by,level\nrowCount," << rows.size() << "\nlevel,count,percent\n";
-            for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
+            for (int value = static_cast<int>(loglib::LogLevel::Trace);
+                 value <= static_cast<int>(loglib::LogLevel::Fatal);
                  ++value)
             {
                 const auto level = static_cast<loglib::LogLevel>(value);
@@ -907,9 +906,9 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
                 {
                     continue;
                 }
-                const double percent = summary.total == 0 ? 0.0
-                                                          : (100.0 * static_cast<double>(count)) /
-                                                                static_cast<double>(summary.total);
+                const double percent = summary.total == 0
+                                           ? 0.0
+                                           : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
                 csv << loglib::CanonicalLevelName(level) << ',' << count << ',' << FormatPercent(percent) << '\n';
             }
             if (summary.unresolvable > 0)
@@ -938,9 +937,8 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
         const std::size_t timeColumn = static_cast<std::size_t>(timeIndex);
         const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
 
-        TimeHistogram probe = BuildTimeHistogram(
-            table, rows, timeColumn, levelColumn, loglib::HistogramBucketSize::OneMinute
-        );
+        TimeHistogram probe =
+            BuildTimeHistogram(table, rows, timeColumn, levelColumn, loglib::HistogramBucketSize::OneMinute);
         const loglib::HistogramBucketSize bucketSize = ResolveBucketSize(options, structured, probe);
         TimeHistogram histogram = BuildTimeHistogram(table, rows, timeColumn, levelColumn, bucketSize);
 
@@ -986,8 +984,7 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
                 )
             );
         }
-        const ColumnValueStats columnStats =
-            SummarizeColumn(table, rows, static_cast<std::size_t>(columnIndex));
+        const ColumnValueStats columnStats = SummarizeColumn(table, rows, static_cast<std::size_t>(columnIndex));
         const std::string span = std::format("span: {} row(s)", rows.size());
         const std::string &header = columns[static_cast<std::size_t>(columnIndex)].header;
         if (options.outputFormat == "json")
@@ -997,8 +994,8 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
         else if (options.outputFormat == "csv")
         {
             std::ostringstream csv;
-            csv << "by,column\nrowCount," << rows.size() << "\ncolumn," << header
-                << "\ncardinality," << columnStats.counts.size() << "\nvalue,count,percent\n";
+            csv << "by,column\nrowCount," << rows.size() << "\ncolumn," << header << "\ncardinality,"
+                << columnStats.counts.size() << "\nvalue,count,percent\n";
             std::vector<std::pair<std::string, std::uint64_t>> ranked(
                 columnStats.counts.begin(), columnStats.counts.end()
             );
@@ -1015,10 +1012,9 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
             }
             for (const auto &[value, count] : ranked)
             {
-                const double percent = columnStats.presentRows == 0
-                                           ? 0.0
-                                           : (100.0 * static_cast<double>(count)) /
-                                                 static_cast<double>(columnStats.presentRows);
+                const double percent = columnStats.presentRows == 0 ? 0.0
+                                                                    : (100.0 * static_cast<double>(count)) /
+                                                                          static_cast<double>(columnStats.presentRows);
                 csv << '"' << value << '"' << ',' << count << ',' << FormatPercent(percent) << '\n';
             }
             out.out = csv.str();

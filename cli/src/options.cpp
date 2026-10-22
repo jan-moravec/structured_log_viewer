@@ -1156,9 +1156,7 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
         .metavar("PERCENT")
         .help("Not accepted on tail. Use --strict instead. The default is unset.");
     AddSwitch(tail, "--strict", "Exit 4 when the parse reported errors. The default is to keep going.");
-    AddSources(
-        tail, "One source to follow: a file, - for stdin, or tcp://[host]:port / udp://[host]:port."
-    );
+    AddSources(tail, "One source to follow: a file, - for stdin, or tcp://[host]:port / udp://[host]:port.");
 
     program.add_subparser(query);
     program.add_subparser(stats);

@@ -123,7 +123,8 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled = loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
+    const auto compiled =
+        loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     const auto filterMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - filterStarted).count()

@@ -19,9 +19,7 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] CommandOutput SessionFail(
-    std::string_view command, ExitCode code, std::string_view sentence
-)
+[[nodiscard]] CommandOutput SessionFail(std::string_view command, ExitCode code, std::string_view sentence)
 {
     CommandOutput out;
     out.exitCode = static_cast<int>(code);
@@ -282,9 +280,7 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
     }
     else if (OnlyInvertRequested(options))
     {
-        session.expression = loglib::FilterExpression{
-            loglib::FilterExpression::Not{session.configuration.expression}
-        };
+        session.expression = loglib::FilterExpression{loglib::FilterExpression::Not{session.configuration.expression}};
     }
     else
     {
@@ -306,8 +302,10 @@ std::expected<EffectiveSession, CommandOutput> ApplySessionConfiguration(
         }
         session.sort = *parsed;
     }
-    else if (const auto &persisted = session.configuration.sort;
-             persisted.columnIndex >= 0 && static_cast<std::size_t>(persisted.columnIndex) < columns.size())
+    else if (
+        const auto &persisted = session.configuration.sort;
+        persisted.columnIndex >= 0 && static_cast<std::size_t>(persisted.columnIndex) < columns.size()
+    )
     {
         session.sort = SortChoice{
             static_cast<std::size_t>(persisted.columnIndex),

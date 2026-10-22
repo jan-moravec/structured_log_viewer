@@ -17,8 +17,8 @@
 #include <io.h>
 #include <windows.h>
 #else
-#include <signal.h>
 #include <sys/ioctl.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -121,7 +121,7 @@ int TerminalWidth(std::FILE *stream, int fallback) noexcept
             return static_cast<int>(parsed);
         }
     }
-    struct winsize size {};
+    struct winsize size{};
     if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0)
     {
         return static_cast<int>(size.ws_col);

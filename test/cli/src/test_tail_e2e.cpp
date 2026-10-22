@@ -53,8 +53,7 @@ constexpr auto kLong = milliseconds(30000);
 
 [[nodiscard]] std::string FourRows()
 {
-    return Row("info", "alpha", 0) + Row("error", "bravo", 1) + Row("warn", "charlie", 2) +
-           Row("error", "delta", 3);
+    return Row("info", "alpha", 0) + Row("error", "bravo", 1) + Row("warn", "charlie", 2) + Row("error", "delta", 3);
 }
 
 [[nodiscard]] std::vector<std::string> TailArgs(std::vector<std::string> extra)
@@ -197,8 +196,7 @@ TEST_CASE("slp tail applies filter, level, and invert flags per batch", "[cli][t
 
 TEST_CASE("slp tail renders one text line per row", "[cli][tail][e2e]")
 {
-    const auto result =
-        RunSlpWithStdin(TailArgs({"--output-format", "text", "--color", "never", "-"}), FourRows());
+    const auto result = RunSlpWithStdin(TailArgs({"--output-format", "text", "--color", "never", "-"}), FourRows());
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
     CHECK(CountLines(result.out) == 4);
@@ -206,8 +204,7 @@ TEST_CASE("slp tail renders one text line per row", "[cli][tail][e2e]")
     CHECK_FALSE(Contains(result.out, "\033["));
 
     const NoColorUnset allowColor;
-    const auto colored =
-        RunSlpWithStdin(TailArgs({"--output-format", "text", "--color", "always", "-"}), FourRows());
+    const auto colored = RunSlpWithStdin(TailArgs({"--output-format", "text", "--color", "always", "-"}), FourRows());
     INFO(colored.err);
     REQUIRE(colored.exitCode == 0);
     CHECK(Contains(colored.out, "\033[31merror\033[0m"));
@@ -286,9 +283,7 @@ TEST_CASE("slp tail receives rows over UDP", "[cli][tail][e2e][network]")
 
     test_common::UdpLogClient client("127.0.0.1", port);
     // Datagrams can be lost before the listener drains its socket; resend until the run ends.
-    const std::vector<std::string> lines = {
-        Row("info", "one", 0), Row("warn", "two", 1), Row("error", "three", 2)
-    };
+    const std::vector<std::string> lines = {Row("info", "one", 0), Row("warn", "two", 1), Row("error", "three", 2)};
     std::optional<int> exitCode;
     for (int attempt = 0; attempt < 50 && !exitCode.has_value(); ++attempt)
     {
@@ -320,6 +315,28 @@ TEST_CASE("slp tail --for ends an idle listener with exit 0", "[cli][tail][e2e][
     CHECK(result.out.empty());
     CHECK(elapsed >= milliseconds(900));
     CHECK(elapsed < std::chrono::seconds(15));
+}
+
+TEST_CASE("slp tail exits 0 on SIGINT after emitting what arrived", "[cli][tail][e2e][network]")
+{
+    const std::uint16_t port = FreePort<loglib::TcpServerProducer>();
+    SlpChild child(TailArgs({"tcp://127.0.0.1:" + std::to_string(port)}));
+    (void)ListeningLine(child, "tcp");
+    {
+        test_common::TcpLogClient client("127.0.0.1", port);
+        client.Send(Row("info", "before-interrupt", 0));
+        client.Send(Row("warn", "also-before", 1));
+    }
+    REQUIRE(child.WaitForOut("also-before", kLong));
+    if (!child.Interrupt())
+    {
+        SKIP("this platform cannot deliver SIGINT to one child");
+    }
+    const auto exitCode = child.Wait(kLong);
+    REQUIRE(exitCode.has_value());
+    INFO(child.Err());
+    CHECK(*exitCode == 0);
+    CHECK(CountLines(child.Out()) == 2);
 }
 
 TEST_CASE("slp tail says so when a TCP peer speaks TLS", "[cli][tail][e2e][network]")

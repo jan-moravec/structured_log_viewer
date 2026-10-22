@@ -200,8 +200,7 @@ struct QuerySink final : loglib::LogParseSink
             }
             for (const loglib::LogLine &line : batch.lines)
             {
-                *linesConsumed =
-                    std::max(*linesConsumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
+                *linesConsumed = std::max(*linesConsumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
             }
         }
 
@@ -478,10 +477,7 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
 {
     if (loglib::IsStdinInteractive())
     {
-        return Fail(
-            ExitCode::Input,
-            "standard input is a terminal; pipe log data into slp or redirect from a file"
-        );
+        return Fail(ExitCode::Input, "standard input is a terminal; pipe log data into slp or redirect from a file");
     }
 
     constexpr auto kPeekTimeout = std::chrono::milliseconds(500);
@@ -531,11 +527,7 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
     return {};
 }
 
-[[nodiscard]] CommandOutput LoadSources(
-    const Options &options,
-    const RuntimeContext &runtime,
-    LoadedTable &loaded
-)
+[[nodiscard]] CommandOutput LoadSources(const Options &options, const RuntimeContext &runtime, LoadedTable &loaded)
 {
     CommandOutput side;
     LoadUserTemplates(options, side);
@@ -610,9 +602,7 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
     {
         if (source.kind == SourceKind::Tcp || source.kind == SourceKind::Udp)
         {
-            return Fail(
-                ExitCode::Usage, std::format("Network source '{}' is only valid for `slp tail`.", source.text)
-            );
+            return Fail(ExitCode::Usage, std::format("Network source '{}' is only valid for `slp tail`.", source.text));
         }
         if (source.kind == SourceKind::Path)
         {

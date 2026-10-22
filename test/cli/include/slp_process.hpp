@@ -65,6 +65,9 @@ public:
     /** @brief Waits for exit and returns the exit code, or nullopt on timeout. */
     [[nodiscard]] std::optional<int> Wait(std::chrono::milliseconds timeout);
 
+    /** @brief Sends `SIGINT` to the child. Returns false where the platform cannot deliver it. */
+    [[nodiscard]] bool Interrupt();
+
     /** @brief Standard output captured so far. */
     [[nodiscard]] std::string Out() const;
 

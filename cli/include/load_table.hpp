@@ -50,9 +50,7 @@ struct LoadedTable
  * `BeginStreaming`. `--config` seeds it the same way and replaces the
  * bundle's, minus its `source`.
  */
-[[nodiscard]] std::pair<LoadedTable, CommandOutput> LoadTable(
-    const Options &options, const RuntimeContext &runtime
-);
+[[nodiscard]] std::pair<LoadedTable, CommandOutput> LoadTable(const Options &options, const RuntimeContext &runtime);
 
 /**
  * @brief Registers the user's regex templates for format detection.

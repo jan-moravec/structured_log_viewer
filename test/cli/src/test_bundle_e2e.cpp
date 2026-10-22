@@ -60,7 +60,9 @@ constexpr std::string_view kFourRows =
     return RunSlp(args);
 }
 
-[[nodiscard]] slp::test::CommandResult CountRows(const std::filesystem::path &bundle, std::vector<std::string> extra = {})
+[[nodiscard]] slp::test::CommandResult CountRows(
+    const std::filesystem::path &bundle, std::vector<std::string> extra = {}
+)
 {
     std::vector<std::string> args = {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count"};
     args.insert(args.end(), extra.begin(), extra.end());
@@ -69,13 +71,23 @@ constexpr std::string_view kFourRows =
 }
 
 /** @brief Reads back the configuration embedded in @p bundle through `query --save-session`. */
-[[nodiscard]] loglib::LogConfiguration EmbeddedConfiguration(const std::filesystem::path &bundle, const std::string &name)
+[[nodiscard]] loglib::LogConfiguration EmbeddedConfiguration(
+    const std::filesystem::path &bundle, const std::string &name
+)
 {
     const auto sessionPath = ScratchRoot() / name;
     std::filesystem::remove(sessionPath);
     const auto result = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", "--allow-empty", "--save-session",
-         sessionPath.string(), bundle.string()}
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--count",
+         "--allow-empty",
+         "--save-session",
+         sessionPath.string(),
+         bundle.string()}
     );
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
@@ -91,9 +103,8 @@ TEST_CASE("slp bundle keeps every row and stores filter, sort, and columns", "[c
     const auto bundle = ScratchRoot() / "default.slvbundle";
     std::filesystem::remove(bundle);
 
-    const auto result = RunBundle(
-        {"-o", bundle.string(), "--filter", "level:error", "--sort", "msg:desc", "--columns", "msg,level"}
-    );
+    const auto result =
+        RunBundle({"-o", bundle.string(), "--filter", "level:error", "--sort", "msg:desc", "--columns", "msg,level"});
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
     REQUIRE(std::filesystem::exists(bundle));

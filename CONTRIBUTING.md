@@ -44,7 +44,7 @@ Thanks for your interest in contributing! This document is the developer referen
 
 ### Project Structure
 
-The project is organized into two main components: the `library` and the GUI `app`.
+The project is organized into three main components: the `library`, the GUI `app`, and the command-line `cli` (`slp`). `cli/` links `loglib` only and must never include Qt or link a Qt target. The `build-qt-free` CI job (`-DSLV_BUILD_GUI=OFF`) fails if Qt leaks out of `app/`, and the packaging jobs assert that `slp` has no Qt dependency. Logic `slp` needs that has a Qt-free signature belongs in `loglib`, not in `cli/`.
 
 ```plaintext
 structured_log_viewer/
@@ -70,9 +70,14 @@ structured_log_viewer/
 │   ├── include/              # GUI headers
 │   ├── src/                  # GUI implementation (including main_window.ui)
 │   └── CMakeLists.txt
+├── cli/                      # slp: Qt-free command-line tool (links loglib only)
+│   ├── include/              # CLI headers
+│   ├── src/                  # One command_<name>.cpp per subcommand, plus options and session helpers
+│   └── CMakeLists.txt
 ├── test/
 │   ├── lib/                  # Catch2 unit tests and benchmarks for loglib
 │   ├── app/                  # Qt Test smoke tests for MainWindow (+ JSONL/logfmt fixtures)
+│   ├── cli/                  # Catch2 option, golden, and end-to-end tests that run the real `slp` (CTest label `cli`)
 │   ├── common/               # Test helpers shared across lib/app/log_generator
 │   └── log_generator/        # Standalone multi-format fixture generator (`log_generator`)
 ├── cmake/                    # Shared CMake modules (warnings, FetchContent)

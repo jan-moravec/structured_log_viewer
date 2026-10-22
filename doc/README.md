@@ -280,6 +280,10 @@ Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) an
 - **Encrypted private keys / hardware tokens** — the TLS configuration accepts plain PEM cert + key files only. Decrypt offline before pointing the dialog at them.
 - **Auto-discovery of services on the network** — bind address and port are always entered explicitly.
 
+## Companion CLI
+
+Every package also ships `slp`, a command-line tool that runs the same parsers, filters, and exports without a window. Use it in scripts and CI: `slp query` extracts rows, `slp stats` and `slp validate` summarise and check a log, `slp tail` follows a file, stdin, or a TCP/UDP listener, and `slp bundle` writes a `.slvbundle` that **File → Open** restores with its filter, sort, columns, anchors, and highlight rules. `--save-session` and `--config` exchange the same session JSON the GUI saves. See the [`slp` reference](cli.md) for every flag, the exit codes, and recipes.
+
 ## Automatic Column Detection
 
 The first time you open a file (in either mode), Structured Log Viewer builds the column list from the keys it sees in the JSON records:
@@ -626,6 +630,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 - Every keystroke re-parses. The status label beneath the field shows either **Parsed OK.** (or **Parsed OK — will save as: …** when the pretty-printer normalises the input, e.g. lower-cases `in` to `IN` or trims whitespace), or **Parse error at position N: …** with a caret offset into the text.
 - **OK** is enabled only when the query parses. On accept the expression replaces the current filter tree wholesale. Top-level leaves the simple editor can represent (a plain per-column rule) reappear as individual entries in the Filters menu, so Edit / Remove still work on them; any `OR` / `NOT` structure that the simple menu can't represent stays under **Advanced Filter…** and roundtrips through save/load.
 - Leave the field empty to match every row (equivalent to **Filters → Clear All**).
+- The same syntax drives `slp --filter` on the command line (see [Companion CLI](#companion-cli)).
 
 **Leaves** — the atoms of a query — pair a column with an operator and a value:
 

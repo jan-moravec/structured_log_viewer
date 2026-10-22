@@ -13,7 +13,7 @@
 
 ## Overview
 
-Structured Log Viewer is a C++ application consisting of a reusable library (`loglib`) for handling structured log data and a Qt-based GUI (`StructuredLogViewer`) for viewing, searching, and filtering the logs.
+Structured Log Viewer is a C++ application consisting of a reusable library (`loglib`) for handling structured log data, a Qt-based GUI (`StructuredLogViewer`) for viewing, searching, and filtering the logs, and a Qt-free command-line companion (`slp`) for scripting the same pipeline. Two binaries ship in every package: `StructuredLogViewer` and `slp`. See the [`slp` reference](doc/cli.md).
 
 Four ingestion modes are available:
 
@@ -80,6 +80,7 @@ Static files, live-tail files, stdin, and network streams (Auto-detect by defaul
 1. Download the latest `StructuredLogViewer.dmg`.
 1. Open the DMG and drag `StructuredLogViewer.app` into `/Applications`.
 1. Launch it from Launchpad or Spotlight.
+1. Optionally copy `slp`, the command-line tool that sits next to the app in the DMG, onto your `PATH`. It needs no time zone data from the app; without `tzdata` beside it, it uses UTC and says so.
 
 > The macOS build is not notarized. On first launch you may need to right-click the app and choose **Open** to bypass Gatekeeper.
 

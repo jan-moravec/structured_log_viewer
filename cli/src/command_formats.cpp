@@ -261,16 +261,18 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     return nullptr;
 }
 
-[[nodiscard]] const loglib::RegexTemplate *FindBuiltin(std::string_view slug)
+/** @brief Copy of the built-in template named @p slug; the catalog is returned by value, so no pointer into it may
+ * escape. */
+[[nodiscard]] std::optional<loglib::RegexTemplate> FindBuiltin(std::string_view slug)
 {
     for (const loglib::BuiltinRegexTemplateInfo &info : loglib::BuiltinRegexTemplateCatalog())
     {
         if (info.slug == slug)
         {
-            return &info.tmpl;
+            return info.tmpl;
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 [[nodiscard]] std::string RenderText(
@@ -425,7 +427,7 @@ CommandOutput RenderFormats(const Options &options)
         {
             if (!options.listUserTemplates)
             {
-                if (const loglib::RegexTemplate *builtin = FindBuiltin(*options.showSlug))
+                if (const auto builtin = FindBuiltin(*options.showSlug))
                 {
                     json = loglib::SerializeRegexTemplate(*builtin);
                 }
@@ -451,7 +453,7 @@ CommandOutput RenderFormats(const Options &options)
             }
             if (!json.has_value() && options.listUserTemplates)
             {
-                if (const loglib::RegexTemplate *builtin = FindBuiltin(*options.showSlug))
+                if (const auto builtin = FindBuiltin(*options.showSlug))
                 {
                     json = loglib::SerializeRegexTemplate(*builtin);
                 }

@@ -65,9 +65,8 @@ TEST_CASE("slp validate reports clean parse health", "[cli][e2e][validate]")
 
 TEST_CASE("golden: validate json for two_lines", "[cli][e2e][validate][golden]")
 {
-    const auto result = RunSlp(
-        {"validate", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", TwoLines()}
-    );
+    const auto result =
+        RunSlp({"validate", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", TwoLines()});
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 0);
     RequireGolden("validate_two_lines.json", result.out);
@@ -83,16 +82,8 @@ TEST_CASE("slp validate exits 4 on partial corruption", "[cli][e2e][validate]")
     REQUIRE(result.out.find("errors: 1") != std::string::npos);
     REQUIRE(result.out.find("Error on line 2:") != std::string::npos);
 
-    const auto allowed = RunSlp(
-        {"validate",
-         "--tz",
-         "UTC",
-         "--template-dir",
-         EmptyTemplates(),
-         "--max-error-rate",
-         "50",
-         fixture}
-    );
+    const auto allowed =
+        RunSlp({"validate", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--max-error-rate", "50", fixture});
     INFO("stdout:\n" << allowed.out);
     REQUIRE(allowed.exitCode == 0);
 }

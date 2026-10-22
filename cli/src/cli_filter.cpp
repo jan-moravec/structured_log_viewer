@@ -5,8 +5,8 @@
 #include <loglib/query_parser.hpp>
 #include <loglib/user_timestamp.hpp>
 
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <format>
 #include <optional>
 #include <sstream>
@@ -98,7 +98,8 @@ int FindColumnByName(const std::vector<loglib::Column> &columns, std::string_vie
             bool match = true;
             for (std::size_t j = 0; j < name.size(); ++j)
             {
-                if (std::tolower(static_cast<unsigned char>(key[j])) != std::tolower(static_cast<unsigned char>(name[j])))
+                if (std::tolower(static_cast<unsigned char>(key[j])) !=
+                    std::tolower(static_cast<unsigned char>(name[j])))
                 {
                     match = false;
                     break;
@@ -161,7 +162,8 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
                 command,
                 ExitCode::Usage,
                 std::format(
-                    "'--since' and '--until' need a time column; available columns are {}.", AvailableColumnList(columns)
+                    "'--since' and '--until' need a time column; available columns are {}.",
+                    AvailableColumnList(columns)
                 )
             ));
         }
@@ -174,9 +176,9 @@ std::expected<loglib::FilterExpression, CommandOutput> BuildRowFilter(
             const auto parsed = loglib::ParseUserTimestamp(text, timeColumn.parseFormats, now);
             if (!parsed)
             {
-                return std::unexpected(
-                    FilterFail(command, ExitCode::Usage, std::format("'{}' could not parse timestamp '{}'.", flag, text))
-                );
+                return std::unexpected(FilterFail(
+                    command, ExitCode::Usage, std::format("'{}' could not parse timestamp '{}'.", flag, text)
+                ));
             }
             std::int64_t micros = parsed->micros;
             if (parsed->isNaive)

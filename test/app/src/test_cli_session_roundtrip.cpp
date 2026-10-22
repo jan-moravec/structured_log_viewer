@@ -199,7 +199,9 @@ private slots:
         ));
         QVERIFY2(cli.exitCode == 0, cli.err.constData());
         const QStringList cliMessages = MessagesFromJsonl(cli.out);
-        QCOMPARE(cliMessages, (QStringList{QStringLiteral("delta"), QStringLiteral("charlie"), QStringLiteral("alpha")}));
+        QCOMPARE(
+            cliMessages, (QStringList{QStringLiteral("delta"), QStringLiteral("charlie"), QStringLiteral("alpha")})
+        );
 
         mWindow->LoadConfigurationFromPathForTest(session);
         QCoreApplication::processEvents();
@@ -302,13 +304,16 @@ private slots:
         QCoreApplication::processEvents();
 
         const QStringList guiMessages = MessageColumn(*tableView->model(), msgColumn);
-        QCOMPARE(guiMessages, (QStringList{QStringLiteral("delta"), QStringLiteral("charlie"), QStringLiteral("alpha")}));
+        QCOMPARE(
+            guiMessages, (QStringList{QStringLiteral("delta"), QStringLiteral("charlie"), QStringLiteral("alpha")})
+        );
 
         const QString session = mDir.filePath(QStringLiteral("gui_session.json"));
         mWindow->SaveConfigurationToPathForTest(session, loglib::SaveScope::Full);
 
-        const auto cli =
-            RunSlp(QueryArgs(mLogPath, {QStringLiteral("--config"), session, QStringLiteral("-t"), QStringLiteral("jsonl")}));
+        const auto cli = RunSlp(
+            QueryArgs(mLogPath, {QStringLiteral("--config"), session, QStringLiteral("-t"), QStringLiteral("jsonl")})
+        );
         QVERIFY2(cli.exitCode == 0, cli.err.constData());
         QCOMPARE(MessagesFromJsonl(cli.out), guiMessages);
     }

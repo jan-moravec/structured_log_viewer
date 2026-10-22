@@ -25,9 +25,8 @@ namespace
 
 TEST_CASE("golden: stats json by level for two_lines", "[cli][e2e][stats][golden]")
 {
-    const auto result = RunSlp(
-        {"stats", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", TwoLines()}
-    );
+    const auto result =
+        RunSlp({"stats", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", TwoLines()});
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 0);
     RequireGolden("stats_two_lines_level.json", result.out);
@@ -78,9 +77,8 @@ TEST_CASE("slp stats by column reports top values", "[cli][e2e][stats]")
 
 TEST_CASE("slp stats exits 1 when --filter matches nothing", "[cli][e2e][stats]")
 {
-    const auto result = RunSlp(
-        {"stats", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--filter", "msg:missing", TwoLines()}
-    );
+    const auto result =
+        RunSlp({"stats", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--filter", "msg:missing", TwoLines()});
     REQUIRE(result.exitCode == 1);
     REQUIRE(result.out.empty());
 }

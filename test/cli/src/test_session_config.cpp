@@ -51,7 +51,9 @@ constexpr std::string_view kFourRows =
 [[nodiscard]] const std::filesystem::path &WriteLog()
 {
     static const std::filesystem::path path = [] {
-        const auto file = ScratchRoot() / ("four_rows_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl");
+        const auto file =
+            ScratchRoot() /
+            ("four_rows_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl");
         std::ofstream output(file, std::ios::binary | std::ios::trunc);
         output << kFourRows;
         output.close();
@@ -131,8 +133,9 @@ struct Resolved
         FAIL(session.error().err);
     }
 
-    const auto compiled =
-        loglib::CompileExpression(session->expression, loaded.table.Configuration().Configuration().columns, &loaded.table);
+    const auto compiled = loglib::CompileExpression(
+        session->expression, loaded.table.Configuration().Configuration().columns, &loaded.table
+    );
     auto rows = loglib::FilterAcceptedRows(loaded.table, compiled);
     return Resolved{std::move(loaded), std::move(*session), std::move(rows)};
 }
@@ -184,9 +187,10 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
 
     const Resolved overridden = Resolve({"--config", path.string(), "--sort", "level:asc"});
     REQUIRE(overridden.session.sort.has_value());
-    CHECK(overridden.session.sort->columnIndex == static_cast<std::size_t>(ColumnIndex(
-                                                      overridden.loaded.table.Configuration().Configuration().columns, "level"
-                                                  )));
+    CHECK(
+        overridden.session.sort->columnIndex ==
+        static_cast<std::size_t>(ColumnIndex(overridden.loaded.table.Configuration().Configuration().columns, "level"))
+    );
     CHECK(overridden.session.sort->direction == loglib::SortDirection::Ascending);
     CHECK_FALSE(overridden.session.configuration.sort.descending);
 }
@@ -239,9 +243,8 @@ TEST_CASE("session precedence: --config discards the embedded source", "[cli][se
 TEST_CASE("slp query --config failures map to exit 3", "[cli][session][e2e]")
 {
     const auto missing = (ScratchRoot() / "missing_config.json").string();
-    const auto result = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", missing, WriteLog().string()}
-    );
+    const auto result =
+        RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", missing, WriteLog().string()});
     INFO("stderr:\n" << result.err);
     CHECK(result.exitCode == 3);
     CHECK(result.err.find("missing_config.json") != std::string::npos);
@@ -252,7 +255,14 @@ TEST_CASE("slp query --config failures map to exit 3", "[cli][session][e2e]")
         output << "{ not json";
     }
     const auto parse = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", malformed.string(), WriteLog().string()}
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--config",
+         malformed.string(),
+         WriteLog().string()}
     );
     INFO("stderr:\n" << parse.err);
     CHECK(parse.exitCode == 3);
@@ -305,8 +315,20 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
     std::filesystem::remove(sessionPath);
 
     const std::vector<std::string> args = {
-        "query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--filter", "level:error", "--sort", "msg:desc",
-        "--columns", "msg,level", "-t", "jsonl", log.string()
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--filter",
+        "level:error",
+        "--sort",
+        "msg:desc",
+        "--columns",
+        "msg,level",
+        "-t",
+        "jsonl",
+        log.string()
     };
     const auto plain = RunSlp(args);
     REQUIRE(plain.exitCode == 0);
@@ -340,7 +362,15 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
 
     // The saved session reproduces the filtered row set.
     const auto replay = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", sessionPath.string(), "-t", "jsonl",
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--config",
+         sessionPath.string(),
+         "-t",
+         "jsonl",
          log.string()}
     );
     INFO(replay.err);
@@ -367,8 +397,19 @@ TEST_CASE("slp query --save-columns omits session state", "[cli][session][e2e]")
     const auto configPath = WriteConfig("with_rules.json", configuration, loglib::SaveScope::Full);
 
     const auto result = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", configPath.string(), "--filter",
-         "level:error", "--save-columns", columnsPath.string(), "--count", log.string()}
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--config",
+         configPath.string(),
+         "--filter",
+         "level:error",
+         "--save-columns",
+         columnsPath.string(),
+         "--count",
+         log.string()}
     );
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
@@ -392,8 +433,15 @@ TEST_CASE("slp query save flags report write failure as exit 5", "[cli][session]
     std::filesystem::create_directories(blocker);
 
     const auto result = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--save-session",
-         (blocker / "missing_dir" / "session.json").string(), "--count", WriteLog().string()}
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--save-session",
+         (blocker / "missing_dir" / "session.json").string(),
+         "--count",
+         WriteLog().string()}
     );
     INFO(result.err);
     CHECK(result.exitCode == 5);
@@ -414,7 +462,14 @@ TEST_CASE("slp query --save-session records the compressed primary path only", "
     const auto sessionPath = root / "session.json";
 
     const auto result = RunSlp(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", "--save-session", sessionPath.string(),
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--count",
+         "--save-session",
+         sessionPath.string(),
          (root / "app.log").string()}
     );
     INFO(result.err);
@@ -435,7 +490,15 @@ TEST_CASE("slp query --save-session omits stdin from source", "[cli][session][e2
     const auto sessionPath = ScratchRoot() / "stdin_session.json";
     std::filesystem::remove(sessionPath);
     const auto result = slp::test::RunSlpWithStdin(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", "--save-session", sessionPath.string(), "-"},
+        {"query",
+         "--tz",
+         "UTC",
+         "--template-dir",
+         EmptyTemplates(),
+         "--count",
+         "--save-session",
+         sessionPath.string(),
+         "-"},
         kFourRows
     );
     INFO(result.err);

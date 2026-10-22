@@ -16,9 +16,9 @@
 #endif
 #include <windows.h>
 #else
-#include <csignal>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <csignal>
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -221,8 +221,7 @@ namespace
 #else
 [[nodiscard]] std::filesystem::path UniqueTempPath(const char *prefix)
 {
-    const std::filesystem::path pattern =
-        std::filesystem::temp_directory_path() / (std::string(prefix) + "XXXXXX");
+    const std::filesystem::path pattern = std::filesystem::temp_directory_path() / (std::string(prefix) + "XXXXXX");
     std::string mutablePattern = pattern.string();
     const int fd = ::mkstemp(mutablePattern.data());
     REQUIRE(fd >= 0);
@@ -433,8 +432,7 @@ CommandResult RunSlpWithStdin(const std::vector<std::string> &args, std::string_
     std::size_t offset = 0;
     while (offset < stdinBytes.size())
     {
-        const ssize_t written =
-            ::write(pipefds[1], stdinBytes.data() + offset, stdinBytes.size() - offset);
+        const ssize_t written = ::write(pipefds[1], stdinBytes.data() + offset, stdinBytes.size() - offset);
         REQUIRE(written > 0);
         offset += static_cast<std::size_t>(written);
     }
@@ -467,7 +465,8 @@ struct SlpChild::Impl
 };
 
 #ifdef _WIN32
-SlpChild::SlpChild(const std::vector<std::string> &args) : mImpl(std::make_unique<Impl>())
+SlpChild::SlpChild(const std::vector<std::string> &args)
+    : mImpl(std::make_unique<Impl>())
 {
     mImpl->outPath = UniqueTempPath(L"slpo");
     mImpl->errPath = UniqueTempPath(L"slpe");
@@ -529,6 +528,12 @@ SlpChild::~SlpChild()
     std::filesystem::remove(mImpl->errPath, ec);
 }
 
+bool SlpChild::Interrupt()
+{
+    // A console Ctrl+C cannot be aimed at one child without a new process group.
+    return false;
+}
+
 std::optional<int> SlpChild::Wait(std::chrono::milliseconds timeout)
 {
     if (!mImpl->exited)
@@ -545,7 +550,8 @@ std::optional<int> SlpChild::Wait(std::chrono::milliseconds timeout)
     return mImpl->exitCode;
 }
 #else
-SlpChild::SlpChild(const std::vector<std::string> &args) : mImpl(std::make_unique<Impl>())
+SlpChild::SlpChild(const std::vector<std::string> &args)
+    : mImpl(std::make_unique<Impl>())
 {
     mImpl->outPath = UniqueTempPath("slpo");
     mImpl->errPath = UniqueTempPath("slpe");
@@ -595,6 +601,11 @@ SlpChild::~SlpChild()
     std::error_code ec;
     std::filesystem::remove(mImpl->outPath, ec);
     std::filesystem::remove(mImpl->errPath, ec);
+}
+
+bool SlpChild::Interrupt()
+{
+    return ::kill(mImpl->pid, SIGINT) == 0;
 }
 
 std::optional<int> SlpChild::Wait(std::chrono::milliseconds timeout)

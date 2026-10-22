@@ -70,13 +70,7 @@ void WriteBytes(const std::filesystem::path &path, std::string_view bytes)
     char *inputBuf = const_cast<char *>(input.data());
     REQUIRE(
         ::BZ2_bzBuffToBuffCompress(
-            reinterpret_cast<char *>(out.data()),
-            &outLen,
-            inputBuf,
-            static_cast<unsigned int>(input.size()),
-            9,
-            0,
-            30
+            reinterpret_cast<char *>(out.data()), &outLen, inputBuf, static_cast<unsigned int>(input.size()), 9, 0, 30
         ) == BZ_OK
     );
     out.resize(outLen);
@@ -169,8 +163,7 @@ void ExpectTwoLinesCount(const slp::test::CommandResult &result)
 
 TEST_CASE("slp query reads a plain JSONL file", "[cli][e2e][sources]")
 {
-    const auto result =
-        RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", TwoLinesPath()});
+    const auto result = RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", TwoLinesPath()});
     ExpectTwoLinesCount(result);
 }
 
@@ -237,8 +230,12 @@ TEST_CASE("slp query expands rotated siblings oldest-first", "[cli][e2e][sources
     std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
 
-    WriteBytes(root / "app.log.2", std::string(R"({"ts":"2024-01-01T00:00:00Z","level":"info","msg":"oldest"})") + "\n");
-    WriteBytes(root / "app.log.1", std::string(R"({"ts":"2024-01-01T00:00:01Z","level":"info","msg":"middle"})") + "\n");
+    WriteBytes(
+        root / "app.log.2", std::string(R"({"ts":"2024-01-01T00:00:00Z","level":"info","msg":"oldest"})") + "\n"
+    );
+    WriteBytes(
+        root / "app.log.1", std::string(R"({"ts":"2024-01-01T00:00:01Z","level":"info","msg":"middle"})") + "\n"
+    );
     WriteBytes(root / "app.log", std::string(R"({"ts":"2024-01-01T00:00:02Z","level":"info","msg":"newest"})") + "\n");
 
     const auto expanded = RunSlp(
@@ -282,9 +279,8 @@ TEST_CASE("slp query expands rotated siblings oldest-first", "[cli][e2e][sources
 
 TEST_CASE("slp query reads stdin", "[cli][e2e][sources]")
 {
-    const auto result = RunSlpWithStdin(
-        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", "-"}, TwoLinesBytes()
-    );
+    const auto result =
+        RunSlpWithStdin({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--count", "-"}, TwoLinesBytes());
     ExpectTwoLinesCount(result);
 }
 

@@ -13,3 +13,5 @@ ignores:
   - "**/build/**"
   - "**/.venv/**"
   - "**/node_modules/**"
+  # Golden output compared byte-for-byte by the slp tests; not prose.
+  - "test/cli/golden/**"
