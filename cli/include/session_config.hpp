@@ -42,6 +42,16 @@ struct EffectiveSession
 };
 
 /**
+ * @brief Dedup key for a source path, matching the GUI's anchor locators.
+ *
+ * The path is absolute and forward-slashed, and lower-cased on Windows.
+ *
+ * @param path Source file path.
+ * @return The canonical locator.
+ */
+[[nodiscard]] std::string CanonicalSourceLocator(const std::filesystem::path &path);
+
+/**
  * @brief Reads a session or columns file for `--config`.
  *
  * The embedded `source` is discarded so the file never rebinds the

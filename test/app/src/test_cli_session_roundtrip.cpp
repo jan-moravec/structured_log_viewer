@@ -3,6 +3,7 @@
 #include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "theme_control.hpp"
+#include "uuid_utils.hpp"
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
@@ -310,6 +311,87 @@ private slots:
             RunSlp(QueryArgs(mLogPath, {QStringLiteral("--config"), session, QStringLiteral("-t"), QStringLiteral("jsonl")}));
         QVERIFY2(cli.exitCode == 0, cli.err.constData());
         QCOMPARE(MessagesFromJsonl(cli.out), guiMessages);
+    }
+
+    // slp bundle -> GUI opens the bundle with every row retained and the
+    // anchors, highlight rules, filter, sort, and column set intact.
+    void TestBundleOpensWithEmbeddedSession()
+    {
+        const QString seedPath = WriteSeed(/*pinMsgToString=*/true, /*withRule=*/true);
+        QVERIFY(!seedPath.isEmpty());
+        loglib::LogConfigurationManager seedManager;
+        seedManager.Load(seedPath.toStdString());
+        loglib::LogConfiguration seed = seedManager.Configuration();
+        // Anchor the second source row by its canonical source locator.
+        seed.anchors = {
+            {.locator = logapp::CanonicalLocator(mLogPath).toStdString(), .lineId = 1, .colorIndex = 0, .note = "kept"}
+        };
+        const QString anchoredSeed = mDir.filePath(QStringLiteral("anchored_seed.json"));
+        loglib::LogConfigurationManager::Save(seed, anchoredSeed.toStdString(), loglib::SaveScope::Full);
+
+        const QString bundle = mDir.filePath(QStringLiteral("cli.slvbundle"));
+        QStringList args{
+            QStringLiteral("bundle"),
+            QStringLiteral("--tz"),
+            QStringLiteral("UTC"),
+            QStringLiteral("--template-dir"),
+            QString::fromStdString((std::filesystem::path(SLP_FIXTURES_DIR) / "empty_templates").string()),
+            QStringLiteral("--config"),
+            anchoredSeed,
+            QStringLiteral("--filter"),
+            QStringLiteral("msg:l"),
+            QStringLiteral("--sort"),
+            QStringLiteral("msg:desc"),
+            QStringLiteral("--columns"),
+            QStringLiteral("msg,level"),
+            QStringLiteral("-o"),
+            bundle,
+            mLogPath,
+        };
+        const auto cli = RunSlp(args);
+        QVERIFY2(cli.exitCode == 0, cli.err.constData());
+        QVERIFY(std::filesystem::exists(bundle.toStdString()));
+
+        QSignalSpy finishedSpy(mWindow->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        mWindow->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(5000) || finishedSpy.count() > 0);
+        QCoreApplication::processEvents();
+
+        auto *model = mWindow->Model();
+        // Non-destructive: the filtered-out row is still loaded.
+        QCOMPARE(model->rowCount(), 4);
+
+        const loglib::LogConfiguration &loaded = model->Configuration();
+        QCOMPARE(loaded.columns[0].header, std::string("msg"));
+        QCOMPARE(loaded.columns[1].header, std::string("level"));
+        QVERIFY(loaded.columns[0].visible);
+        QVERIFY(loaded.columns[1].visible);
+        QVERIFY(!loaded.columns.back().visible);
+
+        QCOMPARE(loaded.highlightRules.size(), static_cast<std::size_t>(1));
+        QCOMPARE(loaded.highlightRules[0].name, std::string("errors"));
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<std::size_t>(1));
+        QCOMPARE(mWindow->Filters().begin()->second.columnKeys, (std::vector<std::string>{"msg"}));
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const int msgColumn = ColumnByHeader(loaded, "msg");
+        QVERIFY(msgColumn >= 0);
+        const QHeaderView *header = tableView->horizontalHeader();
+        QVERIFY(header->isSortIndicatorShown());
+        QCOMPARE(header->sortIndicatorSection(), msgColumn);
+        QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
+        QCOMPARE(
+            MessageColumn(*tableView->model(), msgColumn),
+            (QStringList{QStringLiteral("delta"), QStringLiteral("charlie"), QStringLiteral("alpha")})
+        );
+
+        QCOMPARE(loaded.anchors.size(), static_cast<std::size_t>(1));
+        QVERIFY(mWindow->Anchors() != nullptr);
+        QCOMPARE(mWindow->Anchors()->Count(), 1);
+        QVERIFY(model->AnchorSlotForRow(1).has_value());
     }
 
 private:

@@ -1,5 +1,6 @@
 #include "commands.hpp"
 
+#include "ansi.hpp"
 #include "cli_filter.hpp"
 #include "diagnostics.hpp"
 #include "load_table.hpp"
@@ -89,36 +90,6 @@ void AppendJsonString(std::string &out, std::string_view text)
     }
     out.push_back('"');
 }
-
-[[nodiscard]] bool ColorActive(const Options &options) noexcept
-{
-    return options.color == ColorMode::Always ||
-           (options.color == ColorMode::Auto && IsTerminal(stdout));
-}
-
-[[nodiscard]] std::string_view LevelAnsiPrefix(loglib::LogLevel level) noexcept
-{
-    switch (level)
-    {
-    case loglib::LogLevel::Trace:
-        return "\033[2m";
-    case loglib::LogLevel::Debug:
-        return "\033[36m";
-    case loglib::LogLevel::Info:
-        return "\033[32m";
-    case loglib::LogLevel::Warn:
-        return "\033[33m";
-    case loglib::LogLevel::Error:
-        return "\033[31m";
-    case loglib::LogLevel::Fatal:
-        return "\033[1;35m";
-    case loglib::LogLevel::Unknown:
-        return "";
-    }
-    return "";
-}
-
-constexpr std::string_view kAnsiReset = "\033[0m";
 
 [[nodiscard]] std::string FormatPercent(double value)
 {
@@ -262,7 +233,7 @@ struct LevelSummary
     const std::string &spanLine
 )
 {
-    const bool color = ColorActive(options);
+    const bool color = ColorActive(options, stdout);
     const int termWidth = TerminalWidth(stdout, kDefaultTerminalWidth);
 
     std::vector<std::string> headers = {"level", "count", "percent", "bar"};
@@ -597,7 +568,7 @@ void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
     const std::string &spanLine
 )
 {
-    const bool color = ColorActive(options);
+    const bool color = ColorActive(options, stdout);
     const int termWidth = TerminalWidth(stdout, kDefaultTerminalWidth);
     const auto widthMicros = histogram.index.BucketWidth().count();
 

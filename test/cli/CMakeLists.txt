@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(
     slp_tests
     src/slp_process.cpp
+    src/test_bundle_e2e.cpp
     src/test_options.cpp
     src/test_formats.cpp
     src/test_platform.cpp
@@ -12,6 +13,7 @@ add_executable(
     src/test_schema_validate_e2e.cpp
     src/test_session_config.cpp
     src/test_stats_e2e.cpp
+    src/test_tail_e2e.cpp
 )
 
 # Compression codecs are linked so the source-matrix e2e cases can
@@ -20,6 +22,7 @@ target_link_libraries(
     slp_tests
     PRIVATE
         slp_core
+        test_common
         Catch2::Catch2WithMain
         project_warnings
         ZLIB::ZLIB

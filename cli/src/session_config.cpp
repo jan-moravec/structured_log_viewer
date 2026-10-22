@@ -155,6 +155,17 @@ namespace
     return text;
 }
 
+[[nodiscard]] std::string AbsoluteGenericPath(const std::filesystem::path &path)
+{
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+    if (ec)
+    {
+        absolute = path;
+    }
+    return absolute.lexically_normal().generic_string();
+}
+
 [[nodiscard]] std::optional<loglib::Source::Format> FormatFromName(std::string_view name) noexcept
 {
     if (name == "json")
@@ -191,13 +202,7 @@ namespace
         {
             continue;
         }
-        std::error_code ec;
-        std::filesystem::path absolute = std::filesystem::absolute(spec.path, ec);
-        if (ec)
-        {
-            absolute = spec.path;
-        }
-        std::string display = absolute.lexically_normal().generic_string();
+        std::string display = AbsoluteGenericPath(spec.path);
         std::string dedup = LowerIfCaseInsensitiveFs(display);
         loglib::AppendLocator(source, std::move(display), std::move(dedup));
     }
@@ -237,6 +242,11 @@ namespace
 }
 
 } // namespace
+
+std::string CanonicalSourceLocator(const std::filesystem::path &path)
+{
+    return LowerIfCaseInsensitiveFs(AbsoluteGenericPath(path));
+}
 
 std::expected<loglib::LogConfiguration, std::string> LoadConfigFile(const std::filesystem::path &path)
 {

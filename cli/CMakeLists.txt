@@ -16,6 +16,8 @@ add_library(
     src/command_schema.cpp
     src/command_validate.cpp
     src/command_stats.cpp
+    src/command_bundle.cpp
+    src/command_tail.cpp
     src/cli_filter.cpp
     src/load_table.cpp
     src/session_config.cpp

@@ -73,9 +73,31 @@ struct RuntimeContext
 [[nodiscard]] CommandOutput RunStats(const Options &options, const RuntimeContext &runtime);
 
 /**
+ * @brief Runs `slp bundle` and writes a `.slvbundle` of the loaded rows.
+ *
+ * By default every row is kept and the effective filter, sort, and
+ * columns are stored in the embedded configuration. `--filtered-rows`
+ * writes only matching rows and clears the embedded filter. Progress
+ * goes to a rewritten stderr line when stderr is a terminal. Exit 130
+ * when cancelled and exit 5 when the file cannot be written; neither
+ * leaves a partial file.
+ */
+[[nodiscard]] CommandOutput RunBundle(const Options &options, const RuntimeContext &runtime);
+
+/**
+ * @brief Runs `slp tail` over one file, standard input, or a network listener.
+ *
+ * Rows go to stdout, or are appended to `--output`, one flushed write
+ * per arriving batch. `--max-rows`, `--for`, end of standard input, and
+ * a signal end the run with exit 0. An unopenable source or a bind
+ * failure exits 3. Rows are emitted before retention evicts them.
+ */
+[[nodiscard]] CommandOutput RunTail(const Options &options, const RuntimeContext &runtime);
+
+/**
  * @brief Runs the parsed command.
  *
- * `formats`, `query`, `schema`, `validate`, and `stats` are implemented.
+ * `formats`, `query`, `schema`, `validate`, `stats`, `bundle`, and `tail` are implemented.
  * Every other command reports that it is not available yet and
  * returns exit code 2.
  */

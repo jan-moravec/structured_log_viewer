@@ -69,6 +69,20 @@ int Execute(const Options &options, const RuntimeContext &runtime)
         std::cerr << rendered.err;
         return rendered.exitCode;
     }
+    if (options.command == Command::Bundle)
+    {
+        const CommandOutput rendered = RunBundle(options, runtime);
+        std::cout << rendered.out;
+        std::cerr << rendered.err;
+        return rendered.exitCode;
+    }
+    if (options.command == Command::Tail)
+    {
+        const CommandOutput rendered = RunTail(options, runtime);
+        std::cout << rendered.out;
+        std::cerr << rendered.err;
+        return rendered.exitCode;
+    }
     if (options.command == Command::Stats)
     {
         const CommandOutput rendered = RunStats(options, runtime);

@@ -1,6 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,6 +36,45 @@ struct CommandResult
  * standard input, and captures both output streams.
  */
 [[nodiscard]] CommandResult RunSlpWithStdin(const std::vector<std::string> &args, std::string_view stdinBytes);
+
+/**
+ * @brief A running `slp` child whose output is read while it runs.
+ *
+ * Standard input is empty. Both output streams are captured in temporary
+ * files that the destructor removes. A child still running at
+ * destruction is killed.
+ */
+class SlpChild
+{
+public:
+    /** @brief Starts `slp` with @p args. */
+    explicit SlpChild(const std::vector<std::string> &args);
+    ~SlpChild();
+
+    SlpChild(const SlpChild &) = delete;
+    SlpChild &operator=(const SlpChild &) = delete;
+    SlpChild(SlpChild &&) = delete;
+    SlpChild &operator=(SlpChild &&) = delete;
+
+    /** @brief Polls stderr until it contains @p needle; false on timeout. */
+    [[nodiscard]] bool WaitForErr(std::string_view needle, std::chrono::milliseconds timeout) const;
+
+    /** @brief Polls stdout until it contains @p needle; false on timeout. */
+    [[nodiscard]] bool WaitForOut(std::string_view needle, std::chrono::milliseconds timeout) const;
+
+    /** @brief Waits for exit and returns the exit code, or nullopt on timeout. */
+    [[nodiscard]] std::optional<int> Wait(std::chrono::milliseconds timeout);
+
+    /** @brief Standard output captured so far. */
+    [[nodiscard]] std::string Out() const;
+
+    /** @brief Standard error captured so far. */
+    [[nodiscard]] std::string Err() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
+};
 
 /**
  * @brief Asserts @p actual matches the golden file at @p relativeName.

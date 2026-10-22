@@ -3,6 +3,7 @@
 #include "diagnostics.hpp"
 #include "session_config.hpp"
 
+#include <loglib/auto_detect_parser.hpp>
 #include <loglib/decompressing_byte_source.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
@@ -156,25 +157,6 @@ namespace
     return std::unexpected(std::format("unknown regex template slug '{}'.", *options.regexTemplate));
 }
 
-void LoadUserTemplates(const Options &options, CommandOutput &out)
-{
-    const std::filesystem::path dir = options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
-    if (dir.empty())
-    {
-        return;
-    }
-    const auto loaded = loglib::LoadRegexTemplatesFromDirectory(dir);
-    for (const std::string &error : loaded.errors)
-    {
-        out.err += FormatWarningLine(error);
-        out.err.push_back('\n');
-    }
-    if (!loaded.templates.empty())
-    {
-        loglib::SetExtraRegexTemplates(loaded.templates);
-    }
-}
-
 [[nodiscard]] CommandOutput Fail(ExitCode code, std::string_view sentence, std::string errExtra = {})
 {
     CommandOutput out;
@@ -223,33 +205,7 @@ struct QuerySink final : loglib::LogParseSink
             }
         }
 
-        const std::size_t oldColumnCount = table->ColumnCount();
-        table->AppendBatch(std::move(batch));
-        const std::size_t newColumnCount = table->ColumnCount();
-
-        // Match LogModel::AppendBatch: bubble each newly appended Time column to index 0.
-        if (newColumnCount > oldColumnCount)
-        {
-            const auto &columns = table->Configuration().Configuration().columns;
-            std::vector<std::size_t> timeColumns;
-            for (std::size_t columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
-            {
-                if (columns[columnIndex].type == loglib::ColumnType::Time)
-                {
-                    timeColumns.push_back(columnIndex);
-                }
-            }
-            for (const std::size_t srcIndex : timeColumns)
-            {
-                if (srcIndex == 0)
-                {
-                    continue;
-                }
-                table->MoveColumn(srcIndex, 0);
-            }
-        }
-
-        table->ApplyPendingLevelBubbles();
+        AppendStreamedBatch(*table, std::move(batch));
     }
 
     void OnFinished(bool /*cancelled*/) override
@@ -731,6 +687,85 @@ void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex,
 }
 
 } // namespace
+
+void LoadUserTemplates(const Options &options, CommandOutput &out)
+{
+    const std::filesystem::path dir = options.templateDir ? *options.templateDir : loglib::UserRegexTemplateDirectory();
+    if (dir.empty())
+    {
+        return;
+    }
+    const auto loaded = loglib::LoadRegexTemplatesFromDirectory(dir);
+    for (const std::string &error : loaded.errors)
+    {
+        out.err += FormatWarningLine(error);
+        out.err.push_back('\n');
+    }
+    if (!loaded.templates.empty())
+    {
+        loglib::SetExtraRegexTemplates(loaded.templates);
+    }
+}
+
+void AppendStreamedBatch(loglib::LogTable &table, loglib::StreamedBatch batch)
+{
+    const std::size_t oldColumnCount = table.ColumnCount();
+    table.AppendBatch(std::move(batch));
+    const std::size_t newColumnCount = table.ColumnCount();
+
+    // Match LogModel::AppendBatch: bubble each newly appended Time column to index 0.
+    if (newColumnCount > oldColumnCount)
+    {
+        const auto &columns = table.Configuration().Configuration().columns;
+        std::vector<std::size_t> timeColumns;
+        for (std::size_t columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
+        {
+            if (columns[columnIndex].type == loglib::ColumnType::Time)
+            {
+                timeColumns.push_back(columnIndex);
+            }
+        }
+        for (const std::size_t srcIndex : timeColumns)
+        {
+            if (srcIndex == 0)
+            {
+                continue;
+            }
+            table.MoveColumn(srcIndex, 0);
+        }
+    }
+
+    table.ApplyPendingLevelBubbles();
+}
+
+std::expected<std::unique_ptr<loglib::LogParser>, CommandOutput> MakeStreamParser(const Options &options)
+{
+    const auto pinned = ToSourceFormat(options.format);
+    if (!pinned)
+    {
+        return std::make_unique<loglib::AutoDetectParser>();
+    }
+    std::string pattern;
+    if (*pinned == loglib::Source::Format::Regex)
+    {
+        auto resolved = ResolveRegexPattern(options);
+        if (!resolved)
+        {
+            return std::unexpected(Fail(ExitCode::Usage, resolved.error()));
+        }
+        pattern = std::move(*resolved);
+    }
+    return loglib::MakeParserForFormat(*pinned, pattern);
+}
+
+loglib::ParserOptions StreamParserOptions(const Options &options, const loglib::StopToken &stop)
+{
+    loglib::ParserOptions parserOptions;
+    parserOptions.stopToken = stop;
+    parserOptions.threads = options.threads;
+    parserOptions.multilineLogfmt = !options.noMultilineLogfmt;
+    return parserOptions;
+}
 
 std::pair<LoadedTable, CommandOutput> LoadTable(const Options &options, const RuntimeContext &runtime)
 {

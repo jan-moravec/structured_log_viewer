@@ -4,9 +4,13 @@
 #include "options.hpp"
 
 #include <loglib/decompressing_byte_source.hpp>
+#include <loglib/log_parse_sink.hpp>
+#include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/parser_options.hpp>
 
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <string>
 #include <utility>
@@ -49,5 +53,40 @@ struct LoadedTable
 [[nodiscard]] std::pair<LoadedTable, CommandOutput> LoadTable(
     const Options &options, const RuntimeContext &runtime
 );
+
+/**
+ * @brief Registers the user's regex templates for format detection.
+ *
+ * Reads `options.templateDir` or the library's user template directory.
+ * Unreadable template files become warning lines on @p out.
+ */
+void LoadUserTemplates(const Options &options, CommandOutput &out);
+
+/**
+ * @brief Splices @p batch into @p table as `LoadTable` does.
+ *
+ * A newly appended Time column moves to index 0 and pending Level
+ * promotions are applied, so column order matches the GUI.
+ */
+void AppendStreamedBatch(loglib::LogTable &table, loglib::StreamedBatch batch);
+
+/**
+ * @brief Builds the parser for a live byte stream.
+ *
+ * A pinned `--format` selects that parser; otherwise the parser detects
+ * the format from the first bytes the producer delivers.
+ *
+ * @return The parser, or a failing `CommandOutput` (exit 2) when the
+ * regex pattern cannot be resolved.
+ */
+[[nodiscard]] std::expected<std::unique_ptr<loglib::LogParser>, CommandOutput> MakeStreamParser(const Options &options);
+
+/**
+ * @brief Parser options for a live stream governed by @p stop.
+ *
+ * @param options Parsed invocation.
+ * @param stop Token the parser polls between batches.
+ */
+[[nodiscard]] loglib::ParserOptions StreamParserOptions(const Options &options, const loglib::StopToken &stop);
 
 } // namespace slp
