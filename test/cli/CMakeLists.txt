@@ -10,6 +10,7 @@ add_executable(
     src/test_query_golden.cpp
     src/test_query_sources_e2e.cpp
     src/test_schema_validate_e2e.cpp
+    src/test_session_config.cpp
     src/test_stats_e2e.cpp
 )
 

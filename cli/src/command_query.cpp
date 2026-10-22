@@ -4,6 +4,7 @@
 #include "diagnostics.hpp"
 #include "load_table.hpp"
 #include "platform.hpp"
+#include "session_config.hpp"
 
 #include <loglib/column_projection.hpp>
 #include <loglib/decompressing_byte_source.hpp>
@@ -56,22 +57,6 @@ namespace slp
 namespace
 {
 
-[[nodiscard]] bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) noexcept
-{
-    if (lhs.size() != rhs.size())
-    {
-        return false;
-    }
-    for (std::size_t i = 0; i < lhs.size(); ++i)
-    {
-        if (std::tolower(static_cast<unsigned char>(lhs[i])) != std::tolower(static_cast<unsigned char>(rhs[i])))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 [[nodiscard]] CommandOutput QueryFail(ExitCode code, std::string_view sentence, std::string errExtra = {})
 {
     CommandOutput out;
@@ -103,85 +88,11 @@ namespace
     return std::nullopt;
 }
 
-[[nodiscard]] std::vector<std::string> SplitCsv(std::string_view text)
-{
-    std::vector<std::string> parts;
-    std::size_t begin = 0;
-    while (begin <= text.size())
-    {
-        const std::size_t comma = text.find(',', begin);
-        const std::string_view part =
-            comma == std::string_view::npos ? text.substr(begin) : text.substr(begin, comma - begin);
-        std::size_t start = 0;
-        std::size_t end = part.size();
-        while (start < end && std::isspace(static_cast<unsigned char>(part[start])) != 0)
-        {
-            ++start;
-        }
-        while (end > start && std::isspace(static_cast<unsigned char>(part[end - 1])) != 0)
-        {
-            --end;
-        }
-        if (start < end)
-        {
-            parts.emplace_back(part.substr(start, end - start));
-        }
-        if (comma == std::string_view::npos)
-        {
-            break;
-        }
-        begin = comma + 1;
-    }
-    return parts;
-}
-
-[[nodiscard]] std::expected<std::vector<std::size_t>, CommandOutput> ProjectColumns(
-    const Options &options, const loglib::LogTable &table
-)
-{
-    const auto &columns = table.Configuration().Configuration().columns;
-    if (options.allColumns)
-    {
-        std::vector<std::size_t> indices(columns.size());
-        for (std::size_t i = 0; i < columns.size(); ++i)
-        {
-            indices[i] = i;
-        }
-        return indices;
-    }
-    if (options.columns)
-    {
-        std::vector<std::size_t> indices;
-        for (const std::string &name : SplitCsv(*options.columns))
-        {
-            const int index = FindColumnByName(columns, name);
-            if (index < 0)
-            {
-                return std::unexpected(QueryFail(
-                    ExitCode::Usage,
-                    std::format(
-                        "unresolvable column '{}'; available columns are {}.", name, AvailableColumnList(columns)
-                    )
-                ));
-            }
-            indices.push_back(static_cast<std::size_t>(index));
-        }
-        return indices;
-    }
-    return loglib::ColumnProjection(columns).Indices();
-}
-
 } // namespace
 
 CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
 {
     CommandOutput out;
-    if (!options.quiet && (options.config || options.saveSession || options.saveColumns))
-    {
-        out.err += FormatWarningLine("session configuration flags are not applied yet");
-        out.err.push_back('\n');
-    }
-
     const auto parseStarted = std::chrono::steady_clock::now();
     auto [loaded, loadSide] = LoadTable(options, runtime);
     out.err += loadSide.err;
@@ -203,16 +114,16 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
         out.err.push_back('\n');
     }
 
-    auto filter = BuildRowFilter(options, table, runtime, "query");
-    if (!filter)
+    auto session = ApplySessionConfiguration(options, table, runtime, "query");
+    if (!session)
     {
-        out.err += filter.error().err;
-        out.exitCode = filter.error().exitCode;
+        out.err += session.error().err;
+        out.exitCode = session.error().exitCode;
         return out;
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled = loglib::CompileExpression(*filter, table.Configuration().Configuration().columns, &table);
+    const auto compiled = loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     const auto filterMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - filterStarted).count()
@@ -223,49 +134,31 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
         out.err.push_back('\n');
     }
 
-    if (options.sort)
+    if (session->sort)
     {
-        std::string_view sortSpec = *options.sort;
-        loglib::SortDirection direction = loglib::SortDirection::Ascending;
-        const std::size_t colon = sortSpec.rfind(':');
-        if (colon != std::string_view::npos)
-        {
-            const std::string_view dir = sortSpec.substr(colon + 1);
-            if (EqualsIgnoreCase(dir, "asc"))
-            {
-                direction = loglib::SortDirection::Ascending;
-                sortSpec = sortSpec.substr(0, colon);
-            }
-            else if (EqualsIgnoreCase(dir, "desc"))
-            {
-                direction = loglib::SortDirection::Descending;
-                sortSpec = sortSpec.substr(0, colon);
-            }
-        }
         const auto &columns = table.Configuration().Configuration().columns;
-        const int columnIndex = FindColumnByName(columns, sortSpec);
-        if (columnIndex < 0)
-        {
-            return QueryFail(
-                ExitCode::Usage,
-                std::format(
-                    "unresolvable sort column '{}'; available columns are {}.", sortSpec, AvailableColumnList(columns)
-                )
-            );
-        }
+        const std::size_t columnIndex = session->sort->columnIndex;
         std::optional<loglib::EnumDictRank> rankStorage;
         const loglib::EnumDictRank *rank = nullptr;
-        if (columns[static_cast<std::size_t>(columnIndex)].type == loglib::ColumnType::Enumeration)
+        if (columns[columnIndex].type == loglib::ColumnType::Enumeration)
         {
-            const auto lookup = table.ResolveEnumColumn(static_cast<std::size_t>(columnIndex));
+            const auto lookup = table.ResolveEnumColumn(columnIndex);
             if (lookup.dictionary != nullptr)
             {
                 rankStorage.emplace(*lookup.dictionary);
                 rank = &*rankStorage;
             }
         }
-        const loglib::RowOrdering ordering(static_cast<std::size_t>(columnIndex), direction, rank);
-        rows = ordering.Permute(table, std::span<const std::size_t>{rows});
+        const loglib::RowOrdering ordering(columnIndex, session->sort->direction, rank);
+        // `Permute` returns positions within `rows`, not row indices.
+        const std::vector<std::size_t> permutation = ordering.Permute(table, std::span<const std::size_t>{rows});
+        std::vector<std::size_t> sorted;
+        sorted.reserve(permutation.size());
+        for (const std::size_t position : permutation)
+        {
+            sorted.push_back(rows[position]);
+        }
+        rows = std::move(sorted);
     }
 
     if (options.last)
@@ -308,6 +201,14 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
         }
     }
 
+    // Saved configuration is the effective one; it does not depend on paging or output.
+    if (auto saveFailure = SaveSessionFiles(options, loaded, *session))
+    {
+        out.err += saveFailure->err;
+        out.exitCode = saveFailure->exitCode;
+        return out;
+    }
+
     if (options.count)
     {
         out.out = std::to_string(rows.size());
@@ -319,14 +220,6 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
         }
         out.exitCode = rows.empty() && !options.allowEmpty ? static_cast<int>(ExitCode::Empty)
                                                            : static_cast<int>(ExitCode::Success);
-        return out;
-    }
-
-    auto visible = ProjectColumns(options, table);
-    if (!visible)
-    {
-        out.err += visible.error().err;
-        out.exitCode = visible.error().exitCode;
         return out;
     }
 
@@ -349,7 +242,7 @@ CommandOutput RunQuery(const Options &options, const RuntimeContext &runtime)
     loglib::exports::ExportPlan plan;
     plan.format = *exportFormat;
     plan.sourceRows = std::move(rows);
-    plan.visibleColumns = std::move(*visible);
+    plan.visibleColumns = session->visibleColumns;
     plan.includeAllFieldsForJson = !options.jsonVisibleOnly;
     plan.includeHeaderRow = !options.noHeader;
     plan.table = &table;

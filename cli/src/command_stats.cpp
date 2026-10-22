@@ -4,6 +4,7 @@
 #include "diagnostics.hpp"
 #include "load_table.hpp"
 #include "platform.hpp"
+#include "session_config.hpp"
 
 #include <loglib/filter_expression.hpp>
 #include <loglib/histogram_bucket_index.hpp>
@@ -893,15 +894,15 @@ CommandOutput RunStats(const Options &options, const RuntimeContext &runtime)
     const std::string sources = FormatSources(options);
     const std::string sourcesJson = FormatSourcesJson(options);
 
-    auto filter = BuildRowFilter(options, table, runtime, "stats");
-    if (!filter)
+    auto session = ApplySessionConfiguration(options, table, runtime, "stats");
+    if (!session)
     {
-        out.err += filter.error().err;
-        out.exitCode = filter.error().exitCode;
+        out.err += session.error().err;
+        out.exitCode = session.error().exitCode;
         return out;
     }
 
-    const auto compiled = loglib::CompileExpression(*filter, table.Configuration().Configuration().columns, &table);
+    const auto compiled = loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
 
     out.exitCode = StatsExitCode(options, sourceRows, rows.size());

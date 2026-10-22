@@ -1,6 +1,7 @@
 #include "load_table.hpp"
 
 #include "diagnostics.hpp"
+#include "session_config.hpp"
 
 #include <loglib/decompressing_byte_source.hpp>
 #include <loglib/file_line_source.hpp>
@@ -396,11 +397,12 @@ void UpdateLinesConsumedFromErrors(std::uint64_t &linesConsumed, const std::vect
     return loglib::DetectFormatFromBytes(sniff);
 }
 
-void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format format)
+void NoteDetectedFormat(std::string &detectedFormat, std::string &detectedRegex, const loglib::DetectedFormat &format)
 {
     if (detectedFormat.empty())
     {
-        detectedFormat = FormatName(format);
+        detectedFormat = FormatName(format.format);
+        detectedRegex = format.regexPattern;
     }
 }
 
@@ -414,6 +416,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
     const std::filesystem::path &displayPath,
     bool discardFirstLine,
     std::string &detectedFormat,
+    std::string &detectedRegex,
     std::uint64_t &linesConsumed
 )
 {
@@ -439,7 +442,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
             const auto metadata = loglib::ParseSessionBundleMetadata(decompressor->DiscardedFirstLine());
             // Seed the table with the embedded session before the first
             // BeginStreaming so column pins and filter defaults apply.
-            if (first)
+            if (first && !options.config)
             {
                 table.Configuration().SetConfiguration(metadata.configuration);
             }
@@ -454,7 +457,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
         {
             return std::move(format.error());
         }
-        NoteDetectedFormat(detectedFormat, format->format);
+        NoteDetectedFormat(detectedFormat, detectedRegex, *format);
 
         auto logFile = std::make_unique<loglib::LogFile>(effective, displayPath);
         logFile->AttachLifetimeAnchor(decompressor);
@@ -513,6 +516,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
     bool &first,
     std::vector<std::string> &parseErrors,
     std::string &detectedFormat,
+    std::string &detectedRegex,
     std::uint64_t &linesConsumed
 )
 {
@@ -531,7 +535,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
     {
         return std::move(format.error());
     }
-    NoteDetectedFormat(detectedFormat, format->format);
+    NoteDetectedFormat(detectedFormat, detectedRegex, *format);
 
     std::unique_ptr<loglib::StdinBytesProducer> producer;
     try
@@ -584,6 +588,18 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
         return Fail(ExitCode::Usage, "at least one source is required.");
     }
 
+    // `--config` replaces any bundle-embedded configuration, so seed it
+    // here and let `ParseFilePath` skip its own bundle seeding.
+    if (options.config)
+    {
+        auto configuration = LoadConfigFile(*options.config);
+        if (!configuration)
+        {
+            return Fail(ExitCode::Input, configuration.error());
+        }
+        loaded.table.Configuration().SetConfiguration(std::move(*configuration));
+    }
+
     bool first = true;
     std::vector<std::filesystem::path> pendingPaths;
 
@@ -620,6 +636,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
                 entry.path,
                 false,
                 loaded.detectedFormat,
+                loaded.detectedRegexPattern,
                 loaded.linesConsumed
             );
             if (part.exitCode != 0)
@@ -657,7 +674,14 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
         if (source.kind == SourceKind::Stdin)
         {
             CommandOutput part = ParseStdin(
-                options, runtime, loaded.table, first, loaded.parseErrors, loaded.detectedFormat, loaded.linesConsumed
+                options,
+                runtime,
+                loaded.table,
+                first,
+                loaded.parseErrors,
+                loaded.detectedFormat,
+                loaded.detectedRegexPattern,
+                loaded.linesConsumed
             );
             if (part.exitCode != 0)
             {
@@ -680,6 +704,7 @@ void NoteDetectedFormat(std::string &detectedFormat, loglib::Source::Format form
                 source.path,
                 true,
                 loaded.detectedFormat,
+                loaded.detectedRegexPattern,
                 loaded.linesConsumed
             );
             if (part.exitCode != 0)

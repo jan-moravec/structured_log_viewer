@@ -266,6 +266,26 @@ if(SLV_BUILD_CLI)
         WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_cli_export_parity>
     )
     set_tests_properties(apptest_cli_export_parity PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # `slp --save-session` / `--save-columns` / `--config` against a real MainWindow
+    # (tasks-slp-cli 11.6). MainWindow needs the built-in themes from resources.qrc.
+    qt_add_resources(SESSION_ROUNDTRIP_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
+    qt_add_executable(apptest_cli_session_roundtrip src/test_cli_session_roundtrip.cpp ${SESSION_ROUNDTRIP_RESOURCES})
+    target_link_libraries(apptest_cli_session_roundtrip PRIVATE Qt6::Test Qt6::Widgets logapp)
+    target_include_directories(apptest_cli_session_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+    add_dependencies(apptest_cli_session_roundtrip slp)
+    target_compile_definitions(
+        apptest_cli_session_roundtrip
+        PRIVATE "SLP_EXECUTABLE=\"$<TARGET_FILE:slp>\"" "SLP_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/test/cli/fixtures\""
+    )
+    add_test(
+        NAME apptest_cli_session_roundtrip
+        COMMAND apptest_cli_session_roundtrip
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_cli_session_roundtrip>
+    )
+    set_tests_properties(apptest_cli_session_roundtrip PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # Console subsystem so CTest captures QtTest output on Windows.
+    set_target_properties(apptest_cli_session_roundtrip PROPERTIES WIN32_EXECUTABLE FALSE)
 endif()
 
 qt_add_executable(apptest_workspace_persistence src/workspace_persistence_test.cpp)

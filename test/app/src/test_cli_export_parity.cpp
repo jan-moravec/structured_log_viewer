@@ -160,7 +160,16 @@ namespace
             return std::nullopt;
         }
         const loglib::RowOrdering ordering(static_cast<std::size_t>(columnIndex), direction, nullptr);
-        rows = ordering.Permute(model.Table(), std::span<const std::size_t>{rows});
+        // `Permute` returns positions within `rows`, not table row indices.
+        const std::vector<std::size_t> permutation =
+            ordering.Permute(model.Table(), std::span<const std::size_t>{rows});
+        std::vector<std::size_t> sorted;
+        sorted.reserve(permutation.size());
+        for (const std::size_t position : permutation)
+        {
+            sorted.push_back(rows[position]);
+        }
+        rows = std::move(sorted);
     }
 
     QTemporaryDir temp;

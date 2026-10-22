@@ -29,6 +29,8 @@ struct LoadedTable
     std::vector<std::string> parseErrors;
     std::vector<std::shared_ptr<loglib::DecompressingByteSource>> ownedDecompressors;
     std::string detectedFormat;
+    /** @brief Regex pattern of the first source when it resolved to `regex`. */
+    std::string detectedRegexPattern;
     std::uint64_t linesConsumed = 0;
 };
 
@@ -39,6 +41,10 @@ struct LoadedTable
  * and stderr text; the table may be incomplete. Warnings (verbose
  * source listing, template-load notes) live on that output's `err`
  * even when the exit code is zero.
+ *
+ * A bundle's embedded configuration seeds the table before the first
+ * `BeginStreaming`. `--config` seeds it the same way and replaces the
+ * bundle's, minus its `source`.
  */
 [[nodiscard]] std::pair<LoadedTable, CommandOutput> LoadTable(
     const Options &options, const RuntimeContext &runtime
