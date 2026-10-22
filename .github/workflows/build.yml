@@ -431,13 +431,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
-    env:
-      # Single source for the choco install version and the path probe.
-      # slproweb's installer mirror only hosts the latest few versions;
-      # 4.0.1 was rotated off when 4.0.2 shipped on Aug 26 2026 (CI
-      # started 404-ing in `Install OpenSSL`). Bump in lockstep with
-      # the Chocolatey roster: https://community.chocolatey.org/packages/openssl.
-      OPENSSL_VERSION: "4.0.2"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -461,28 +454,39 @@ jobs:
         with:
           arch: x64
 
-      - name: Install OpenSSL
-        # Strawberry Perl's openssl lacks import libraries; use the full
-        # SLP build via choco. Install path varies, so the next step probes.
-        shell: powershell
-        run: choco install openssl --version=$env:OPENSSL_VERSION --yes --no-progress
-
-      - name: Locate OpenSSL and export OPENSSL_ROOT_DIR
-        # Probe known SLP / choco install roots for openssl.exe + headers
-        # and export the match into GITHUB_ENV for find_package(OpenSSL).
+      - name: Locate or install OpenSSL and export OPENSSL_ROOT_DIR
+        # The runner image ships a full OpenSSL (headers, import libraries, DLLs)
+        # under C:\Program Files\OpenSSL, so use it and download nothing. Only if
+        # no usable install is found do we fall back to Chocolatey, unpinned and
+        # retried: a pinned version 404s on slproweb's mirror once it rotates off.
+        # Strawberry Perl's openssl lacks import libraries, so it never counts.
+        # The match is exported into GITHUB_ENV for find_package(OpenSSL).
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $candidates = @(
-            "C:\Program Files\OpenSSL-Win64",
-            "C:\Program Files\OpenSSL",
-            "C:\Program Files\OpenSSL-Win64-$env:OPENSSL_VERSION"
-          )
-          $found = $null
-          foreach ($c in $candidates) {
-            if ((Test-Path "$c\bin\openssl.exe") -and (Test-Path "$c\include\openssl")) {
-              $found = $c
-              break
+          function Find-OpenSsl {
+            foreach ($c in @("C:\Program Files\OpenSSL-Win64", "C:\Program Files\OpenSSL")) {
+              if ((Test-Path "$c\bin\openssl.exe") -and
+                  (Test-Path "$c\include\openssl") -and
+                  (Test-Path "$c\bin\libssl*.dll") -and
+                  (Test-Path "$c\bin\libcrypto*.dll")) {
+                return $c
+              }
+            }
+            return $null
+          }
+          $found = Find-OpenSsl
+          if ($found) {
+            Write-Host "Using the OpenSSL preinstalled on the runner at $found"
+          } else {
+            Write-Host "No usable preinstalled OpenSSL; installing from Chocolatey."
+            for ($attempt = 1; $attempt -le 3 -and -not $found; $attempt++) {
+              choco install openssl --yes --no-progress --force
+              $found = Find-OpenSsl
+              if (-not $found) {
+                Write-Host "Attempt $attempt did not produce a usable OpenSSL."
+                Start-Sleep -Seconds (10 * $attempt)
+              }
             }
           }
           if (-not $found) {

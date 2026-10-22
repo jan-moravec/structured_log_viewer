@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <format>
 #include <limits>
@@ -1445,9 +1447,15 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
         if (selected->is_used("--max-error-rate"))
         {
             const std::string text = selected->get<std::string>("--max-error-rate");
-            double rate = 0;
-            const std::from_chars_result parsed = std::from_chars(text.data(), text.data() + text.size(), rate);
-            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+            // Floating-point `from_chars` is missing from Apple's libc++, so use `strtod`
+            // and reject what `from_chars` would: leading space, a sign-less `+`, `nan`, `inf`.
+            char *end = nullptr;
+            errno = 0;
+            const double rate = std::strtod(text.c_str(), &end);
+            const bool wellFormed =
+                !text.empty() && (std::isdigit(static_cast<unsigned char>(text.front())) != 0 || text.front() == '.') &&
+                errno == 0 && end == text.c_str() + text.size() && std::isfinite(rate);
+            if (!wellFormed)
             {
                 return std::unexpected(
                     UsageError{
