@@ -4,6 +4,7 @@
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
 
+#include <loglib/line_source.hpp>
 #include <loglib/theme.hpp>
 
 #include <QApplication>
@@ -286,10 +287,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     );
 
     mStreamRetentionSpinBox->setRange(
-        static_cast<int>(StreamingControl::MIN_RETENTION_LINES), static_cast<int>(StreamingControl::MAX_RETENTION_LINES)
+        static_cast<int>(loglib::MIN_RETENTION_LINES), static_cast<int>(loglib::MAX_RETENTION_LINES)
     );
     mStreamRetentionSpinBox->setSingleStep(RETENTION_LINES_SPIN_SINGLE_STEP);
-    mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::DEFAULT_RETENTION_LINES));
+    mStreamRetentionSpinBox->setValue(static_cast<int>(loglib::DEFAULT_RETENTION_LINES));
     mStreamRetentionSpinBox->setToolTip(
         "Maximum number of streamed lines kept in memory. Oldest lines are dropped when the cap "
         "is reached. Higher values use more memory."

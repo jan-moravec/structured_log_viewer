@@ -60,8 +60,19 @@ set_project_warnings(project_warnings False)
 # target exists.
 include(cmake/BundleLicenses.cmake)
 
+# The GUI and the headless CLI build independently. Both default ON.
+# `find_package(Qt6)` stays inside `app/` and `test/app`, so
+# `-DSLV_BUILD_GUI=OFF` configures on a machine with no Qt.
+option(SLV_BUILD_GUI "Build the StructuredLogViewer GUI" ON)
+option(SLV_BUILD_CLI "Build the slp command-line tool" ON)
+
 add_subdirectory(library)
-add_subdirectory(app)
+if(SLV_BUILD_GUI)
+    add_subdirectory(app)
+endif()
+if(SLV_BUILD_CLI)
+    add_subdirectory(cli)
+endif()
 
 # `BUILD_TESTING` (from `include(CTest)`, default ON) also scopes
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` from `test/lib` to test builds.
@@ -72,6 +83,11 @@ if(BUILD_TESTING)
     # must come before `test/lib`.
     add_subdirectory(test/common)
     add_subdirectory(test/lib)
-    add_subdirectory(test/app)
+    if(SLV_BUILD_GUI)
+        add_subdirectory(test/app)
+    endif()
+    if(SLV_BUILD_CLI)
+        add_subdirectory(test/cli)
+    endif()
     add_subdirectory(test/log_generator)
 endif()

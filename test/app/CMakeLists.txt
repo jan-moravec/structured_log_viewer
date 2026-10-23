@@ -159,22 +159,22 @@ add_test(
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_highlight_rules>
 )
 
-# Focused tests for the shared `leaf_rule_compile` translation unit
-# (`ResolveLeafColumnByKeys`, `CompileLeaf`, `CompileExpression`).
-# Same concern-per-binary pattern as the tests above; drills into
-# each `CompileLeaf` arm's absent-branch and the combinator
-# propagation rules so a regression in a single arm surfaces here
-# instead of as a distant model-rebuild diff.
-qt_add_executable(apptest_leaf_rule_compile src/test_leaf_rule_compile.cpp)
+# Re-runs the string-matcher corpus against loglib. Expected flags are the
+# Qt 6.11 oracle except the three separator wildcards, which PCRE2 matches.
 
-target_link_libraries(apptest_leaf_rule_compile PRIVATE Qt6::Test Qt6::Widgets logapp)
+qt_add_executable(apptest_log_string_matcher src/test_log_string_matcher.cpp)
 
-target_include_directories(apptest_leaf_rule_compile PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_link_libraries(apptest_log_string_matcher PRIVATE Qt6::Test loglib)
+
+target_include_directories(
+    apptest_log_string_matcher
+    PRIVATE ${CMAKE_SOURCE_DIR}/library/include ${CMAKE_SOURCE_DIR}/test/lib/include
+)
 
 add_test(
-    NAME apptest_leaf_rule_compile
-    COMMAND apptest_leaf_rule_compile
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_leaf_rule_compile>
+    NAME apptest_log_string_matcher
+    COMMAND apptest_log_string_matcher
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_log_string_matcher>
 )
 
 # ScopedConnections RAII helper (task 1.4). Pure QObject / signal
@@ -238,6 +238,55 @@ add_test(
     COMMAND apptest_session_tabs
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_session_tabs>
 )
+
+qt_add_executable(apptest_user_data_directory src/test_user_data_directory.cpp)
+target_link_libraries(apptest_user_data_directory PRIVATE Qt6::Test loglib)
+target_include_directories(apptest_user_data_directory PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_user_data_directory
+    COMMAND apptest_user_data_directory
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_user_data_directory>
+)
+
+# GUI Export Filtered Rows vs `slp query` byte parity (tasks-slp-cli 7.17).
+# Loads the shared CLI fixture through LogModel's streaming sink, builds the
+# same ExportPlan the GUI would, and compares bytes with a real `slp` run.
+if(SLV_BUILD_CLI)
+    qt_add_executable(apptest_cli_export_parity src/test_cli_export_parity.cpp)
+    target_link_libraries(apptest_cli_export_parity PRIVATE Qt6::Test Qt6::Widgets logapp)
+    target_include_directories(apptest_cli_export_parity PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+    add_dependencies(apptest_cli_export_parity slp)
+    target_compile_definitions(
+        apptest_cli_export_parity
+        PRIVATE "SLP_EXECUTABLE=\"$<TARGET_FILE:slp>\"" "SLP_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/test/cli/fixtures\""
+    )
+    add_test(
+        NAME apptest_cli_export_parity
+        COMMAND apptest_cli_export_parity
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_cli_export_parity>
+    )
+    set_tests_properties(apptest_cli_export_parity PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # `slp --save-session` / `--save-columns` / `--config` against a real MainWindow
+    # (tasks-slp-cli 11.6). MainWindow needs the built-in themes from resources.qrc.
+    qt_add_resources(SESSION_ROUNDTRIP_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
+    qt_add_executable(apptest_cli_session_roundtrip src/test_cli_session_roundtrip.cpp ${SESSION_ROUNDTRIP_RESOURCES})
+    target_link_libraries(apptest_cli_session_roundtrip PRIVATE Qt6::Test Qt6::Widgets logapp)
+    target_include_directories(apptest_cli_session_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+    add_dependencies(apptest_cli_session_roundtrip slp)
+    target_compile_definitions(
+        apptest_cli_session_roundtrip
+        PRIVATE "SLP_EXECUTABLE=\"$<TARGET_FILE:slp>\"" "SLP_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/test/cli/fixtures\""
+    )
+    add_test(
+        NAME apptest_cli_session_roundtrip
+        COMMAND apptest_cli_session_roundtrip
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_cli_session_roundtrip>
+    )
+    set_tests_properties(apptest_cli_session_roundtrip PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # Console subsystem so CTest captures QtTest output on Windows.
+    set_target_properties(apptest_cli_session_roundtrip PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
 
 qt_add_executable(apptest_workspace_persistence src/workspace_persistence_test.cpp)
 target_link_libraries(apptest_workspace_persistence PRIVATE Qt6::Test Qt6::Widgets logapp)

@@ -12,6 +12,15 @@ namespace loglib
 
 class EnumDictionaryRegistry;
 
+/** @brief Default number of streamed lines kept before `EvictBefore` drops older lines. */
+inline constexpr size_t DEFAULT_RETENTION_LINES = 10'000;
+
+/** @brief Minimum number of streamed lines a retention cap may keep. */
+inline constexpr size_t MIN_RETENTION_LINES = 1'000;
+
+/** @brief Maximum number of streamed lines a retention cap may keep. */
+inline constexpr size_t MAX_RETENTION_LINES = 1'000'000;
+
 /**
  * @brief Abstract source of log lines. Owns the bytes and resolves byte ranges
  * by offset/length so `LogLine` is storage-agnostic (mmap file or

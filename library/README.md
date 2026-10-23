@@ -39,6 +39,10 @@ Typical composition:
 
 `SetProcessDefaultTimeZone` is a documented process-wide convenience for formatting helpers such as `TimeStampToDateTimeString`. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 
+## Worked example: `slp`
+
+[`cli/`](../cli) is a complete `loglib`-only host. It links no Qt target and builds with `-DSLV_BUILD_GUI=OFF`. It shows the whole composition: source resolution (`ResolveSourcePlan`), format detection, streaming parse into a `LogTable`, filter compilation (`CompileExpression`), sorting (`RowOrdering`), export sinks, session bundles, and the live producers behind `slp tail`. See the [`slp` reference](../doc/cli.md).
+
 ## API stability
 
 Supported headers are `LOGLIB_PUBLIC_HEADERS` in [`library/CMakeLists.txt`](CMakeLists.txt). Pre-v1 C++ source may still change. Persisted configuration JSON keys stay compatible. There is no shared-library ABI and no vcpkg/Conan recipe.

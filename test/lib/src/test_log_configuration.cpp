@@ -69,9 +69,8 @@ namespace
 }
 
 /// Test helper: resolve the first column whose `keys` subset-matches @p keys.
-/// Returns -1 when nothing matches or @p keys is empty. Duplicated
-/// from `leaf_rule_compile.cpp` so `loglib` tests don't take an
-/// app-side dependency.
+/// Returns -1 when nothing matches or @p keys is empty. Local copy of the
+/// subset-match rule so this fixture does not call `ResolveLeafColumnByKeys`.
 [[nodiscard]] int LegacyColumnKeysToRow(const std::vector<std::string> &keys, const std::vector<Column> &columns)
 {
     if (keys.empty())

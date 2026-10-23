@@ -9,6 +9,7 @@
 #include "loglib/key_index.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_parse_sink.hpp"
+#include "loglib/parse_error_text.hpp"
 #include "loglib/parser_options.hpp"
 #include "loglib/stop_token.hpp"
 #include "loglib/stream_line_source.hpp"
@@ -272,15 +273,14 @@ void RunStreamingParseLoop(
         std::string msg;
         if (orphanRunFirstLine == orphanRunLastLine)
         {
-            msg = fmt::format("Error on line {}: Orphaned continuation line.", orphanRunFirstLine);
+            msg = FormatLineError(orphanRunFirstLine, "Orphaned continuation line.");
         }
         else
         {
-            msg = fmt::format(
-                "Error on lines {}-{}: {} orphaned continuation lines dropped.",
+            msg = FormatLineRangeError(
                 orphanRunFirstLine,
                 orphanRunLastLine,
-                orphanRunLastLine - orphanRunFirstLine + 1
+                fmt::format("{} orphaned continuation lines dropped.", orphanRunLastLine - orphanRunFirstLine + 1)
             );
         }
         coalescer.Pending().errors.emplace_back(std::move(msg));
@@ -308,29 +308,26 @@ void RunStreamingParseLoop(
             else
             {
                 // Defensive: buffered targets should already be valid.
+                const std::string_view reason = outcome == ContinuationSpliceOutcome::MissingTarget
+                                                    ? "target field is not present in the record"
+                                                    : "target field is not a string";
                 coalescer.Pending().errors.emplace_back(
-                    fmt::format(
-                        "Continuation lines dropped on line {}: {}.",
-                        rec.startLineNumber,
-                        outcome == ContinuationSpliceOutcome::MissingTarget
-                            ? "target field is not present in the record"
-                            : "target field is not a string"
-                    )
+                    FormatLineError(rec.startLineNumber, fmt::format("Continuation lines dropped: {}.", reason))
                 );
             }
         }
         // Trailing blanks remain between-record separators.
         if (rec.droppedContinuationLines > 0)
         {
-            coalescer.Pending().errors.emplace_back(
+            coalescer.Pending().errors.emplace_back(FormatLineError(
+                rec.startLineNumber,
                 fmt::format(
-                    "Continuation lines dropped on line {} ({} line{}): target field is not present in the record or "
-                    "is not a string.",
-                    rec.startLineNumber,
+                    "Continuation lines dropped ({} line{}): target field is not present in the record or is not a "
+                    "string.",
                     rec.droppedContinuationLines,
                     rec.droppedContinuationLines == 1 ? "" : "s"
                 )
-            );
+            ));
         }
 
         std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
@@ -370,9 +367,7 @@ void RunStreamingParseLoop(
         if (result == LineDecodeResult::Error)
         {
             flushOrphanRun();
-            coalescer.Pending().errors.emplace_back(
-                fmt::format("Error on line {}: {}", lineNumber, std::move(lineError))
-            );
+            coalescer.Pending().errors.emplace_back(FormatLineError(lineNumber, lineError));
             return;
         }
         if (result == LineDecodeResult::Skip)

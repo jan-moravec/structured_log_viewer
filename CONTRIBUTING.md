@@ -44,7 +44,7 @@ Thanks for your interest in contributing! This document is the developer referen
 
 ### Project Structure
 
-The project is organized into two main components: the `library` and the GUI `app`.
+The project is organized into three main components: the `library`, the GUI `app`, and the command-line `cli` (`slp`). `cli/` links `loglib` only and must never include Qt or link a Qt target. The `build-qt-free` CI job (`-DSLV_BUILD_GUI=OFF`) fails if Qt leaks out of `app/`, and the packaging jobs assert that `slp` has no Qt dependency. Logic `slp` needs that has a Qt-free signature belongs in `loglib`, not in `cli/`.
 
 ```plaintext
 structured_log_viewer/
@@ -70,14 +70,19 @@ structured_log_viewer/
 │   ├── include/              # GUI headers
 │   ├── src/                  # GUI implementation (including main_window.ui)
 │   └── CMakeLists.txt
+├── cli/                      # slp: Qt-free command-line tool (links loglib only)
+│   ├── include/              # CLI headers
+│   ├── src/                  # One command_<name>.cpp per subcommand, plus options and session helpers
+│   └── CMakeLists.txt
 ├── test/
 │   ├── lib/                  # Catch2 unit tests and benchmarks for loglib
 │   ├── app/                  # Qt Test smoke tests for MainWindow (+ JSONL/logfmt fixtures)
+│   ├── cli/                  # Catch2 option, golden, and end-to-end tests that run the real `slp` (CTest label `cli`)
 │   ├── common/               # Test helpers shared across lib/app/log_generator
 │   └── log_generator/        # Standalone multi-format fixture generator (`log_generator`)
 ├── cmake/                    # Shared CMake modules (warnings, FetchContent)
 ├── resources/                # Icons, .desktop entry, Qt resource file
-├── doc/                      # End-user guide (`README.md`) and contributor notes
+├── doc/                      # End-user guide (`README.md`), `slp` reference, contributor notes, examples
 ├── .github/workflows/        # CI: build + test on Linux / Windows / macOS
 ├── CMakeLists.txt
 └── README.md
@@ -405,7 +410,7 @@ To teach the viewer a new regex-based log format (a vendor-specific syslog diale
 >
 > - **Logrus default text formatter** emits `time="..." level=info msg="..." key=val` — that's logfmt. Use [`LogfmtParser`](library/include/loglib/parsers/logfmt_parser.hpp), no template needed.
 > - **Heroku router log** emits `at=info method=GET path="/" host=... fwd="..." dyno=... connect=Xms service=Yms status=200 bytes=N` — also pure logfmt. Same parser.
-> - **Python `logging` default** has no portable shape (each app calls `logging.basicConfig` with its own format string), so we don't ship a built-in. The conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` shape is documented as a stock example under [`docs/regex_templates_examples/python_logging.json`](docs/regex_templates_examples/python_logging.json); copy it into `<AppDataLocation>/regex_templates/` if your app uses that layout. (Documented; not auto-detected.)
+> - **Python `logging` default** has no portable shape (each app calls `logging.basicConfig` with its own format string), so we don't ship a built-in. The conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` shape is documented as a stock example under [`doc/regex_templates_examples/python_logging.json`](doc/regex_templates_examples/python_logging.json); copy it into `<AppDataLocation>/regex_templates/` if your app uses that layout. (Documented; not auto-detected.)
 
 #### Built-in templates (shipped with the binary)
 

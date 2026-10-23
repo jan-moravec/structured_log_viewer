@@ -76,6 +76,18 @@ ctest --preset release -L regex_templates      # CTest label
 ctest --preset release -R log_table -V         # verbose failure reproduction
 ```
 
+## CLI tests
+
+The `slp` tests (`test/cli/`) carry the CTest label `cli`. They run the real `slp` binary, so rebuild first and select them with the preset:
+
+```sh
+cmake --build --preset release
+ctest --preset release -L cli
+ctest --preset release -R tail          # e.g. only the slp tail cases
+```
+
+`cli/` must stay Qt-free. Platform-specific `slp` code needs a run on that platform.
+
 ## Specialized presets
 
 Sanitizer and coverage presets pin `clang-22` / `clang++-22` and are intended for Linux (locally, under WSL, or in CI):
@@ -127,4 +139,5 @@ ctest --preset relwithdebinfo-benchmark
 - Ordinary C++ or build-system changes require the `release` workflow.
 - Platform-specific behavior must be tested on the affected platform. A Linux sanitizer run does not validate Windows-only APIs such as `_wfopen_s`.
 - Memory-safety or undefined-behavior-sensitive changes should also run `clang-asan-ubsan`.
+- `slp tail` stdin and network cases, and anything that touches its stop watcher, also run `clang-tsan`.
 - Threading changes involving the TBB pipeline, `StreamLineSource`, `TailingBytesProducer`, `LogModel::Reset`, or `BoundedBatchQueue` should also run `clang-tsan`.

@@ -1,6 +1,6 @@
 #include "highlight_rule_set.hpp"
 
-#include "leaf_rule_compile.hpp"
+#include <loglib/leaf_rule_compile.hpp>
 
 #include <loglib/filter_expression.hpp>
 #include <loglib/log_configuration.hpp>
@@ -96,7 +96,7 @@ int HighlightRuleSet::ResolveColumnByKeys(
 {
     // Thin wrapper over the shared factory helper so the public
     // static entry point stays stable for callers / tests.
-    return ResolveLeafColumnByKeys(keys, columns);
+    return loglib::ResolveLeafColumnByKeys(keys, columns);
 }
 
 std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
@@ -113,7 +113,7 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
     // Shared `CompileLeaf` factory so filter and highlight paths
     // build predicates identically (Level expansion, empty-needle
     // rejection, boolean decoding, ...).
-    auto predicate = CompileLeaf(ToLeafRule(rule), resolvedColumn, columns, table);
+    auto predicate = loglib::CompileLeaf(loglib::ToLeafRule(rule), resolvedColumn, columns, table);
     if (!predicate.has_value())
     {
         return std::nullopt;

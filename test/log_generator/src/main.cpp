@@ -33,7 +33,7 @@
 
 #include <loglib/regex_templates.hpp>
 
-#include <argparse/argparse.hpp>
+#include <CLI/CLI.hpp>
 
 #include <array>
 #include <cctype>
@@ -45,6 +45,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <ostream>
 #include <random>
 #include <stdexcept>
@@ -645,12 +646,11 @@ std::uint64_t Rotate(
 
 } // namespace
 
-// CLI tool; `ParseSize` and argparse surface errors via exceptions by design.
+// CLI tool; `ParseSize` and CLI11 surface errors via exceptions by design.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char *argv[])
 {
-    argparse::ArgumentParser program("log_generator", "0.5.0");
-    program.add_description(
+    CLI::App program(
         "Generate a structured log file with synthetic timestamp/level/message records. "
         "Pick the on-disk shape with --format: either a wire format (json|logfmt|csv) "
         "or a shipped regex-template synthesizer slug (e.g. syslog, apache-combined, "
@@ -661,159 +661,188 @@ int main(int argc, char *argv[])
         "--roll-lines to rotate the active file in-flight (--roll-strategy controls "
         "how). When --output is omitted the default base name takes the format's "
         "extension (generated.jsonl for json, generated.logfmt for logfmt, "
-        "generated.csv for csv, generated_<slug>.log for a regex-template slug)."
+        "generated.csv for csv, generated_<slug>.log for a regex-template slug).",
+        "log_generator"
+    );
+    program.set_version_flag("--version", "0.5.0");
+
+    std::string sizeText = "10MB";
+    program.add_option(
+        "-s,--size",
+        sizeText,
+        "Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = "
+        "unbounded."
     );
 
-    program.add_argument("-s", "--size")
-        .default_value(std::string{"10MB"})
-        .help(
-            "Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = "
-            "unbounded."
-        );
+    std::string linesText = "0";
+    program.add_option(
+        "-n,--lines",
+        linesText,
+        "Total output budget in lines across all rolls. Plain integer or with suffix K/M/G (base 1000). 0 = "
+        "unbounded."
+    );
 
-    program.add_argument("-n", "--lines")
-        .default_value(std::string{"0"})
-        .help(
-            "Total output budget in lines across all rolls. Plain integer or with suffix K/M/G (base 1000). 0 = "
-            "unbounded."
-        );
+    std::string outputArg;
+    program.add_option(
+        "-o,--output",
+        outputArg,
+        "Output file path (overwritten if it already exists, unless --append). A bare '-' is "
+        "shorthand for '--target stdout://' and writes every generated line to standard "
+        "output (useful for piping into StructuredLogViewer). When --output is omitted the default base "
+        "name is `generated` plus the format's extension (generated.jsonl for --format json, "
+        "generated.logfmt for --format logfmt, generated.csv for --format csv, "
+        "generated_<slug>.log for a regex-template slug)."
+    );
 
-    program.add_argument("-o", "--output")
-        .default_value(std::string{})
-        .help(
-            "Output file path (overwritten if it already exists, unless --append). A bare '-' is "
-            "shorthand for '--target stdout://' and writes every generated line to standard "
-            "output (useful for piping into StructuredLogViewer). When --output is omitted the default base "
-            "name is `generated` plus the format's extension (generated.jsonl for --format json, "
-            "generated.logfmt for --format logfmt, generated.csv for --format csv, "
-            "generated_<slug>.log for a regex-template slug)."
-        );
-
-    // No `.choices(...)`: the regex-template shortlist is resolved at
+    // No `IsMember` check: the regex-template shortlist is resolved at
     // runtime via `FindRegexTemplateOption` (case-insensitive, accepts
-    // both the slug and the full template name), and argparse's
-    // built-in choices enforcement would reject those before we reach
-    // the fallback resolver.
-    program.add_argument("-f", "--format")
-        .default_value(std::string{"json"})
-        .help(
-            "Record serialization format. Wire formats: 'json' (one JSON object per line), 'logfmt', "
-            "'csv' (RFC 4180 strict). Regex-template synthesizers (slug or full template name, "
-            "case-insensitive): 'syslog', 'apache-combined', 'apache-common', 'apache-error', "
-            "'java'. Pass --list-formats for the shortlist with descriptions."
-        );
+    // both the slug and the full template name), and a fixed choice
+    // list would reject those before we reach the fallback resolver.
+    std::string formatName = "json";
+    program.add_option(
+        "-f,--format",
+        formatName,
+        "Record serialization format. Wire formats: 'json' (one JSON object per line), 'logfmt', "
+        "'csv' (RFC 4180 strict). Regex-template synthesizers (slug or full template name, "
+        "case-insensitive): 'syslog', 'apache-combined', 'apache-common', 'apache-error', "
+        "'java'. Pass --list-formats for the shortlist with descriptions."
+    );
 
-    program.add_argument("--list-formats")
-        .default_value(false)
-        .implicit_value(true)
-        .help(
-            "Print the --format shortlist (wire formats + regex-template synthesizers with slugs, "
-            "display names, and descriptions) and exit."
-        );
+    bool listFormats = false;
+    program.add_flag(
+        "--list-formats",
+        listFormats,
+        "Print the --format shortlist (wire formats + regex-template synthesizers with slugs, "
+        "display names, and descriptions) and exit."
+    );
 
-    program.add_argument("-q", "--quiet")
-        .default_value(false)
-        .implicit_value(true)
-        .help(
-            "Suppress the 'writing / wrote / rotated' progress lines. Errors still print to stderr. "
-            "Useful when stderr is shown beside a piped stdout stream."
-        );
+    bool quiet = false;
+    program.add_flag(
+        "-q,--quiet",
+        quiet,
+        "Suppress the 'writing / wrote / rotated' progress lines. Errors still print to stderr. "
+        "Useful when stderr is shown beside a piped stdout stream."
+    );
 
-    program.add_argument("-t", "--timeout")
-        .default_value(std::string{"0"})
-        .help(
-            "Delay in milliseconds between line writes. Either a fixed value (e.g. 50) or a MIN-MAX range "
-            "(e.g. 10-200) sampled uniformly per line so timestamps look organically jittered. 0 disables "
-            "throttling."
-        );
+    std::string timeoutText = "0";
+    program.add_option(
+        "-t,--timeout",
+        timeoutText,
+        "Delay in milliseconds between line writes. Either a fixed value (e.g. 50) or a MIN-MAX range "
+        "(e.g. 10-200) sampled uniformly per line so timestamps look organically jittered. 0 disables "
+        "throttling."
+    );
 
-    program.add_argument("--seed").scan<'i', int>().help(
+    std::optional<int> seedArg;
+    program.add_option_function<int>(
+        "--seed",
+        [&seedArg](int value) { seedArg = value; },
         "Optional RNG seed for reproducible output. Defaults to std::random_device."
     );
 
-    program.add_argument("--append")
-        .default_value(false)
-        .implicit_value(true)
-        .help("Append to an existing output file rather than truncating at start.");
+    bool append = false;
+    program.add_flag("--append", append, "Append to an existing output file rather than truncating at start.");
 
-    program.add_argument("--roll-size")
-        .default_value(std::string{"0"})
-        .help(
-            "Rotate the active file once it reaches at least this size (B/KB/MB/GB suffix supported, base 1024). 0 "
-            "disables size-triggered rotation."
-        );
+    std::string rollSizeText = "0";
+    program.add_option(
+        "--roll-size",
+        rollSizeText,
+        "Rotate the active file once it reaches at least this size (B/KB/MB/GB suffix supported, base 1024). 0 "
+        "disables size-triggered rotation."
+    );
 
-    program.add_argument("--roll-lines")
-        .default_value(std::string{"0"})
-        .help(
-            "Rotate the active file once it has at least this many lines (K/M/G suffix supported, base 1000). 0 "
-            "disables line-triggered rotation."
-        );
+    std::string rollLinesText = "0";
+    program.add_option(
+        "--roll-lines",
+        rollLinesText,
+        "Rotate the active file once it has at least this many lines (K/M/G suffix supported, base 1000). 0 "
+        "disables line-triggered rotation."
+    );
 
-    program.add_argument("--roll-strategy")
-        .default_value(std::string{"rename"})
-        .choices("rename", "copytruncate", "truncate")
-        .help(
+    std::string rollStrategyText = "rename";
+    program
+        .add_option(
+            "--roll-strategy",
+            rollStrategyText,
             "Rotation strategy. 'rename' (mv path -> path.1, recreate path;  identity change), "
             "'copytruncate' (cp path path.1, then truncate path in place;  size shrunk), "
             "'truncate' (in-place truncate, no backup;  size shrunk)."
-        );
+        )
+        ->check(CLI::IsMember({"rename", "copytruncate", "truncate"}));
 
-    program.add_argument("--keep-rolled")
-        .default_value(5)
-        .scan<'i', int>()
-        .help(
-            "Number of rotated backups to keep at <output>.1 .. <output>.N. 0 deletes content on rotation (no backup)."
-        );
+    int keepRolledInt = 5;
+    program.add_option(
+        "--keep-rolled",
+        keepRolledInt,
+        "Number of rotated backups to keep at <output>.1 .. <output>.N. 0 deletes content on rotation (no backup)."
+    );
 
-    program.add_argument("--target")
-        .help(
-            "URL-style output destination. Supersedes --output when set. "
-            "Examples: file:///tmp/foo.jsonl, stdout:// (or the bare word "
-            "'stdout'/'-'; writes each line to stdout and reroutes "
-            "diagnostics to stderr for a downstream viewer), "
-            "tcp://127.0.0.1:5141, tcp+tls://example:6514, "
-            "udp://127.0.0.1:5142. When unset, --output selects a file "
-            "or stdout via '-'. The --roll-* flags require a file target and are "
-            "rejected for network / stdout streams."
-        );
+    std::optional<std::string> targetArg;
+    program.add_option_function<std::string>(
+        "--target",
+        [&targetArg](const std::string &value) { targetArg = value; },
+        "URL-style output destination. Supersedes --output when set. "
+        "Examples: file:///tmp/foo.jsonl, stdout:// (or the bare word "
+        "'stdout'/'-'; writes each line to stdout and reroutes "
+        "diagnostics to stderr for a downstream viewer), "
+        "tcp://127.0.0.1:5141, tcp+tls://example:6514, "
+        "udp://127.0.0.1:5142. When unset, --output selects a file "
+        "or stdout via '-'. The --roll-* flags require a file target and are "
+        "rejected for network / stdout streams."
+    );
 
-    program.add_argument("--tls-ca")
-        .help("Optional PEM CA bundle used to verify the server certificate (tcp+tls:// only).");
-    program.add_argument("--tls-cert").help("Optional client certificate PEM for mutual TLS (tcp+tls:// only).");
-    program.add_argument("--tls-key").help("Optional client private key PEM matching --tls-cert (tcp+tls:// only).");
-    program.add_argument("--tls-skip-verify")
-        .default_value(false)
-        .implicit_value(true)
-        .help("Skip server certificate validation. Required for self-signed dev certs; never use in production.");
-    program.add_argument("--tls-sni")
-        .help("Override the SNI hostname sent during the handshake. Defaults to the URL host.");
+    std::optional<std::string> tlsCa;
+    std::optional<std::string> tlsCert;
+    std::optional<std::string> tlsKey;
+    std::optional<std::string> tlsSni;
+    bool tlsSkipVerify = false;
+    program.add_option_function<std::string>(
+        "--tls-ca",
+        [&tlsCa](const std::string &value) { tlsCa = value; },
+        "Optional PEM CA bundle used to verify the server certificate (tcp+tls:// only)."
+    );
+    program.add_option_function<std::string>(
+        "--tls-cert",
+        [&tlsCert](const std::string &value) { tlsCert = value; },
+        "Optional client certificate PEM for mutual TLS (tcp+tls:// only)."
+    );
+    program.add_option_function<std::string>(
+        "--tls-key",
+        [&tlsKey](const std::string &value) { tlsKey = value; },
+        "Optional client private key PEM matching --tls-cert (tcp+tls:// only)."
+    );
+    program.add_flag(
+        "--tls-skip-verify",
+        tlsSkipVerify,
+        "Skip server certificate validation. Required for self-signed dev certs; never use in production."
+    );
+    program.add_option_function<std::string>(
+        "--tls-sni",
+        [&tlsSni](const std::string &value) { tlsSni = value; },
+        "Override the SNI hostname sent during the handshake. Defaults to the URL host."
+    );
 
     try
     {
-        program.parse_args(argc, argv);
+        program.parse(argc, argv);
     }
-    catch (const std::exception &err)
+    catch (const CLI::ParseError &error)
     {
-        std::cerr << err.what() << '\n' << program;
-        return 1;
+        return program.exit(error) == 0 ? 0 : 1;
     }
 
     // `--list-formats` short-circuits before argument validation
     // so users can discover the shortlist without a valid target.
-    if (program.get<bool>("--list-formats"))
+    if (listFormats)
     {
         PrintFormatShortlist(std::cout);
         return 0;
     }
 
-    const auto sizeText = program.get<std::string>("--size");
-    const auto linesText = program.get<std::string>("--lines");
-    const auto formatName = program.get<std::string>("--format");
     // Resolve the seed first so the CSV branch can derive its schema
     // from a probe record on a throwaway RNG.
-    const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
-                                                         : test_common::MakeRandomSeed();
+    const std::uint32_t seed =
+        seedArg.has_value() ? static_cast<std::uint32_t>(*seedArg) : test_common::MakeRandomSeed();
     // Adding a `--format` slug without extending this dispatch
     // must fail loudly here, not fall through. Wire-format
     // branches run first (cheap literal comparisons); anything
@@ -861,10 +890,9 @@ int main(int argc, char *argv[])
     const std::string formatLabel = pickedTemplate == nullptr ? formatName : std::string(pickedTemplate->slug);
     // Empty `--output` means "derive from format": `generated.<ext>`
     // for wire formats, `generated_<slug>.log` for regex-template
-    // slugs. The argparse default is empty so `--help` doesn't bias
+    // slugs. The default is empty so `--help` doesn't bias
     // toward JSON. A bare `-` is shorthand for `--target stdout://`
     // and skips filename derivation entirely.
-    auto outputArg = program.get<std::string>("--output");
     const bool outputIsStdoutShorthand = outputArg == "-";
     if (outputArg.empty())
     {
@@ -881,13 +909,6 @@ int main(int argc, char *argv[])
         }
     }
     const auto outputPath = std::filesystem::path(outputArg);
-    const auto timeoutText = program.get<std::string>("--timeout");
-    const auto append = program.get<bool>("--append");
-    const auto rollSizeText = program.get<std::string>("--roll-size");
-    const auto rollLinesText = program.get<std::string>("--roll-lines");
-    const auto rollStrategyText = program.get<std::string>("--roll-strategy");
-    const auto keepRolledInt = program.get<int>("--keep-rolled");
-    const auto quiet = program.get<bool>("--quiet");
 
     std::uint64_t targetBytes = 0;
     std::uint64_t targetLines = 0;
@@ -916,14 +937,14 @@ int main(int argc, char *argv[])
         const auto timeoutRange = ParseTimeoutRange(timeoutText);
         timeoutMinMs = timeoutRange.first;
         timeoutMaxMs = timeoutRange.second;
-        if (program.is_used("--target"))
+        if (targetArg.has_value())
         {
-            target = ParseTarget(program.get<std::string>("--target"));
+            target = ParseTarget(*targetArg);
         }
     }
     catch (const std::exception &err)
     {
-        std::cerr << "Invalid argument: " << err.what() << '\n' << program;
+        std::cerr << "Invalid argument: " << err.what() << '\n' << program.help();
         return 1;
     }
 
@@ -931,12 +952,12 @@ int main(int argc, char *argv[])
     {
         std::cerr << "Invalid --timeout: must be non-negative and MIN <= MAX (got " << timeoutMinMs << ".."
                   << timeoutMaxMs << ")\n"
-                  << program;
+                  << program.help();
         return 1;
     }
     if (keepRolledInt < 0)
     {
-        std::cerr << "Invalid --keep-rolled: must be >= 0\n" << program;
+        std::cerr << "Invalid --keep-rolled: must be >= 0\n" << program.help();
         return 1;
     }
     const auto keepRolled = static_cast<std::size_t>(keepRolledInt);
@@ -1043,22 +1064,22 @@ int main(int argc, char *argv[])
         if (target.kind == TargetKind::TcpTls)
         {
             tls.emplace();
-            if (program.is_used("--tls-ca"))
+            if (tlsCa.has_value())
             {
-                tls->caBundle = std::filesystem::path(program.get<std::string>("--tls-ca"));
+                tls->caBundle = std::filesystem::path(*tlsCa);
             }
-            if (program.is_used("--tls-cert"))
+            if (tlsCert.has_value())
             {
-                tls->clientCert = std::filesystem::path(program.get<std::string>("--tls-cert"));
+                tls->clientCert = std::filesystem::path(*tlsCert);
             }
-            if (program.is_used("--tls-key"))
+            if (tlsKey.has_value())
             {
-                tls->clientKey = std::filesystem::path(program.get<std::string>("--tls-key"));
+                tls->clientKey = std::filesystem::path(*tlsKey);
             }
-            tls->insecureSkipVerify = program.get<bool>("--tls-skip-verify");
-            if (program.is_used("--tls-sni"))
+            tls->insecureSkipVerify = tlsSkipVerify;
+            if (tlsSni.has_value())
             {
-                tls->serverNameIndication = program.get<std::string>("--tls-sni");
+                tls->serverNameIndication = *tlsSni;
             }
         }
         try

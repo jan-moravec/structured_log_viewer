@@ -1,0 +1,90 @@
+{
+  "columns": [
+    {
+      "header": "ts",
+      "keys": [
+        "ts"
+      ],
+      "type": "time",
+      "autoDetect": true,
+      "visible": true,
+      "printFormat": "%F %H:%M:%S",
+      "parseFormats": [
+        "%FT%T%Ez",
+        "%F %T%Ez",
+        "%FT%T",
+        "%F %T",
+        "%d/%b/%Y:%H:%M:%S %z",
+        "%b %e %H:%M:%S",
+        "%b %d %H:%M:%S"
+      ],
+      "nonNullCount": 2,
+      "samples": [
+        "2024-01-01 00:00:00.000",
+        "2024-01-01 00:00:01.000"
+      ]
+    },
+    {
+      "header": "level",
+      "keys": [
+        "level"
+      ],
+      "type": "level",
+      "autoDetect": true,
+      "visible": true,
+      "printFormat": "{}",
+      "parseFormats": [],
+      "nonNullCount": 2,
+      "samples": [
+        "info",
+        "error"
+      ],
+      "enumCardinality": 2,
+      "enumValues": [
+        "info",
+        "error"
+      ]
+    },
+    {
+      "header": "msg",
+      "keys": [
+        "msg"
+      ],
+      "type": "enumeration",
+      "autoDetect": true,
+      "visible": true,
+      "printFormat": "{}",
+      "parseFormats": [],
+      "nonNullCount": 2,
+      "samples": [
+        "hello",
+        "boom"
+      ],
+      "enumCardinality": 2,
+      "enumValues": [
+        "hello",
+        "boom"
+      ]
+    },
+    {
+      "header": "service",
+      "keys": [
+        "service"
+      ],
+      "type": "enumeration",
+      "autoDetect": true,
+      "visible": true,
+      "printFormat": "{}",
+      "parseFormats": [],
+      "nonNullCount": 2,
+      "samples": [
+        "auth",
+        "auth"
+      ],
+      "enumCardinality": 1,
+      "enumValues": [
+        "auth"
+      ]
+    }
+  ]
+}

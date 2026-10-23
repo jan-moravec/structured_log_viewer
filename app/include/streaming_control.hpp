@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loglib/line_source.hpp>
+
 #include <cstddef>
 
 /// Persistence facade for the **Streaming** and **Static (file mode)**
@@ -10,15 +12,6 @@
 class StreamingControl
 {
 public:
-    /// Default retention cap, also the fallback used by
-    /// `LogModel::BeginStreaming(StreamLineSource, ...)` when no value
-    /// has been set elsewhere.
-    static constexpr size_t DEFAULT_RETENTION_LINES = 10'000;
-
-    /// Allowed retention range surfaced by the spinbox.
-    static constexpr size_t MIN_RETENTION_LINES = 1'000;
-    static constexpr size_t MAX_RETENTION_LINES = 1'000'000;
-
     /// Default for **Show newest lines first** (both stream and static
     /// modes): off, so the existing append-at-bottom behaviour is
     /// preserved for users who do not opt in.
@@ -54,7 +47,7 @@ public:
 private:
     struct Configuration
     {
-        size_t retentionLines = DEFAULT_RETENTION_LINES;
+        size_t retentionLines = loglib::DEFAULT_RETENTION_LINES;
         /// Stream-mode newest-first flag. Persisted at `streaming/newestFirst`.
         bool newestFirst = DEFAULT_NEWEST_FIRST;
         /// Static-mode newest-first flag. Persisted at `static/newestFirst`.

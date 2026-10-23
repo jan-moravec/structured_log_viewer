@@ -9,7 +9,8 @@ option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
 option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
 option(USE_SYSTEM_ROBIN_MAP "Use system Tessil robin-map library" OFF)
 option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
-option(USE_SYSTEM_ARGPARSE "Use system p-ranav/argparse library" OFF)
+option(USE_SYSTEM_CLI11 "Use system CLIUtils/CLI11 library" OFF)
+option(USE_SYSTEM_UTF8PROC "Use system JuliaStrings/utf8proc library" OFF)
 option(USE_SYSTEM_EFSW "Use system SpartanJ/efsw library" OFF)
 option(USE_SYSTEM_PCRE2 "Use system PCRE2 library" OFF)
 option(USE_SYSTEM_ZLIB "Use system zlib library" OFF)
@@ -188,18 +189,44 @@ else()
     find_package(TBB 2021.5 REQUIRED)
 endif()
 
-# argparse is only needed by the test/log_generator console helper (header-only)
-if(NOT USE_SYSTEM_ARGPARSE)
+# CLI11 parses the command lines of `slp` and `test/log_generator`.
+# Header-only; both link `CLI11::CLI11`.
+if(NOT USE_SYSTEM_CLI11)
     FetchContent_Declare(
-        argparse
-        GIT_REPOSITORY https://github.com/p-ranav/argparse.git
-        GIT_TAG v3.2
+        CLI11
+        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+        GIT_TAG v2.7.2
         SYSTEM
         EXCLUDE_FROM_ALL
     )
-    FetchContent_MakeAvailable(argparse)
+    set(CLI11_PRECOMPILED OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(CLI11)
 else()
-    find_package(argparse REQUIRED)
+    find_package(CLI11 REQUIRED)
+endif()
+
+# utf8proc decodes UTF-8 and classifies code points: the string
+# matcher in loglib uses it for whitespace, and `slp` for display
+# widths in its text tables. Built as a static library.
+if(NOT USE_SYSTEM_UTF8PROC)
+    FetchContent_Declare(
+        utf8proc
+        GIT_REPOSITORY https://github.com/JuliaStrings/utf8proc.git
+        GIT_TAG v2.12.0
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
+    block()
+        set(BUILD_SHARED_LIBS OFF)
+        FetchContent_MakeAvailable(utf8proc)
+    endblock()
+else()
+    find_package(utf8proc REQUIRED)
 endif()
 
 # efsw provides the cross-platform filesystem watcher used by the live tail

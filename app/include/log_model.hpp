@@ -229,7 +229,7 @@ public:
     ///   - Paused: trim the paused buffer so visible+buffered <= cap.
     ///   - Idle: record for the next session.
     /// `cap == 0` means unbounded; live-tail substitutes
-    /// `StreamingControl::DEFAULT_RETENTION_LINES` if still 0.
+    /// `loglib::DEFAULT_RETENTION_LINES` if still 0.
     void SetRetentionCap(size_t cap);
 
     /// Current retention cap (`0` means unbounded). GUI thread only.
@@ -253,18 +253,13 @@ public:
     void SetTimestampsMonotonicForTest(bool monotonic) noexcept;
 
     /// UTF-8 bytes -> single-line, simplified `QString` (the
-    /// `Qt::DisplayRole` representation). Public so `MatchRow` and
-    /// `MainWindow::MakeStringMatcher` apply the same normalisation
-    /// the user sees on screen.
+    /// `Qt::DisplayRole` representation).
     static QString ConvertToSingleLineCompactQString(std::string_view bytes);
 
     /// True iff @p bytes is already byte-equal to
     /// `ConvertToSingleLineCompactQString(bytes).toUtf8()`: pure 7-bit
     /// ASCII, no leading/trailing space, no double-space, no
-    /// `\n`/`\r`/`\t`/`\v`/`\f`/control byte. When both pattern and
-    /// haystack pass, `MakeStringMatcher`'s `Exactly` / `Contains`
-    /// paths byte-compare directly and skip the
-    /// `QString::fromUtf8` + `simplified()` walk. Early-exits on the
+    /// `\n`/`\r`/`\t`/`\v`/`\f`/control byte. Early-exits on the
     /// first violating byte so the common ASCII log line costs a
     /// single linear scan.
     [[nodiscard]] static bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept;

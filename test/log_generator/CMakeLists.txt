@@ -10,4 +10,4 @@ cmake_minimum_required(VERSION 3.28)
 # Other formats route entirely through `test_common::LogFormat`.
 add_executable(log_generator src/main.cpp)
 
-target_link_libraries(log_generator PRIVATE test_common loglib argparse project_warnings)
+target_link_libraries(log_generator PRIVATE test_common loglib CLI11::CLI11 project_warnings)

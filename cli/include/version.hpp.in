@@ -1,0 +1,11 @@
+#pragma once
+
+#include <string_view>
+
+namespace slp
+{
+
+inline constexpr std::string_view VERSION = "@PROJECT_VERSION@";
+inline constexpr std::string_view PRODUCT_NAME = "StructuredLogProcessor";
+
+} // namespace slp

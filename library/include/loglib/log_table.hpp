@@ -114,6 +114,32 @@ public:
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
     /**
+     * @brief Columns from @p firstColumn on that belong at index 0 because they hold time.
+     *
+     * Returns `Type::Time` column indices in ascending order, skipping
+     * index 0. Moving each one to index 0 in that order leaves the later
+     * indices valid. Streaming consumers pass the column count from
+     * before `AppendBatch` so new time columns lead, as
+     * `LogConfigurationManager::Update` arranges them on a static load.
+     *
+     * @param firstColumn First column index to consider.
+     * @return Source indices to move to index 0, in move order.
+     */
+    [[nodiscard]] std::vector<size_t> TimeColumnsToFront(size_t firstColumn) const;
+
+    /**
+     * @brief Splices @p batch in and arranges columns without notifications.
+     *
+     * Runs `AppendBatch`, moves each new time column to index 0 as
+     * `TimeColumnsToFront` lists them, then applies
+     * `ApplyPendingLevelBubbles`. Hosts that must announce each move
+     * call those steps themselves.
+     *
+     * @param batch Batch to append.
+     */
+    void AppendBatchArranged(StreamedBatch batch);
+
+    /**
      * @brief Canonical `KeyId`s of columns that `MaybePromoteToLevel`
      * flipped to `Type::Level` since the last drain. The bubble
      * to `CANONICAL_LEVEL_COLUMN_INDEX` is deferred so the
