@@ -82,5 +82,7 @@ TEST_CASE("FindTzdataDirectory ignores a file named tzdata", "[tzdata_search]")
     std::vector<std::filesystem::path> searched;
     const auto found = loglib::FindTzdataDirectory(loglib::TzdataSearchRoots{.executableDirectory = exeDir}, searched);
     CHECK(found.empty());
-    CHECK(searched == std::vector<std::filesystem::path>{exeDir / "tzdata"});
+    // macOS also checks the bundle's Resources directory after this one.
+    REQUIRE_FALSE(searched.empty());
+    CHECK(searched.front() == exeDir / "tzdata");
 }
