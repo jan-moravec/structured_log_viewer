@@ -160,7 +160,8 @@ jobs:
             -I${{ github.workspace }}/build/clang-coverage/_deps/glaze-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/mio-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/date-src/include
-            -I${{ github.workspace }}/build/clang-coverage/_deps/argparse-src/include
+            -I${{ github.workspace }}/build/clang-coverage/_deps/cli11-src/include
+            -I${{ github.workspace }}/build/clang-coverage/_deps/utf8proc-src
             -I${{ github.workspace }}/build/clang-coverage/_deps/tbb-src/include
             -std=c++23
 
@@ -278,8 +279,9 @@ jobs:
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
-        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates.
-        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev
+        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates;
+        # patchelf: points the slp tarball's binary at its bundled libraries.
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev patchelf
 
       - name: Configure
         # TLS pinned ON so the published AppImage can't silently lose it.
@@ -330,7 +332,6 @@ jobs:
           mkdir -p $APP_DIR/usr/share/applications
           mkdir -p $APP_DIR/usr/share/icons/hicolor/256x256/apps
           cp build/release/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/
-          cp build/release/bin/Release/slp $APP_DIR/usr/bin/
           cp -r build/release/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
@@ -384,21 +385,64 @@ jobs:
           rm -rf squashfs-root
           "./$APPIMAGE" --appimage-extract >/dev/null
           test -x "squashfs-root/usr/bin/${{ env.APP_NAME }}"
-          test -x "squashfs-root/usr/bin/slp"
+          # slp ships in its own tarball; the AppImage only launches the GUI.
+          test ! -e "squashfs-root/usr/bin/slp"
           test -f "squashfs-root/usr/share/doc/${{ env.APP_NAME }}/THIRD_PARTY_LICENSES.txt"
-          # slp resolves tzdata through $APPDIR/usr/share/tzdata, as AppRun sets it.
-          APPDIR="$PWD/squashfs-root" LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" \
-            squashfs-root/usr/bin/slp --version
           test -f "squashfs-root/usr/lib/libQt6Core.so.6"
           test -f "squashfs-root/usr/lib/libQt6Widgets.so.6"
           test -d "squashfs-root/usr/share/tzdata"
           test -f "squashfs-root/usr/plugins/platforms/libqxcb.so"
           echo "AppImage structural sanity check passed."
 
+      - name: Package slp tarball
+        # Standalone command-line tool for servers, CI, and containers: no Qt,
+        # no FUSE. Bundles libtbb and the GCC 13 C++ runtime the binary was
+        # built against (newer than the base distro's); glibc and OpenSSL 3
+        # come from the host. The binary finds them through an $ORIGIN rpath
+        # and finds tzdata next to itself.
+        run: |
+          set -euo pipefail
+          VERSION="$(build/release/bin/Release/slp --version | awk '{print $2}')"
+          STAGE="slp-${VERSION}-linux-x86_64"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/lib"
+          cp build/release/bin/Release/slp "$STAGE/"
+          cp -r build/release/bin/Release/tzdata "$STAGE/"
+          for lib in $(ldd "$STAGE/slp" | awk '/=> \// {print $3}' | grep -E '/(libtbb[^/]*|libstdc\+\+[^/]*|libgcc_s[^/]*)$'); do
+            cp -L "$lib" "$STAGE/lib/"
+          done
+          test -n "$(ls "$STAGE"/lib/libtbb*)"
+          patchelf --set-rpath '$ORIGIN/lib' "$STAGE/slp"
+          cp build/release/bin/Release/THIRD_PARTY_LICENSES.txt build/release/bin/Release/LICENSE "$STAGE/"
+          cp doc/cli.md "$STAGE/README.md"
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+          echo "SLP_TARBALL=$STAGE.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Verify slp tarball
+        # Run from a fresh extraction with no build tree on the library path.
+        run: |
+          set -euo pipefail
+          rm -rf slp-check && mkdir slp-check
+          tar -xzf "$SLP_TARBALL" -C slp-check
+          SLP="$(echo slp-check/slp-*/slp)"
+          test -x "$SLP"
+          if ldd "$SLP" | grep -E 'not found|libQt6'; then
+            echo "slp in the tarball has unresolved or Qt dependencies" >&2
+            exit 1
+          fi
+          ldd "$SLP" | grep -q "$(dirname "$SLP")/lib/libtbb"
+          "$SLP" --version
+          # tzdata next to the binary must load: no fallback warning.
+          echo '{"msg":"hello"}' | "$SLP" query --tz Europe/Prague - 2>slp.stderr
+          if grep -q 'timezone data was not found' slp.stderr; then
+            echo "slp did not find the bundled tzdata" >&2
+            exit 1
+          fi
+
       - name: Compute SHA256 checksums
         run: |
           shopt -s nullglob
-          for file in ${{ env.APP_NAME }}-*.AppImage ${{ env.APP_NAME }}-*.AppImage.zsync; do
+          for file in ${{ env.APP_NAME }}-*.AppImage ${{ env.APP_NAME }}-*.AppImage.zsync slp-*-linux-x86_64.tar.gz; do
             sha256sum "$file" > "$file.sha256"
           done
 
@@ -413,6 +457,8 @@ jobs:
             ${{ env.APP_NAME }}-*.AppImage.zsync
             ${{ env.APP_NAME }}-*.AppImage.sha256
             ${{ env.APP_NAME }}-*.AppImage.zsync.sha256
+            slp-*-linux-x86_64.tar.gz
+            slp-*-linux-x86_64.tar.gz.sha256
           if-no-files-found: error
 
       - name: Release binaries
@@ -424,6 +470,8 @@ jobs:
             ${{ env.APP_NAME }}-*.AppImage.zsync
             ${{ env.APP_NAME }}-*.AppImage.sha256
             ${{ env.APP_NAME }}-*.AppImage.zsync.sha256
+            slp-*-linux-x86_64.tar.gz
+            slp-*-linux-x86_64.tar.gz.sha256
 
   build-windows:
     needs: pre-commit

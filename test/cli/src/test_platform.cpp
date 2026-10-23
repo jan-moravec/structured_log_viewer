@@ -50,22 +50,6 @@ TEST_CASE("the first cancel signal stops and the second terminates", "[cli][plat
     CHECK(slp::AdvanceCancel(source, signals) == slp::CancelStep::Terminate);
 }
 
-TEST_CASE("tzdata search prefers the executable directory", "[cli][platform]")
-{
-    TempDir dir;
-    const std::filesystem::path exeDir = dir.path() / "bin";
-    const std::filesystem::path elsewhere = dir.path() / "walk";
-    std::filesystem::create_directories(exeDir / "tzdata");
-    std::filesystem::create_directories(elsewhere / "tzdata");
-    std::ofstream(exeDir / "tzdata" / "zoneinfo") << "x";
-
-    std::vector<std::filesystem::path> searched;
-    const std::filesystem::path found = slp::FindTzdataDirectory(exeDir, elsewhere, {}, searched);
-    CHECK(found == exeDir / "tzdata");
-    REQUIRE_FALSE(searched.empty());
-    CHECK(searched.front() == exeDir / "tzdata");
-}
-
 TEST_CASE("UTC suppresses the missing-tzdata warning", "[cli][platform]")
 {
     const slp::TimeZoneSetup utc = slp::ResolveTimeZone("UTC", {});

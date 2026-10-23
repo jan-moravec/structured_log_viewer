@@ -8,8 +8,8 @@
 # install tree.
 #
 # Background: Qt (LGPLv3), TBB / simdjson / OpenSSL (Apache-2.0),
-# fmt / glaze / mio / robin_map / date / argparse / efsw (MIT or
-# BSD), Asio / Catch2 (BSL-1.0), and PCRE2 (BSD-3-Clause) all
+# fmt / glaze / mio / robin_map / date / utf8proc / efsw (MIT or
+# BSD), Asio / Catch2 (BSL-1.0), and PCRE2 / CLI11 (BSD-3-Clause) all
 # require source attribution in redistributed binary form. lnav
 # (BSD-2-Clause) and logstash-patterns-core (Apache-2.0) aren't
 # linked, but their regex patterns are adapted into
@@ -84,7 +84,8 @@ function(bundle_third_party_licenses target_name)
         "mio:LICENSE:mio (MIT)"
         "robin_map:LICENSE:robin_map (MIT)"
         "efsw:LICENSE:efsw (MIT)"
-        "argparse:LICENSE:argparse (MIT)"
+        "cli11:LICENSE:CLI11 (BSD-3-Clause)"
+        "utf8proc:LICENSE.md:utf8proc (MIT and Unicode-3.0)"
         "asio:LICENSE_1_0.txt:Asio (BSL-1.0)"
         # PCRE2 ships its license as `LICENCE.md` (British spelling) at
         # the source root; it backs the regex-template log parser

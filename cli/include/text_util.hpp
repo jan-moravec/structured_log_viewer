@@ -22,7 +22,4 @@ namespace slp
 /** @brief Splits @p text on commas, trims surrounding whitespace, and drops empty parts. */
 [[nodiscard]] std::vector<std::string> SplitCsv(std::string_view text);
 
-/** @brief Appends @p text to @p out as a quoted, escaped JSON string. */
-void AppendJsonString(std::string &out, std::string_view text);
-
 } // namespace slp

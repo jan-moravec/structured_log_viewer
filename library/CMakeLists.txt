@@ -65,6 +65,7 @@ add_library(
     src/query_parser.cpp
     src/rotation_siblings.cpp
     src/source_plan.cpp
+    src/tzdata_search.cpp
     src/user_paths.cpp
     src/version.cpp
     src/row_ordering.cpp
@@ -150,6 +151,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/time_zone_context.hpp
     include/loglib/transparent_string_hash.hpp
     include/loglib/udp_server_producer.hpp
+    include/loglib/tzdata_search.hpp
     include/loglib/user_paths.hpp
     include/loglib/user_timestamp.hpp
     include/loglib/version.hpp
@@ -213,6 +215,8 @@ target_link_libraries(
     # `MakeStringMatcher`. Includes stay in `regex_parser.cpp` and
     # `log_string_matcher.cpp`; no `pcre2_*` type appears in any public
     # loglib header. PRIVATE link.
+    # utf8proc decodes UTF-8 and classifies whitespace for `MakeStringMatcher`;
+    # it is included only by `log_string_matcher.cpp`. PRIVATE link.
     # zlib / bzip2 / liblzma / zstd back `loglib::internal::DecompressingByteSource`
     # for transparent decompression of the four canonical codecs. All codec
     # includes are confined to `library/src/decompressing_byte_source.cpp`;
@@ -229,6 +233,7 @@ target_link_libraries(
         $<BUILD_INTERFACE:efsw>
         $<BUILD_INTERFACE:asio::asio>
         $<BUILD_INTERFACE:PCRE2::pcre2-8>
+        $<BUILD_INTERFACE:utf8proc::utf8proc>
         $<BUILD_INTERFACE:ZLIB::ZLIB>
         $<BUILD_INTERFACE:BZip2::BZip2>
         $<BUILD_INTERFACE:LibLZMA::LibLZMA>

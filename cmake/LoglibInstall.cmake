@@ -59,6 +59,7 @@ function(loglib_install_library)
             TBB::tbb
             efsw
             PCRE2::pcre2-8
+            utf8proc::utf8proc
             ZLIB::ZLIB
             BZip2::BZip2
             LibLZMA::LibLZMA

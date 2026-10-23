@@ -57,6 +57,7 @@
 #include <loglib/tailing_bytes_producer.hpp>
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/theme.hpp>
+#include <loglib/tzdata_search.hpp>
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
@@ -222,66 +223,6 @@ QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
         return QStringLiteral("%1 %2 ago").arg(days).arg(days == 1 ? "day" : "days");
     }
     return QDateTime::fromMSecsSinceEpoch(timestampMsEpoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd"));
-}
-
-// Locate the staged `tzdata/` directory. Tries (in order) the binary
-// directory, the macOS Resources bundle, $APPDIR/usr/share/tzdata, then
-// the CWD ancestor chain. Empty path on miss; `searched` accumulates
-// candidates for diagnostics.
-std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
-{
-    auto pushAndCheck = [&searched](std::filesystem::path candidate) -> bool {
-        std::error_code ec;
-        const bool exists = std::filesystem::exists(candidate, ec);
-        searched.push_back(std::move(candidate));
-        return exists && !ec;
-    };
-
-    // Preserve non-ASCII Windows paths; constructing a path from
-    // `QString::toStdString()` would decode through the active code page.
-    const auto appDir = logapp::QStringToFsPath(QCoreApplication::applicationDirPath());
-    if (!appDir.empty() && pushAndCheck(appDir / "tzdata"))
-    {
-        return searched.back();
-    }
-
-#ifdef __APPLE__
-    if (!appDir.empty() && pushAndCheck(appDir.parent_path() / "Resources" / "tzdata"))
-    {
-        return searched.back();
-    }
-#endif
-
-#if !defined(_WIN32) && !defined(__APPLE__)
-    if (const char *appImageDir = std::getenv("APPDIR"))
-    {
-        if (pushAndCheck(std::filesystem::path(appImageDir) / "usr/share/tzdata"))
-        {
-            return searched.back();
-        }
-    }
-#endif
-
-    std::error_code cwdEc;
-    auto walk = std::filesystem::current_path(cwdEc);
-    if (!cwdEc)
-    {
-        while (true)
-        {
-            if (pushAndCheck(walk / "tzdata"))
-            {
-                return searched.back();
-            }
-            const auto parent = walk.parent_path();
-            if (parent.empty() || parent == walk)
-            {
-                break;
-            }
-            walk = parent;
-        }
-    }
-
-    return {};
 }
 
 // How long transient status-bar messages (filter rejection / drop notices)
@@ -3053,7 +2994,11 @@ bool MainWindow::InitializeTimezoneDatabase()
     // `qCritical` instead of a modal: the offscreen Qt plugin used
     // by CI deadlocks on `exec()`-style modals.
     std::vector<std::filesystem::path> searched;
-    const auto tzdata = FindTzdata(searched);
+    // Preserve non-ASCII Windows paths; constructing a path from
+    // `QString::toStdString()` would decode through the active code page.
+    const auto tzdata = loglib::FindTzdataDirectory(
+        loglib::DefaultTzdataSearchRoots(logapp::QStringToFsPath(QCoreApplication::applicationDirPath())), searched
+    );
 
     if (tzdata.empty())
     {

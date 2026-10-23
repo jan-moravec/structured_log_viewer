@@ -45,7 +45,7 @@ Several sources concatenate in the order given. Rotated siblings of a file (`app
 | `-h`, `--help`                |                         | Help. `--help-advanced` adds `--batch-size`.                                   |
 | `--version`                   |                         | Print the `slp` and `loglib` versions.                                         |
 
-If no `tzdata` directory is found next to the executable (or under `$APPDIR` on Linux AppImages), `slp` warns once and uses UTC.
+If no `tzdata` directory is found next to the executable, `slp` warns once and uses UTC. The Linux tarball and the Windows zip ship `tzdata` beside `slp`.
 
 ## Parser flags (all commands except `formats`)
 

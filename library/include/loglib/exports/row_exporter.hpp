@@ -173,6 +173,18 @@ public:
 [[nodiscard]] std::unique_ptr<RowExporter> MakeExporter(ExportFormat format);
 
 /**
+ * @brief Appends @p cell to @p out as one RFC 4180 CSV field.
+ *
+ * Quotes the field when it holds a comma, quote, or line break, and
+ * doubles embedded quotes. A value that starts with `=` or `@` is quoted
+ * and prefixed with `'` so spreadsheets do not run it as a formula.
+ *
+ * @param out Buffer to append to.
+ * @param cell Field text.
+ */
+void AppendCsvField(std::string &out, std::string_view cell);
+
+/**
  * @brief Self-contained bundle handed off to an async worker.
  *
  * Owns the snapshot vectors backing `RowSource`'s spans, so the

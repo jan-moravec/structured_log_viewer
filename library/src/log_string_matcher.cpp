@@ -2,7 +2,9 @@
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
+#include <utf8proc.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,37 +24,6 @@ constexpr unsigned char HIGH_BIT = 0x80;
 constexpr char32_t ASCII_TAB = 0x09;
 constexpr char32_t ASCII_CR = 0x0D;
 constexpr char32_t NEXT_LINE = 0x85;
-constexpr char32_t NO_BREAK_SPACE = 0xA0;
-constexpr char32_t OGHAM_SPACE = 0x1680;
-constexpr char32_t EN_QUAD = 0x2000;
-constexpr char32_t HAIR_SPACE = 0x200A;
-constexpr char32_t LINE_SEPARATOR = 0x2028;
-constexpr char32_t PARAGRAPH_SEPARATOR = 0x2029;
-constexpr char32_t NARROW_NO_BREAK_SPACE = 0x202F;
-constexpr char32_t MEDIUM_MATHEMATICAL_SPACE = 0x205F;
-constexpr char32_t IDEOGRAPHIC_SPACE = 0x3000;
-constexpr unsigned char CONTINUATION_MASK = 0xC0;
-constexpr unsigned char CONTINUATION_BITS = 0x3F;
-constexpr unsigned char TWO_BYTE_MASK = 0xE0;
-constexpr unsigned char TWO_BYTE_PREFIX = 0xC0;
-constexpr unsigned char TWO_BYTE_LEAD_BITS = 0x1F;
-constexpr unsigned char THREE_BYTE_MASK = 0xF0;
-constexpr unsigned char THREE_BYTE_PREFIX = 0xE0;
-constexpr unsigned char THREE_BYTE_LEAD_BITS = 0x0F;
-constexpr unsigned char FOUR_BYTE_MASK = 0xF8;
-constexpr unsigned char FOUR_BYTE_PREFIX = 0xF0;
-constexpr unsigned char FOUR_BYTE_LEAD_BITS = 0x07;
-constexpr char32_t UTF8_MIN_2 = 0x80;
-constexpr char32_t UTF8_MAX_2 = 0x7FF;
-constexpr char32_t UTF8_MIN_3 = 0x800;
-constexpr char32_t UTF8_MAX_3 = 0xFFFF;
-constexpr char32_t UTF8_MIN_4 = 0x10000;
-constexpr char32_t UNICODE_MAX = 0x10FFFF;
-constexpr char32_t SURROGATE_MIN = 0xD800;
-constexpr char32_t SURROGATE_MAX = 0xDFFF;
-constexpr int UTF8_SHIFT_6 = 6;
-constexpr int UTF8_SHIFT_12 = 12;
-constexpr int UTF8_SHIFT_18 = 18;
 constexpr std::size_t WILDCARD_ANCHOR_BYTES = 8;
 
 /// True when @p bytes already equal their normalised form and are 7-bit ASCII.
@@ -98,24 +69,23 @@ bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept
     return true;
 }
 
-/// Qt `QChar::isSpace`: ASCII controls, NEL, NBSP, and Unicode separators.
+/// Qt `QChar::isSpace`: tab through carriage return, NEL, and every
+/// Unicode separator (space, line, and paragraph).
 bool IsMatchWhitespace(char32_t codePoint) noexcept
 {
-    if (codePoint == ASCII_SPACE || (codePoint <= ASCII_CR && codePoint >= ASCII_TAB))
+    if ((codePoint >= ASCII_TAB && codePoint <= ASCII_CR) || codePoint == NEXT_LINE)
     {
         return true;
     }
-    if (codePoint < HIGH_BIT)
+    switch (utf8proc_category(static_cast<utf8proc_int32_t>(codePoint)))
     {
+    case UTF8PROC_CATEGORY_ZS:
+    case UTF8PROC_CATEGORY_ZL:
+    case UTF8PROC_CATEGORY_ZP:
+        return true;
+    default:
         return false;
     }
-    if (codePoint == NEXT_LINE || codePoint == NO_BREAK_SPACE || codePoint == OGHAM_SPACE ||
-        codePoint == LINE_SEPARATOR || codePoint == PARAGRAPH_SEPARATOR || codePoint == NARROW_NO_BREAK_SPACE ||
-        codePoint == MEDIUM_MATHEMATICAL_SPACE || codePoint == IDEOGRAPHIC_SPACE)
-    {
-        return true;
-    }
-    return codePoint >= EN_QUAD && codePoint <= HAIR_SPACE;
 }
 
 struct DecodedCodePoint
@@ -125,99 +95,28 @@ struct DecodedCodePoint
     bool valid = false;
 };
 
-/// One UTF-8 sequence, or one byte replaced by U+FFFD. Overlongs and
-/// surrogates are invalid.
-DecodedCodePoint DecodeOne(std::string_view bytes)
+/// One UTF-8 sequence, or one byte replaced by U+FFFD. Overlongs,
+/// surrogates, and values past U+10FFFF are invalid.
+DecodedCodePoint DecodeOne(std::string_view bytes) noexcept
 {
-    const auto lead = static_cast<unsigned char>(bytes.front());
-    if (lead < HIGH_BIT)
+    utf8proc_int32_t codePoint = 0;
+    const utf8proc_ssize_t size = utf8proc_iterate(
+        reinterpret_cast<const utf8proc_uint8_t *>(bytes.data()),
+        static_cast<utf8proc_ssize_t>(bytes.size()),
+        &codePoint
+    );
+    if (size <= 0 || codePoint < 0)
     {
-        return {.codePoint = lead, .size = 1, .valid = true};
+        return {};
     }
-
-    auto continuation = [&](std::size_t index) -> int {
-        if (index >= bytes.size())
-        {
-            return -1;
-        }
-        const auto byte = static_cast<unsigned char>(bytes[index]);
-        if ((byte & CONTINUATION_MASK) != HIGH_BIT)
-        {
-            return -1;
-        }
-        return byte & CONTINUATION_BITS;
-    };
-
-    if ((lead & TWO_BYTE_MASK) == TWO_BYTE_PREFIX)
-    {
-        const int tail = continuation(1);
-        if (tail >= 0)
-        {
-            const auto codePoint =
-                (static_cast<char32_t>(lead & TWO_BYTE_LEAD_BITS) << UTF8_SHIFT_6) | static_cast<char32_t>(tail);
-            if (codePoint >= UTF8_MIN_2)
-            {
-                return {.codePoint = codePoint, .size = 2, .valid = true};
-            }
-        }
-    }
-    else if ((lead & THREE_BYTE_MASK) == THREE_BYTE_PREFIX)
-    {
-        const int tail1 = continuation(1);
-        const int tail2 = continuation(2);
-        if (tail1 >= 0 && tail2 >= 0)
-        {
-            const auto codePoint = (static_cast<char32_t>(lead & THREE_BYTE_LEAD_BITS) << UTF8_SHIFT_12) |
-                                   (static_cast<char32_t>(tail1) << UTF8_SHIFT_6) | static_cast<char32_t>(tail2);
-            if (codePoint >= UTF8_MIN_3 && (codePoint < SURROGATE_MIN || codePoint > SURROGATE_MAX))
-            {
-                return {.codePoint = codePoint, .size = 3, .valid = true};
-            }
-        }
-    }
-    else if ((lead & FOUR_BYTE_MASK) == FOUR_BYTE_PREFIX)
-    {
-        const int tail1 = continuation(1);
-        const int tail2 = continuation(2);
-        const int tail3 = continuation(3);
-        if (tail1 >= 0 && tail2 >= 0 && tail3 >= 0)
-        {
-            const auto codePoint = (static_cast<char32_t>(lead & FOUR_BYTE_LEAD_BITS) << UTF8_SHIFT_18) |
-                                   (static_cast<char32_t>(tail1) << UTF8_SHIFT_12) |
-                                   (static_cast<char32_t>(tail2) << UTF8_SHIFT_6) | static_cast<char32_t>(tail3);
-            if (codePoint >= UTF8_MIN_4 && codePoint <= UNICODE_MAX)
-            {
-                return {.codePoint = codePoint, .size = 4, .valid = true};
-            }
-        }
-    }
-    return {.codePoint = REPLACEMENT, .size = 1, .valid = false};
+    return {.codePoint = static_cast<char32_t>(codePoint), .size = static_cast<std::size_t>(size), .valid = true};
 }
 
 void AppendUtf8(std::string &out, char32_t codePoint)
 {
-    if (codePoint < UTF8_MIN_2)
-    {
-        out.push_back(static_cast<char>(codePoint));
-        return;
-    }
-    if (codePoint <= UTF8_MAX_2)
-    {
-        out.push_back(static_cast<char>(TWO_BYTE_PREFIX | (codePoint >> UTF8_SHIFT_6)));
-        out.push_back(static_cast<char>(HIGH_BIT | (codePoint & CONTINUATION_BITS)));
-        return;
-    }
-    if (codePoint <= UTF8_MAX_3)
-    {
-        out.push_back(static_cast<char>(THREE_BYTE_PREFIX | (codePoint >> UTF8_SHIFT_12)));
-        out.push_back(static_cast<char>(HIGH_BIT | ((codePoint >> UTF8_SHIFT_6) & CONTINUATION_BITS)));
-        out.push_back(static_cast<char>(HIGH_BIT | (codePoint & CONTINUATION_BITS)));
-        return;
-    }
-    out.push_back(static_cast<char>(FOUR_BYTE_PREFIX | (codePoint >> UTF8_SHIFT_18)));
-    out.push_back(static_cast<char>(HIGH_BIT | ((codePoint >> UTF8_SHIFT_12) & CONTINUATION_BITS)));
-    out.push_back(static_cast<char>(HIGH_BIT | ((codePoint >> UTF8_SHIFT_6) & CONTINUATION_BITS)));
-    out.push_back(static_cast<char>(HIGH_BIT | (codePoint & CONTINUATION_BITS)));
+    std::array<utf8proc_uint8_t, 4> buffer{};
+    const utf8proc_ssize_t size = utf8proc_encode_char(static_cast<utf8proc_int32_t>(codePoint), buffer.data());
+    out.append(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(size));
 }
 
 /// UTF-8 decode with U+FFFD substitution. Does not trim or collapse.

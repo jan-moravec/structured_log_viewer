@@ -8,13 +8,13 @@
 #include <loglib/exports/export_sink.hpp>
 #include <loglib/exports/row_exporter.hpp>
 #include <loglib/session_bundle.hpp>
+#include <loglib/tzdata_search.hpp>
 
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <format>
 #include <iostream>
-#include <system_error>
+#include <vector>
 
 namespace
 {
@@ -30,17 +30,6 @@ public:
     ConsoleRestore(const ConsoleRestore &) = delete;
     ConsoleRestore &operator=(const ConsoleRestore &) = delete;
 };
-
-[[nodiscard]] std::filesystem::path AppImageDir()
-{
-#if !defined(_WIN32) && !defined(__APPLE__)
-    if (const char *value = std::getenv("APPDIR"); value != nullptr && value[0] != '\0')
-    {
-        return std::filesystem::path(value);
-    }
-#endif
-    return {};
-}
 
 [[nodiscard]] int Exit(slp::ExitCode code) noexcept
 {
@@ -80,10 +69,8 @@ int main(int argc, char **argv)
         }
 
         std::vector<std::filesystem::path> searched;
-        std::error_code cwdError;
-        const std::filesystem::path cwd = std::filesystem::current_path(cwdError);
-        const std::filesystem::path tzdata = slp::FindTzdataDirectory(
-            slp::CurrentExecutable().parent_path(), cwdError ? std::filesystem::path{} : cwd, AppImageDir(), searched
+        const std::filesystem::path tzdata = loglib::FindTzdataDirectory(
+            loglib::DefaultTzdataSearchRoots(slp::CurrentExecutable().parent_path()), searched
         );
         const slp::TimeZoneSetup zone = slp::ResolveTimeZone(parsed->global.timeZone, tzdata);
         if (!zone.error.empty())

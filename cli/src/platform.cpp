@@ -74,13 +74,6 @@ void PosixCancelHandler(int /*signal*/)
 }
 #endif
 
-bool DirectoryExists(const std::filesystem::path &candidate)
-{
-    std::error_code error;
-    const bool exists = std::filesystem::is_directory(candidate, error);
-    return exists && !error;
-}
-
 } // namespace
 
 bool IsTerminal(std::FILE *stream) noexcept
@@ -218,57 +211,6 @@ std::filesystem::path CurrentExecutable()
     }
     return path;
 #endif
-}
-
-std::filesystem::path FindTzdataDirectory(
-    const std::filesystem::path &executableDirectory,
-    const std::filesystem::path &startDirectory,
-    const std::filesystem::path &appDir,
-    std::vector<std::filesystem::path> &searched
-)
-{
-    auto consider = [&searched](std::filesystem::path candidate) -> bool {
-        const bool found = DirectoryExists(candidate);
-        searched.push_back(std::move(candidate));
-        return found;
-    };
-
-    if (!executableDirectory.empty() && consider(executableDirectory / "tzdata"))
-    {
-        return searched.back();
-    }
-
-#ifdef __APPLE__
-    if (!executableDirectory.empty() && consider(executableDirectory.parent_path() / "Resources" / "tzdata"))
-    {
-        return searched.back();
-    }
-#endif
-
-#if !defined(_WIN32) && !defined(__APPLE__)
-    if (!appDir.empty() && consider(appDir / "usr" / "share" / "tzdata"))
-    {
-        return searched.back();
-    }
-#else
-    (void)appDir;
-#endif
-
-    std::filesystem::path walk = startDirectory;
-    while (!walk.empty())
-    {
-        if (consider(walk / "tzdata"))
-        {
-            return searched.back();
-        }
-        const std::filesystem::path parent = walk.parent_path();
-        if (parent.empty() || parent == walk)
-        {
-            break;
-        }
-        walk = parent;
-    }
-    return {};
 }
 
 TimeZoneSetup ResolveTimeZone(std::string_view zoneName, const std::filesystem::path &tzdataDirectory)

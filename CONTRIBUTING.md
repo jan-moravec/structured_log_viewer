@@ -82,7 +82,7 @@ structured_log_viewer/
 │   └── log_generator/        # Standalone multi-format fixture generator (`log_generator`)
 ├── cmake/                    # Shared CMake modules (warnings, FetchContent)
 ├── resources/                # Icons, .desktop entry, Qt resource file
-├── doc/                      # End-user guide (`README.md`) and contributor notes
+├── doc/                      # End-user guide (`README.md`), `slp` reference, contributor notes, examples
 ├── .github/workflows/        # CI: build + test on Linux / Windows / macOS
 ├── CMakeLists.txt
 └── README.md
@@ -410,7 +410,7 @@ To teach the viewer a new regex-based log format (a vendor-specific syslog diale
 >
 > - **Logrus default text formatter** emits `time="..." level=info msg="..." key=val` — that's logfmt. Use [`LogfmtParser`](library/include/loglib/parsers/logfmt_parser.hpp), no template needed.
 > - **Heroku router log** emits `at=info method=GET path="/" host=... fwd="..." dyno=... connect=Xms service=Yms status=200 bytes=N` — also pure logfmt. Same parser.
-> - **Python `logging` default** has no portable shape (each app calls `logging.basicConfig` with its own format string), so we don't ship a built-in. The conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` shape is documented as a stock example under [`docs/regex_templates_examples/python_logging.json`](docs/regex_templates_examples/python_logging.json); copy it into `<AppDataLocation>/regex_templates/` if your app uses that layout. (Documented; not auto-detected.)
+> - **Python `logging` default** has no portable shape (each app calls `logging.basicConfig` with its own format string), so we don't ship a built-in. The conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` shape is documented as a stock example under [`doc/regex_templates_examples/python_logging.json`](doc/regex_templates_examples/python_logging.json); copy it into `<AppDataLocation>/regex_templates/` if your app uses that layout. (Documented; not auto-detected.)
 
 #### Built-in templates (shipped with the binary)
 

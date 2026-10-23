@@ -60,6 +60,7 @@ add_executable(
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"
     "src/test_udp_server_producer.cpp"
+    "src/test_tzdata_search.cpp"
     "src/test_user_paths.cpp"
     "src/test_user_timestamp.cpp"
 )

@@ -4,11 +4,14 @@
 #include "cli_filter.hpp"
 #include "console.hpp"
 #include "diagnostics.hpp"
+#include "json_report.hpp"
 #include "load_table.hpp"
 #include "platform.hpp"
 #include "session_config.hpp"
+#include "text_table.hpp"
 #include "text_util.hpp"
 
+#include <loglib/exports/row_exporter.hpp>
 #include <loglib/filter_expression.hpp>
 #include <loglib/histogram_bucket_index.hpp>
 #include <loglib/leaf_rule_compile.hpp>
@@ -18,16 +21,12 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <format>
-#include <iomanip>
-#include <map>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -37,55 +36,216 @@
 namespace slp
 {
 
+// Report structs have external linkage: glaze reflects member names
+// through templates that MSVC cannot instantiate for internal types.
+namespace reports
+{
+
+/** @brief Rows at one level, with their share of the total in percent (one decimal). */
+struct LevelCount
+{
+    std::string level;
+    std::uint64_t count = 0;
+    double percent = 0.0;
+};
+
+/** @brief `slp stats --by level`. */
+struct LevelReport
+{
+    std::string by = "level";
+    std::vector<std::string> sources;
+    std::uint64_t rowCount = 0;
+    std::uint64_t total = 0;
+    std::uint64_t unresolvableLevelCount = 0;
+    /** @brief Canonical levels that occur, lowest first, then `Unknown` when any row has no level. */
+    std::vector<LevelCount> levels;
+};
+
+/** @brief Rows at one level within a time bucket. */
+struct BucketLevelCount
+{
+    std::string level;
+    std::uint64_t count = 0;
+};
+
+/** @brief One non-empty time bucket. */
+struct TimeBucket
+{
+    std::int64_t bucketStartMicros = 0;
+    std::int64_t bucketWidthMicros = 0;
+    std::string bucketStartLocal;
+    std::uint64_t total = 0;
+    std::vector<BucketLevelCount> levels;
+};
+
+/** @brief `slp stats --by time`. */
+struct TimeReport
+{
+    std::string by = "time";
+    std::vector<std::string> sources;
+    std::uint64_t rowCount = 0;
+    std::string bucketSize;
+    std::int64_t bucketWidthMicros = 0;
+    std::vector<TimeBucket> buckets;
+};
+
+/** @brief Rows holding one value, with their share of rows that have the column. */
+struct ValueCount
+{
+    std::string value;
+    std::uint64_t count = 0;
+    double percent = 0.0;
+};
+
+/** @brief `slp stats --by column`. */
+struct ColumnReport
+{
+    std::string by = "column";
+    std::vector<std::string> sources;
+    std::uint64_t rowCount = 0;
+    std::string column;
+    std::uint64_t cardinality = 0;
+    /** @brief The `--top` most frequent values, most frequent first, ties by value. */
+    std::vector<ValueCount> top;
+};
+
+} // namespace reports
+
 namespace
 {
+
+using reports::BucketLevelCount;
+using reports::ColumnReport;
+using reports::LevelCount;
+using reports::LevelReport;
+using reports::TimeBucket;
+using reports::TimeReport;
+using reports::ValueCount;
 
 constexpr int DEFAULT_TEXT_BUCKET_BUDGET = 60;
 constexpr int DEFAULT_STRUCTURED_BUCKET_BUDGET = 500;
 constexpr int DEFAULT_TERMINAL_WIDTH = 80;
+constexpr std::size_t MIN_BAR_WIDTH = 8;
+constexpr std::string_view UNKNOWN_LEVEL = "Unknown";
+
+// ---- helpers ----------------------------------------------------------------
+
+/** @brief @p part as a percentage of @p whole, rounded to one decimal. */
+[[nodiscard]] double Percent(std::uint64_t part, std::uint64_t whole) noexcept
+{
+    constexpr double TENTHS = 10.0;
+    if (whole == 0)
+    {
+        return 0.0;
+    }
+    return std::round(100.0 * TENTHS * static_cast<double>(part) / static_cast<double>(whole)) / TENTHS;
+}
 
 [[nodiscard]] std::string FormatPercent(double value)
 {
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(1) << value;
-    return out.str();
+    return std::format("{:.1f}", value);
 }
 
-[[nodiscard]] std::string FormatSources(const InputOptions &input)
+/** @brief The sources as typed, for text output. */
+[[nodiscard]] std::string SourceLine(const InputOptions &input)
 {
     if (input.sources.empty())
     {
         return "-";
     }
-    std::ostringstream out;
-    for (std::size_t i = 0; i < input.sources.size(); ++i)
+    std::vector<std::string> texts;
+    for (const SourceSpec &source : input.sources)
     {
-        if (i != 0)
-        {
-            out << ", ";
-        }
-        out << input.sources[i].text;
+        texts.push_back(source.text);
     }
-    return out.str();
+    return JoinComma(texts);
 }
 
-/** @brief Basenames only so JSON stays stable across absolute source paths. */
-[[nodiscard]] std::string FormatSourcesJson(const InputOptions &input)
+/** @brief Source file names only, so JSON stays stable across absolute paths. */
+[[nodiscard]] std::vector<std::string> SourceNames(const InputOptions &input)
 {
-    if (input.sources.empty())
+    std::vector<std::string> names;
+    for (const SourceSpec &source : input.sources)
     {
-        return "-";
+        names.push_back(std::filesystem::path(source.text).filename().string());
     }
-    std::ostringstream out;
-    for (std::size_t i = 0; i < input.sources.size(); ++i)
+    if (names.empty())
     {
-        if (i != 0)
+        names.emplace_back("-");
+    }
+    return names;
+}
+
+[[nodiscard]] std::string LevelName(loglib::LogLevel level)
+{
+    return level == loglib::LogLevel::Unknown ? std::string(UNKNOWN_LEVEL)
+                                              : std::string(loglib::CanonicalLevelName(level));
+}
+
+/** @brief ANSI style for a level written by `LevelName`, or empty. */
+[[nodiscard]] std::string_view LevelStyle(std::string_view name)
+{
+    return LevelAnsiPrefix(loglib::ParseLevelName(name).value_or(loglib::LogLevel::Unknown));
+}
+
+/**
+ * @brief Calls @p visit for each count in @p counts that is non-zero.
+ *
+ * Canonical levels come first, lowest first; `Unknown` comes last.
+ */
+template <typename Counts, typename Visit> void ForEachLevel(const Counts &counts, Visit visit)
+{
+    for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
+         ++value)
+    {
+        const auto level = static_cast<loglib::LogLevel>(value);
+        if (const std::uint64_t count = counts[static_cast<std::size_t>(level)]; count != 0)
         {
-            out << ", ";
+            visit(level, count);
         }
-        out << std::filesystem::path(input.sources[i].text).filename().string();
     }
-    return out.str();
+    if (const std::uint64_t unknown = counts[static_cast<std::size_t>(loglib::LogLevel::Unknown)]; unknown != 0)
+    {
+        visit(loglib::LogLevel::Unknown, unknown);
+    }
+}
+
+/** @brief A bar of `#` scaled so @p maximum fills @p width. */
+[[nodiscard]] std::string Bar(std::uint64_t value, std::uint64_t maximum, std::size_t width)
+{
+    if (maximum == 0)
+    {
+        return {};
+    }
+    const auto filled = static_cast<std::size_t>(
+        static_cast<double>(value) * static_cast<double>(width) / static_cast<double>(maximum)
+    );
+    return std::string(filled, '#');
+}
+
+/** @brief Width left for a bar that starts after @p table's column @p barColumn. */
+[[nodiscard]] std::size_t BarWidth(const Console &console, const TextTable &table, std::size_t barColumn)
+{
+    const auto terminal = static_cast<std::size_t>(TerminalWidth(console.Out(), DEFAULT_TERMINAL_WIDTH));
+    const std::size_t used = table.WidthBefore(barColumn);
+    return used + MIN_BAR_WIDTH < terminal ? terminal - used : MIN_BAR_WIDTH;
+}
+
+[[nodiscard]] std::string CsvLine(std::initializer_list<std::string_view> fields)
+{
+    std::string line;
+    bool first = true;
+    for (const std::string_view field : fields)
+    {
+        if (!first)
+        {
+            line.push_back(',');
+        }
+        first = false;
+        loglib::exports::AppendCsvField(line, field);
+    }
+    line.push_back('\n');
+    return line;
 }
 
 [[nodiscard]] std::optional<loglib::TimeStamp> TimeStampForRow(
@@ -106,257 +266,75 @@ constexpr int DEFAULT_TERMINAL_WIDTH = 80;
     {
         return loglib::LogLevel::Unknown;
     }
-    const auto level = table.GetLevelForRow(row, static_cast<std::size_t>(levelColumn));
-    return level.value_or(loglib::LogLevel::Unknown);
+    return table.GetLevelForRow(row, static_cast<std::size_t>(levelColumn)).value_or(loglib::LogLevel::Unknown);
 }
 
-[[nodiscard]] std::optional<loglib::HistogramBucketSize> ParseBucketToken(std::string_view token) noexcept
-{
-    if (token == "1s")
-    {
-        return loglib::HistogramBucketSize::OneSecond;
-    }
-    if (token == "10s")
-    {
-        return loglib::HistogramBucketSize::TenSeconds;
-    }
-    if (token == "1m")
-    {
-        return loglib::HistogramBucketSize::OneMinute;
-    }
-    if (token == "10m")
-    {
-        return loglib::HistogramBucketSize::TenMinutes;
-    }
-    if (token == "1h")
-    {
-        return loglib::HistogramBucketSize::OneHour;
-    }
-    if (token == "1d")
-    {
-        return loglib::HistogramBucketSize::OneDay;
-    }
-    return std::nullopt;
-}
+// ---- --by level -------------------------------------------------------------
 
-[[nodiscard]] int BucketBudget(const StatsOptions &options, bool structuredOutput)
-{
-    if (options.maxBuckets)
-    {
-        return static_cast<int>(*options.maxBuckets);
-    }
-    return structuredOutput ? DEFAULT_STRUCTURED_BUCKET_BUDGET : DEFAULT_TEXT_BUCKET_BUDGET;
-}
-
-struct LevelSummary
+[[nodiscard]] LevelReport SummarizeLevels(
+    const loglib::LogTable &table, const std::vector<std::size_t> &rows, int levelColumn, const InputOptions &input
+)
 {
     std::array<std::uint64_t, loglib::CANONICAL_LEVEL_COUNT + 1> counts{};
-    std::uint64_t total = 0;
-    std::uint64_t unresolvable = 0;
-};
-
-[[nodiscard]] LevelSummary SummarizeLevels(
-    const loglib::LogTable &table, const std::vector<std::size_t> &rows, int levelColumn
-)
-{
-    LevelSummary summary;
     for (const std::size_t row : rows)
     {
-        const loglib::LogLevel level = LevelForRow(table, row, levelColumn);
-        const std::size_t slot = static_cast<std::size_t>(level);
-        ++summary.counts[slot];
-        ++summary.total;
-        if (level == loglib::LogLevel::Unknown)
-        {
-            ++summary.unresolvable;
-        }
+        ++counts[static_cast<std::size_t>(LevelForRow(table, row, levelColumn))];
     }
-    return summary;
+
+    LevelReport report;
+    report.sources = SourceNames(input);
+    report.rowCount = rows.size();
+    report.total = rows.size();
+    report.unresolvableLevelCount = counts[static_cast<std::size_t>(loglib::LogLevel::Unknown)];
+    ForEachLevel(counts, [&report](loglib::LogLevel level, std::uint64_t count) {
+        report.levels.push_back(
+            LevelCount{.level = LevelName(level), .count = count, .percent = Percent(count, report.total)}
+        );
+    });
+    return report;
 }
 
-[[nodiscard]] std::string RenderLevelText(
-    const Console &console, const LevelSummary &summary, const std::string &sources, const std::string &spanLine
-)
+[[nodiscard]] std::string RenderLevelText(const Console &console, const LevelReport &report, const InputOptions &input)
 {
     const bool color = console.ColorFor(console.Out());
-    const int termWidth = TerminalWidth(console.Out(), DEFAULT_TERMINAL_WIDTH);
-
-    std::vector<std::string> headers = {"level", "count", "percent", "bar"};
-    std::vector<std::vector<std::string>> tableRows;
-    tableRows.reserve(loglib::CANONICAL_LEVEL_COUNT + 1);
-
-    const auto addRow = [&](loglib::LogLevel level) {
-        const std::size_t slot = static_cast<std::size_t>(level);
-        const std::uint64_t count = summary.counts[slot];
-        if (count == 0 && level != loglib::LogLevel::Unknown)
-        {
-            return;
-        }
-        const double percent =
-            summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
-        std::vector<std::string> row;
-        row.emplace_back(std::string(loglib::CanonicalLevelName(level)));
-        row.push_back(std::to_string(count));
-        row.push_back(FormatPercent(percent));
-        row.emplace_back("");
-        tableRows.push_back(std::move(row));
-    };
-
-    for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
-         ++value)
+    TextTable table({"level", "count", "percent", "bar"});
+    std::uint64_t maximum = 0;
+    for (const LevelCount &level : report.levels)
     {
-        addRow(static_cast<loglib::LogLevel>(value));
+        maximum = std::max(maximum, level.count);
+        table.AddRow(
+            {level.level, std::to_string(level.count), FormatPercent(level.percent)},
+            color ? LevelStyle(level.level) : std::string_view{}
+        );
     }
-    if (summary.unresolvable > 0)
+    const std::size_t barWidth = BarWidth(console, table, 3);
+    for (std::size_t row = 0; row < report.levels.size(); ++row)
     {
-        addRow(loglib::LogLevel::Unknown);
+        table.SetCell(row, 3, Bar(report.levels[row].count, maximum, barWidth));
     }
 
-    std::size_t maxCount = 0;
-    for (const auto &row : tableRows)
+    std::string out =
+        std::format("source: {}\nspan: {} row(s)\ntotal: {}", SourceLine(input), report.rowCount, report.total);
+    if (report.unresolvableLevelCount > 0)
     {
-        maxCount = std::max(maxCount, static_cast<std::size_t>(std::stoull(row[1])));
+        out += std::format("  unresolvable: {}", report.unresolvableLevelCount);
     }
-
-    std::vector<std::size_t> widths(headers.size(), 0);
-    for (std::size_t c = 0; c < headers.size(); ++c)
-    {
-        widths[c] = headers[c].size();
-    }
-    for (const auto &row : tableRows)
-    {
-        for (std::size_t c = 0; c < row.size(); ++c)
-        {
-            widths[c] = std::max(widths[c], row[c].size());
-        }
-    }
-
-    const std::size_t fixedWidth = widths[0] + widths[1] + widths[2] + 6 + headers.size() - 1;
-    const int barWidth = std::max(8, termWidth - static_cast<int>(fixedWidth));
-
-    for (std::size_t r = 0; r < tableRows.size(); ++r)
-    {
-        const std::uint64_t count = std::stoull(tableRows[r][1]);
-        const int filled =
-            maxCount == 0 ? 0
-                          : static_cast<int>((static_cast<double>(count) * barWidth) / static_cast<double>(maxCount));
-        tableRows[r][3] = std::string(static_cast<std::size_t>(filled), '#');
-    }
-
-    std::ostringstream out;
-    out << "source: " << sources << '\n';
-    out << spanLine << '\n';
-    out << "total: " << summary.total;
-    if (summary.unresolvable > 0)
-    {
-        out << "  unresolvable: " << summary.unresolvable;
-    }
-    out << '\n';
-
-    auto writeRow = [&](const std::vector<std::string> &cells, loglib::LogLevel levelForColor) {
-        for (std::size_t c = 0; c < cells.size(); ++c)
-        {
-            if (c != 0)
-            {
-                out << "  ";
-            }
-            if (c == 0 && color)
-            {
-                out << LevelAnsiPrefix(levelForColor) << cells[c] << ANSI_RESET;
-            }
-            else
-            {
-                out << cells[c];
-            }
-            if (c + 1 < cells.size())
-            {
-                out << std::string(widths[c] - cells[c].size(), ' ');
-            }
-        }
-        out << '\n';
-    };
-
-    writeRow(headers, loglib::LogLevel::Unknown);
-    for (const auto &row : tableRows)
-    {
-        loglib::LogLevel level = loglib::LogLevel::Unknown;
-        if (row[0] != "Unknown")
-        {
-            for (int value = static_cast<int>(loglib::LogLevel::Trace);
-                 value <= static_cast<int>(loglib::LogLevel::Fatal);
-                 ++value)
-            {
-                if (row[0] == std::string(loglib::CanonicalLevelName(static_cast<loglib::LogLevel>(value))))
-                {
-                    level = static_cast<loglib::LogLevel>(value);
-                    break;
-                }
-            }
-        }
-        writeRow(row, level);
-    }
-    return out.str();
+    out.push_back('\n');
+    return out + table.Render();
 }
 
-[[nodiscard]] std::string RenderLevelJson(
-    const LevelSummary &summary, const std::string &sources, std::uint64_t rowCount
-)
+[[nodiscard]] std::string RenderLevelCsv(const LevelReport &report)
 {
-    std::string out = "{\n  \"by\": \"level\",\n  \"sources\": [";
-    AppendJsonString(out, sources);
-    out += "],\n  \"rowCount\": ";
-    out += std::to_string(rowCount);
-    out += ",\n  \"total\": ";
-    out += std::to_string(summary.total);
-    out += ",\n  \"unresolvableLevelCount\": ";
-    out += std::to_string(summary.unresolvable);
-    out += ",\n  \"levels\": [\n";
-
-    bool first = true;
-    for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
-         ++value)
+    std::string out = std::format("by,level\nrowCount,{}\n", report.rowCount);
+    out += CsvLine({"level", "count", "percent"});
+    for (const LevelCount &level : report.levels)
     {
-        const auto level = static_cast<loglib::LogLevel>(value);
-        const std::uint64_t count = summary.counts[static_cast<std::size_t>(level)];
-        if (count == 0)
-        {
-            continue;
-        }
-        if (!first)
-        {
-            out += ",\n";
-        }
-        first = false;
-        const double percent =
-            summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
-        out += "    {\"level\": ";
-        AppendJsonString(out, loglib::CanonicalLevelName(level));
-        out += ", \"count\": ";
-        out += std::to_string(count);
-        out += ", \"percent\": ";
-        out += FormatPercent(percent);
-        out += "}";
+        out += CsvLine({level.level, std::to_string(level.count), FormatPercent(level.percent)});
     }
-    if (summary.unresolvable > 0)
-    {
-        if (!first)
-        {
-            out += ",\n";
-        }
-        const double percent = summary.total == 0 ? 0.0
-                                                  : (100.0 * static_cast<double>(summary.unresolvable)) /
-                                                        static_cast<double>(summary.total);
-        out += "    {\"level\": ";
-        AppendJsonString(out, "Unknown");
-        out += ", \"count\": ";
-        out += std::to_string(summary.unresolvable);
-        out += ", \"percent\": ";
-        out += FormatPercent(percent);
-        out += "}";
-    }
-    out += "\n  ]\n}\n";
     return out;
 }
+
+// ---- --by time --------------------------------------------------------------
 
 struct TimeHistogram
 {
@@ -395,441 +373,238 @@ struct TimeHistogram
     return result;
 }
 
+[[nodiscard]] std::optional<loglib::HistogramBucketSize> ParseBucketToken(std::string_view token) noexcept
+{
+    if (token == "1s")
+    {
+        return loglib::HistogramBucketSize::OneSecond;
+    }
+    if (token == "10s")
+    {
+        return loglib::HistogramBucketSize::TenSeconds;
+    }
+    if (token == "1m")
+    {
+        return loglib::HistogramBucketSize::OneMinute;
+    }
+    if (token == "10m")
+    {
+        return loglib::HistogramBucketSize::TenMinutes;
+    }
+    if (token == "1h")
+    {
+        return loglib::HistogramBucketSize::OneHour;
+    }
+    if (token == "1d")
+    {
+        return loglib::HistogramBucketSize::OneDay;
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] loglib::HistogramBucketSize ResolveBucketSize(
     const StatsOptions &options, bool structuredOutput, const TimeHistogram &histogram
 )
 {
     if (options.bucket != "auto")
     {
-        const auto parsed = ParseBucketToken(options.bucket);
-        if (!parsed)
-        {
-            return loglib::HistogramBucketSize::OneMinute;
-        }
-        return *parsed;
+        return ParseBucketToken(options.bucket).value_or(loglib::HistogramBucketSize::OneMinute);
     }
     if (!histogram.minTs.has_value() || !histogram.maxTs.has_value())
     {
         return loglib::HistogramBucketSize::OneMinute;
     }
-    return loglib::HistogramBucketIndex::AutoBucketSize(
-        *histogram.minTs, *histogram.maxTs, BucketBudget(options, structuredOutput)
-    );
-}
-
-void AppendLevelCountsJson(std::string &out, const loglib::LevelBucket &bucket)
-{
-    out += ", \"levels\": [";
-    bool first = true;
-    for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
-         ++value)
+    int budget = structuredOutput ? DEFAULT_STRUCTURED_BUCKET_BUDGET : DEFAULT_TEXT_BUCKET_BUDGET;
+    if (options.maxBuckets)
     {
-        const auto level = static_cast<loglib::LogLevel>(value);
-        const std::uint64_t count = bucket.counts[static_cast<std::size_t>(level)];
-        if (count == 0)
-        {
-            continue;
-        }
-        if (!first)
-        {
-            out += ", ";
-        }
-        first = false;
-        out += "{\"level\": ";
-        AppendJsonString(out, loglib::CanonicalLevelName(level));
-        out += ", \"count\": ";
-        out += std::to_string(count);
-        out += "}";
+        budget = static_cast<int>(*options.maxBuckets);
     }
-    const std::uint64_t unknown = bucket.counts[0];
-    if (unknown > 0)
-    {
-        if (!first)
-        {
-            out += ", ";
-        }
-        out += "{\"level\": ";
-        AppendJsonString(out, "Unknown");
-        out += ", \"count\": ";
-        out += std::to_string(unknown);
-        out += "}";
-    }
-    out += "]";
+    return loglib::HistogramBucketIndex::AutoBucketSize(*histogram.minTs, *histogram.maxTs, budget);
 }
 
-[[nodiscard]] std::int64_t EpochMicros(loglib::TimeStamp ts) noexcept
-{
-    return ts.time_since_epoch().count();
-}
-
-[[nodiscard]] std::string RenderTimeJson(
-    const TimeHistogram &histogram, const RuntimeContext &runtime, const std::string &sources, std::uint64_t rowCount
+[[nodiscard]] TimeReport SummarizeTime(
+    const TimeHistogram &histogram, const RuntimeContext &runtime, std::uint64_t rowCount, const InputOptions &input
 )
 {
-    const auto widthMicros = histogram.index.BucketWidth().count();
-    std::string out = "{\n  \"by\": \"time\",\n  \"sources\": [";
-    AppendJsonString(out, sources);
-    out += "],\n  \"rowCount\": ";
-    out += std::to_string(rowCount);
-    out += ",\n  \"bucketSize\": ";
-    AppendJsonString(out, loglib::HistogramBucketSizeLabel(histogram.index.BucketSize()));
-    out += ",\n  \"bucketWidthMicros\": ";
-    out += std::to_string(widthMicros);
-    out += ",\n  \"buckets\": [\n";
-
+    TimeReport report;
+    report.sources = SourceNames(input);
+    report.rowCount = rowCount;
+    report.bucketSize = loglib::HistogramBucketSizeLabel(histogram.index.BucketSize());
+    report.bucketWidthMicros = histogram.index.BucketWidth().count();
     const auto buckets = histogram.index.Buckets();
-    for (std::size_t i = 0; i < buckets.size(); ++i)
+    for (std::size_t index = 0; index < buckets.size(); ++index)
     {
-        if (buckets[i].Total() == 0)
+        if (buckets[index].Total() == 0)
         {
             continue;
         }
-        if (i != 0)
-        {
-            out += ",\n";
-        }
-        const loglib::TimeStamp start = histogram.index.BucketStart(i);
-        out += "    {\"bucketStartMicros\": ";
-        out += std::to_string(EpochMicros(start));
-        out += ", \"bucketWidthMicros\": ";
-        out += std::to_string(widthMicros);
-        out += ", \"bucketStartLocal\": ";
-        AppendJsonString(out, runtime.timeZone.FormatTimeStamp(start));
-        out += ", \"total\": ";
-        out += std::to_string(buckets[i].Total());
-        AppendLevelCountsJson(out, buckets[i]);
-        out += "}";
+        const loglib::TimeStamp start = histogram.index.BucketStart(index);
+        TimeBucket bucket{
+            .bucketStartMicros = start.time_since_epoch().count(),
+            .bucketWidthMicros = report.bucketWidthMicros,
+            .bucketStartLocal = runtime.timeZone.FormatTimeStamp(start),
+            .total = buckets[index].Total(),
+        };
+        ForEachLevel(buckets[index].counts, [&bucket](loglib::LogLevel level, std::uint64_t count) {
+            bucket.levels.push_back(BucketLevelCount{.level = LevelName(level), .count = count});
+        });
+        report.buckets.push_back(std::move(bucket));
     }
-    out += "\n  ]\n}\n";
-    return out;
+    return report;
+}
+
+/** @brief Style of the most severe canonical level in @p bucket, or empty. */
+[[nodiscard]] std::string_view MostSevereStyle(const TimeBucket &bucket)
+{
+    for (auto level = bucket.levels.rbegin(); level != bucket.levels.rend(); ++level)
+    {
+        if (level->level != UNKNOWN_LEVEL)
+        {
+            return LevelStyle(level->level);
+        }
+    }
+    return {};
 }
 
 [[nodiscard]] std::string RenderTimeText(
     const Console &console,
+    const TimeReport &report,
     const TimeHistogram &histogram,
     const RuntimeContext &runtime,
-    const std::string &sources,
-    const std::string &spanLine
+    const InputOptions &input
 )
 {
     const bool color = console.ColorFor(console.Out());
-    const int termWidth = TerminalWidth(console.Out(), DEFAULT_TERMINAL_WIDTH);
-    const auto widthMicros = histogram.index.BucketWidth().count();
-
-    std::vector<std::string> headers = {"bucketStartLocal", "total", "bar"};
-    std::vector<std::vector<std::string>> rows;
-    std::uint64_t maxTotal = 0;
-    const auto buckets = histogram.index.Buckets();
-    for (std::size_t i = 0; i < buckets.size(); ++i)
+    TextTable table({"bucketStartLocal", "total", "bar"});
+    std::uint64_t maximum = 0;
+    for (const TimeBucket &bucket : report.buckets)
     {
-        const std::uint64_t total = buckets[i].Total();
-        if (total == 0)
+        maximum = std::max(maximum, bucket.total);
+        table.AddRow({bucket.bucketStartLocal, std::to_string(bucket.total)});
+    }
+    const std::size_t barWidth = BarWidth(console, table, 2);
+    for (std::size_t row = 0; row < report.buckets.size(); ++row)
+    {
+        std::string bar = Bar(report.buckets[row].total, maximum, barWidth);
+        const std::string_view style = color ? MostSevereStyle(report.buckets[row]) : std::string_view{};
+        if (!style.empty() && !bar.empty())
         {
-            continue;
+            bar = std::string(style) + bar + std::string(ANSI_RESET);
         }
-        maxTotal = std::max(maxTotal, total);
-        const loglib::TimeStamp start = histogram.index.BucketStart(i);
-        rows.push_back({runtime.timeZone.FormatTimeStamp(start), std::to_string(total), ""});
+        table.SetCell(row, 2, std::move(bar));
     }
 
-    std::vector<std::size_t> widths(headers.size(), 0);
-    for (std::size_t c = 0; c < headers.size(); ++c)
+    std::string span = std::format("span: {} row(s)", report.rowCount);
+    if (histogram.minTs.has_value() && histogram.maxTs.has_value())
     {
-        widths[c] = headers[c].size();
+        span = std::format(
+            "span: {} .. {} ({} row(s))",
+            runtime.timeZone.FormatTimeStamp(*histogram.minTs),
+            runtime.timeZone.FormatTimeStamp(*histogram.maxTs),
+            report.rowCount
+        );
     }
-    for (const auto &row : rows)
-    {
-        for (std::size_t c = 0; c < row.size(); ++c)
-        {
-            widths[c] = std::max(widths[c], row[c].size());
-        }
-    }
-
-    const std::size_t fixedWidth = widths[0] + widths[1] + 4 + headers.size() - 1;
-    const int barWidth = std::max(8, termWidth - static_cast<int>(fixedWidth));
-
-    std::ostringstream out;
-    out << "source: " << sources << '\n';
-    out << spanLine << '\n';
-    out << "bucket: " << loglib::HistogramBucketSizeLabel(histogram.index.BucketSize()) << " (" << widthMicros
-        << " us)\n";
-
-    auto writeCells = [&](const std::vector<std::string> &cells) {
-        for (std::size_t c = 0; c < cells.size(); ++c)
-        {
-            if (c != 0)
-            {
-                out << "  ";
-            }
-            out << cells[c];
-            if (c + 1 < cells.size())
-            {
-                out << std::string(widths[c] - cells[c].size(), ' ');
-            }
-        }
-        out << '\n';
-    };
-
-    writeCells(headers);
-    std::size_t rowIndex = 0;
-    for (std::size_t i = 0; i < buckets.size(); ++i)
-    {
-        const std::uint64_t total = buckets[i].Total();
-        if (total == 0)
-        {
-            continue;
-        }
-        const int filled =
-            maxTotal == 0 ? 0
-                          : static_cast<int>((static_cast<double>(total) * barWidth) / static_cast<double>(maxTotal));
-        std::string bar(static_cast<std::size_t>(filled), '#');
-        if (color)
-        {
-            for (int value = static_cast<int>(loglib::LogLevel::Fatal);
-                 value >= static_cast<int>(loglib::LogLevel::Trace);
-                 --value)
-            {
-                const auto level = static_cast<loglib::LogLevel>(value);
-                const std::uint64_t count = buckets[i].counts[static_cast<std::size_t>(level)];
-                if (count > 0)
-                {
-                    bar.insert(0, LevelAnsiPrefix(level));
-                    bar.append(ANSI_RESET);
-                    break;
-                }
-            }
-        }
-        std::vector<std::string> cells = rows[rowIndex];
-        cells[2] = std::move(bar);
-        writeCells(cells);
-        ++rowIndex;
-    }
-    return out.str();
+    return std::format(
+               "source: {}\n{}\nbucket: {} ({} us)\n",
+               SourceLine(input),
+               span,
+               report.bucketSize,
+               report.bucketWidthMicros
+           ) +
+           table.Render();
 }
 
-struct ColumnValueStats
+[[nodiscard]] std::string RenderTimeCsv(const TimeReport &report)
+{
+    std::string out =
+        std::format("by,time\nrowCount,{}\nbucketWidthMicros,{}\n", report.rowCount, report.bucketWidthMicros);
+    out += CsvLine({"bucketStartMicros", "bucketWidthMicros", "bucketStartLocal", "total"});
+    for (const TimeBucket &bucket : report.buckets)
+    {
+        out += CsvLine({
+            std::to_string(bucket.bucketStartMicros),
+            std::to_string(bucket.bucketWidthMicros),
+            bucket.bucketStartLocal,
+            std::to_string(bucket.total),
+        });
+    }
+    return out;
+}
+
+// ---- --by column ------------------------------------------------------------
+
+[[nodiscard]] ColumnReport SummarizeColumn(
+    const loglib::LogTable &table,
+    const std::vector<std::size_t> &rows,
+    std::size_t columnIndex,
+    std::uint64_t top,
+    const InputOptions &input
+)
 {
     std::unordered_map<std::string, std::uint64_t> counts;
     std::uint64_t presentRows = 0;
-};
-
-[[nodiscard]] ColumnValueStats SummarizeColumn(
-    const loglib::LogTable &table, const std::vector<std::size_t> &rows, std::size_t columnIndex
-)
-{
-    ColumnValueStats stats;
     std::string buffer;
     for (const std::size_t row : rows)
     {
-        const loglib::LogValue value = table.GetValue(row, columnIndex);
-        if (!IsPresent(value))
+        if (!IsPresent(table.GetValue(row, columnIndex)))
         {
             continue;
         }
-        ++stats.presentRows;
-        const std::string_view text = table.GetValueOrFormatted(row, columnIndex, buffer);
-        ++stats.counts[std::string(text)];
+        ++presentRows;
+        ++counts[std::string(table.GetValueOrFormatted(row, columnIndex, buffer))];
     }
-    return stats;
-}
 
-/** @brief The @p top most frequent values, most frequent first, ties by value. */
-[[nodiscard]] std::vector<std::pair<std::string, std::uint64_t>> RankValues(
-    const ColumnValueStats &stats, std::uint64_t top
-)
-{
-    std::vector<std::pair<std::string, std::uint64_t>> ranked(stats.counts.begin(), stats.counts.end());
+    std::vector<std::pair<std::string, std::uint64_t>> ranked(counts.begin(), counts.end());
     std::ranges::sort(ranked, [](const auto &lhs, const auto &rhs) {
-        if (lhs.second != rhs.second)
-        {
-            return lhs.second > rhs.second;
-        }
-        return lhs.first < rhs.first;
+        return lhs.second != rhs.second ? lhs.second > rhs.second : lhs.first < rhs.first;
     });
     if (ranked.size() > top)
     {
         ranked.resize(static_cast<std::size_t>(top));
     }
-    return ranked;
+
+    ColumnReport report;
+    report.sources = SourceNames(input);
+    report.rowCount = rows.size();
+    report.column = table.Configuration().Configuration().columns[columnIndex].header;
+    report.cardinality = counts.size();
+    for (auto &[value, count] : ranked)
+    {
+        report.top.push_back(
+            ValueCount{.value = std::move(value), .count = count, .percent = Percent(count, presentRows)}
+        );
+    }
+    return report;
 }
 
-[[nodiscard]] double ValuePercent(const ColumnValueStats &stats, std::uint64_t count) noexcept
+[[nodiscard]] std::string RenderColumnText(const ColumnReport &report, const InputOptions &input)
 {
-    return stats.presentRows == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(stats.presentRows);
+    TextTable table({"value", "count", "percent"});
+    for (const ValueCount &value : report.top)
+    {
+        table.AddRow({value.value, std::to_string(value.count), FormatPercent(value.percent)});
+    }
+    return std::format(
+               "source: {}\nspan: {} row(s)\ncolumn: {}\ncardinality: {}\n",
+               SourceLine(input),
+               report.rowCount,
+               report.column,
+               report.cardinality
+           ) +
+           table.Render();
 }
 
-/** @brief Quotes @p value as one CSV field, doubling embedded quotes. */
-[[nodiscard]] std::string CsvField(std::string_view value)
+[[nodiscard]] std::string RenderColumnCsv(const ColumnReport &report)
 {
-    std::string field = "\"";
-    for (const char ch : value)
+    std::string out = std::format("by,column\nrowCount,{}\n", report.rowCount);
+    out += CsvLine({"column", report.column});
+    out += CsvLine({"cardinality", std::to_string(report.cardinality)});
+    out += CsvLine({"value", "count", "percent"});
+    for (const ValueCount &value : report.top)
     {
-        if (ch == '"')
-        {
-            field.push_back('"');
-        }
-        field.push_back(ch);
+        out += CsvLine({value.value, std::to_string(value.count), FormatPercent(value.percent)});
     }
-    field.push_back('"');
-    return field;
-}
-
-[[nodiscard]] std::string RenderColumnText(
-    const ColumnValueStats &stats,
-    const StatsOptions &options,
-    const std::string &sources,
-    const std::string &columnName,
-    const std::string &spanLine
-)
-{
-    const auto ranked = RankValues(stats, options.top);
-
-    std::vector<std::string> headers = {"value", "count", "percent"};
-    std::vector<std::vector<std::string>> rows;
-    rows.reserve(ranked.size());
-    for (const auto &[value, count] : ranked)
-    {
-        rows.push_back({value, std::to_string(count), FormatPercent(ValuePercent(stats, count))});
-    }
-
-    std::vector<std::size_t> widths(headers.size(), 0);
-    for (std::size_t c = 0; c < headers.size(); ++c)
-    {
-        widths[c] = headers[c].size();
-    }
-    for (const auto &row : rows)
-    {
-        for (std::size_t c = 0; c < row.size(); ++c)
-        {
-            widths[c] = std::max(widths[c], row[c].size());
-        }
-    }
-
-    std::ostringstream out;
-    out << "source: " << sources << '\n';
-    out << spanLine << '\n';
-    out << "column: " << columnName << '\n';
-    out << "cardinality: " << stats.counts.size() << '\n';
-
-    auto writeRow = [&](const std::vector<std::string> &cells) {
-        for (std::size_t c = 0; c < cells.size(); ++c)
-        {
-            if (c != 0)
-            {
-                out << "  ";
-            }
-            out << cells[c];
-            if (c + 1 < cells.size())
-            {
-                out << std::string(widths[c] - cells[c].size(), ' ');
-            }
-        }
-        out << '\n';
-    };
-    writeRow(headers);
-    for (const auto &row : rows)
-    {
-        writeRow(row);
-    }
-    return out.str();
-}
-
-[[nodiscard]] std::string RenderColumnJson(
-    const ColumnValueStats &stats,
-    const StatsOptions &options,
-    const std::string &sources,
-    const std::string &columnName,
-    std::uint64_t rowCount
-)
-{
-    const auto ranked = RankValues(stats, options.top);
-
-    std::string out = "{\n  \"by\": \"column\",\n  \"sources\": [";
-    AppendJsonString(out, sources);
-    out += "],\n  \"rowCount\": ";
-    out += std::to_string(rowCount);
-    out += ",\n  \"column\": ";
-    AppendJsonString(out, columnName);
-    out += ",\n  \"cardinality\": ";
-    out += std::to_string(stats.counts.size());
-    out += ",\n  \"top\": [\n";
-    for (std::size_t i = 0; i < ranked.size(); ++i)
-    {
-        if (i != 0)
-        {
-            out += ",\n";
-        }
-        const double percent = ValuePercent(stats, ranked[i].second);
-        out += "    {\"value\": ";
-        AppendJsonString(out, ranked[i].first);
-        out += ", \"count\": ";
-        out += std::to_string(ranked[i].second);
-        out += ", \"percent\": ";
-        out += FormatPercent(percent);
-        out += "}";
-    }
-    out += "\n  ]\n}\n";
     return out;
-}
-
-[[nodiscard]] std::string RenderTimeCsv(
-    const TimeHistogram &histogram, const RuntimeContext &runtime, std::uint64_t rowCount
-)
-{
-    const auto widthMicros = histogram.index.BucketWidth().count();
-    std::ostringstream out;
-    out << "by,time\nrowCount," << rowCount << "\nbucketWidthMicros," << widthMicros << "\n";
-    out << "bucketStartMicros,bucketWidthMicros,bucketStartLocal,total\n";
-    const auto buckets = histogram.index.Buckets();
-    for (std::size_t i = 0; i < buckets.size(); ++i)
-    {
-        if (buckets[i].Total() == 0)
-        {
-            continue;
-        }
-        const loglib::TimeStamp start = histogram.index.BucketStart(i);
-        out << EpochMicros(start) << ',' << widthMicros << ',';
-        out << '"' << runtime.timeZone.FormatTimeStamp(start) << '"' << ',' << buckets[i].Total() << '\n';
-    }
-    return out.str();
-}
-
-[[nodiscard]] std::string RenderColumnCsv(
-    const ColumnValueStats &stats, const StatsOptions &options, const std::string &columnName, std::uint64_t rowCount
-)
-{
-    std::ostringstream csv;
-    csv << "by,column\nrowCount," << rowCount << "\ncolumn," << columnName << "\ncardinality," << stats.counts.size()
-        << "\nvalue,count,percent\n";
-    for (const auto &[value, count] : RankValues(stats, options.top))
-    {
-        csv << CsvField(value) << ',' << count << ',' << FormatPercent(ValuePercent(stats, count)) << '\n';
-    }
-    return csv.str();
-}
-
-[[nodiscard]] std::string RenderLevelCsv(const LevelSummary &summary, std::uint64_t rowCount)
-{
-    std::ostringstream csv;
-    csv << "by,level\nrowCount," << rowCount << "\nlevel,count,percent\n";
-    const auto percentOf = [&summary](std::uint64_t count) {
-        return summary.total == 0 ? 0.0 : (100.0 * static_cast<double>(count)) / static_cast<double>(summary.total);
-    };
-    for (int value = static_cast<int>(loglib::LogLevel::Trace); value <= static_cast<int>(loglib::LogLevel::Fatal);
-         ++value)
-    {
-        const auto level = static_cast<loglib::LogLevel>(value);
-        const std::uint64_t count = summary.counts[static_cast<std::size_t>(level)];
-        if (count != 0)
-        {
-            csv << loglib::CanonicalLevelName(level) << ',' << count << ',' << FormatPercent(percentOf(count)) << '\n';
-        }
-    }
-    if (summary.unresolvable > 0)
-    {
-        csv << "Unknown," << summary.unresolvable << ',' << FormatPercent(percentOf(summary.unresolvable)) << '\n';
-    }
-    return csv.str();
 }
 
 /** @brief A `--filter` that matches nothing in a non-empty source exits 1. */
@@ -855,10 +630,6 @@ ExitCode RunStats(
     }
 
     loglib::LogTable &table = loaded->table;
-    const std::uint64_t sourceRows = table.RowCount();
-    const std::string sources = FormatSources(options.input);
-    const std::string sourcesJson = FormatSourcesJson(options.input);
-
     auto session = ApplySessionConfiguration(options.filter, ViewOptions{}, table, runtime, StatsOptions::NAME);
     if (!session)
     {
@@ -869,31 +640,29 @@ ExitCode RunStats(
         loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     const std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
 
-    const ExitCode exitCode = StatsExitCode(options, sourceRows, rows.size());
-    if (exitCode != ExitCode::Success)
+    if (const ExitCode exitCode = StatsExitCode(options, table.RowCount(), rows.size()); exitCode != ExitCode::Success)
     {
         return exitCode;
     }
 
-    const bool structured = options.outputFormat != ReportFormat::Text;
     const auto &columns = table.Configuration().Configuration().columns;
+    const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
 
     switch (options.by)
     {
     case StatsAxis::Level:
     {
-        const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
-        const LevelSummary summary = SummarizeLevels(table, rows, levelColumn);
+        const LevelReport report = SummarizeLevels(table, rows, levelColumn, options.input);
         switch (options.outputFormat)
         {
         case ReportFormat::Json:
-            console.Print(RenderLevelJson(summary, sourcesJson, rows.size()));
+            console.Print(WriteJsonReport(report));
             break;
         case ReportFormat::Csv:
-            console.Print(RenderLevelCsv(summary, rows.size()));
+            console.Print(RenderLevelCsv(report));
             break;
         case ReportFormat::Text:
-            console.Print(RenderLevelText(console, summary, sources, std::format("span: {} row(s)", rows.size())));
+            console.Print(RenderLevelText(console, report, options.input));
             break;
         }
         return ExitCode::Success;
@@ -905,35 +674,23 @@ ExitCode RunStats(
         {
             return console.Report(console.Fail(ExitCode::Usage, "this source has no time column for --by time."));
         }
-        const std::size_t timeColumn = static_cast<std::size_t>(timeIndex);
-        const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
-
+        const auto timeColumn = static_cast<std::size_t>(timeIndex);
+        const bool structured = options.outputFormat != ReportFormat::Text;
         const TimeHistogram probe =
             BuildTimeHistogram(table, rows, timeColumn, levelColumn, loglib::HistogramBucketSize::OneMinute);
-        const loglib::HistogramBucketSize bucketSize = ResolveBucketSize(options, structured, probe);
-        const TimeHistogram histogram = BuildTimeHistogram(table, rows, timeColumn, levelColumn, bucketSize);
-
-        std::string span = std::format("span: {} row(s)", rows.size());
-        if (histogram.minTs.has_value() && histogram.maxTs.has_value())
-        {
-            span = std::format(
-                "span: {} .. {} ({} row(s))",
-                runtime.timeZone.FormatTimeStamp(*histogram.minTs),
-                runtime.timeZone.FormatTimeStamp(*histogram.maxTs),
-                rows.size()
-            );
-        }
-
+        const TimeHistogram histogram =
+            BuildTimeHistogram(table, rows, timeColumn, levelColumn, ResolveBucketSize(options, structured, probe));
+        const TimeReport report = SummarizeTime(histogram, runtime, rows.size(), options.input);
         switch (options.outputFormat)
         {
         case ReportFormat::Json:
-            console.Print(RenderTimeJson(histogram, runtime, sourcesJson, rows.size()));
+            console.Print(WriteJsonReport(report));
             break;
         case ReportFormat::Csv:
-            console.Print(RenderTimeCsv(histogram, runtime, rows.size()));
+            console.Print(RenderTimeCsv(report));
             break;
         case ReportFormat::Text:
-            console.Print(RenderTimeText(console, histogram, runtime, sources, span));
+            console.Print(RenderTimeText(console, report, histogram, runtime, options.input));
             break;
         }
         return ExitCode::Success;
@@ -949,20 +706,18 @@ ExitCode RunStats(
                 std::format("unresolvable column '{}'; available columns are {}.", name, AvailableColumnList(columns))
             ));
         }
-        const ColumnValueStats columnStats = SummarizeColumn(table, rows, static_cast<std::size_t>(columnIndex));
-        const std::string &header = columns[static_cast<std::size_t>(columnIndex)].header;
+        const ColumnReport report =
+            SummarizeColumn(table, rows, static_cast<std::size_t>(columnIndex), options.top, options.input);
         switch (options.outputFormat)
         {
         case ReportFormat::Json:
-            console.Print(RenderColumnJson(columnStats, options, sourcesJson, header, rows.size()));
+            console.Print(WriteJsonReport(report));
             break;
         case ReportFormat::Csv:
-            console.Print(RenderColumnCsv(columnStats, options, header, rows.size()));
+            console.Print(RenderColumnCsv(report));
             break;
         case ReportFormat::Text:
-            console.Print(
-                RenderColumnText(columnStats, options, sources, header, std::format("span: {} row(s)", rows.size()))
-            );
+            console.Print(RenderColumnText(report, options.input));
             break;
         }
         return ExitCode::Success;

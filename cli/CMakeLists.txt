@@ -20,6 +20,7 @@ add_library(
     src/command_tail.cpp
     src/cli_filter.cpp
     src/console.cpp
+    src/text_table.cpp
     src/text_util.cpp
     src/load_table.cpp
     src/session_config.cpp
@@ -27,7 +28,7 @@ add_library(
 
 target_include_directories(slp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
-target_link_libraries(slp_core PUBLIC loglib PRIVATE argparse project_warnings)
+target_link_libraries(slp_core PUBLIC loglib PRIVATE CLI11::CLI11 glaze::glaze utf8proc::utf8proc project_warnings)
 
 add_executable(slp src/main.cpp)
 target_link_libraries(slp PRIVATE slp_core project_warnings)

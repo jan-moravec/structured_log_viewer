@@ -316,7 +316,7 @@ Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is
 
 ### ~~31. Sibling `slp` CLI~~
 
-**Shipped.** `slp` ships next to the GUI in every package with seven commands (`query`, `stats`, `schema`, `validate`, `bundle`, `formats`, `tail`); see [`doc/cli.md`](doc/cli.md). The scope below is the original proposal and is kept for history.
+**Shipped.** `slp` ships next to the GUI on Windows and macOS, and as its own tarball on Linux, with seven commands (`query`, `stats`, `schema`, `validate`, `bundle`, `formats`, `tail`); see [`doc/cli.md`](doc/cli.md). The scope below is the original proposal and is kept for history.
 
 **Why.** lnav's `-n` / `-c` flags are the most cited reason engineers script lnav into CI / triage runbooks. A headless companion binary unlocks one-shot triage (`slp --filter 'level=error' --since '-1h' --export errors.jsonl`) without spinning up Qt. This is a **sibling product** to the viewer, not a viewer feature — a user who only opens the GUI gains nothing from it — so it lives outside the release-blocker set. Builds on shipped [item 10](#10-complete-loglibs-qt-independence): with the extraction pass complete, `slp` is a thin argument parser wired to `loglib::ParseFile` / `loglib::RowOrdering` / `loglib::ColumnProjection` / `loglib::exports`.
 

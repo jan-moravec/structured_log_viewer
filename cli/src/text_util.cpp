@@ -82,44 +82,4 @@ std::vector<std::string> SplitCsv(std::string_view text)
     return parts;
 }
 
-void AppendJsonString(std::string &out, std::string_view text)
-{
-    out.push_back('"');
-    for (const unsigned char ch : text)
-    {
-        switch (ch)
-        {
-        case '"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            if (ch < 0x20)
-            {
-                constexpr std::string_view HEX = "0123456789abcdef";
-                out += "\\u00";
-                out.push_back(HEX[ch >> 4]);
-                out.push_back(HEX[ch & 0x0f]);
-            }
-            else
-            {
-                out.push_back(static_cast<char>(ch));
-            }
-            break;
-        }
-    }
-    out.push_back('"');
-}
-
 } // namespace slp

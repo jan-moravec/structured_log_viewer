@@ -2,6 +2,8 @@
 
 #include "console.hpp"
 #include "diagnostics.hpp"
+#include "json_report.hpp"
+#include "text_table.hpp"
 #include "text_util.hpp"
 
 #include <loglib/regex_templates.hpp>
@@ -19,8 +21,45 @@
 namespace slp
 {
 
+// Report structs have external linkage: glaze reflects member names
+// through templates that MSVC cannot instantiate for internal types.
+namespace reports
+{
+
+/** @brief One parser in `slp formats --output-format json`. */
+struct ParserEntry
+{
+    std::string id;
+    std::string description;
+};
+
+/** @brief One regex template in `slp formats --output-format json`. */
+struct TemplateEntry
+{
+    std::string slug;
+    std::string name;
+    std::string continuationMode;
+    std::string description;
+    int priority = 0;
+    std::string source;
+    std::optional<std::string> shadows;
+};
+
+/** @brief The `slp formats --output-format json` report. */
+struct FormatsReport
+{
+    std::vector<ParserEntry> parsers;
+    std::vector<TemplateEntry> templates;
+};
+
+} // namespace reports
+
 namespace
 {
+
+using reports::FormatsReport;
+using reports::ParserEntry;
+using reports::TemplateEntry;
 
 constexpr int MAX_CLOSEST = 5;
 constexpr int CLOSE_DISTANCE = 3;
@@ -236,115 +275,73 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     const std::vector<ListedTemplate> &builtins, const std::vector<ListedTemplate> &users
 )
 {
-    std::ostringstream out;
-    out << "Parsers\n";
-    out << "  auto    Detect the format from the file, or from a short sniff for stdin and network sources. "
-           "JSON Lines is the fallback. This is the default.\n";
-    out << "  json    JSON Lines, one object per line.\n";
-    out << "  logfmt  logfmt key=value lines.\n";
-    out << "  csv     Comma-separated values.\n";
-    out << "  regex   A PCRE2 pattern with named captures, or a regex template selected by slug.\n";
-    out << "\nBuilt-in regex templates\n";
+    TextTable parsers({}, "  ");
+    parsers.AddRow(
+        {"auto",
+         "Detect the format from the file, or from a short sniff for stdin and network sources. JSON Lines is the "
+         "fallback. This is the default."}
+    );
+    parsers.AddRow({"json", "JSON Lines, one object per line."});
+    parsers.AddRow({"logfmt", "logfmt key=value lines."});
+    parsers.AddRow({"csv", "Comma-separated values."});
+    parsers.AddRow({"regex", "A PCRE2 pattern with named captures, or a regex template selected by slug."});
 
-    auto writeRows = [&out](const std::vector<ListedTemplate> &rows, bool showUser) {
-        std::size_t slugWidth = 4;
-        std::size_t nameWidth = 4;
-        std::size_t modeWidth = 4;
+    auto templates = [](const std::vector<ListedTemplate> &rows, bool showUser) {
+        TextTable table({}, "  ");
         for (const ListedTemplate &row : rows)
         {
-            slugWidth = std::max(slugWidth, row.slug.size());
-            nameWidth = std::max(nameWidth, row.name.size());
-            modeWidth = std::max(modeWidth, row.continuation.size());
-        }
-        for (const ListedTemplate &row : rows)
-        {
-            out << "  " << row.slug << std::string(slugWidth - row.slug.size() + 2, ' ') << row.name
-                << std::string(nameWidth - row.name.size() + 2, ' ') << row.continuation
-                << std::string(modeWidth - row.continuation.size() + 2, ' ') << FirstLine(row.description);
+            std::string description = FirstLine(row.description);
             if (showUser)
             {
-                out << "  priority " << row.priority;
+                description += "  priority " + std::to_string(row.priority);
                 if (!row.shadows.empty())
                 {
-                    out << ", shadows " << row.shadows;
+                    description += ", shadows " + row.shadows;
                 }
             }
-            out << '\n';
+            table.AddRow({row.slug, row.name, row.continuation, std::move(description)});
         }
+        return table.Render();
     };
-    writeRows(builtins, false);
+
+    std::string out = "Parsers\n" + parsers.Render() + "\nBuilt-in regex templates\n" + templates(builtins, false);
     if (!users.empty())
     {
-        out << "\nUser regex templates\n";
-        writeRows(users, true);
+        out += "\nUser regex templates\n" + templates(users, true);
     }
-    return out.str();
+    return out;
 }
 
 [[nodiscard]] std::string RenderJson(
     const std::vector<ListedTemplate> &builtins, const std::vector<ListedTemplate> &users
 )
 {
-    std::string out = "{\n  \"parsers\": [\n";
-    const std::array<std::pair<std::string_view, std::string_view>, 5> parsers = {{
+    FormatsReport report;
+    report.parsers = {
         {"auto", "Detect the format. JSON Lines is the fallback. This is the default."},
         {"json", "JSON Lines, one object per line."},
         {"logfmt", "logfmt key=value lines."},
         {"csv", "Comma-separated values."},
         {"regex", "A PCRE2 pattern with named captures, or a regex template."},
-    }};
-    for (std::size_t index = 0; index < parsers.size(); ++index)
+    };
+    for (const auto *rows : {&builtins, &users})
     {
-        out += "    {\"id\": ";
-        AppendJsonString(out, parsers[index].first);
-        out += ", \"description\": ";
-        AppendJsonString(out, parsers[index].second);
-        out += "}";
-        if (index + 1 != parsers.size())
+        for (const ListedTemplate &row : *rows)
         {
-            out += ',';
+            report.templates.push_back(
+                TemplateEntry{
+                    .slug = row.slug,
+                    .name = row.name,
+                    .continuationMode = row.continuation,
+                    .description = row.description,
+                    .priority = row.priority,
+                    .source = row.user ? "user" : "builtin",
+                    .shadows = row.shadows.empty() ? std::nullopt : std::optional<std::string>(row.shadows),
+                }
+            );
         }
-        out += '\n';
     }
-    out += "  ],\n  \"templates\": [\n";
-    std::vector<const ListedTemplate *> rows;
-    rows.reserve(builtins.size() + users.size());
-    for (const ListedTemplate &row : builtins)
-    {
-        rows.push_back(&row);
-    }
-    for (const ListedTemplate &row : users)
-    {
-        rows.push_back(&row);
-    }
-    for (std::size_t index = 0; index < rows.size(); ++index)
-    {
-        const ListedTemplate &row = *rows[index];
-        out += "    {\"slug\": ";
-        AppendJsonString(out, row.slug);
-        out += ", \"name\": ";
-        AppendJsonString(out, row.name);
-        out += ", \"continuationMode\": ";
-        AppendJsonString(out, row.continuation);
-        out += ", \"description\": ";
-        AppendJsonString(out, row.description);
-        out += ", \"priority\": " + std::to_string(row.priority);
-        out += ", \"source\": ";
-        AppendJsonString(out, row.user ? "user" : "builtin");
-        if (!row.shadows.empty())
-        {
-            out += ", \"shadows\": ";
-            AppendJsonString(out, row.shadows);
-        }
-        out += "}";
-        if (index + 1 != rows.size())
-        {
-            out += ',';
-        }
-        out += '\n';
-    }
-    out += "  ]\n}\n";
-    return out;
+    return WriteJsonReport(report);
 }
 
 } // namespace

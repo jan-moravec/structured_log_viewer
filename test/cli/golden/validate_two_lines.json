@@ -3,10 +3,8 @@
   "linesConsumed": 2,
   "rowsProduced": 2,
   "parseErrorCount": 0,
-  "errorRatePercent": 0.000000,
-  "errors": [
-
-  ],
+  "errorRatePercent": 0,
+  "errors": [],
   "columnHealth": [
     {
       "header": "ts",

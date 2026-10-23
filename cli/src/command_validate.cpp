@@ -2,8 +2,8 @@
 
 #include "console.hpp"
 #include "diagnostics.hpp"
+#include "json_report.hpp"
 #include "load_table.hpp"
-#include "text_util.hpp"
 
 #include <loglib/column_type_health.hpp>
 #include <loglib/parse_error_text.hpp>
@@ -19,13 +19,51 @@
 namespace slp
 {
 
+// Report structs have external linkage: glaze reflects member names
+// through templates that MSVC cannot instantiate for internal types.
+namespace reports
+{
+
+/** @brief One reported parse error. `line` and `lastLine` are 1-based. */
+struct ValidateError
+{
+    std::optional<std::uint64_t> line;
+    /** @brief Set only when the error spans several lines. */
+    std::optional<std::uint64_t> lastLine;
+    std::string message;
+};
+
+/** @brief Type agreement of one column's values. */
+struct ColumnHealth
+{
+    std::string header;
+    std::uint64_t totalSlots = 0;
+    std::uint64_t presentSlots = 0;
+    std::uint64_t matchingSlots = 0;
+    bool typeMismatch = false;
+};
+
+/** @brief The `slp validate` report. Its members are the JSON keys. */
+struct ValidateReport
+{
+    std::string format;
+    std::uint64_t linesConsumed = 0;
+    std::uint64_t rowsProduced = 0;
+    std::uint64_t parseErrorCount = 0;
+    double errorRatePercent = 0.0;
+    /** @brief At most `--max-errors` entries. */
+    std::vector<ValidateError> errors;
+    std::vector<ColumnHealth> columnHealth;
+};
+
+} // namespace reports
+
 namespace
 {
 
-[[nodiscard]] std::string_view DetectedFormatName(const LoadedTable &loaded) noexcept
-{
-    return loaded.format ? FormatName(loaded.format->format) : "unknown";
-}
+using reports::ColumnHealth;
+using reports::ValidateError;
+using reports::ValidateReport;
 
 [[nodiscard]] double ErrorRatePercent(std::uint64_t errors, std::uint64_t lines) noexcept
 {
@@ -36,132 +74,83 @@ namespace
     return (100.0 * static_cast<double>(errors)) / static_cast<double>(lines);
 }
 
-[[nodiscard]] bool WithinErrorBudget(const ValidateOptions &options, std::uint64_t errors, std::uint64_t lines) noexcept
+[[nodiscard]] ValidateReport Assess(const LoadedTable &loaded, std::uint64_t maxErrors)
 {
-    if (errors == 0)
-    {
-        return true;
-    }
-    if (!options.maxErrorRate)
-    {
-        return false;
-    }
-    return ErrorRatePercent(errors, lines) <= *options.maxErrorRate;
-}
+    ValidateReport report;
+    report.format = loaded.format ? std::string(FormatName(loaded.format->format)) : "unknown";
+    report.rowsProduced = loaded.table.RowCount();
+    report.parseErrorCount = loaded.parseErrors.size();
+    report.linesConsumed =
+        loaded.linesConsumed == 0 ? report.rowsProduced + report.parseErrorCount : loaded.linesConsumed;
+    report.errorRatePercent = ErrorRatePercent(report.parseErrorCount, report.linesConsumed);
 
-[[nodiscard]] std::string RenderText(const LoadedTable &loaded, const ValidateOptions &options)
-{
-    const std::uint64_t rows = loaded.table.RowCount();
-    const std::uint64_t errors = loaded.parseErrors.size();
-    const std::uint64_t lines = loaded.linesConsumed == 0 ? rows + errors : loaded.linesConsumed;
-    const double rate = ErrorRatePercent(errors, lines);
-
-    std::ostringstream out;
-    out << "format: " << DetectedFormatName(loaded) << '\n';
-    out << "lines: " << lines << '\n';
-    out << "rows: " << rows << '\n';
-    out << "errors: " << errors << '\n';
-    out << "errorRatePercent: " << rate << '\n';
+    const std::size_t listed = static_cast<std::size_t>(std::min<std::uint64_t>(report.parseErrorCount, maxErrors));
+    for (std::size_t index = 0; index < listed; ++index)
+    {
+        const loglib::ParseErrorLocation location = loglib::LocateParseError(loaded.parseErrors[index]);
+        ValidateError error{.message = std::string(location.message)};
+        if (location.firstLine != 0)
+        {
+            error.line = location.firstLine;
+        }
+        if (location.lastLine != location.firstLine)
+        {
+            error.lastLine = location.lastLine;
+        }
+        report.errors.push_back(std::move(error));
+    }
 
     const auto &columns = loaded.table.Configuration().Configuration().columns;
-    std::size_t demoted = 0;
-    for (std::size_t i = 0; i < columns.size(); ++i)
+    for (std::size_t index = 0; index < columns.size(); ++index)
     {
-        const auto health = loaded.table.ComputeColumnTypeHealth(i);
-        if (health.presentSlots > health.matchingSlots)
+        const auto health = loaded.table.ComputeColumnTypeHealth(index);
+        report.columnHealth.push_back(
+            ColumnHealth{
+                .header = columns[index].header,
+                .totalSlots = health.totalSlots,
+                .presentSlots = health.presentSlots,
+                .matchingSlots = health.matchingSlots,
+                .typeMismatch = health.presentSlots > health.matchingSlots,
+            }
+        );
+    }
+    return report;
+}
+
+[[nodiscard]] std::string RenderText(const ValidateReport &report, const LoadedTable &loaded)
+{
+    std::ostringstream out;
+    out << "format: " << report.format << '\n';
+    out << "lines: " << report.linesConsumed << '\n';
+    out << "rows: " << report.rowsProduced << '\n';
+    out << "errors: " << report.parseErrorCount << '\n';
+    out << "errorRatePercent: " << report.errorRatePercent << '\n';
+
+    bool mismatch = false;
+    for (const ColumnHealth &health : report.columnHealth)
+    {
+        if (health.typeMismatch)
         {
-            ++demoted;
-            out << "columnHealth: " << columns[i].header << " present=" << health.presentSlots
+            mismatch = true;
+            out << "columnHealth: " << health.header << " present=" << health.presentSlots
                 << " matching=" << health.matchingSlots << " (type mismatch)\n";
         }
     }
-    if (demoted == 0 && !columns.empty())
+    if (!mismatch && !report.columnHealth.empty())
     {
         out << "columnHealth: ok\n";
     }
 
-    const std::uint64_t limit = options.maxErrors;
-    for (std::size_t i = 0; i < loaded.parseErrors.size() && i < limit; ++i)
+    // Text mode prints each error as the parser worded it.
+    for (std::size_t index = 0; index < report.errors.size(); ++index)
     {
-        out << loaded.parseErrors[i] << '\n';
+        out << loaded.parseErrors[index] << '\n';
     }
-    if (loaded.parseErrors.size() > limit)
+    if (report.parseErrorCount > report.errors.size())
     {
-        out << "... " << (loaded.parseErrors.size() - limit) << " more error(s) omitted\n";
+        out << "... " << (report.parseErrorCount - report.errors.size()) << " more error(s) omitted\n";
     }
     return out.str();
-}
-
-[[nodiscard]] std::string RenderJson(const LoadedTable &loaded, const ValidateOptions &options)
-{
-    const std::uint64_t rows = loaded.table.RowCount();
-    const std::uint64_t errors = loaded.parseErrors.size();
-    const std::uint64_t lines = loaded.linesConsumed == 0 ? rows + errors : loaded.linesConsumed;
-    const double rate = ErrorRatePercent(errors, lines);
-
-    std::string out = "{\n  \"format\": ";
-    AppendJsonString(out, DetectedFormatName(loaded));
-    out += ",\n  \"linesConsumed\": ";
-    out += std::to_string(lines);
-    out += ",\n  \"rowsProduced\": ";
-    out += std::to_string(rows);
-    out += ",\n  \"parseErrorCount\": ";
-    out += std::to_string(errors);
-    out += ",\n  \"errorRatePercent\": ";
-    out += std::to_string(rate);
-    out += ",\n  \"errors\": [\n";
-
-    const std::uint64_t limit = options.maxErrors;
-    const std::size_t emit = static_cast<std::size_t>(std::min<std::uint64_t>(errors, limit));
-    for (std::size_t i = 0; i < emit; ++i)
-    {
-        if (i != 0)
-        {
-            out += ",\n";
-        }
-        const loglib::ParseErrorLocation location = loglib::LocateParseError(loaded.parseErrors[i]);
-        out += "    {\n";
-        if (location.firstLine != 0)
-        {
-            out += "      \"line\": ";
-            out += std::to_string(location.firstLine);
-            out += ",\n";
-        }
-        if (location.lastLine != location.firstLine)
-        {
-            out += "      \"lastLine\": ";
-            out += std::to_string(location.lastLine);
-            out += ",\n";
-        }
-        out += "      \"message\": ";
-        AppendJsonString(out, location.message);
-        out += "\n    }";
-    }
-    out += "\n  ],\n  \"columnHealth\": [\n";
-
-    const auto &columns = loaded.table.Configuration().Configuration().columns;
-    for (std::size_t i = 0; i < columns.size(); ++i)
-    {
-        if (i != 0)
-        {
-            out += ",\n";
-        }
-        const auto health = loaded.table.ComputeColumnTypeHealth(i);
-        const bool mismatch = health.presentSlots > health.matchingSlots;
-        out += "    {\n      \"header\": ";
-        AppendJsonString(out, columns[i].header);
-        out += ",\n      \"totalSlots\": ";
-        out += std::to_string(health.totalSlots);
-        out += ",\n      \"presentSlots\": ";
-        out += std::to_string(health.presentSlots);
-        out += ",\n      \"matchingSlots\": ";
-        out += std::to_string(health.matchingSlots);
-        out += ",\n      \"typeMismatch\": ";
-        out += mismatch ? "true" : "false";
-        out += "\n    }";
-    }
-    out += "\n  ]\n}\n";
-    return out;
 }
 
 } // namespace
@@ -175,14 +164,12 @@ ExitCode RunValidate(
     {
         return console.Report(loaded.error());
     }
-    console.Print(
-        options.outputFormat == ReportFormat::Json ? RenderJson(*loaded, options) : RenderText(*loaded, options)
-    );
+    const ValidateReport report = Assess(*loaded, options.maxErrors);
+    console.Print(options.outputFormat == ReportFormat::Json ? WriteJsonReport(report) : RenderText(report, *loaded));
 
-    const std::uint64_t rows = loaded->table.RowCount();
-    const std::uint64_t errors = loaded->parseErrors.size();
-    const std::uint64_t lines = loaded->linesConsumed == 0 ? rows + errors : loaded->linesConsumed;
-    return WithinErrorBudget(options, errors, lines) ? ExitCode::Success : ExitCode::Data;
+    const bool withinBudget =
+        report.parseErrorCount == 0 || (options.maxErrorRate && report.errorRatePercent <= *options.maxErrorRate);
+    return withinBudget ? ExitCode::Success : ExitCode::Data;
 }
 
 } // namespace slp

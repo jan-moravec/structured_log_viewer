@@ -68,21 +68,6 @@ void InstallSignalHandlers(loglib::StopSource &source);
 [[nodiscard]] std::filesystem::path CurrentExecutable();
 
 /**
- * @brief Locates a tzdata directory using the GUI search order.
- *
- * Checks @p executableDirectory`/tzdata`, then on macOS
- * `../Resources/tzdata`, then `$APPDIR/usr/share/tzdata` when
- * @p appDir is non-empty, then walks @p startDirectory toward the
- * root. @p searched receives every candidate, including misses.
- */
-[[nodiscard]] std::filesystem::path FindTzdataDirectory(
-    const std::filesystem::path &executableDirectory,
-    const std::filesystem::path &startDirectory,
-    const std::filesystem::path &appDir,
-    std::vector<std::filesystem::path> &searched
-);
-
-/**
  * @brief Time zone selected for one invocation.
  *
  * `error` set means exit 2. `warning` is printed once unless the
