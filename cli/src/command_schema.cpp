@@ -25,6 +25,7 @@ namespace slp
 // through templates that MSVC cannot instantiate for internal types.
 namespace reports
 {
+// NOLINTBEGIN(misc-use-internal-linkage)
 
 /** @brief One column of `slp schema`. Its members are the JSON keys. */
 struct SchemaColumn
@@ -48,6 +49,8 @@ struct SchemaReport
 {
     std::vector<SchemaColumn> columns;
 };
+
+// NOLINTEND(misc-use-internal-linkage)
 
 } // namespace reports
 
@@ -98,6 +101,10 @@ constexpr std::size_t MAX_ENUM_VALUES_LISTED = 64;
         .visible = column.visible,
         .printFormat = column.printFormat,
         .parseFormats = column.parseFormats,
+        .nonNullCount = 0,
+        .samples = {},
+        .enumCardinality = std::nullopt,
+        .enumValues = std::nullopt,
     };
 
     std::string buffer;
@@ -184,8 +191,7 @@ ExitCode RunSchema(
         return console.Report(console.Fail(ExitCode::Input, "source produced no columns"));
     }
     const SchemaReport report = DescribeTable(loaded->table, options.sample);
-    console.Print(options.outputFormat == ReportFormat::Json ? WriteJsonReport(report) : RenderText(report));
-    return ExitCode::Success;
+    return console.Print(options.outputFormat == ReportFormat::Json ? WriteJsonReport(report) : RenderText(report));
 }
 
 } // namespace slp

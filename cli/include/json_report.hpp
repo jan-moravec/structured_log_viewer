@@ -31,7 +31,7 @@ template <typename Report> [[nodiscard]] std::string WriteJsonReport(const Repor
     std::string json;
     if (const auto error = glz::write<REPORT_JSON_OPTIONS>(report, json))
     {
-        throw std::runtime_error("could not serialize the JSON report: " + glz::format_error(error, json));
+        throw std::runtime_error("could not serialize the JSON report: " + glz::format_error(error));
     }
     json.push_back('\n');
     return json;

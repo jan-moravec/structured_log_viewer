@@ -23,6 +23,7 @@ namespace slp
 // through templates that MSVC cannot instantiate for internal types.
 namespace reports
 {
+// NOLINTBEGIN(misc-use-internal-linkage)
 
 /** @brief One reported parse error. `line` and `lastLine` are 1-based. */
 struct ValidateError
@@ -56,6 +57,8 @@ struct ValidateReport
     std::vector<ColumnHealth> columnHealth;
 };
 
+// NOLINTEND(misc-use-internal-linkage)
+
 } // namespace reports
 
 namespace
@@ -84,11 +87,11 @@ using reports::ValidateReport;
         loaded.linesConsumed == 0 ? report.rowsProduced + report.parseErrorCount : loaded.linesConsumed;
     report.errorRatePercent = ErrorRatePercent(report.parseErrorCount, report.linesConsumed);
 
-    const std::size_t listed = static_cast<std::size_t>(std::min<std::uint64_t>(report.parseErrorCount, maxErrors));
+    const auto listed = static_cast<std::size_t>(std::min<std::uint64_t>(report.parseErrorCount, maxErrors));
     for (std::size_t index = 0; index < listed; ++index)
     {
         const loglib::ParseErrorLocation location = loglib::LocateParseError(loaded.parseErrors[index]);
-        ValidateError error{.message = std::string(location.message)};
+        ValidateError error{.line = std::nullopt, .lastLine = std::nullopt, .message = std::string(location.message)};
         if (location.firstLine != 0)
         {
             error.line = location.firstLine;
@@ -165,7 +168,13 @@ ExitCode RunValidate(
         return console.Report(loaded.error());
     }
     const ValidateReport report = Assess(*loaded, options.maxErrors);
-    console.Print(options.outputFormat == ReportFormat::Json ? WriteJsonReport(report) : RenderText(report, *loaded));
+    if (const ExitCode written = console.Print(
+            options.outputFormat == ReportFormat::Json ? WriteJsonReport(report) : RenderText(report, *loaded)
+        );
+        written != ExitCode::Success)
+    {
+        return written;
+    }
 
     const bool withinBudget =
         report.parseErrorCount == 0 || (options.maxErrorRate && report.errorRatePercent <= *options.maxErrorRate);

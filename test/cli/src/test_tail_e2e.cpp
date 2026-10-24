@@ -47,8 +47,8 @@ constexpr auto LONG_WAIT = milliseconds(30000);
 
 [[nodiscard]] std::string Row(std::string_view level, std::string_view msg, int second = 0)
 {
-    return "{\"ts\":\"2024-01-01T00:00:" + std::string(second < 10 ? "0" : "") + std::to_string(second) +
-           "Z\",\"level\":\"" + std::string(level) + "\",\"msg\":\"" + std::string(msg) + "\"}\n";
+    return R"({"ts":"2024-01-01T00:00:)" + std::string(second < 10 ? "0" : "") + std::to_string(second) +
+           R"(Z","level":")" + std::string(level) + R"(","msg":")" + std::string(msg) + "\"}\n";
 }
 
 [[nodiscard]] std::string FourRows()
@@ -70,7 +70,7 @@ constexpr auto LONG_WAIT = milliseconds(30000);
 
 [[nodiscard]] bool Contains(const std::string &text, std::string_view needle)
 {
-    return text.find(needle) != std::string::npos;
+    return text.contains(needle);
 }
 
 /** @brief Removes `NO_COLOR` from the environment so `--color always` is honored, then restores it. */
@@ -85,6 +85,7 @@ public:
         if (_dupenv_s(&value, &length, "NO_COLOR") == 0 && value != nullptr)
         {
             mSaved = value;
+            // NOLINTNEXTLINE(cppcoreguidelines-no-malloc): `_dupenv_s` allocates with `malloc`.
             std::free(value);
         }
 #else
@@ -363,7 +364,7 @@ TEST_CASE("slp tail emits every row when retention evicts", "[cli][tail][e2e][re
     std::string input;
     for (int i = 0; i < ROWS; ++i)
     {
-        input += "{\"ts\":\"2024-01-01T00:00:00Z\",\"level\":\"info\",\"msg\":\"row-" + std::to_string(i) + "\"}\n";
+        input += R"({"ts":"2024-01-01T00:00:00Z","level":"info","msg":"row-)" + std::to_string(i) + "\"}\n";
     }
     const auto result = RunSlpWithStdin(TailArgs({"--retention", "1000", "-"}), input);
     INFO(result.err);

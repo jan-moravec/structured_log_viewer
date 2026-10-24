@@ -1,6 +1,7 @@
 #include "loglib/tzdata_search.hpp"
 
-#include <cstdlib>
+#include "loglib/user_paths.hpp"
+
 #include <system_error>
 #include <utility>
 
@@ -25,9 +26,9 @@ TzdataSearchRoots DefaultTzdataSearchRoots(const std::filesystem::path &executab
         roots.startDirectory.clear();
     }
 #if !defined(_WIN32) && !defined(__APPLE__)
-    if (const char *appDir = std::getenv("APPDIR"); appDir != nullptr && appDir[0] != '\0')
+    if (auto appDir = EnvironmentPath("APPDIR"))
     {
-        roots.appImageDirectory = std::filesystem::path(appDir);
+        roots.appImageDirectory = std::move(*appDir);
     }
 #endif
     return roots;

@@ -9,6 +9,7 @@
 #include <exception>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -24,47 +25,16 @@
 #else
 #include <pwd.h>
 #include <unistd.h>
+#endif
 
 #include <cstdlib>
-#endif
 
 namespace loglib
 {
 namespace
 {
 
-#ifdef _WIN32
-[[nodiscard]] std::optional<std::filesystem::path> EnvironmentPath(const wchar_t *name)
-{
-    const DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
-    if (needed == 0)
-    {
-        return std::nullopt;
-    }
-    std::wstring value(static_cast<size_t>(needed), L'\0');
-    const DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
-    if (written == 0)
-    {
-        return std::nullopt;
-    }
-    value.resize(written);
-    if (value.empty())
-    {
-        return std::nullopt;
-    }
-    return std::filesystem::path{std::move(value)};
-}
-#else
-[[nodiscard]] std::optional<std::filesystem::path> EnvironmentPath(const char *name)
-{
-    const char *value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0')
-    {
-        return std::nullopt;
-    }
-    return std::filesystem::path{value};
-}
-
+#ifndef _WIN32
 [[nodiscard]] std::filesystem::path HomeDirectory()
 {
     if (const std::optional<std::filesystem::path> home = EnvironmentPath("HOME"))
@@ -121,10 +91,51 @@ constexpr size_t FILE_READ_CHUNK_BYTES = 4096;
 
 } // namespace
 
+std::optional<std::filesystem::path> EnvironmentPath(std::string_view name)
+{
+#ifdef _WIN32
+    const std::wstring wideName(name.begin(), name.end());
+    const DWORD needed = GetEnvironmentVariableW(wideName.c_str(), nullptr, 0);
+    if (needed == 0)
+    {
+        return std::nullopt;
+    }
+    std::wstring value(static_cast<size_t>(needed), L'\0');
+    const DWORD written = GetEnvironmentVariableW(wideName.c_str(), value.data(), needed);
+    if (written == 0)
+    {
+        return std::nullopt;
+    }
+    value.resize(written);
+    return std::filesystem::path{std::move(value)};
+#else
+    const std::string nameText(name);
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): environment reads happen at startup, before any thread changes it.
+    const char *value = std::getenv(nameText.c_str());
+    if (value == nullptr || value[0] == '\0')
+    {
+        return std::nullopt;
+    }
+    return std::filesystem::path{value};
+#endif
+}
+
+bool EnvironmentIsSet(std::string_view name)
+{
+#ifdef _WIN32
+    const std::wstring wideName(name.begin(), name.end());
+    return GetEnvironmentVariableW(wideName.c_str(), nullptr, 0) != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+#else
+    const std::string nameText(name);
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): environment reads happen at startup, before any thread changes it.
+    return std::getenv(nameText.c_str()) != nullptr;
+#endif
+}
+
 std::filesystem::path UserDataDirectory()
 {
 #ifdef _WIN32
-    std::optional<std::filesystem::path> base = EnvironmentPath(L"APPDATA");
+    std::optional<std::filesystem::path> base = EnvironmentPath("APPDATA");
     if (!base)
     {
         return {};

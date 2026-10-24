@@ -74,17 +74,17 @@ void WritePathBytes(const std::filesystem::path &path, std::string_view bytes)
 
 std::filesystem::path SlpBinary()
 {
-    return std::filesystem::path(SLP_EXECUTABLE);
+    return {SLP_EXECUTABLE};
 }
 
 std::filesystem::path FixturesDir()
 {
-    return std::filesystem::path(SLP_FIXTURES_DIR);
+    return {SLP_FIXTURES_DIR};
 }
 
 std::filesystem::path GoldenDir()
 {
-    return std::filesystem::path(SLP_GOLDEN_DIR);
+    return {SLP_GOLDEN_DIR};
 }
 
 std::string DescribeByteDiff(std::string_view expected, std::string_view actual)
@@ -109,7 +109,7 @@ std::string DescribeByteDiff(std::string_view expected, std::string_view actual)
         std::string out;
         for (std::size_t i = begin; i < end; ++i)
         {
-            const unsigned char ch = static_cast<unsigned char>(text[i]);
+            const auto ch = static_cast<unsigned char>(text[i]);
             if (ch == '\n')
             {
                 out += "\\n";
@@ -148,7 +148,7 @@ namespace
     REQUIRE(GetTempPathW(MAX_PATH, directory) != 0);
     wchar_t file[MAX_PATH];
     REQUIRE(GetTempFileNameW(directory, prefix, 0, file) != 0);
-    return std::filesystem::path(file);
+    return {file};
 }
 
 [[nodiscard]] CommandResult RunSlpImpl(const std::vector<std::string> &args, HANDLE stdinHandle)
@@ -528,6 +528,7 @@ SlpChild::~SlpChild()
     std::filesystem::remove(mImpl->errPath, ec);
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): the POSIX variant signals the child.
 bool SlpChild::Interrupt()
 {
     // A console Ctrl+C cannot be aimed at one child without a new process group.
@@ -649,13 +650,13 @@ bool SlpChild::WaitForErr(std::string_view needle, std::chrono::milliseconds tim
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        if (Err().find(needle) != std::string::npos)
+        if (Err().contains(needle))
         {
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    return Err().find(needle) != std::string::npos;
+    return Err().contains(needle);
 }
 
 bool SlpChild::WaitForOut(std::string_view needle, std::chrono::milliseconds timeout) const
@@ -663,13 +664,13 @@ bool SlpChild::WaitForOut(std::string_view needle, std::chrono::milliseconds tim
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        if (Out().find(needle) != std::string::npos)
+        if (Out().contains(needle))
         {
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    return Out().find(needle) != std::string::npos;
+    return Out().contains(needle);
 }
 
 void RequireGolden(std::string_view relativeName, std::string_view actual)

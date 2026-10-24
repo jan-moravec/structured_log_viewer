@@ -10,49 +10,63 @@ namespace slp
 namespace
 {
 
-/** @brief Calls the `Run*` function that matches each options type. */
-struct Dispatch
+ExitCode RunCommand(
+    const QueryOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
 {
-    const GlobalOptions &global;
-    Console &console;
-    const RuntimeContext &runtime;
+    return RunQuery(options, global, console, runtime);
+}
 
-    ExitCode operator()(const QueryOptions &options) const
-    {
-        return RunQuery(options, global, console, runtime);
-    }
-    ExitCode operator()(const StatsOptions &options) const
-    {
-        return RunStats(options, global, console, runtime);
-    }
-    ExitCode operator()(const SchemaOptions &options) const
-    {
-        return RunSchema(options, global, console, runtime);
-    }
-    ExitCode operator()(const ValidateOptions &options) const
-    {
-        return RunValidate(options, global, console, runtime);
-    }
-    ExitCode operator()(const BundleOptions &options) const
-    {
-        return RunBundle(options, global, console, runtime);
-    }
-    ExitCode operator()(const FormatsOptions &options) const
-    {
-        return RunFormats(options, global, console);
-    }
-    ExitCode operator()(const TailOptions &options) const
-    {
-        return RunTail(options, global, console, runtime);
-    }
-};
+ExitCode RunCommand(
+    const StatsOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
+{
+    return RunStats(options, global, console, runtime);
+}
+
+ExitCode RunCommand(
+    const SchemaOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
+{
+    return RunSchema(options, global, console, runtime);
+}
+
+ExitCode RunCommand(
+    const ValidateOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
+{
+    return RunValidate(options, global, console, runtime);
+}
+
+ExitCode RunCommand(
+    const BundleOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
+{
+    return RunBundle(options, global, console, runtime);
+}
+
+ExitCode RunCommand(
+    const FormatsOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext & /*runtime*/
+)
+{
+    return RunFormats(options, global, console);
+}
+
+ExitCode RunCommand(
+    const TailOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
+)
+{
+    return RunTail(options, global, console, runtime);
+}
 
 } // namespace
 
 int Execute(const Options &options, const RuntimeContext &runtime)
 {
     Console console(stdout, stderr, CommandName(options.command), options.global);
-    return static_cast<int>(std::visit(Dispatch{options.global, console, runtime}, options.command));
+    return static_cast<int>(std::visit(
+        [&](const auto &command) { return RunCommand(command, options.global, console, runtime); }, options.command
+    ));
 }
 
 } // namespace slp

@@ -3,6 +3,7 @@
 #include "loglib/regex_templates.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,6 +16,25 @@ inline constexpr std::string_view USER_DATA_ORGANIZATION_NAME = "jan-moravec";
 
 /** @brief Application directory used by `UserDataDirectory`. Matches the GUI application identity. */
 inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogViewer";
+
+/**
+ * @brief Value of environment variable @p name as a path.
+ *
+ * Windows reads the wide-character environment, so names outside the
+ * active code page survive. Call it at startup, before other threads
+ * change the environment.
+ *
+ * @param name ASCII variable name.
+ * @return The value, or `std::nullopt` when the variable is unset or empty.
+ */
+[[nodiscard]] std::optional<std::filesystem::path> EnvironmentPath(std::string_view name);
+
+/**
+ * @brief Whether environment variable @p name exists, even with an empty value.
+ *
+ * @param name ASCII variable name.
+ */
+[[nodiscard]] bool EnvironmentIsSet(std::string_view name);
 
 /**
  * @brief Writable application-data directory, matching `QStandardPaths::AppDataLocation`.

@@ -130,17 +130,15 @@ private:
 class StopWatcher
 {
 public:
-    StopWatcher(
-        const loglib::StopToken &external, loglib::StopSource &local, std::optional<std::chrono::milliseconds> limit
-    )
-        : mExternal(external), mLocal(local), mLimit(limit), mThread([this] { Run(); })
+    StopWatcher(loglib::StopToken external, loglib::StopSource &local, std::optional<std::chrono::milliseconds> limit)
+        : mExternal(std::move(external)), mLocal(local), mLimit(limit), mThread([this] { Run(); })
     {
     }
 
     ~StopWatcher()
     {
         {
-            const std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             mDone = true;
         }
         mWake.notify_all();
@@ -396,14 +394,14 @@ public:
         std::size_t retentionCap,
         loglib::StopSource &stop
     )
-        : mOptions(options),
-          mRuntime(runtime),
-          mTable(table),
+        : mOptions(&options),
+          mRuntime(&runtime),
+          mTable(&table),
           mOutput(output),
           mRendering(rendering),
           mColor(color),
           mRetentionCap(retentionCap),
-          mStop(stop),
+          mStop(&stop),
           mSessionFilter(options.filter)
     {
         mSessionFilter.minLevel.reset();
@@ -415,7 +413,7 @@ public:
 
     loglib::KeyIndex &Keys() override
     {
-        return mTable.Keys();
+        return mTable->Keys();
     }
 
     void OnStarted() override
@@ -437,7 +435,7 @@ public:
             );
             batch.errors.clear();
         }
-        mTable.AppendBatchArranged(std::move(batch));
+        mTable->AppendBatchArranged(std::move(batch));
         Process(false);
         Evict();
     }
@@ -453,10 +451,10 @@ public:
         {
             return;
         }
-        if (mNextRow < mTable.RowCount())
+        if (mNextRow < mTable->RowCount())
         {
-            (void)mTable.FinalizeAutoDetection();
-            mTable.ApplyPendingLevelBubbles();
+            (void)mTable->FinalizeAutoDetection();
+            mTable->ApplyPendingLevelBubbles();
             Process(true);
         }
     }
@@ -480,7 +478,7 @@ private:
     /** @brief Resolves the session when the column set changed. Returns it, or null when it cannot be resolved yet. */
     [[nodiscard]] const EffectiveSession *EnsureSession()
     {
-        const auto &columns = mTable.Configuration().Configuration().columns;
+        const auto &columns = mTable->Configuration().Configuration().columns;
         std::vector<std::string> headers;
         headers.reserve(columns.size());
         for (const loglib::Column &column : columns)
@@ -491,7 +489,8 @@ private:
         {
             return &*mSession;
         }
-        auto resolved = ApplySessionConfiguration(mSessionFilter, mOptions.view, mTable, mRuntime, TailOptions::NAME);
+        auto resolved =
+            ApplySessionConfiguration(mSessionFilter, mOptions->view, *mTable, *mRuntime, TailOptions::NAME);
         if (!resolved)
         {
             mSessionError = std::move(resolved.error());
@@ -517,19 +516,19 @@ private:
         }
         mSession = std::move(*resolved);
         mHeaders = std::move(headers);
-        mLayout = MakeTextLayout(mTable, mSession->visibleColumns);
+        mLayout = MakeTextLayout(*mTable, mSession->visibleColumns);
         return &*mSession;
     }
 
     void Fail(slp::Failure failure)
     {
         mFailure = std::move(failure);
-        mStop.request_stop();
+        mStop->request_stop();
     }
 
     void Process(bool final)
     {
-        const std::size_t total = mTable.RowCount();
+        const std::size_t total = mTable->RowCount();
         if (mNextRow >= total)
         {
             return;
@@ -545,7 +544,7 @@ private:
         }
 
         const auto compiled =
-            loglib::CompileExpression(session->expression, mTable.Configuration().Configuration().columns, &mTable);
+            loglib::CompileExpression(session->expression, mTable->Configuration().Configuration().columns, mTable);
         std::vector<std::size_t> accepted;
         std::string buffer;
         for (std::size_t row = mNextRow; row < total; ++row)
@@ -553,14 +552,14 @@ private:
             // `--min-level` is applied here, by level text, because streaming inference
             // may not have typed the column as `Level` yet. `--invert` negates the
             // whole combination, so it also negates the level test.
-            const bool expressionMatch = loglib::EvaluateExpression(compiled, mTable, row);
+            const bool expressionMatch = loglib::EvaluateExpression(compiled, *mTable, row);
             bool levelOk = true;
             if (mMinLevel)
             {
-                const auto level = loglib::ParseLevelName(mTable.GetValueOrFormatted(row, mLevelColumn, buffer));
+                const auto level = loglib::ParseLevelName(mTable->GetValueOrFormatted(row, mLevelColumn, buffer));
                 levelOk = level && *level != loglib::LogLevel::Unknown && *level >= *mMinLevel;
             }
-            const bool match = mOptions.filter.invert ? (expressionMatch || !levelOk) : (expressionMatch && levelOk);
+            const bool match = mOptions->filter.invert ? (expressionMatch || !levelOk) : (expressionMatch && levelOk);
             if (match)
             {
                 accepted.push_back(row);
@@ -568,9 +567,9 @@ private:
         }
         mNextRow = total;
 
-        if (mOptions.maxRows)
+        if (mOptions->maxRows)
         {
-            const std::uint64_t remaining = *mOptions.maxRows - mEmitted;
+            const std::uint64_t remaining = *mOptions->maxRows - mEmitted;
             if (accepted.size() > remaining)
             {
                 accepted.resize(static_cast<std::size_t>(remaining));
@@ -581,10 +580,10 @@ private:
             Write(accepted, *session);
             mEmitted += accepted.size();
         }
-        if (mOptions.maxRows && mEmitted >= *mOptions.maxRows)
+        if (mOptions->maxRows && mEmitted >= *mOptions->maxRows)
         {
             mDone = true;
-            mStop.request_stop();
+            mStop->request_stop();
         }
     }
 
@@ -610,8 +609,8 @@ private:
             plan.format = loglib::exports::ExportFormat::JsonLines;
             plan.sourceRows = rows;
             plan.visibleColumns = session.visibleColumns;
-            plan.includeAllFieldsForJson = !mOptions.view.columns.has_value();
-            plan.table = &mTable;
+            plan.includeAllFieldsForJson = !mOptions->view.columns.has_value();
+            plan.table = mTable;
             const auto exporter = loglib::exports::MakeExporter(plan.format);
             exporter->Run(plan.View(), sink, loglib::StopToken{});
         }
@@ -620,7 +619,7 @@ private:
             std::string text;
             for (const std::size_t row : rows)
             {
-                text += RenderTextLine(mTable, row, mLayout, mColor);
+                text += RenderTextLine(*mTable, row, mLayout, mColor);
             }
             sink.Write(text);
         }
@@ -634,7 +633,7 @@ private:
         {
             return;
         }
-        const std::size_t total = mTable.RowCount();
+        const std::size_t total = mTable->RowCount();
         if (total <= mRetentionCap)
         {
             return;
@@ -645,18 +644,18 @@ private:
         {
             return;
         }
-        mTable.EvictPrefixRows(drop);
+        mTable->EvictPrefixRows(drop);
         mNextRow -= drop;
     }
 
-    const TailOptions &mOptions;
-    const RuntimeContext &mRuntime;
-    loglib::LogTable &mTable;
+    const TailOptions *mOptions;
+    const RuntimeContext *mRuntime;
+    loglib::LogTable *mTable;
     std::FILE *mOutput;
     Rendering mRendering;
     bool mColor;
     std::size_t mRetentionCap;
-    loglib::StopSource &mStop;
+    loglib::StopSource *mStop;
     /** @brief Row flags without `--min-level`, which the sink applies itself. */
     FilterOptions mSessionFilter;
     std::optional<loglib::LogLevel> mMinLevel;

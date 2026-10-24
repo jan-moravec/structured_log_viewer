@@ -29,9 +29,9 @@ TEST_CASE("slp schema text lists columns for a clean file", "[cli][e2e][schema]"
     INFO("stdout:\n" << result.out);
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.out.find("header") != std::string::npos);
-    REQUIRE(result.out.find("ts") != std::string::npos);
-    REQUIRE(result.out.find("level") != std::string::npos);
+    REQUIRE(result.out.contains("header"));
+    REQUIRE(result.out.contains("ts"));
+    REQUIRE(result.out.contains("level"));
 }
 
 TEST_CASE("golden: schema json for two_lines", "[cli][e2e][schema][golden]")
@@ -59,8 +59,8 @@ TEST_CASE("slp validate reports clean parse health", "[cli][e2e][validate]")
     INFO("stdout:\n" << result.out);
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.out.find("format: json") != std::string::npos);
-    REQUIRE(result.out.find("errors: 0") != std::string::npos);
+    REQUIRE(result.out.contains("format: json"));
+    REQUIRE(result.out.contains("errors: 0"));
 }
 
 TEST_CASE("golden: validate json for two_lines", "[cli][e2e][validate][golden]")
@@ -79,8 +79,8 @@ TEST_CASE("slp validate exits 4 on partial corruption", "[cli][e2e][validate]")
     INFO("stdout:\n" << result.out);
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 4);
-    REQUIRE(result.out.find("errors: 1") != std::string::npos);
-    REQUIRE(result.out.find("Error on line 2:") != std::string::npos);
+    REQUIRE(result.out.contains("errors: 1"));
+    REQUIRE(result.out.contains("Error on line 2:"));
 
     const auto allowed =
         RunSlp({"validate", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--max-error-rate", "50", fixture});
@@ -104,5 +104,5 @@ TEST_CASE("slp validate exits 4 on a wholly unparseable file", "[cli][e2e][valid
     INFO("stdout:\n" << result.out);
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 4);
-    REQUIRE(result.out.find("errors:") != std::string::npos);
+    REQUIRE(result.out.contains("errors:"));
 }

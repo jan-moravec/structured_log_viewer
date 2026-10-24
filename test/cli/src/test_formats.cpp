@@ -2,6 +2,8 @@
 #include "commands.hpp"
 #include "options.hpp"
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <filesystem>
@@ -16,6 +18,7 @@ namespace
 {
     std::vector<std::string> owned = words;
     std::vector<char *> argv;
+    argv.reserve(owned.size());
     for (std::string &word : owned)
     {
         argv.push_back(word.data());
@@ -30,34 +33,6 @@ namespace
     });
 }
 
-class TempDir
-{
-public:
-    TempDir()
-        : mPath(std::filesystem::temp_directory_path() / "slp-formats-test")
-    {
-        std::filesystem::remove_all(mPath);
-        std::filesystem::create_directories(mPath);
-    }
-
-    ~TempDir() noexcept
-    {
-        std::error_code error;
-        std::filesystem::remove_all(mPath, error);
-    }
-
-    TempDir(const TempDir &) = delete;
-    TempDir &operator=(const TempDir &) = delete;
-
-    [[nodiscard]] const std::filesystem::path &path() const
-    {
-        return mPath;
-    }
-
-private:
-    std::filesystem::path mPath;
-};
-
 } // namespace
 
 TEST_CASE("formats lists parsers and built-in slugs", "[cli][formats]")
@@ -66,11 +41,11 @@ TEST_CASE("formats lists parsers and built-in slugs", "[cli][formats]")
     REQUIRE(parsed.has_value());
     const slp::test::Captured rendered = RenderFormats(*parsed);
     CHECK(rendered.exitCode == 0);
-    CHECK(rendered.out.find("auto") != std::string::npos);
-    CHECK(rendered.out.find("json") != std::string::npos);
-    CHECK(rendered.out.find("logfmt") != std::string::npos);
-    CHECK(rendered.out.find("csv") != std::string::npos);
-    CHECK(rendered.out.find("apache_combined") != std::string::npos);
+    CHECK(rendered.out.contains("auto"));
+    CHECK(rendered.out.contains("json"));
+    CHECK(rendered.out.contains("logfmt"));
+    CHECK(rendered.out.contains("csv"));
+    CHECK(rendered.out.contains("apache_combined"));
     CHECK(rendered.err.empty());
 }
 
@@ -80,36 +55,36 @@ TEST_CASE("formats json and --show", "[cli][formats]")
     REQUIRE(asJson.has_value());
     const slp::test::Captured json = RenderFormats(*asJson);
     CHECK(json.exitCode == 0);
-    CHECK(json.out.find("\"slug\": \"apache_combined\"") != std::string::npos);
-    CHECK(json.out.find("\"id\": \"regex\"") != std::string::npos);
+    CHECK(json.out.contains("\"slug\": \"apache_combined\""));
+    CHECK(json.out.contains("\"id\": \"regex\""));
 
     const auto show = Parse({"slp", "formats", "--show", "syslog_rfc3164"});
     REQUIRE(show.has_value());
     const slp::test::Captured shown = RenderFormats(*show);
     CHECK(shown.exitCode == 0);
-    CHECK(shown.out.find("pattern") != std::string::npos);
+    CHECK(shown.out.contains("pattern"));
 
     const auto missing = Parse({"slp", "formats", "--show", "no-such-template"});
     REQUIRE(missing.has_value());
     const slp::test::Captured failed = RenderFormats(*missing);
     CHECK(failed.exitCode == 2);
-    CHECK(failed.err.find("no-such-template") != std::string::npos);
+    CHECK(failed.err.contains("no-such-template"));
     CHECK(failed.out.empty());
 }
 
 TEST_CASE("formats --user marks a shadowing template", "[cli][formats]")
 {
-    TempDir dir;
+    const test_common::TempDir dir("formats");
     {
-        std::ofstream out(dir.path() / "mine.json", std::ios::binary);
+        std::ofstream out(dir.Path() / "mine.json", std::ios::binary);
         out << R"({"name":"Apache/nginx Combined Log Format","pattern":"x","description":"user copy"})";
     }
     const auto parsed =
-        Parse({"slp", "--template-dir", dir.path().string(), "formats", "--user", "--output-format", "text"});
+        Parse({"slp", "--template-dir", dir.Path().string(), "formats", "--user", "--output-format", "text"});
     REQUIRE(parsed.has_value());
     const slp::test::Captured rendered = RenderFormats(*parsed);
     CHECK(rendered.exitCode == 0);
-    CHECK(rendered.out.find("mine") != std::string::npos);
-    CHECK(rendered.out.find("shadows apache_combined") != std::string::npos);
-    CHECK(rendered.out.find("priority 100") != std::string::npos);
+    CHECK(rendered.out.contains("mine"));
+    CHECK(rendered.out.contains("shadows apache_combined"));
+    CHECK(rendered.out.contains("priority 100"));
 }

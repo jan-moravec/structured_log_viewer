@@ -2,7 +2,10 @@
 
 #include "platform.hpp"
 
+#include <loglib/exports/export_sink.hpp>
+
 #include <format>
+#include <stdexcept>
 
 namespace slp
 {
@@ -17,13 +20,23 @@ bool Console::ColorFor(std::FILE *stream) const noexcept
     return mColor == ColorMode::Always || (mColor == ColorMode::Auto && IsTerminal(stream));
 }
 
-void Console::Print(std::string_view text) const
+ExitCode Console::Print(std::string_view text) const
 {
-    if (!text.empty())
+    if (text.empty())
     {
-        (void)std::fwrite(text.data(), 1, text.size(), mOut);
-        (void)std::fflush(mOut);
+        return ExitCode::Success;
     }
+    try
+    {
+        loglib::exports::StreamSink sink(mOut);
+        sink.Write(text);
+        sink.Finish();
+    }
+    catch (const std::runtime_error &ex)
+    {
+        return Report(Fail(ExitCode::Output, std::format("could not write to standard output: {}", ex.what())));
+    }
+    return ExitCode::Success;
 }
 
 void Console::Error(std::string_view sentence) const

@@ -15,17 +15,17 @@ TEST_CASE("slp query emits jsonl rows and respects --filter", "[cli][e2e][query]
     INFO("stdout:\n" << all.out);
     INFO("stderr:\n" << all.err);
     REQUIRE(all.exitCode == 0);
-    REQUIRE(all.out.find("\"msg\":\"hello\"") != std::string::npos);
-    REQUIRE(all.out.find("\"msg\":\"boom\"") != std::string::npos);
-    REQUIRE(all.err.find("slp:") == std::string::npos);
+    REQUIRE(all.out.contains("\"msg\":\"hello\""));
+    REQUIRE(all.out.contains("\"msg\":\"boom\""));
+    REQUIRE(!all.err.contains("slp:"));
 
     const auto filtered =
         RunSlp({"query", "--tz", "UTC", "--template-dir", emptyTemplates, "--filter", "level:error", fixture});
     INFO("stdout:\n" << filtered.out);
     INFO("stderr:\n" << filtered.err);
     REQUIRE(filtered.exitCode == 0);
-    REQUIRE(filtered.out.find("\"msg\":\"boom\"") != std::string::npos);
-    REQUIRE(filtered.out.find("\"msg\":\"hello\"") == std::string::npos);
+    REQUIRE(filtered.out.contains("\"msg\":\"boom\""));
+    REQUIRE(!filtered.out.contains("\"msg\":\"hello\""));
 }
 
 TEST_CASE("slp query --count and empty results", "[cli][e2e][query]")
@@ -59,10 +59,10 @@ TEST_CASE("slp query verbose keeps row bytes on stdout", "[cli][e2e][query]")
     INFO("stdout:\n" << verbose.out);
     INFO("stderr:\n" << verbose.err);
     REQUIRE(verbose.exitCode == 0);
-    REQUIRE(verbose.out.find("hello") != std::string::npos);
-    REQUIRE(verbose.out.find("stage=parse") == std::string::npos);
-    REQUIRE(verbose.err.find("stage=parse") != std::string::npos);
-    REQUIRE(verbose.err.find("stage=filter") != std::string::npos);
+    REQUIRE(verbose.out.contains("hello"));
+    REQUIRE(!verbose.out.contains("stage=parse"));
+    REQUIRE(verbose.err.contains("stage=parse"));
+    REQUIRE(verbose.err.contains("stage=filter"));
 }
 
 TEST_CASE("slp query rejects a malformed --filter with a caret", "[cli][e2e][query]")
@@ -73,6 +73,6 @@ TEST_CASE("slp query rejects a malformed --filter with a caret", "[cli][e2e][que
         RunSlp({"query", "--tz", "UTC", "--template-dir", emptyTemplates, "--filter", "level in [Warn", fixture});
     INFO("stderr:\n" << bad.err);
     REQUIRE(bad.exitCode == 2);
-    REQUIRE(bad.err.find("invalid --filter expression") != std::string::npos);
-    REQUIRE(bad.err.find('^') != std::string::npos);
+    REQUIRE(bad.err.contains("invalid --filter expression"));
+    REQUIRE(bad.err.contains('^'));
 }

@@ -5,41 +5,6 @@
 #include <catch2/catch_all.hpp>
 
 #include <atomic>
-#include <filesystem>
-#include <fstream>
-
-namespace
-{
-
-class TempDir
-{
-public:
-    TempDir()
-        : mPath(std::filesystem::temp_directory_path() / "slp-platform-test")
-    {
-        std::filesystem::remove_all(mPath);
-        std::filesystem::create_directories(mPath);
-    }
-
-    ~TempDir() noexcept
-    {
-        std::error_code error;
-        std::filesystem::remove_all(mPath, error);
-    }
-
-    TempDir(const TempDir &) = delete;
-    TempDir &operator=(const TempDir &) = delete;
-
-    [[nodiscard]] const std::filesystem::path &path() const
-    {
-        return mPath;
-    }
-
-private:
-    std::filesystem::path mPath;
-};
-
-} // namespace
 
 TEST_CASE("the first cancel signal stops and the second terminates", "[cli][platform]")
 {
@@ -71,5 +36,5 @@ TEST_CASE("an unknown IANA zone is a usage error when tzdata is present", "[cli]
         SKIP("tzdata is not staged next to the test executable");
     }
     const slp::TimeZoneSetup bad = slp::ResolveTimeZone("Not/ARealZone", tzdata);
-    CHECK(bad.error.find("unavailable") != std::string::npos);
+    CHECK(bad.error.contains("unavailable"));
 }

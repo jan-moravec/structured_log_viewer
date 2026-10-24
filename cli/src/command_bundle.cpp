@@ -59,14 +59,7 @@ public:
             return;
         }
         const unsigned percent = total == 0 ? 100U : static_cast<unsigned>(written * 100U / total);
-        std::fprintf(
-            mStream,
-            "\rbundle: %llu/%llu rows (%u%%)",
-            static_cast<unsigned long long>(written),
-            static_cast<unsigned long long>(total),
-            percent
-        );
-        std::fflush(mStream);
+        Write(std::format("\rbundle: {}/{} rows ({}%)", written, total, percent));
         mDirty = true;
     }
 
@@ -75,13 +68,19 @@ public:
     {
         if (mDirty)
         {
-            std::fputc('\n', mStream);
-            std::fflush(mStream);
+            Write("\n");
             mDirty = false;
         }
     }
 
 private:
+    /** @brief Progress output is best effort: a failed write is not an error of the command. */
+    void Write(std::string_view text) const
+    {
+        (void)std::fwrite(text.data(), 1, text.size(), mStream);
+        (void)std::fflush(mStream);
+    }
+
     std::FILE *mStream;
     bool mEnabled;
     bool mDirty = false;

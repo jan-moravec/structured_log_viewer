@@ -54,7 +54,10 @@ template <typename Run> [[nodiscard]] Captured Capture(const Options &options, R
 
     const auto readBack = [](std::FILE *file) {
         std::string text;
-        std::rewind(file);
+        if (std::fseek(file, 0, SEEK_SET) != 0)
+        {
+            throw std::runtime_error("could not rewind a capture file");
+        }
         char buffer[4096];
         std::size_t read = 0;
         while ((read = std::fread(buffer, 1, sizeof(buffer), file)) > 0)

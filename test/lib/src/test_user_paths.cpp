@@ -286,3 +286,36 @@ TEST_CASE("LoadRegexTemplatesFromDirectory tolerates a missing directory", "[use
     CHECK(loaded.templates.empty());
     CHECK(loaded.errors.empty());
 }
+
+#ifdef _WIN32
+TEST_CASE("EnvironmentPath reads the wide environment and ignores empty values", "[user_paths]")
+{
+    const EnvVarGuard variable(L"SLV_TEST_ENVIRONMENT_PATH");
+    EnvVarGuard::Unset(L"SLV_TEST_ENVIRONMENT_PATH");
+    CHECK_FALSE(EnvironmentPath("SLV_TEST_ENVIRONMENT_PATH").has_value());
+    CHECK_FALSE(EnvironmentIsSet("SLV_TEST_ENVIRONMENT_PATH"));
+
+    EnvVarGuard::Set(L"SLV_TEST_ENVIRONMENT_PATH", L"");
+    CHECK_FALSE(EnvironmentPath("SLV_TEST_ENVIRONMENT_PATH").has_value());
+    CHECK(EnvironmentIsSet("SLV_TEST_ENVIRONMENT_PATH"));
+
+    const std::wstring unicodePath = L"C:\\slv-\u010d\u00e1\\templates";
+    EnvVarGuard::Set(L"SLV_TEST_ENVIRONMENT_PATH", unicodePath);
+    CHECK(EnvironmentPath("SLV_TEST_ENVIRONMENT_PATH") == std::filesystem::path(unicodePath));
+}
+#else
+TEST_CASE("EnvironmentPath ignores empty values and EnvironmentIsSet does not", "[user_paths]")
+{
+    const EnvVarGuard variable("SLV_TEST_ENVIRONMENT_PATH");
+    EnvVarGuard::Unset("SLV_TEST_ENVIRONMENT_PATH");
+    CHECK_FALSE(EnvironmentPath("SLV_TEST_ENVIRONMENT_PATH").has_value());
+    CHECK_FALSE(EnvironmentIsSet("SLV_TEST_ENVIRONMENT_PATH"));
+
+    EnvVarGuard::Set("SLV_TEST_ENVIRONMENT_PATH", "");
+    CHECK_FALSE(EnvironmentPath("SLV_TEST_ENVIRONMENT_PATH").has_value());
+    CHECK(EnvironmentIsSet("SLV_TEST_ENVIRONMENT_PATH"));
+
+    EnvVarGuard::Set("SLV_TEST_ENVIRONMENT_PATH", "/tmp/templates");
+    CHECK(EnvironmentPath("SLV_TEST_ENVIRONMENT_PATH") == std::filesystem::path("/tmp/templates"));
+}
+#endif

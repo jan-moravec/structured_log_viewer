@@ -178,10 +178,10 @@ TEST_CASE("slp query reads compressed JSONL codecs", "[cli][e2e][sources]")
         std::vector<std::uint8_t> (*compress)(const std::string &);
     };
     const Case cases[] = {
-        {".jsonl.gz", &CompressGzip},
-        {".jsonl.bz2", &CompressBzip2},
-        {".jsonl.xz", &CompressXz},
-        {".jsonl.zst", &CompressZstd},
+        {.suffix = ".jsonl.gz", .compress = &CompressGzip},
+        {.suffix = ".jsonl.bz2", .compress = &CompressBzip2},
+        {.suffix = ".jsonl.xz", .compress = &CompressXz},
+        {.suffix = ".jsonl.zst", .compress = &CompressZstd},
     };
 
     for (const Case &entry : cases)
@@ -256,8 +256,8 @@ TEST_CASE("slp query expands rotated siblings oldest-first", "[cli][e2e][sources
     INFO("stderr:\n" << expanded.err);
     REQUIRE(expanded.exitCode == 0);
     REQUIRE(expanded.out == "oldest\nmiddle\nnewest\n");
-    REQUIRE(expanded.err.find("app.log.2") != std::string::npos);
-    REQUIRE(expanded.err.find("rotated sibling") != std::string::npos);
+    REQUIRE(expanded.err.contains("app.log.2"));
+    REQUIRE(expanded.err.contains("rotated sibling"));
 
     const auto disabled = RunSlp(
         {"query",
@@ -303,7 +303,7 @@ TEST_CASE("slp query maps missing paths to exit 3", "[cli][e2e][sources]")
     const auto result = RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), missing});
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 3);
-    REQUIRE(result.err.find("does-not-exist.jsonl") != std::string::npos);
+    REQUIRE(result.err.contains("does-not-exist.jsonl"));
 }
 
 TEST_CASE("slp query rejects network sources outside tail", "[cli][e2e][sources]")
@@ -311,5 +311,5 @@ TEST_CASE("slp query rejects network sources outside tail", "[cli][e2e][sources]
     const auto result = RunSlp({"query", "tcp://127.0.0.1:514"});
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 2);
-    REQUIRE(result.err.find("slp tail") != std::string::npos);
+    REQUIRE(result.err.contains("slp tail"));
 }

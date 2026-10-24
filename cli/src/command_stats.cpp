@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -40,6 +41,7 @@ namespace slp
 // through templates that MSVC cannot instantiate for internal types.
 namespace reports
 {
+// NOLINTBEGIN(misc-use-internal-linkage)
 
 /** @brief Rows at one level, with their share of the total in percent (one decimal). */
 struct LevelCount
@@ -109,6 +111,8 @@ struct ColumnReport
     std::vector<ValueCount> top;
 };
 
+// NOLINTEND(misc-use-internal-linkage)
+
 } // namespace reports
 
 namespace
@@ -154,6 +158,7 @@ constexpr std::string_view UNKNOWN_LEVEL = "Unknown";
         return "-";
     }
     std::vector<std::string> texts;
+    texts.reserve(input.sources.size());
     for (const SourceSpec &source : input.sources)
     {
         texts.push_back(source.text);
@@ -165,6 +170,7 @@ constexpr std::string_view UNKNOWN_LEVEL = "Unknown";
 [[nodiscard]] std::vector<std::string> SourceNames(const InputOptions &input)
 {
     std::vector<std::string> names;
+    names.reserve(input.sources.size());
     for (const SourceSpec &source : input.sources)
     {
         names.push_back(std::filesystem::path(source.text).filename().string());
@@ -220,6 +226,7 @@ template <typename Counts, typename Visit> void ForEachLevel(const Counts &count
     const auto filled = static_cast<std::size_t>(
         static_cast<double>(value) * static_cast<double>(width) / static_cast<double>(maximum)
     );
+    // NOLINTNEXTLINE(modernize-return-braced-init-list): braces would select the `initializer_list<char>` constructor.
     return std::string(filled, '#');
 }
 
@@ -373,42 +380,13 @@ struct TimeHistogram
     return result;
 }
 
-[[nodiscard]] std::optional<loglib::HistogramBucketSize> ParseBucketToken(std::string_view token) noexcept
-{
-    if (token == "1s")
-    {
-        return loglib::HistogramBucketSize::OneSecond;
-    }
-    if (token == "10s")
-    {
-        return loglib::HistogramBucketSize::TenSeconds;
-    }
-    if (token == "1m")
-    {
-        return loglib::HistogramBucketSize::OneMinute;
-    }
-    if (token == "10m")
-    {
-        return loglib::HistogramBucketSize::TenMinutes;
-    }
-    if (token == "1h")
-    {
-        return loglib::HistogramBucketSize::OneHour;
-    }
-    if (token == "1d")
-    {
-        return loglib::HistogramBucketSize::OneDay;
-    }
-    return std::nullopt;
-}
-
 [[nodiscard]] loglib::HistogramBucketSize ResolveBucketSize(
     const StatsOptions &options, bool structuredOutput, const TimeHistogram &histogram
 )
 {
-    if (options.bucket != "auto")
+    if (options.bucket)
     {
-        return ParseBucketToken(options.bucket).value_or(loglib::HistogramBucketSize::OneMinute);
+        return *options.bucket;
     }
     if (!histogram.minTs.has_value() || !histogram.maxTs.has_value())
     {
@@ -444,6 +422,7 @@ struct TimeHistogram
             .bucketWidthMicros = report.bucketWidthMicros,
             .bucketStartLocal = runtime.timeZone.FormatTimeStamp(start),
             .total = buckets[index].Total(),
+            .levels = {},
         };
         ForEachLevel(buckets[index].counts, [&bucket](loglib::LogLevel level, std::uint64_t count) {
             bucket.levels.push_back(BucketLevelCount{.level = LevelName(level), .count = count});
@@ -456,11 +435,11 @@ struct TimeHistogram
 /** @brief Style of the most severe canonical level in @p bucket, or empty. */
 [[nodiscard]] std::string_view MostSevereStyle(const TimeBucket &bucket)
 {
-    for (auto level = bucket.levels.rbegin(); level != bucket.levels.rend(); ++level)
+    for (const BucketLevelCount &count : std::views::reverse(bucket.levels))
     {
-        if (level->level != UNKNOWN_LEVEL)
+        if (count.level != UNKNOWN_LEVEL)
         {
-            return LevelStyle(level->level);
+            return LevelStyle(count.level);
         }
     }
     return {};
@@ -489,7 +468,8 @@ struct TimeHistogram
         const std::string_view style = color ? MostSevereStyle(report.buckets[row]) : std::string_view{};
         if (!style.empty() && !bar.empty())
         {
-            bar = std::string(style) + bar + std::string(ANSI_RESET);
+            bar.insert(0, style);
+            bar.append(ANSI_RESET);
         }
         table.SetCell(row, 2, std::move(bar));
     }
@@ -656,14 +636,11 @@ ExitCode RunStats(
         switch (options.outputFormat)
         {
         case ReportFormat::Json:
-            console.Print(WriteJsonReport(report));
-            break;
+            return console.Print(WriteJsonReport(report));
         case ReportFormat::Csv:
-            console.Print(RenderLevelCsv(report));
-            break;
+            return console.Print(RenderLevelCsv(report));
         case ReportFormat::Text:
-            console.Print(RenderLevelText(console, report, options.input));
-            break;
+            return console.Print(RenderLevelText(console, report, options.input));
         }
         return ExitCode::Success;
     }
@@ -684,14 +661,11 @@ ExitCode RunStats(
         switch (options.outputFormat)
         {
         case ReportFormat::Json:
-            console.Print(WriteJsonReport(report));
-            break;
+            return console.Print(WriteJsonReport(report));
         case ReportFormat::Csv:
-            console.Print(RenderTimeCsv(report));
-            break;
+            return console.Print(RenderTimeCsv(report));
         case ReportFormat::Text:
-            console.Print(RenderTimeText(console, report, histogram, runtime, options.input));
-            break;
+            return console.Print(RenderTimeText(console, report, histogram, runtime, options.input));
         }
         return ExitCode::Success;
     }
@@ -711,14 +685,11 @@ ExitCode RunStats(
         switch (options.outputFormat)
         {
         case ReportFormat::Json:
-            console.Print(WriteJsonReport(report));
-            break;
+            return console.Print(WriteJsonReport(report));
         case ReportFormat::Csv:
-            console.Print(RenderColumnCsv(report));
-            break;
+            return console.Print(RenderColumnCsv(report));
         case ReportFormat::Text:
-            console.Print(RenderColumnText(report, options.input));
-            break;
+            return console.Print(RenderColumnText(report, options.input));
         }
         return ExitCode::Success;
     }

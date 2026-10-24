@@ -117,7 +117,13 @@ std::string TextTable::Render() const
 void TextTable::RenderRow(std::string &out, const Row &row, const std::vector<std::size_t> &widths) const
 {
     std::string line = mIndent;
-    for (std::size_t column = 0; column < row.cells.size(); ++column)
+    // Trailing empty cells are dropped with their separators, so no line ends in padding.
+    std::size_t shown = row.cells.size();
+    while (shown > 1 && row.cells[shown - 1].empty())
+    {
+        --shown;
+    }
+    for (std::size_t column = 0; column < shown; ++column)
     {
         const std::string &cell = row.cells[column];
         if (column != 0)
@@ -132,14 +138,10 @@ void TextTable::RenderRow(std::string &out, const Row &row, const std::vector<st
         {
             line.append(cell);
         }
-        if (column + 1 < row.cells.size())
+        if (column + 1 < shown)
         {
             line.append(widths[column] - DisplayWidth(cell), ' ');
         }
-    }
-    while (!line.empty() && line.back() == ' ')
-    {
-        line.pop_back();
     }
     out.append(line).push_back('\n');
 }

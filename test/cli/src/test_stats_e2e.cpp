@@ -38,10 +38,10 @@ TEST_CASE("slp stats text by level lists canonical counts", "[cli][e2e][stats]")
     INFO("stdout:\n" << result.out);
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.out.find("source:") != std::string::npos);
-    REQUIRE(result.out.find("Info") != std::string::npos);
-    REQUIRE(result.out.find("Error") != std::string::npos);
-    REQUIRE(result.out.find("total: 2") != std::string::npos);
+    REQUIRE(result.out.contains("source:"));
+    REQUIRE(result.out.contains("Info"));
+    REQUIRE(result.out.contains("Error"));
+    REQUIRE(result.out.contains("total: 2"));
 }
 
 TEST_CASE("slp stats by time reports buckets", "[cli][e2e][stats]")
@@ -51,8 +51,8 @@ TEST_CASE("slp stats by time reports buckets", "[cli][e2e][stats]")
     );
     INFO("stdout:\n" << result.out);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.out.find("bucket:") != std::string::npos);
-    REQUIRE(result.out.find("2024-01-01") != std::string::npos);
+    REQUIRE(result.out.contains("bucket:"));
+    REQUIRE(result.out.contains("2024-01-01"));
 }
 
 TEST_CASE("slp stats by column reports top values", "[cli][e2e][stats]")
@@ -71,8 +71,8 @@ TEST_CASE("slp stats by column reports top values", "[cli][e2e][stats]")
     );
     INFO("stdout:\n" << result.out);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.out.find("cardinality: 1") != std::string::npos);
-    REQUIRE(result.out.find("auth") != std::string::npos);
+    REQUIRE(result.out.contains("cardinality: 1"));
+    REQUIRE(result.out.contains("auth"));
 }
 
 TEST_CASE("slp stats exits 1 when --filter matches nothing", "[cli][e2e][stats]")
@@ -89,5 +89,5 @@ TEST_CASE("slp stats exits 0 on an empty source", "[cli][e2e][stats]")
     const auto result = RunSlp({"stats", "--tz", "UTC", "--template-dir", EmptyTemplates(), fixture});
     INFO("stdout:\n" << result.out);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.out.find("total: 0") != std::string::npos);
+    REQUIRE(result.out.contains("total: 0"));
 }

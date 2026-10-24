@@ -68,8 +68,16 @@ public:
         return mColor;
     }
 
-    /** @brief Writes payload text to the output stream. */
-    void Print(std::string_view text) const;
+    /**
+     * @brief Writes payload text to the output stream and flushes it.
+     *
+     * A failed write is reported as an `ExitCode::Output` failure. A closed
+     * pipe throws `loglib::exports::BrokenPipe`, which `main` treats as success.
+     *
+     * @param text Payload to write.
+     * @return `ExitCode::Success`, or the exit code of the reported failure.
+     */
+    [[nodiscard]] ExitCode Print(std::string_view text) const;
 
     /** @brief Writes `slp <command>: <sentence>.` to the diagnostic stream. */
     void Error(std::string_view sentence) const;

@@ -123,13 +123,13 @@ class TableSink final : public loglib::LogParseSink
 {
 public:
     explicit TableSink(LoadedTable &loaded) noexcept
-        : mLoaded(loaded)
+        : mLoaded(&loaded)
     {
     }
 
     loglib::KeyIndex &Keys() override
     {
-        return mLoaded.table.Keys();
+        return mLoaded->table.Keys();
     }
 
     void OnStarted() override
@@ -138,7 +138,7 @@ public:
 
     void OnBatch(loglib::StreamedBatch batch) override
     {
-        std::uint64_t &consumed = mLoaded.linesConsumed;
+        std::uint64_t &consumed = mLoaded->linesConsumed;
         if (batch.firstLineNumber != 0)
         {
             consumed = std::max(consumed, static_cast<std::uint64_t>(batch.firstLineNumber));
@@ -150,10 +150,10 @@ public:
         for (std::string &error : batch.errors)
         {
             consumed = std::max(consumed, loglib::LocateParseError(error).lastLine);
-            mLoaded.parseErrors.push_back(std::move(error));
+            mLoaded->parseErrors.push_back(std::move(error));
         }
         batch.errors.clear();
-        mLoaded.table.AppendBatchArranged(std::move(batch));
+        mLoaded->table.AppendBatchArranged(std::move(batch));
     }
 
     void OnFinished(bool /*cancelled*/) override
@@ -161,7 +161,7 @@ public:
     }
 
 private:
-    LoadedTable &mLoaded;
+    LoadedTable *mLoaded;
 };
 
 /**
@@ -184,18 +184,18 @@ public:
     TableLoader(
         const GlobalOptions &global, const InputOptions &input, const Console &console, const RuntimeContext &runtime
     )
-        : mGlobal(global), mInput(input), mConsole(console), mRuntime(runtime)
+        : mGlobal(&global), mInput(&input), mConsole(&console), mRuntime(&runtime)
     {
     }
 
     /** @brief Seeds the configuration from `--config`. */
     [[nodiscard]] std::optional<Failure> SeedConfig()
     {
-        if (!mInput.config)
+        if (!mInput->config)
         {
             return std::nullopt;
         }
-        auto configuration = LoadConfigFile(*mInput.config);
+        auto configuration = LoadConfigFile(*mInput->config);
         if (!configuration)
         {
             return LoadFail(ExitCode::Input, configuration.error());
@@ -212,13 +212,13 @@ public:
             return std::nullopt;
         }
         loglib::SourcePlanOptions planOptions;
-        planOptions.rotationHistory = !mGlobal.noRotationHistory;
+        planOptions.rotationHistory = !mGlobal->noRotationHistory;
         const auto plan = loglib::ResolveSourcePlan(paths, planOptions);
-        if (mConsole.Verbose() > 0)
+        if (mConsole->Verbose() > 0)
         {
             for (const auto &entry : plan)
             {
-                mConsole.Warn("loading " + entry.path.string() + (entry.autoAdded ? " (rotated sibling)" : ""));
+                mConsole->Warn("loading " + entry.path.string() + (entry.autoAdded ? " (rotated sibling)" : ""));
             }
         }
         for (const auto &entry : plan)
@@ -276,7 +276,7 @@ public:
         loglib::StreamLineSource &source = *lineSource;
         Attach(std::move(lineSource));
 
-        loglib::ParserOptions parserOptions = MakeParserOptions(mGlobal, mInput, mRuntime.stop);
+        loglib::ParserOptions parserOptions = MakeParserOptions(*mGlobal, *mInput, mRuntime->stop);
         parserOptions.initialCarry = std::move(peek);
         try
         {
@@ -315,14 +315,14 @@ private:
             loglib::DecompressingByteSource::Options decompressOptions;
             decompressOptions.discardFirstLine = bundle;
             auto decompressor = std::make_shared<loglib::DecompressingByteSource>(
-                displayPath, loglib::DecompressingByteSource::ProgressCallback{}, mRuntime.stop, decompressOptions
+                displayPath, loglib::DecompressingByteSource::ProgressCallback{}, mRuntime->stop, decompressOptions
             );
             if (bundle)
             {
                 const auto metadata = loglib::ParseSessionBundleMetadata(decompressor->DiscardedFirstLine());
                 // Seed the embedded session before the first BeginStreaming so
                 // column pins and filter defaults apply.
-                if (mFirst && !mInput.config)
+                if (mFirst && !mInput->config)
                 {
                     mLoaded.table.Configuration().SetConfiguration(metadata.configuration);
                 }
@@ -349,7 +349,7 @@ private:
             auto lineSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
             loglib::FileLineSource &source = *lineSource;
             Attach(std::move(lineSource));
-            Parse(*format, source, MakeParserOptions(mGlobal, mInput, mRuntime.stop));
+            Parse(*format, source, MakeParserOptions(*mGlobal, *mInput, mRuntime->stop));
         }
         catch (const loglib::DecompressionCancelled &)
         {
@@ -382,12 +382,12 @@ private:
     [[nodiscard]] std::expected<loglib::DetectedFormat, Failure> ResolveFormat(const FormatProbe &probe)
     {
         loglib::DetectedFormat resolved;
-        if (const auto pinned = ToSourceFormat(mInput.format))
+        if (const auto pinned = ToSourceFormat(mInput->format))
         {
             resolved.format = *pinned;
             if (*pinned == loglib::Source::Format::Regex)
             {
-                auto pattern = ResolveRegexPattern(mGlobal, mInput);
+                auto pattern = ResolveRegexPattern(*mGlobal, *mInput);
                 if (!pattern)
                 {
                     return std::unexpected(std::move(pattern.error()));
@@ -443,7 +443,7 @@ private:
 
     [[nodiscard]] std::optional<Failure> StopCheck() const
     {
-        if (mRuntime.stop.stop_requested())
+        if (mRuntime->stop.stop_requested())
         {
             return CancelledFailure();
         }
@@ -455,10 +455,10 @@ private:
         return LoadFail(ExitCode::Input, std::format("source '{}': {}", path.string(), reason));
     }
 
-    const GlobalOptions &mGlobal;
-    const InputOptions &mInput;
-    const Console &mConsole;
-    const RuntimeContext &mRuntime;
+    const GlobalOptions *mGlobal;
+    const InputOptions *mInput;
+    const Console *mConsole;
+    const RuntimeContext *mRuntime;
     LoadedTable mLoaded;
     bool mFirst = true;
 };

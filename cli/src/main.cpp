@@ -10,6 +10,7 @@
 #include <loglib/session_bundle.hpp>
 #include <loglib/tzdata_search.hpp>
 
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -36,9 +37,8 @@ public:
     return static_cast<int>(code);
 }
 
-} // namespace
-
-int main(int argc, char **argv)
+/** @brief Runs `slp` and maps every failure to an exit code. */
+[[nodiscard]] int RunSlp(int argc, char **argv)
 {
     slp::PrepareStandardStreams();
     const ConsoleRestore restoreConsole;
@@ -112,6 +112,22 @@ int main(int argc, char **argv)
     catch (...)
     {
         slp::WriteError({}, "internal error: an unexpected exception was thrown");
+        return Exit(slp::ExitCode::Internal);
+    }
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    try
+    {
+        return RunSlp(argc, argv);
+    }
+    catch (...)
+    {
+        // Last resort when even reporting the error threw; nothing here may allocate.
+        (void)std::fputs("slp: internal error: an unexpected exception was thrown.\n", stderr);
         return Exit(slp::ExitCode::Internal);
     }
 }

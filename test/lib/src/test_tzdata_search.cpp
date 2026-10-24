@@ -1,5 +1,7 @@
 #include <loglib/tzdata_search.hpp>
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <filesystem>
@@ -7,42 +9,9 @@
 #include <system_error>
 #include <vector>
 
-namespace
-{
-
-class ScratchDirectory
-{
-public:
-    ScratchDirectory()
-        : mPath(std::filesystem::temp_directory_path() / "loglib-tzdata-search")
-    {
-        std::filesystem::remove_all(mPath);
-        std::filesystem::create_directories(mPath);
-    }
-
-    ~ScratchDirectory()
-    {
-        std::error_code error;
-        std::filesystem::remove_all(mPath, error);
-    }
-
-    ScratchDirectory(const ScratchDirectory &) = delete;
-    ScratchDirectory &operator=(const ScratchDirectory &) = delete;
-
-    [[nodiscard]] const std::filesystem::path &Path() const noexcept
-    {
-        return mPath;
-    }
-
-private:
-    std::filesystem::path mPath;
-};
-
-} // namespace
-
 TEST_CASE("FindTzdataDirectory prefers the executable directory", "[tzdata_search]")
 {
-    const ScratchDirectory dir;
+    const test_common::TempDir dir("tzdata_search");
     const std::filesystem::path exeDir = dir.Path() / "bin";
     const std::filesystem::path walk = dir.Path() / "walk";
     std::filesystem::create_directories(exeDir / "tzdata");
@@ -59,7 +28,7 @@ TEST_CASE("FindTzdataDirectory prefers the executable directory", "[tzdata_searc
 
 TEST_CASE("FindTzdataDirectory walks up from the start directory", "[tzdata_search]")
 {
-    const ScratchDirectory dir;
+    const test_common::TempDir dir("tzdata_search");
     const std::filesystem::path nested = dir.Path() / "a" / "b";
     std::filesystem::create_directories(nested);
     std::filesystem::create_directories(dir.Path() / "tzdata");
@@ -72,7 +41,7 @@ TEST_CASE("FindTzdataDirectory walks up from the start directory", "[tzdata_sear
 
 TEST_CASE("FindTzdataDirectory ignores a file named tzdata", "[tzdata_search]")
 {
-    const ScratchDirectory dir;
+    const test_common::TempDir dir("tzdata_search");
     const std::filesystem::path exeDir = dir.Path() / "bin";
     std::filesystem::create_directories(exeDir);
     {

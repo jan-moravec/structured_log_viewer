@@ -27,7 +27,7 @@ namespace loglib
 struct SourcePlanOptions
 {
     bool rotationHistory = true;
-    std::span<const std::string> suppressKeys{};
+    std::span<const std::string> suppressKeys;
 };
 
 /**

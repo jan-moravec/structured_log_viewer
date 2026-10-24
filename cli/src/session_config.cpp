@@ -93,7 +93,7 @@ namespace
     return indices;
 }
 
-[[nodiscard]] std::string LowerIfCaseInsensitiveFs(std::string text)
+[[nodiscard]] std::string LowerIfCaseInsensitiveFs(const std::string &text)
 {
 #ifdef _WIN32
     return AsciiLower(text);
@@ -243,8 +243,8 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     )
     {
         session.sort = SortChoice{
-            static_cast<std::size_t>(persisted.columnIndex),
-            persisted.descending ? loglib::SortDirection::Descending : loglib::SortDirection::Ascending
+            .columnIndex = static_cast<std::size_t>(persisted.columnIndex),
+            .direction = persisted.descending ? loglib::SortDirection::Descending : loglib::SortDirection::Ascending
         };
     }
 

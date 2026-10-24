@@ -189,7 +189,10 @@ ExitCode RunQuery(
     const bool empty = rows.empty();
     if (options.count)
     {
-        console.Print(std::to_string(rows.size()) + '\n');
+        if (const ExitCode written = console.Print(std::to_string(rows.size()) + '\n'); written != ExitCode::Success)
+        {
+            return written;
+        }
     }
     else
     {

@@ -39,7 +39,7 @@ constexpr std::string_view FOUR_ROWS =
 
 [[nodiscard]] const std::filesystem::path &WriteLog()
 {
-    static const std::filesystem::path path = [] {
+    static const std::filesystem::path LOG_PATH = [] {
         const auto file =
             ScratchRoot() /
             ("four_rows_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl");
@@ -49,7 +49,7 @@ constexpr std::string_view FOUR_ROWS =
         REQUIRE(output.good());
         return file;
     }();
-    return path;
+    return LOG_PATH;
 }
 
 [[nodiscard]] slp::test::CommandResult RunBundle(std::vector<std::string> extra)
@@ -166,7 +166,7 @@ TEST_CASE("slp bundle requires --output and rejects stdout", "[cli][bundle][e2e]
 {
     const auto missing = RunBundle({});
     CHECK(missing.exitCode == 2);
-    CHECK(missing.err.find("--output") != std::string::npos);
+    CHECK(missing.err.contains("--output"));
 
     const auto dash = RunBundle({"-o", "-"});
     CHECK(dash.exitCode == 2);

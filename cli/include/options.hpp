@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loglib/histogram_bucket_index.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <expected>
@@ -168,6 +170,12 @@ enum class StatsAxis
     Column,
 };
 
+/** @brief Default number of distinct values `slp stats --by column` prints. */
+inline constexpr std::uint64_t DEFAULT_TOP_VALUES = 20;
+
+/** @brief Default number of individual parse errors `slp validate` prints. */
+inline constexpr std::uint64_t DEFAULT_MAX_ERRORS = 20;
+
 /** @brief `slp stats`. `column` is set whenever `by` is `Column`. */
 struct StatsOptions
 {
@@ -176,9 +184,10 @@ struct StatsOptions
     InputOptions input;
     FilterOptions filter;
     StatsAxis by = StatsAxis::Level;
-    std::string bucket = "auto";
+    /** @brief Histogram width for `--by time`; unset selects it automatically. */
+    std::optional<loglib::HistogramBucketSize> bucket;
     std::optional<std::uint64_t> maxBuckets;
-    std::uint64_t top = 20;
+    std::uint64_t top = DEFAULT_TOP_VALUES;
     std::optional<std::string> column;
     ReportFormat outputFormat = ReportFormat::Text;
 };
@@ -199,7 +208,7 @@ struct ValidateOptions
     static constexpr std::string_view NAME = "validate";
 
     InputOptions input;
-    std::uint64_t maxErrors = 20;
+    std::uint64_t maxErrors = DEFAULT_MAX_ERRORS;
     /** @brief Accepted parse-error percentage; unset means any error fails. */
     std::optional<double> maxErrorRate;
     ReportFormat outputFormat = ReportFormat::Text;
@@ -260,7 +269,7 @@ using CommandOptions = std::
     variant<QueryOptions, StatsOptions, SchemaOptions, ValidateOptions, BundleOptions, FormatsOptions, TailOptions>;
 
 /** @brief Name of the subcommand that @p command holds. */
-[[nodiscard]] std::string_view CommandName(const CommandOptions &command) noexcept;
+[[nodiscard]] std::string_view CommandName(const CommandOptions &command);
 
 /**
  * @brief Failure of `ParseArguments`. Exit code is always 2.

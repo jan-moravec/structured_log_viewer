@@ -53,7 +53,7 @@ constexpr std::string_view FOUR_ROWS =
 /** @brief Writes the four-row log once per process; parallel ctest runs get distinct files. */
 [[nodiscard]] const std::filesystem::path &WriteLog()
 {
-    static const std::filesystem::path path = [] {
+    static const std::filesystem::path LOG_PATH = [] {
         const auto file =
             ScratchRoot() /
             ("four_rows_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl");
@@ -63,13 +63,13 @@ constexpr std::string_view FOUR_ROWS =
         REQUIRE(output.good());
         return file;
     }();
-    return path;
+    return LOG_PATH;
 }
 
 /** @brief Configuration detected from the four-row log; the base for authored configs. */
 [[nodiscard]] loglib::LogConfiguration DetectedConfiguration()
 {
-    loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
+    const loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
     manager.Update(parsed.data);
@@ -119,6 +119,7 @@ struct Resolved
     words.insert(words.end(), flags.begin(), flags.end());
     words.push_back(WriteLog().string());
     std::vector<char *> argv;
+    argv.reserve(words.size());
     for (std::string &word : words)
     {
         argv.push_back(word.data());
@@ -127,7 +128,7 @@ struct Resolved
     REQUIRE(options.has_value());
 
     const auto &query = std::get<slp::QueryOptions>(options->command);
-    slp::RuntimeContext runtime;
+    const slp::RuntimeContext runtime;
     const slp::Console console(stdout, stderr, slp::QueryOptions::NAME, options->global);
     auto load = slp::LoadTable(options->global, query.input, console, runtime);
     if (!load)
@@ -145,7 +146,7 @@ struct Resolved
         session->expression, loaded.table.Configuration().Configuration().columns, &loaded.table
     );
     auto rows = loglib::FilterAcceptedRows(loaded.table, compiled);
-    return Resolved{std::move(loaded), std::move(*session), std::move(rows)};
+    return Resolved{.loaded = std::move(loaded), .session = std::move(*session), .rows = std::move(rows)};
 }
 
 } // namespace
@@ -190,14 +191,16 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
 
     const Resolved fromConfig = Resolve({"--config", path.string()});
     REQUIRE(fromConfig.session.sort.has_value());
-    CHECK(fromConfig.session.sort->columnIndex == static_cast<std::size_t>(msg));
+    CHECK(std::cmp_equal(fromConfig.session.sort->columnIndex, msg));
     CHECK(fromConfig.session.sort->direction == loglib::SortDirection::Descending);
 
     const Resolved overridden = Resolve({"--config", path.string(), "--sort", "level:asc"});
     REQUIRE(overridden.session.sort.has_value());
     CHECK(
-        overridden.session.sort->columnIndex ==
-        static_cast<std::size_t>(ColumnIndex(overridden.loaded.table.Configuration().Configuration().columns, "level"))
+        std::cmp_equal(
+            overridden.session.sort->columnIndex,
+            ColumnIndex(overridden.loaded.table.Configuration().Configuration().columns, "level")
+        )
     );
     CHECK(overridden.session.sort->direction == loglib::SortDirection::Ascending);
     CHECK_FALSE(overridden.session.configuration.sort.descending);
@@ -255,7 +258,7 @@ TEST_CASE("slp query --config failures map to exit 3", "[cli][session][e2e]")
         RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", missing, WriteLog().string()});
     INFO("stderr:\n" << result.err);
     CHECK(result.exitCode == 3);
-    CHECK(result.err.find("missing_config.json") != std::string::npos);
+    CHECK(result.err.contains("missing_config.json"));
 
     const auto malformed = ScratchRoot() / "malformed.json";
     {
@@ -287,7 +290,7 @@ TEST_CASE("slp query --config precedence over a bundle and under flags", "[cli][
         REQUIRE(parsed.errors.empty());
         loglib::LogConfigurationManager manager;
         manager.Update(parsed.data);
-        loglib::LogTable table{std::move(parsed.data), std::move(manager)};
+        const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
         loglib::WriteSessionBundle(table, bundled, bundlePath);
     }
 
@@ -318,7 +321,7 @@ TEST_CASE("slp query --config precedence over a bundle and under flags", "[cli][
 
 TEST_CASE("slp query --save-session writes the effective configuration", "[cli][session][e2e]")
 {
-    const auto log = WriteLog();
+    const auto &log = WriteLog();
     const auto sessionPath = ScratchRoot() / "saved_session.json";
     std::filesystem::remove(sessionPath);
 
@@ -383,14 +386,14 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
     );
     INFO(replay.err);
     CHECK(replay.exitCode == 0);
-    CHECK(replay.out.find("bravo") != std::string::npos);
-    CHECK(replay.out.find("alpha") == std::string::npos);
+    CHECK(replay.out.contains("bravo"));
+    CHECK(!replay.out.contains("alpha"));
     CHECK(replay.out.find("delta") < replay.out.find("bravo"));
 }
 
 TEST_CASE("slp query --save-columns omits session state", "[cli][session][e2e]")
 {
-    const auto log = WriteLog();
+    const auto &log = WriteLog();
     const auto columnsPath = ScratchRoot() / "saved_columns.json";
     std::filesystem::remove(columnsPath);
 
@@ -453,7 +456,7 @@ TEST_CASE("slp query save flags report write failure as exit 5", "[cli][session]
     );
     INFO(result.err);
     CHECK(result.exitCode == 5);
-    CHECK(result.err.find("session.json") != std::string::npos);
+    CHECK(result.err.contains("session.json"));
 }
 
 TEST_CASE("slp query --save-session records the compressed primary path only", "[cli][session][e2e]")
@@ -528,7 +531,7 @@ TEST_CASE("slp stats honors a configuration expression", "[cli][session][e2e]")
         loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
         loglib::LogConfigurationManager manager;
         manager.Update(parsed.data);
-        loglib::LogTable table{std::move(parsed.data), std::move(manager)};
+        const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
         loglib::WriteSessionBundle(table, configuration, bundlePath);
     }
 
@@ -537,5 +540,5 @@ TEST_CASE("slp stats honors a configuration expression", "[cli][session][e2e]")
     );
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
-    CHECK(result.out.find("\"total\": 2") != std::string::npos);
+    CHECK(result.out.contains("\"total\": 2"));
 }

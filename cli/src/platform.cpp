@@ -2,6 +2,8 @@
 
 #include "diagnostics.hpp"
 
+#include <loglib/user_paths.hpp>
+
 #include <cstdint>
 #include <cstdlib>
 #include <system_error>
@@ -18,8 +20,9 @@
 #include <windows.h>
 #else
 #include <sys/ioctl.h>
-#include <signal.h>
 #include <unistd.h>
+
+#include <csignal>
 #endif
 
 #ifdef __APPLE__
@@ -32,9 +35,14 @@ namespace slp
 namespace
 {
 
-constexpr unsigned int WINDOWS_PATH_CHARS = 32768;
 constexpr std::string_view UNAVAILABLE_ZONE = "is unavailable";
 
+#ifdef _WIN32
+constexpr unsigned int WINDOWS_PATH_CHARS = 32768;
+#endif
+
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables): signal and console-control handlers can only
+// reach this state through globals.
 #ifdef _WIN32
 UINT gPreviousOutputCp = 0;
 bool gRestoreOutputCp = false;
@@ -42,6 +50,7 @@ bool gRestoreOutputCp = false;
 
 std::atomic<int> *gSignalCount = nullptr;
 loglib::StopSource *gStopSource = nullptr;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 void OnCancelSignal()
 {
@@ -96,17 +105,19 @@ int TerminalWidth(std::FILE *stream, int fallback) noexcept
         return fallback;
     }
 #ifdef _WIN32
-    const HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    auto *const handle = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO info{};
     if (handle != nullptr && handle != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(handle, &info) != 0)
     {
-        const int width = static_cast<int>(info.srWindow.Right - info.srWindow.Left + 1);
+        const int width = info.srWindow.Right - info.srWindow.Left + 1;
         return width > 0 ? width : fallback;
     }
     return fallback;
 #else
-    if (const char *columns = std::getenv("COLUMNS"))
+    if (const auto columnsPath = loglib::EnvironmentPath("COLUMNS"))
     {
+        const std::string columnsText = columnsPath->string();
+        const char *const columns = columnsText.c_str();
         char *end = nullptr;
         const long parsed = std::strtol(columns, &end, 10);
         if (end != columns && parsed > 0)
@@ -188,8 +199,8 @@ std::filesystem::path CurrentExecutable()
     std::wstring buffer(WINDOWS_PATH_CHARS, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     buffer.resize(length);
-    return std::filesystem::path(buffer);
-#elif defined(__APPLE__)
+    return {buffer};
+#elifdef __APPLE__
     constexpr std::uint32_t INITIAL_PATH_CHARS = 1024;
     std::string buffer(INITIAL_PATH_CHARS, '\0');
     std::uint32_t size = INITIAL_PATH_CHARS;
@@ -241,7 +252,7 @@ TimeZoneSetup ResolveTimeZone(std::string_view zoneName, const std::filesystem::
     catch (const std::exception &ex)
     {
         const std::string_view reason = ex.what();
-        if (reason.find(UNAVAILABLE_ZONE) != std::string_view::npos)
+        if (reason.contains(UNAVAILABLE_ZONE))
         {
             setup.error = std::string(reason);
             return setup;

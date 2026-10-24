@@ -6,6 +6,7 @@
 
 #include <loglib/line_source.hpp>
 #include <loglib/session_bundle.hpp>
+#include <loglib/user_paths.hpp>
 #include <loglib/version.hpp>
 
 #include <CLI/CLI.hpp>
@@ -21,19 +22,10 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <type_traits>
 #include <utility>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 namespace slp
 {
@@ -59,7 +51,7 @@ constexpr std::string_view SOURCE_HELP = "Log file, .slvbundle, or - for stdin. 
                                          "given. tcp:// and udp:// are rejected here; use `slp tail`.";
 
 /** @brief Option group that keeps an option out of `--help`; `--help-advanced` lists it. */
-constexpr std::string_view HIDDEN_GROUP = "";
+constexpr std::string_view HIDDEN_GROUP = {};
 
 /** @brief A flag given to a command that rejects it, with the sentence that points to the right one. */
 struct MisplacedFlag
@@ -125,59 +117,18 @@ struct InvalidFlags
     return rate;
 }
 
-[[nodiscard]] bool EnvIsSet(const char *name)
+[[nodiscard]] std::expected<std::uint16_t, std::string> ParsePort(std::string_view portText, std::string_view source)
 {
-#ifdef _WIN32
-    const DWORD needed = GetEnvironmentVariableA(name, nullptr, 0);
-    return needed != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
-#else
-    return std::getenv(name) != nullptr;
-#endif
-}
-
-/** @brief Value of environment variable @p name, or nullopt when it is unset or empty. */
-[[nodiscard]] std::optional<std::string> EnvironmentString(const char *name)
-{
-#ifdef _WIN32
-    const DWORD needed = GetEnvironmentVariableA(name, nullptr, 0);
-    if (needed == 0)
-    {
-        return std::nullopt;
-    }
-    std::string value(static_cast<std::size_t>(needed), '\0');
-    const DWORD written = GetEnvironmentVariableA(name, value.data(), needed);
-    if (written == 0)
-    {
-        return std::nullopt;
-    }
-    value.resize(written);
-    return value;
-#else
-    const char *value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0')
-    {
-        return std::nullopt;
-    }
-    return std::string(value);
-#endif
-}
-
-[[nodiscard]] std::expected<std::uint16_t, std::string> ParsePort(std::string_view text, std::string_view original)
-{
-    const auto parsed = ParseUint(text, "port");
+    const auto parsed = ParseUint(portText, "port");
     if (!parsed)
     {
-        return std::unexpected(std::format("Network source '{}' has an invalid port.", original));
+        return std::unexpected(std::format("Network source '{}' has an invalid port.", source));
     }
     if (*parsed < static_cast<std::uint64_t>(MIN_TCP_PORT) || *parsed > static_cast<std::uint64_t>(MAX_TCP_PORT))
     {
         return std::unexpected(
             std::format(
-                "Network source '{}' has port {}, which is outside {}-{}.",
-                original,
-                *parsed,
-                MIN_TCP_PORT,
-                MAX_TCP_PORT
+                "Network source '{}' has port {}, which is outside {}-{}.", source, *parsed, MIN_TCP_PORT, MAX_TCP_PORT
             )
         );
     }
@@ -253,14 +204,39 @@ CLI::Option *AddOptional(CLI::App &app, std::string name, std::optional<T> &targ
     return app.add_option_function<T>(std::move(name), [&target](const T &value) { target = value; }, std::move(help));
 }
 
-/** @brief Adds an option that maps fixed tokens to an enum value. */
-template <typename E>
+/**
+ * @brief Adds an option that maps fixed tokens to a value.
+ *
+ * Only the listed tokens are accepted, ignoring case, and help shows them as `a|b|c`.
+ */
+template <typename T>
 CLI::Option *AddChoice(
-    CLI::App &app, std::string name, E &target, std::vector<std::pair<std::string, E>> choices, std::string help
+    CLI::App &app, std::string name, T &target, std::vector<std::pair<std::string, T>> choices, std::string help
 )
 {
-    return app.add_option(std::move(name), target, std::move(help))
-        ->transform(CLI::CheckedTransformer(std::move(choices), CLI::ignore_case));
+    std::vector<std::string> tokens;
+    std::string typeName;
+    for (const auto &choice : choices)
+    {
+        tokens.push_back(choice.first);
+        typeName += (typeName.empty() ? "" : "|") + choice.first;
+    }
+    return app
+        .add_option_function<std::string>(
+            std::move(name),
+            [&target, choices = std::move(choices)](const std::string &token) {
+                const auto match = std::ranges::find_if(choices, [&token](const auto &choice) {
+                    return EqualsIgnoreCase(choice.first, token);
+                });
+                if (match != choices.end())
+                {
+                    target = match->second;
+                }
+            },
+            std::move(help)
+        )
+        ->check(CLI::IsMember(std::move(tokens), CLI::ignore_case))
+        ->type_name(std::move(typeName));
 }
 
 // ---- shared flag groups -----------------------------------------------------
@@ -598,10 +574,19 @@ void AddStats(CLI::App &root, CommandParser &command)
         {{"level", StatsAxis::Level}, {"time", StatsAxis::Time}, {"column", StatsAxis::Column}},
         "Summary axis. One of level, time, or column. The default is level."
     );
-    app.add_option(
-           "--bucket", stats.bucket, std::format("Histogram width for --by time. The default is {}.", stats.bucket)
-    )
-        ->check(CLI::IsMember({"1s", "10s", "1m", "10m", "1h", "1d", "auto"}));
+    AddChoice(
+        app,
+        "--bucket",
+        stats.bucket,
+        {{"auto", std::nullopt},
+         {"1s", loglib::HistogramBucketSize::OneSecond},
+         {"10s", loglib::HistogramBucketSize::TenSeconds},
+         {"1m", loglib::HistogramBucketSize::OneMinute},
+         {"10m", loglib::HistogramBucketSize::TenMinutes},
+         {"1h", loglib::HistogramBucketSize::OneHour},
+         {"1d", loglib::HistogramBucketSize::OneDay}},
+        "Histogram width for --by time. The default is auto."
+    );
     AddOptional(
         app,
         "--max-buckets",
@@ -661,7 +646,7 @@ void AddValidate(CLI::App &root, CommandParser &command)
             {
                 throw CLI::ValidationError("--max-error-rate", std::format("requires a percentage, not '{}'.", text));
             }
-            validate.maxErrorRate = *rate;
+            validate.maxErrorRate = rate;
         },
         "Exit 0 while the parse-error percentage stays at or below this value. The default is any error exits 4."
     );
@@ -857,13 +842,22 @@ void AddTail(CLI::App &root, CommandParser &command)
     return usage;
 }
 
-/** @brief Turns a CLI11 message into one sentence without CLI11's program-name prefix. */
-[[nodiscard]] std::string Sentence(std::string_view what)
+/**
+ * @brief Turns a CLI11 message raised by @p app into one sentence.
+ *
+ * CLI11 prefixes `ExtrasError` with `<app name>: ` for the app that raised
+ * it, which can be @p app or any of its parents.
+ */
+[[nodiscard]] std::string Sentence(std::string_view what, const CLI::App &app)
 {
-    constexpr std::string_view PROGRAM_PREFIX = "slp: ";
-    if (what.starts_with(PROGRAM_PREFIX))
+    for (const CLI::App *owner = &app; owner != nullptr; owner = owner->get_parent())
     {
-        what.remove_prefix(PROGRAM_PREFIX.size());
+        const std::string prefix = owner->get_name() + ": ";
+        if (what.starts_with(prefix))
+        {
+            what.remove_prefix(prefix.size());
+            break;
+        }
     }
     std::string text(what);
     std::ranges::replace(text, '\n', ' ');
@@ -912,7 +906,7 @@ bool FilterOptions::OnlyInvert() const noexcept
     return invert && filters.empty() && !since && !until && !minLevel;
 }
 
-std::string_view CommandName(const CommandOptions &command) noexcept
+std::string_view CommandName(const CommandOptions &command)
 {
     return std::visit([](const auto &options) { return std::decay_t<decltype(options)>::NAME; }, command);
 }
@@ -1068,14 +1062,14 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
     root.require_subcommand(0, 1);
     AddGlobalFlags(root, result.global);
 
-    std::array<CommandParser, 7> commands;
-    AddQuery(root, commands[0]);
-    AddStats(root, commands[1]);
-    AddSchema(root, commands[2]);
-    AddValidate(root, commands[3]);
-    AddBundle(root, commands[4]);
-    AddFormats(root, commands[5]);
-    AddTail(root, commands[6]);
+    constexpr std::array COMMAND_ADDERS = {
+        &AddQuery, &AddStats, &AddSchema, &AddValidate, &AddBundle, &AddFormats, &AddTail
+    };
+    std::array<CommandParser, COMMAND_ADDERS.size()> commands;
+    for (auto &&[add, command] : std::views::zip(COMMAND_ADDERS, commands))
+    {
+        add(root, command);
+    }
     for (CommandParser &command : commands)
     {
         // Global flags may follow the command name.
@@ -1109,24 +1103,21 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
     {
         const CLI::App &app = current();
         const std::string command = app.get_parent() == nullptr ? std::string{} : app.get_name();
-        std::string message = Sentence(error.what());
+        std::string message = Sentence(error.what(), app);
         if (dynamic_cast<const CLI::ExtrasError *>(&error) != nullptr)
         {
             message = MisplacedFlagHint(command, argc, argv).value_or(std::move(message));
         }
-        return std::unexpected(UsageError{command, std::move(message), UsageLine(app)});
+        return std::unexpected(UsageError{.command = command, .message = std::move(message), .usage = UsageLine(app)});
     }
 
-    if (EnvIsSet("NO_COLOR"))
+    if (loglib::EnvironmentIsSet("NO_COLOR"))
     {
         result.global.color = ColorMode::Never;
     }
     if (!result.global.templateDir)
     {
-        if (const auto directory = EnvironmentString("SLV_TEMPLATE_DIR"))
-        {
-            result.global.templateDir = std::filesystem::path(*directory);
-        }
+        result.global.templateDir = loglib::EnvironmentPath("SLV_TEMPLATE_DIR");
     }
 
     for (CommandParser &command : commands)
@@ -1147,7 +1138,11 @@ std::expected<Options, UsageError> ParseArguments(int argc, char **argv)
         }
         catch (const InvalidFlags &invalid)
         {
-            return std::unexpected(UsageError{command.app->get_name(), invalid.message, UsageLine(*command.app)});
+            return std::unexpected(
+                UsageError{
+                    .command = command.app->get_name(), .message = invalid.message, .usage = UsageLine(*command.app)
+                }
+            );
         }
         result.command = std::move(command.options);
         return result;

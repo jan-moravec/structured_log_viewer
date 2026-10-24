@@ -130,34 +130,34 @@ TEST_CASE("top-level help and version", "[cli][options]")
     const auto missing = Parse({"slp"});
     REQUIRE(missing.has_value());
     CHECK(missing->kind == slp::ParseKind::MissingCommand);
-    CHECK(missing->helpText.find("query") != std::string::npos);
-    CHECK(missing->helpText.find("Exit codes:") != std::string::npos);
-    CHECK(missing->helpText.find("130") != std::string::npos);
+    CHECK(missing->helpText.contains("query"));
+    CHECK(missing->helpText.contains("Exit codes:"));
+    CHECK(missing->helpText.contains("130"));
 
     const auto help = Parse({"slp", "--help"});
     REQUIRE(help.has_value());
     CHECK(help->kind == slp::ParseKind::Help);
-    CHECK(help->helpText.find("Exit codes:") != std::string::npos);
+    CHECK(help->helpText.contains("Exit codes:"));
 
     const auto queryHelp = Parse({"slp", "query", "--help"});
     REQUIRE(queryHelp.has_value());
     CHECK(queryHelp->kind == slp::ParseKind::Help);
-    CHECK(queryHelp->helpText.find("query") != std::string::npos);
-    CHECK(queryHelp->helpText.find("--batch-size") == std::string::npos);
-    CHECK(queryHelp->helpText.find("Advanced options:") == std::string::npos);
-    CHECK(queryHelp->helpText.find("Exit codes:") != std::string::npos);
+    CHECK(queryHelp->helpText.contains("query"));
+    CHECK_FALSE(queryHelp->helpText.contains("--batch-size"));
+    CHECK_FALSE(queryHelp->helpText.contains("Advanced options:"));
+    CHECK(queryHelp->helpText.contains("Exit codes:"));
 
     const auto advanced = Parse({"slp", "query", "--help-advanced"});
     REQUIRE(advanced.has_value());
-    CHECK(advanced->helpText.find("Advanced options:") != std::string::npos);
-    CHECK(advanced->helpText.find("--batch-size") != std::string::npos);
+    CHECK(advanced->helpText.contains("Advanced options:"));
+    CHECK(advanced->helpText.contains("--batch-size"));
 
     const auto version = Parse({"slp", "--version"});
     REQUIRE(version.has_value());
     CHECK(version->kind == slp::ParseKind::Version);
     const std::string line = slp::VersionLine();
-    CHECK(line.find("StructuredLogProcessor") != std::string::npos);
-    CHECK(line.find("loglib") != std::string::npos);
+    CHECK(line.contains("StructuredLogProcessor"));
+    CHECK(line.contains("loglib"));
 }
 
 TEST_CASE("global flags work before and after the subcommand", "[cli][options]")
@@ -177,8 +177,8 @@ TEST_CASE("global flags work before and after the subcommand", "[cli][options]")
 
 TEST_CASE("NO_COLOR forces never and the template directory flag wins", "[cli][options]")
 {
-    EnvGuard color("NO_COLOR");
-    EnvGuard templates("SLV_TEMPLATE_DIR");
+    const EnvGuard color("NO_COLOR");
+    const EnvGuard templates("SLV_TEMPLATE_DIR");
     SetEnv("NO_COLOR", "1");
     SetEnv("SLV_TEMPLATE_DIR", "from-env");
 
@@ -206,59 +206,59 @@ TEST_CASE("mutual exclusions and source rules exit as usage errors", "[cli][opti
 {
     const auto lastAndOffset = Parse({"slp", "query", "--last", "2", "--offset", "1", "a.log"});
     REQUIRE_FALSE(lastAndOffset.has_value());
-    CHECK(lastAndOffset.error().message.find("--last") != std::string::npos);
-    CHECK(lastAndOffset.error().message.find("--offset") != std::string::npos);
+    CHECK(lastAndOffset.error().message.contains("--last"));
+    CHECK(lastAndOffset.error().message.contains("--offset"));
 
     const auto bothRegex = Parse({"slp", "query", "--regex", "a", "--regex-template", "b", "a.log"});
     REQUIRE_FALSE(bothRegex.has_value());
-    CHECK(bothRegex.error().message.find("--regex") != std::string::npos);
+    CHECK(bothRegex.error().message.contains("--regex"));
 
     const auto formatClash = Parse({"slp", "query", "--format", "json", "--regex", "a", "a.log"});
     REQUIRE_FALSE(formatClash.has_value());
 
     const auto twoStdin = Parse({"slp", "query", "-", "-"});
     REQUIRE_FALSE(twoStdin.has_value());
-    CHECK(twoStdin.error().message.find("once") != std::string::npos);
+    CHECK(twoStdin.error().message.contains("once"));
 
     const auto stdinAndNet = Parse({"slp", "tail", "-", "tcp://127.0.0.1:9"});
     REQUIRE_FALSE(stdinAndNet.has_value());
 
     const auto netOnQuery = Parse({"slp", "query", "tcp://127.0.0.1:9"});
     REQUIRE_FALSE(netOnQuery.has_value());
-    CHECK(netOnQuery.error().message.find("slp tail") != std::string::npos);
+    CHECK(netOnQuery.error().message.contains("slp tail"));
 
     const auto unknown = Parse({"slp", "query", "--not-a-flag"});
     REQUIRE_FALSE(unknown.has_value());
-    CHECK(unknown.error().message.find("--not-a-flag") != std::string::npos);
+    CHECK(unknown.error().message.contains("--not-a-flag"));
     CHECK_FALSE(unknown.error().usage.empty());
 
     const auto bundle = Parse({"slp", "bundle", "a.log"});
     REQUIRE_FALSE(bundle.has_value());
-    CHECK(bundle.error().message.find("--output") != std::string::npos);
+    CHECK(bundle.error().message.contains("--output"));
 
     const auto bundleToStdout = Parse({"slp", "bundle", "-o", "-", "a.log"});
     REQUIRE_FALSE(bundleToStdout.has_value());
-    CHECK(bundleToStdout.error().message.find("stdout") != std::string::npos);
+    CHECK(bundleToStdout.error().message.contains("stdout"));
 
     const auto strict = Parse({"slp", "validate", "--strict", "a.log"});
     REQUIRE_FALSE(strict.has_value());
-    CHECK(strict.error().message.find("--max-error-rate") != std::string::npos);
+    CHECK(strict.error().message.contains("--max-error-rate"));
 
     const auto rate = Parse({"slp", "query", "--max-error-rate", "1", "a.log"});
     REQUIRE_FALSE(rate.has_value());
-    CHECK(rate.error().message.find("--strict") != std::string::npos);
+    CHECK(rate.error().message.contains("--strict"));
 
     const auto tailRate = Parse({"slp", "tail", "--max-error-rate=1", "a.log"});
     REQUIRE_FALSE(tailRate.has_value());
-    CHECK(tailRate.error().message.find("--strict") != std::string::npos);
+    CHECK(tailRate.error().message.contains("--strict"));
 
     const auto column = Parse({"slp", "stats", "--by", "column", "a.log"});
     REQUIRE_FALSE(column.has_value());
-    CHECK(column.error().message.find("--column") != std::string::npos);
+    CHECK(column.error().message.contains("--column"));
 
     const auto retention = Parse({"slp", "tail", "--retention", "10", "a.log"});
     REQUIRE_FALSE(retention.has_value());
-    CHECK(retention.error().message.find("--retention") != std::string::npos);
+    CHECK(retention.error().message.contains("--retention"));
 }
 
 TEST_CASE("tail accepts network sources and retention bounds", "[cli][options]")
@@ -343,7 +343,7 @@ TEST_CASE("command defaults come from the options structs", "[cli][options]")
 
     const auto statsHelp = Parse({"slp", "stats", "--help"});
     REQUIRE(statsHelp.has_value());
-    CHECK(statsHelp->helpText.find("The default is 20.") != std::string::npos);
+    CHECK(statsHelp->helpText.contains("The default is 20."));
 }
 
 TEST_CASE("diagnostics lines keep data and errors apart", "[cli][options]")
@@ -352,4 +352,43 @@ TEST_CASE("diagnostics lines keep data and errors apart", "[cli][options]")
     CHECK(slp::FormatErrorLine("query", "the file is missing.") == "slp query: the file is missing.");
     CHECK(slp::FormatStageLine("parse", 12, 4) == "stage=parse rows=12 ms=4");
     CHECK(slp::FormatWarningLine("timezone data was not found") == "slp: timezone data was not found.");
+}
+
+TEST_CASE("choice flags accept only their documented tokens", "[cli][options]")
+{
+    CHECK_FALSE(Parse({"slp", "query", "-f", "4", "a.log"}).has_value());
+    CHECK_FALSE(Parse({"slp", "stats", "--by", "2", "a.log"}).has_value());
+    CHECK_FALSE(Parse({"slp", "query", "-t", "3", "a.log"}).has_value());
+    CHECK_FALSE(Parse({"slp", "query", "--color", "1", "a.log"}).has_value());
+    CHECK_FALSE(Parse({"slp", "stats", "--bucket", "2m", "a.log"}).has_value());
+
+    const auto upper = Parse({"slp", "query", "-f", "JSON", "--color", "Never", "a.log"});
+    REQUIRE(upper.has_value());
+    CHECK(As<slp::QueryOptions>(upper).input.format == slp::InputFormat::Json);
+    CHECK(upper->global.color == slp::ColorMode::Never);
+
+    const auto help = Parse({"slp", "query", "--help"});
+    REQUIRE(help.has_value());
+    CHECK(help->helpText.contains("auto|json|logfmt|csv|regex"));
+    CHECK_FALSE(help->helpText.contains("->0"));
+}
+
+TEST_CASE("the stats bucket is parsed once into a bucket size", "[cli][options]")
+{
+    const auto automatic = Parse({"slp", "stats", "a.log"});
+    CHECK_FALSE(As<slp::StatsOptions>(automatic).bucket.has_value());
+
+    const auto explicitAuto = Parse({"slp", "stats", "--bucket", "auto", "a.log"});
+    CHECK_FALSE(As<slp::StatsOptions>(explicitAuto).bucket.has_value());
+
+    const auto hour = Parse({"slp", "stats", "--bucket", "1h", "a.log"});
+    REQUIRE(As<slp::StatsOptions>(hour).bucket.has_value());
+    CHECK(*As<slp::StatsOptions>(hour).bucket == loglib::HistogramBucketSize::OneHour);
+}
+
+TEST_CASE("an unexpected argument is reported without CLI11's program-name prefix", "[cli][options]")
+{
+    const auto extra = Parse({"slp", "query", "--bogus"});
+    REQUIRE_FALSE(extra.has_value());
+    CHECK(extra.error().message.starts_with("The following argument was not expected"));
 }

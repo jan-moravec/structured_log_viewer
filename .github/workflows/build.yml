@@ -69,8 +69,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      # pull-requests: write lets cpp-linter-action post inline tidy review
-      # comments on PRs; id-token: write enables tokenless Codecov OIDC upload;
+      # pull-requests: write lets cpp-linter-action post its tidy comment
+      # on PRs; id-token: write enables tokenless Codecov OIDC upload;
       # contents: read is inherited.
       contents: read
       pull-requests: write
@@ -129,6 +129,9 @@ jobs:
         # when invoked directly on a header file. Headers are not entries in
         # compile_commands.json, so without these flags clang-tidy reports
         # spurious "file not found" frontend errors against changed `.hpp`s.
+        # Findings are listed in the PR comment and step summary (no inline
+        # review: 100s of suggestions trip GitHub's secondary rate limit) and
+        # fail the job through the "Fail on clang-tidy findings" step.
         # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
         id: cpp-linter
@@ -143,8 +146,8 @@ jobs:
           extensions: cpp,hpp,h,cc
           files-changed-only: true
           lines-changed-only: true
-          tidy-review: true
-          thread-comments: update
+          tidy-review: false
+          thread-comments: true
           step-summary: true
           # clang-tidy interprets `--extra-arg=-I...` paths relative to the
           # proxy TU's `directory` from compile_commands.json (the build dir),
@@ -211,6 +214,13 @@ jobs:
           fail_ci_if_error: true
           verbose: true
           use_oidc: true
+
+      - name: Fail on clang-tidy findings
+        # Last step so tests and the coverage upload still run when tidy reports.
+        if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.clang-tidy-checks-failed != '0'
+        run: |
+          echo "clang-tidy reported ${{ steps.cpp-linter.outputs.clang-tidy-checks-failed }} finding(s) on changed lines; see the step summary." >&2
+          exit 1
 
   build-qt-free:
     needs: pre-commit

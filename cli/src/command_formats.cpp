@@ -25,6 +25,7 @@ namespace slp
 // through templates that MSVC cannot instantiate for internal types.
 namespace reports
 {
+// NOLINTBEGIN(misc-use-internal-linkage)
 
 /** @brief One parser in `slp formats --output-format json`. */
 struct ParserEntry
@@ -52,13 +53,14 @@ struct FormatsReport
     std::vector<TemplateEntry> templates;
 };
 
+// NOLINTEND(misc-use-internal-linkage)
+
 } // namespace reports
 
 namespace
 {
 
 using reports::FormatsReport;
-using reports::ParserEntry;
 using reports::TemplateEntry;
 
 constexpr int MAX_CLOSEST = 5;
@@ -216,10 +218,10 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     for (const ListedTemplate &row : catalog)
     {
         const int distance = EditDistance(needle, row.slug);
-        const bool contains = row.slug.find(needle) != std::string::npos || needle.find(row.slug) != std::string::npos;
+        const bool contains = row.slug.contains(needle) || needle.contains(row.slug);
         if (distance <= CLOSE_DISTANCE || contains)
         {
-            candidates.push_back(Candidate{distance, row.slug});
+            candidates.push_back(Candidate{.distance = distance, .slug = row.slug});
         }
     }
     std::ranges::sort(candidates, [](const Candidate &lhs, const Candidate &rhs) {
@@ -318,11 +320,11 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
 {
     FormatsReport report;
     report.parsers = {
-        {"auto", "Detect the format. JSON Lines is the fallback. This is the default."},
-        {"json", "JSON Lines, one object per line."},
-        {"logfmt", "logfmt key=value lines."},
-        {"csv", "Comma-separated values."},
-        {"regex", "A PCRE2 pattern with named captures, or a regex template."},
+        {.id = "auto", .description = "Detect the format. JSON Lines is the fallback. This is the default."},
+        {.id = "json", .description = "JSON Lines, one object per line."},
+        {.id = "logfmt", .description = "logfmt key=value lines."},
+        {.id = "csv", .description = "Comma-separated values."},
+        {.id = "regex", .description = "A PCRE2 pattern with named captures, or a regex template."},
     };
     for (const auto *rows : {&builtins, &users})
     {
@@ -436,17 +438,15 @@ ExitCode RunFormats(const FormatsOptions &options, const GlobalOptions &global, 
         {
             json->push_back('\n');
         }
-        console.Print(*json);
-        return ExitCode::Success;
+        return console.Print(*json);
     }
 
     const std::vector<ListedTemplate> listedUsers =
         options.listUserTemplates ? users.templates : std::vector<ListedTemplate>{};
-    console.Print(
+    return console.Print(
         options.outputFormat == ReportFormat::Json ? RenderJson(builtins, listedUsers)
                                                    : RenderText(builtins, listedUsers)
     );
-    return ExitCode::Success;
 }
 
 } // namespace slp
