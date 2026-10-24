@@ -18,8 +18,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#else
-#include <cstdlib>
 #endif
 
 namespace
