@@ -41,6 +41,7 @@ namespace
     {
         return *home;
     }
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): called once at startup, before any thread starts.
     const passwd *entry = getpwuid(geteuid());
     if (entry == nullptr || entry->pw_dir == nullptr || entry->pw_dir[0] == '\0')
     {

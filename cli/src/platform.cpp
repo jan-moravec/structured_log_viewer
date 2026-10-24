@@ -126,6 +126,7 @@ int TerminalWidth(std::FILE *stream, int fallback) noexcept
         }
     }
     struct winsize size{};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): `ioctl` is variadic by design.
     if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0)
     {
         return static_cast<int>(size.ws_col);

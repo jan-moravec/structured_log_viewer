@@ -24,7 +24,7 @@ TEST_CASE("Console::Print reports a stream that cannot be written as an output f
     CHECK(console.Print("payload\n") == slp::ExitCode::Output);
     CHECK(console.Print("") == slp::ExitCode::Success);
 
-    std::rewind(err.get());
+    REQUIRE(std::fseek(err.get(), 0, SEEK_SET) == 0);
     std::string report(256, '\0');
     report.resize(std::fread(report.data(), 1, report.size(), err.get()));
     CHECK(report.contains("could not write to standard output"));

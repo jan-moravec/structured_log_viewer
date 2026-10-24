@@ -19,7 +19,7 @@
 #endif
 #include <windows.h>
 #else
-#include <stdlib.h>
+#include <cstdlib>
 #endif
 
 namespace
@@ -30,6 +30,7 @@ void SetEnv(const char *name, const char *value)
 #ifdef _WIN32
     (void)SetEnvironmentVariableA(name, value);
 #else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
     (void)setenv(name, value, 1);
 #endif
 }
@@ -39,6 +40,7 @@ void UnsetEnv(const char *name)
 #ifdef _WIN32
     (void)SetEnvironmentVariableA(name, nullptr);
 #else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
     (void)unsetenv(name);
 #endif
 }
@@ -60,6 +62,7 @@ void UnsetEnv(const char *name)
     value.resize(written);
     return value;
 #else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
     const char *value = std::getenv(name);
     if (value == nullptr)
     {

@@ -89,6 +89,7 @@ public:
             std::free(value);
         }
 #else
+        // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
         if (const char *value = std::getenv("NO_COLOR"); value != nullptr)
         {
             mSaved = value;
@@ -116,10 +117,12 @@ private:
 #else
         if (value != nullptr)
         {
+            // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
             (void)setenv("NO_COLOR", value, 1);
         }
         else
         {
+            // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
             (void)unsetenv("NO_COLOR");
         }
 #endif

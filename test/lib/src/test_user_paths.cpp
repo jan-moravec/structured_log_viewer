@@ -107,17 +107,20 @@ public:
 
     static void Set(const std::string &name, const std::string &value)
     {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
         setenv(name.c_str(), value.c_str(), 1);
     }
 
     static void Unset(const std::string &name)
     {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
         unsetenv(name.c_str());
     }
 
 private:
     static bool Capture(const std::string &name, std::string &previous)
     {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
         const char *value = std::getenv(name.c_str());
         if (value == nullptr)
         {

@@ -66,6 +66,7 @@ void WritePathBytes(const std::filesystem::path &path, std::string_view bytes)
     const DWORD n = GetEnvironmentVariableA(name, buffer, static_cast<DWORD>(sizeof(buffer)));
     return n > 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
 #else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test setup.
     return std::getenv(name) != nullptr;
 #endif
 }
@@ -226,7 +227,7 @@ namespace
     const int fd = ::mkstemp(mutablePattern.data());
     REQUIRE(fd >= 0);
     ::close(fd);
-    return std::filesystem::path(mutablePattern);
+    return {mutablePattern};
 }
 
 [[nodiscard]] CommandResult RunSlpImpl(const std::vector<std::string> &args, int stdinFd)
@@ -250,7 +251,9 @@ namespace
     REQUIRE(pid >= 0);
     if (pid == 0)
     {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int outFd = ::open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int errFd = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (outFd < 0 || errFd < 0)
         {
@@ -412,7 +415,9 @@ CommandResult RunSlpWithStdin(const std::vector<std::string> &args, std::string_
     if (pid == 0)
     {
         close(pipefds[1]);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int outFd = ::open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int errFd = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (outFd < 0 || errFd < 0)
         {
@@ -573,8 +578,11 @@ SlpChild::SlpChild(const std::vector<std::string> &args)
     REQUIRE(mImpl->pid >= 0);
     if (mImpl->pid == 0)
     {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int inFd = ::open("/dev/null", O_RDONLY);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int outFd = ::open(mImpl->outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): POSIX `open` takes a variadic mode.
         const int errFd = ::open(mImpl->errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (inFd < 0 || outFd < 0 || errFd < 0)
         {
