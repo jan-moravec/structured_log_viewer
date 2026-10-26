@@ -19,7 +19,6 @@ TEST_CASE("ArrivalClock is monotonic and deterministic for a seed", "[arrival_cl
 {
     const test_common::ArrivalClockOptions options{.start = START, .linesPerSecond = 50.0, .bursts = true};
 
-
     // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rngA(42);
     // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
