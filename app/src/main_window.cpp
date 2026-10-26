@@ -2476,6 +2476,11 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
         prefix = QStringLiteral("\u2205 "); // Empty set: disconnected placeholder.
         operationWord = tr("Disconnected");
     }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Listening)) != 0)
+    {
+        prefix = QStringLiteral("\u25cb "); // White circle: listener open, no sender yet.
+        operationWord = tr("Listening");
+    }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Paused)) != 0)
     {
         prefix = QStringLiteral("\u23F8 "); // Pause: user paused live-tail.
@@ -7324,6 +7329,14 @@ void MainWindow::UpdateStreamingStatus()
     if (!IsLiveTailSession())
     {
         text = tr("Parsing %1 - %2 lines, %3 errors").arg(mSession->StreamingFileName(), lineCount, errorCount);
+    }
+    else if (
+        mSession->IsSourceWaiting() && mSession->CurrentSource().has_value() &&
+        mSession->CurrentSource()->kind == loglib::Source::Kind::NetworkStream
+    )
+    {
+        // Network producers wait only until the first sender delivers bytes.
+        text = tr("Listening on %1 - waiting for the first sender").arg(mSession->StreamingFileName());
     }
     else if (mSession->IsSourceWaiting())
     {

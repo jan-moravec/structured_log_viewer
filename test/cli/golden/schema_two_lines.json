@@ -16,7 +16,8 @@
         "%F %T",
         "%d/%b/%Y:%H:%M:%S %z",
         "%b %e %H:%M:%S",
-        "%b %d %H:%M:%S"
+        "%b %d %H:%M:%S",
+        "%a %b %d %H:%M:%S %Y"
       ],
       "nonNullCount": 2,
       "samples": [

@@ -262,18 +262,20 @@ UTC+1. Unticked boxes above failed or were not run.
 
 GUI findings:
 
-1. **Open: Apache error timestamps never parse as time.** `slp validate $fx\fmt_apache-error.log` reports `timestamp present=2000 matching=0 (type mismatch)`. The GUI shows the raw text, marks the column with a warning,
-   and the histogram stays empty. The same happens for `Sun Mar 01 00:00:00 2026` and for six fractional digits, which are the template's own sample
-   forms.
+1. **Fixed: Apache error timestamps never parsed as time.** `slp validate $fx\fmt_apache-error.log` reported `timestamp present=2000 matching=0 (type mismatch)`, and the GUI showed raw text with an empty histogram. The
+   default time formats now include `%a %b %d %H:%M:%S %Y`, which also reads
+   the optional fraction.
 1. **Open: the GUI has no display-zone setting.** It always uses the Windows
    zone, so the UTC half of G10 cannot run without changing the system zone.
-1. **Minor: `StructuredLogViewer --help` starts the GUI** and restores the
-   last session instead of printing usage; the parser defines no help option.
-1. **Minor: Preferences opens taller than the screen.** On the display used
-   for this run, OK and Cancel are below the bottom edge until the dialog is
-   maximized.
-1. **Minor: a network listener reads as down while it waits.** Before the
-   first client connects, the tab says `Disconnected` and the status bar says
-   `Source unavailable`, although the port is listening.
-1. **Minor: the Apache access `bytes` column shows a type warning** because
-   Apache writes `-` for a zero-byte response.
+1. **Fixed: `StructuredLogViewer --help` started the GUI.** `--help` and
+   `--version` now print usage or the version and exit; on Windows without a
+   console, Qt shows them in a message box.
+1. **Fixed: Preferences opened taller than the screen.** The settings now
+   scroll above OK and Cancel, and the first show caps the height at 90% of
+   the screen.
+1. **Fixed: a network listener read as down while it waited.** Before the
+   first sender, the tab now reads `Listening` and the status bar
+   `Listening on <url> - waiting for the first sender`.
+1. **Fixed: the Apache access `bytes` column showed a type warning** because
+   Apache writes `-` for a zero-byte response. The access-log and AWS
+   templates now leave such fields empty.

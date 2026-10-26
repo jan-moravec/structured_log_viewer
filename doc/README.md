@@ -267,7 +267,7 @@ The dialog values are persisted via `QSettings` so the next invocation defaults 
 
 ### Status bar and toolbar
 
-Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) and status-bar labels. The "filename" shown in the label is the listener URL — for example `Streaming tcp://0.0.0.0:5141 — N lines, M errors` or `Streaming udp://127.0.0.1:5142 — …`. Until the first byte arrives the label shows `Source unavailable — last seen tcp://… — 0 lines, 0 errors` (TCP) or the matching UDP variant, which makes a misconfigured client side obvious. Both protocols flip to `Streaming` on the first byte / datagram and never fall back, since there is no connection state to track on either side.
+Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) and status-bar labels. The "filename" shown in the label is the listener URL — for example `Streaming tcp://0.0.0.0:5141 — N lines, M errors` or `Streaming udp://127.0.0.1:5142 — …`. Until the first byte arrives the label shows `Listening on tcp://… — waiting for the first sender` (or the matching UDP URL) and the tab reads **Listening**, which makes a misconfigured client side obvious. Both protocols flip to `Streaming` on the first byte / datagram and never fall back, since there is no connection state to track on either side.
 
 ### Stop semantics
 
@@ -749,7 +749,7 @@ Every window hosts a tab strip for independent investigations. Each tab keeps it
 ### Tab labels and indicators
 
 - While a source is bound, the tab uses the same automatic name as **File → Recent Sessions**: a file basename, `name + N more` for multi-file opens, or the stdin / network locator. Empty tabs with no saved name read `Untitled`. After a launch restore, network and stdin placeholders keep the name they had when the workspace was saved. Right-click a tab and choose **Rename Tab**, use **File → Rename Tab**, or press `F2` while the tab strip is focused to assign a custom title. Clear the name to restore automatic naming. Custom titles persist with the workspace. Long labels may elide visually; the tooltip keeps the full source, operation, unsaved-change, and parse-error text.
-- Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `∅`, `⚠`) but is never the only representation.
+- Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Listening, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `○`, `∅`, `⚠`) but is never the only representation.
 - The label ends with `●` for unsaved session changes, including an unsaved Highlight Rules draft, and `!` when parse errors are present.
 
 ### Closing tabs safely

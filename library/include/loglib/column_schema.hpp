@@ -100,6 +100,9 @@ struct Column
  *     header (Mmm  D HH:MM:SS, space- or zero-padded day; no year).
  *     Routes to the `SyslogRfc3164NoYear` fast path which injects
  *     the current year via the standard month-rollover heuristic.
+ *   * `%a %b %d %H:%M:%S %Y` -- Apache error log
+ *     (`Www Mmm DD HH:MM:SS[.ffffff] YYYY`); `%S` takes the optional
+ *     fraction.
  *
  * Each addition here widens the auto-parse net; keep new entries
  * specific enough that `date::from_stream` fails deterministically
@@ -117,6 +120,7 @@ struct Column
         "%d/%b/%Y:%H:%M:%S %z",
         "%b %e %H:%M:%S",
         "%b %d %H:%M:%S",
+        "%a %b %d %H:%M:%S %Y",
     };
 }
 

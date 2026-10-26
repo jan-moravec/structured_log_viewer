@@ -100,6 +100,7 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
+    QCoreApplication::setApplicationVersion(QStringLiteral(SLV_VERSION_STRING));
 
     // Install before event processing so early macOS opens are retained.
     FileOpenEventFilter fileOpenFilter;

@@ -127,6 +127,7 @@ qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../resources/resources.qr
 qt_add_executable(StructuredLogViewer MANUAL_FINALIZATION src/main.cpp ${RESOURCES})
 
 target_link_libraries(StructuredLogViewer PUBLIC logapp)
+target_compile_definitions(StructuredLogViewer PRIVATE "SLV_VERSION_STRING=\"${PROJECT_VERSION}\"")
 
 set_target_properties(
     StructuredLogViewer

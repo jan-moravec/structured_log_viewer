@@ -16,12 +16,17 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
 #include <QVariant>
 
+#include <algorithm>
 #include <cstddef>
 #include <exception>
 
@@ -30,6 +35,8 @@ namespace
 constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
 constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
 constexpr int THEME_STATUS_CLEAR_MS = 5000;
+/// Largest share of the screen's available height the first show uses.
+constexpr double PREFERENCES_MAX_SCREEN_HEIGHT_FRACTION = 0.9;
 
 /// `QSettings` key for "Show level icons". Mirror of the startup
 /// read in `MainWindow::MainWindow`.
@@ -307,7 +314,19 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     // Stream retention is applied transactionally on Ok: the spinbox
     // does not push live updates, so Cancel reverts cleanly.
 
+    // The groups scroll and the buttons stay below them, so Ok and Cancel
+    // remain reachable when the content is taller than the screen.
     auto *layout = new QVBoxLayout(this);
+    auto *scrollArea = new QScrollArea(this);
+    mScrollArea = scrollArea;
+    scrollArea->setObjectName(QStringLiteral("preferencesScrollArea"));
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    auto *content = new QWidget(scrollArea);
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *appearanceGroup = new QGroupBox("Theme", this);
     auto *appearanceLayout = new QVBoxLayout(appearanceGroup);
@@ -344,10 +363,13 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     // Regex template CRUD lives in `RegexTemplatesEditor`
     // (`Settings -> Regex templates...`), not in Preferences.
 
-    layout->addWidget(appearanceGroup);
-    layout->addWidget(streamingGroup);
-    layout->addWidget(staticGroup);
-    layout->addWidget(sessionGroup);
+    contentLayout->addWidget(appearanceGroup);
+    contentLayout->addWidget(streamingGroup);
+    contentLayout->addWidget(staticGroup);
+    contentLayout->addWidget(sessionGroup);
+    contentLayout->addStretch(1);
+    scrollArea->setWidget(content);
+    layout->addWidget(scrollArea, 1);
 
     auto *okButton = new QPushButton("Ok", this);
     auto *cancelButton = new QPushButton("Cancel", this);
@@ -454,7 +476,6 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     auto *buttonLayout = new QHBoxLayout();
     buttonLayout->addWidget(okButton);
     buttonLayout->addWidget(cancelButton);
-    layout->addStretch(1);
     layout->addLayout(buttonLayout);
 
     RepopulateThemeCombo();
@@ -640,6 +661,37 @@ void PreferencesEditor::RefreshThemePreview()
         preview += QStringLiteral("\nFont size: ") + QString::number(*active.app.fontSize) + QStringLiteral(" pt");
     }
     mThemePreviewLabel->setText(preview);
+}
+
+void PreferencesEditor::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    if (mSizedToScreen)
+    {
+        return;
+    }
+    mSizedToScreen = true;
+    const QScreen *currentScreen = screen();
+    if (currentScreen == nullptr)
+    {
+        return;
+    }
+    const QRect available = currentScreen->availableGeometry();
+    const int maxHeight = static_cast<int>(available.height() * PREFERENCES_MAX_SCREEN_HEIGHT_FRACTION);
+    QSize size = sizeHint().expandedTo(minimumSizeHint());
+    if (size.height() > maxHeight)
+    {
+        size.setHeight(maxHeight);
+        // The vertical scroll bar now takes width from the content.
+        size.setWidth(size.width() + mScrollArea->verticalScrollBar()->sizeHint().width());
+    }
+    resize(size);
+
+    const int frameExtra = frameGeometry().height() - geometry().height();
+    const int maxTop = available.bottom() - size.height() - frameExtra;
+    const int top = std::max(available.top(), std::min(y(), maxTop));
+    const int left = std::max(available.left(), std::min(x(), available.right() - size.width()));
+    move(left, top);
 }
 
 void PreferencesEditor::ShowThemeStatus(const QString &message)

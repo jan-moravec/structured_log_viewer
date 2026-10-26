@@ -545,6 +545,32 @@ TEST_CASE("Apache error log splits module:level into module and level", "[regex_
     CHECK(std::get<std::string_view>(row1level) == std::string_view{"error"});
 }
 
+TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][regex_parser]")
+{
+    // A `-` byte count means no body; capturing it as text would mark the
+    // otherwise numeric `bytes` column as mixed.
+    for (const std::string_view name : {"Apache/nginx Combined Log Format", "Apache/nginx Common Log Format"})
+    {
+        CAPTURE(name);
+        const RegexTemplate *tmpl = FindTemplateByName(name);
+        REQUIRE(tmpl != nullptr);
+        const RegexParser parser{tmpl->pattern};
+
+        const TestLogFile file{"regex_templates_apache_dash_bytes.log"};
+        const std::string tail = name.find("Combined") != std::string_view::npos ? R"( "-" "curl/8.5.0")" : "";
+        file.Write(
+            R"(10.0.0.1 - - [11/Feb/2013:06:43:36 +0000] "GET /a HTTP/1.1" 200 5778)" + tail + "\n" +
+            R"(10.0.0.1 - - [11/Feb/2013:06:43:37 +0000] "HEAD /a HTTP/1.1" 304 -)" + tail + "\n"
+        );
+
+        const ParseResult result = ParseFile(parser, file.GetFilePath());
+        REQUIRE(result.errors.empty());
+        REQUIRE(result.data.Lines().size() == 2);
+        CHECK_FALSE(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue("bytes")));
+        CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[1].GetValue("bytes")));
+    }
+}
+
 namespace
 {
 
