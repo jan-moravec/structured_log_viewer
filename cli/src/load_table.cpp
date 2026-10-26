@@ -139,9 +139,12 @@ public:
     void OnBatch(loglib::StreamedBatch batch) override
     {
         std::uint64_t &consumed = mLoaded->linesConsumed;
+        // `firstLineNumber` is a start cursor: every line before it was consumed,
+        // but the line it names may not exist (an empty terminal batch carries
+        // the cursor one past the last line).
         if (batch.firstLineNumber != 0)
         {
-            consumed = std::max(consumed, static_cast<std::uint64_t>(batch.firstLineNumber));
+            consumed = std::max(consumed, static_cast<std::uint64_t>(batch.firstLineNumber) - std::uint64_t{1});
         }
         for (const loglib::LogLine &line : batch.lines)
         {

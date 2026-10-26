@@ -17,6 +17,7 @@
 #include "common.hpp"
 
 #include <loglib/log_data.hpp>
+#include <loglib/log_value.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
@@ -30,6 +31,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 using namespace loglib;
@@ -41,8 +44,9 @@ namespace
 /// `RegexParser(pattern)` over the file, and CHECK every line
 /// parsed cleanly. Kept as a helper so the per-template `TEST_CASE`s
 /// stay one-liners and any future assertion change (column spot-
-/// check, timing budget, ...) lands in one place.
-void RoundTripThroughTemplate(
+/// check, timing budget, ...) lands in one place. Returns the parse
+/// result for per-template column checks.
+ParseResult RoundTripThroughTemplate(
     const std::vector<test_common::LogRecord> &records,
     const test_common::LogFormat &format,
     const std::string &templateName,
@@ -56,7 +60,7 @@ void RoundTripThroughTemplate(
     REQUIRE(tmpl != nullptr);
 
     const RegexParser parser{tmpl->pattern};
-    const ParseResult result = ParseFile(parser, fixture.GetFilePath());
+    ParseResult result = ParseFile(parser, fixture.GetFilePath());
 
     // A single parse error surfaces the offending line number, so
     // the check-then-require pattern gives us the most useful
@@ -67,6 +71,7 @@ void RoundTripThroughTemplate(
         FAIL("First error: " << result.errors.front());
     }
     REQUIRE(result.data.Lines().size() == records.size());
+    return result;
 }
 
 constexpr std::uint32_t GENERATOR_TEST_SEED = 0xA11CE;
@@ -110,9 +115,26 @@ TEST_CASE(
 )
 {
     const auto records = test_common::GenerateRandomLogRecords(GENERATOR_TEST_LINES, GENERATOR_TEST_SEED);
-    RoundTripThroughTemplate(
+    const ParseResult result = RoundTripThroughTemplate(
         records, test_common::ApacheErrorFormat(), "Apache error log", "regex_gen_apache_error.log"
     );
+
+    // `[module:level]` must split so `level` holds only the level token.
+    size_t withModule = 0;
+    for (const LogLine &line : result.data.Lines())
+    {
+        const LogValue level = line.GetValue("level");
+        const auto levelView = AsStringView(level);
+        REQUIRE(levelView.has_value());
+        CHECK_FALSE(levelView->contains(':'));
+        if (std::holds_alternative<std::string_view>(line.GetValue("module")))
+        {
+            ++withModule;
+        }
+    }
+    // Both the Apache 2.4 and the legacy shapes are exercised.
+    CHECK(withModule > 0);
+    CHECK(withModule < records.size());
 }
 
 TEST_CASE(

@@ -424,21 +424,30 @@ std::string_view FieldOr(const LogRecord &record, const std::string &key, std::s
     return value->get_string();
 }
 
-// Read the record's `line_number` if present. Seeds the per-line
-// RNG so synthesized extras stay deterministic under a pinned
-// generator seed. Falls back to @p fallback when absent (fixtures
-// that skip line-number injection). Uses `as<uint64_t>()` rather
-// than `get_number()` so callers storing the value as `int64_t`
-// (as `GenerateRandomLogRecord` does) don't trip glaze's "cannot
-// get reference to double" abort.
-std::uint64_t LineNumberOr(const LogRecord &record, std::uint64_t fallback)
+// Per-line RNG seed. Uses the record's `line_number` when present,
+// otherwise an FNV-1a hash of its `timestamp` and `message`, so
+// generated records without line numbers still vary their
+// synthesized extras while staying deterministic under a pinned
+// generator seed. Uses `as<uint64_t>()` rather than `get_number()`
+// so callers storing the value as `int64_t` don't trip glaze's
+// "cannot get reference to double" abort.
+std::uint64_t LineSeed(const LogRecord &record)
 {
     const LogRecord *value = FindObjectField(record, "line_number");
-    if (value == nullptr || !value->is_number())
+    if (value != nullptr && value->is_number())
     {
-        return fallback;
+        return value->as<std::uint64_t>();
     }
-    return value->as<std::uint64_t>();
+    std::uint64_t hash = 0xCBF29CE484222325ULL;
+    for (const std::string_view field : {FieldOr(record, "timestamp", ""), FieldOr(record, "message", "")})
+    {
+        for (const char c : field)
+        {
+            hash = (hash ^ static_cast<unsigned char>(c)) * 0x100000001B3ULL;
+        }
+        hash = (hash ^ 0xFFU) * 0x100000001B3ULL;
+    }
+    return hash;
 }
 
 // Deterministic per-line PRNG. `minstd_rand` is cheap and keeps
@@ -649,7 +658,7 @@ LogFormat SyslogRfc3164Format()
         .writeHeader = [](const RecordSchema &) { return std::string{}; },
         .writeLine =
             [](const LogRecord &record) {
-                LineRng rng = MakeLineRng(LineNumberOr(record, 0));
+                LineRng rng = MakeLineRng(LineSeed(record));
                 const IsoTimestamp ts = ParseIsoTimestamp(FieldOr(record, "timestamp", ""));
 
                 std::string out;
@@ -680,7 +689,7 @@ LogFormat ApacheCombinedFormat()
         .writeHeader = [](const RecordSchema &) { return std::string{}; },
         .writeLine =
             [](const LogRecord &record) {
-                LineRng rng = MakeLineRng(LineNumberOr(record, 0));
+                LineRng rng = MakeLineRng(LineSeed(record));
                 const IsoTimestamp ts = ParseIsoTimestamp(FieldOr(record, "timestamp", ""));
 
                 std::string out;
@@ -723,7 +732,7 @@ LogFormat ApacheCommonFormat()
         .writeHeader = [](const RecordSchema &) { return std::string{}; },
         .writeLine =
             [](const LogRecord &record) {
-                LineRng rng = MakeLineRng(LineNumberOr(record, 0));
+                LineRng rng = MakeLineRng(LineSeed(record));
                 const IsoTimestamp ts = ParseIsoTimestamp(FieldOr(record, "timestamp", ""));
 
                 std::string out;
@@ -759,13 +768,25 @@ LogFormat ApacheErrorFormat()
         .writeHeader = [](const RecordSchema &) { return std::string{}; },
         .writeLine =
             [](const LogRecord &record) {
-                LineRng rng = MakeLineRng(LineNumberOr(record, 0));
+                LineRng rng = MakeLineRng(LineSeed(record));
                 const IsoTimestamp ts = ParseIsoTimestamp(FieldOr(record, "timestamp", ""));
 
                 std::string out;
                 out.push_back('[');
                 AppendApacheErrorTimestamp(out, ts);
                 out.append("] [");
+                // Emit the legacy `[level] [client ip]` shape on ~1/4 of
+                // lines and the Apache 2.4 `[module:level] [pid N]
+                // [client ip:port]` shape otherwise.
+                if ((std::uniform_int_distribution<int>{0, 3}(rng)) == 0)
+                {
+                    out.append(Pick(APACHE_ERROR_LEVELS, rng));
+                    out.append("] [client ");
+                    out.append(Pick(APACHE_CLIENT_IPS, rng));
+                    out.append("] ");
+                    AppendCleanQuotedText(out, FieldOr(record, "message", "message"));
+                    return out;
+                }
                 out.append(Pick(APACHE_ERROR_MODULES, rng));
                 out.push_back(':');
                 out.append(Pick(APACHE_ERROR_LEVELS, rng));
@@ -789,7 +810,7 @@ LogFormat JavaLogFormat()
         .writeHeader = [](const RecordSchema &) { return std::string{}; },
         .writeLine =
             [](const LogRecord &record) {
-                LineRng rng = MakeLineRng(LineNumberOr(record, 0));
+                LineRng rng = MakeLineRng(LineSeed(record));
                 IsoTimestamp ts = ParseIsoTimestamp(FieldOr(record, "timestamp", ""));
                 // Force a millisecond field so `AppendJavaTimestamp`
                 // always emits the comma-decimal fractional part the

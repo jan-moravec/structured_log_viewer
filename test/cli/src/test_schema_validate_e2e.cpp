@@ -1,7 +1,14 @@
 #include "slp_process.hpp"
 
+#include <test_common/log_format.hpp>
+#include <test_common/log_generator.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
+#include <filesystem>
+#include <format>
+#include <fstream>
 #include <string>
 
 using slp::test::FixturesDir;
@@ -19,6 +26,24 @@ namespace
 [[nodiscard]] std::string TwoLines()
 {
     return (FixturesDir() / "two_lines.jsonl").string();
+}
+
+/// Writes @p lineCount generated records through @p format, each ending in a newline.
+[[nodiscard]] std::string WriteGenerated(
+    const test_common::LogFormat &format, std::size_t lineCount, const std::string &fileName
+)
+{
+    const auto root = std::filesystem::temp_directory_path() / "slp_cli_validate";
+    std::filesystem::create_directories(root);
+    const auto path = root / fileName;
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    REQUIRE(static_cast<bool>(output));
+    for (const auto &record : test_common::GenerateRandomLogRecords(lineCount, 0xA11CE))
+    {
+        output << format.writeLine(record) << '\n';
+    }
+    REQUIRE(static_cast<bool>(output));
+    return path.string();
 }
 
 } // namespace
@@ -105,4 +130,22 @@ TEST_CASE("slp validate exits 4 on a wholly unparseable file", "[cli][e2e][valid
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 4);
     REQUIRE(result.out.contains("errors:"));
+}
+
+TEST_CASE("slp validate counts physical lines without the trailing newline", "[cli][e2e][validate]")
+{
+    constexpr std::size_t LINE_COUNT = 1000;
+    const auto json = WriteGenerated(test_common::JsonLines(), LINE_COUNT, "generated.jsonl");
+    const auto syslog = WriteGenerated(test_common::SyslogRfc3164Format(), LINE_COUNT, "generated_syslog.log");
+
+    for (const auto &path : {json, syslog})
+    {
+        const auto result =
+            RunSlp({"validate", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", path});
+        INFO("path: " << path);
+        INFO("stdout:\n" << result.out);
+        INFO("stderr:\n" << result.err);
+        REQUIRE(result.exitCode == 0);
+        CHECK(result.out.contains(std::format("\"linesConsumed\": {},", LINE_COUNT)));
+    }
 }

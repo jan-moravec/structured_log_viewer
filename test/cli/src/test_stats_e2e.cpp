@@ -91,3 +91,29 @@ TEST_CASE("slp stats exits 0 on an empty source", "[cli][e2e][stats]")
     REQUIRE(result.exitCode == 0);
     REQUIRE(result.out.contains("total: 0"));
 }
+
+TEST_CASE("slp stats resolves Apache error module:level tags", "[cli][e2e][stats]")
+{
+    const auto fixture = (FixturesDir() / "apache_error.log").string();
+    const auto result =
+        RunSlp({"stats", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", fixture});
+    INFO("stdout:\n" << result.out);
+    INFO("stderr:\n" << result.err);
+    REQUIRE(result.exitCode == 0);
+    CHECK(result.out.contains("\"unresolvableLevelCount\": 0,"));
+    CHECK(result.out.contains("\"level\": \"Warn\""));
+    CHECK(result.out.contains("\"level\": \"Error\""));
+    CHECK(result.out.contains("\"level\": \"Info\""));
+}
+
+TEST_CASE("slp query --min-level filters Apache error lines", "[cli][e2e][query]")
+{
+    const auto fixture = (FixturesDir() / "apache_error.log").string();
+    const auto result = RunSlp(
+        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--min-level", "error", "--count", fixture}
+    );
+    INFO("stdout:\n" << result.out);
+    INFO("stderr:\n" << result.err);
+    REQUIRE(result.exitCode == 0);
+    CHECK(result.out == "2\n");
+}

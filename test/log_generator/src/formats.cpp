@@ -66,7 +66,8 @@ constexpr std::array<FormatSpec, 8> FORMATS = {
         .name = "apache-error",
         .family = FormatFamily::RegexTemplate,
         .templateName = "Apache error log",
-        .description = "Apache 2.4 error log: `[<time>] [<mod>:<lvl>] [pid N] [client ip:port] <msg>`",
+        .description = "Apache 2.4 error log: `[<time>] [<mod>:<lvl>] [pid N] [client ip:port] <msg>`, some legacy "
+                       "`[<lvl>]` lines",
         .needsSchema = false,
         .make = [](const test_common::RecordSchema &) { return test_common::ApacheErrorFormat(); },
     },
