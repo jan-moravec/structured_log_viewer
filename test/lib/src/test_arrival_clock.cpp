@@ -11,7 +11,7 @@ namespace
 
 using Clock = std::chrono::system_clock;
 
-const Clock::time_point START = Clock::time_point(std::chrono::seconds(1'767'225'600)); // 2026-01-01T00:00:00Z
+constexpr Clock::time_point START{std::chrono::seconds(1'767'225'600)}; // 2026-01-01T00:00:00Z
 
 } // namespace
 
