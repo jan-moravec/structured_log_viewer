@@ -105,28 +105,28 @@ foreach ($f in Get-ChildItem $fx\fmt_*) { & $slv --new-instance $f.FullName }
 ```
 
 - [ ] Each window shows 2,000 rows and a timestamp column rendered as a date.
-- [ ] logfmt, csv, and java show a level column with level colours; error+fatal is 89.
-- [ ] syslog splits hostname, program, and pid; apache files show request fields.
-- [ ] apache-error shows the level as a level (see finding 4).
+- [x] logfmt, csv, and java show a level column with level colours; error+fatal is 89.
+- [x] syslog splits hostname, program, and pid; apache files show request fields.
+- [x] apache-error shows the level as a level (see finding 4).
 
 ### G2. Filters
 
 Open `app.jsonl` and use **Filters → Advanced Filter…**:
 
-- [ ] `level IN [error, fatal]` → 44 rows.
-- [ ] `component:database AND level IN [error, fatal]` → 9 rows.
-- [ ] `NOT component:database` → 798 rows.
-- [ ] `line_number IN [100..199]` → 100 rows.
-- [ ] A broken query such as `level IN [` shows a parse error and disables OK.
+- [x] `level IN [error, fatal]` → 44 rows.
+- [x] `component:database AND level IN [error, fatal]` → 9 rows.
+- [x] `NOT component:database` → 798 rows.
+- [x] `line_number IN [100..199]` → 100 rows.
+- [x] A broken query such as `level IN [` shows a parse error and disables OK.
 
 ### G3. Time and histogram
 
 Open `day.jsonl`, then **View → Histogram** (`Ctrl+H`):
 
-- [ ] The histogram shows a day/night curve: low around 02:00 UTC, high around 14:00 UTC (shifted by your offset from UTC).
-- [ ] Short spikes dominated by warning and error colours are visible (bursts).
-- [ ] Dragging across 13:00-14:00 UTC filters to 15,664 rows.
-- [ ] **Edit → Go to Timestamp…** with `2026-03-01T13:00:00Z` lands on the first row at or after 13:00 UTC.
+- [x] The histogram shows a day/night curve: low around 02:00 UTC, high around 14:00 UTC (shifted by your offset from UTC).
+- [x] Short spikes dominated by warning and error colours are visible (bursts).
+- [x] Dragging across 13:00-14:00 UTC filters to 15,664 rows.
+- [x] **Edit → Go to Timestamp…** with `2026-03-01T13:00:00Z` lands on the first row at or after 13:00 UTC.
 
 ### G4. Rotation history
 
@@ -135,8 +135,8 @@ Open `day.jsonl`, then **View → Histogram** (`Ctrl+H`):
 & $slv --new-instance --no-rotation-history $fx\rot\app.jsonl
 ```
 
-- [ ] With history: 4,000 rows, `line_number` from 1000 to 4999 in order.
-- [ ] Without history: 1,000 rows (4000-4999).
+- [x] With history: 4,000 rows, `line_number` from 1000 to 4999 in order.
+- [x] Without history: 1,000 rows (4000-4999).
 
 ### G5. Large file
 
@@ -144,9 +144,9 @@ Open `day.jsonl`, then **View → Histogram** (`Ctrl+H`):
 & $slv --new-instance $fx\big.jsonl
 ```
 
-- [ ] Opens without freezing; note the time to the full row count (1,000,000).
-- [ ] Scrolling to the end and back is smooth; memory stays reasonable (Task Manager).
-- [ ] `level IN [error, fatal]` → 47,448; `message ~ /^lorem ipsum/` → 2,534.
+- [x] Opens without freezing; note the time to the full row count (1,000,000).
+- [x] Scrolling to the end and back is smooth; memory stays reasonable (Task Manager).
+- [x] `level IN [error, fatal]` → 47,448; `message ~ /^lorem ipsum/` → 2,534.
 
 ### G6. Standard input
 
@@ -155,8 +155,8 @@ Open `day.jsonl`, then **View → Histogram** (`Ctrl+H`):
 & $gen -f logfmt -n 2000 --rate 100 -o - | & $slv --new-instance -
 ```
 
-- [ ] Rows appear while the generator is running, not only at the end.
-- [ ] The final row count is 5,000 (2,000 for logfmt) and logfmt is detected.
+- [x] Rows appear while the generator is running, not only at the end.
+- [x] The final row count is 5,000 (2,000 for logfmt) and logfmt is detected.
 
 ### G7. Stream Mode on a rotating file
 
@@ -168,9 +168,9 @@ New-Item -Force $fx\work\live.jsonl | Out-Null
 & $gen --rate 200 --forever --roll-size 256KiB --roll-strategy rename -o $fx\work\live.jsonl
 ```
 
-- [ ] Rows keep arriving across rotations; Pause, Follow newest, and Stop work.
-- [ ] After Stop, sort by `line_number`: no gaps with `rename`.
-- [ ] Repeat with `--roll-strategy copytruncate` and `truncate`; a few lines may be lost at each truncation (known limitation), but the stream must continue.
+- [x] Rows keep arriving across rotations; Pause, Follow newest, and Stop work.
+- [x] After Stop, sort by `line_number`: no gaps with `rename`.
+- [x] Repeat with `--roll-strategy copytruncate` and `truncate`; a few lines may be lost at each truncation (known limitation), but the stream must continue.
 
 ### G8. Network streams
 
@@ -182,9 +182,9 @@ Open **File → Open Network Stream…** (`Ctrl+Shift+L`) and start the listener
 & $gen -f logfmt -n 1000 --rate 200 -o tcp://127.0.0.1:5141 # logfmt, Auto-detect
 ```
 
-- [ ] TCP and UDP JSON: 1,000 rows, no `line_number` gaps.
-- [ ] Two generators sending to the same TCP port at once both arrive; no torn lines.
-- [ ] logfmt with Auto-detect, sent more than a few seconds after the listener started, is parsed as logfmt (see finding 3).
+- [x] TCP and UDP JSON: 1,000 rows, no `line_number` gaps.
+- [x] Two generators sending to the same TCP port at once both arrive; no torn lines.
+- [x] logfmt with Auto-detect, sent more than a few seconds after the listener started, is parsed as logfmt (see finding 3).
 
 TLS, with a self-signed certificate:
 
@@ -195,7 +195,7 @@ TLS, with a self-signed certificate:
 & $gen -n 100 --rate 20 -o tcp+tls://127.0.0.1:5143 --tls-skip-verify
 ```
 
-- [ ] 100 rows arrive. Without `--tls-skip-verify` the generator refuses the self-signed certificate.
+- [x] 100 rows arrive. Without `--tls-skip-verify` the generator refuses the self-signed certificate.
 
 ### G9. Session bundles
 
@@ -204,14 +204,14 @@ TLS, with a self-signed certificate:
 & $slv --new-instance $fx\work\incident.slvbundle
 ```
 
-- [ ] The bundle opens without the original log; the warn+ filter (63,726 rows) and descending sort are restored.
-- [ ] Clearing the filter shows all 222,019 rows.
-- [ ] **File → Export Session Bundle…** from the GUI, then `& $slp query --count <that file>` gives the same count.
+- [x] The bundle opens without the original log; the warn+ filter (63,726 rows) and descending sort are restored.
+- [x] Clearing the filter shows all 222,019 rows.
+- [x] **File → Export Session Bundle…** from the GUI, then `& $slp query --count <that file>` gives the same count.
 
 ### G10. Time zones
 
 - [ ] With the display zone set to UTC, `app.jsonl` shows the first row at 2026-03-01 00:00:00.082, matching `& $slp query --tz UTC --limit 1 $fx\app.jsonl`.
-- [ ] With the local zone, GUI and `slp` (default `--tz local`) show the same times.
+- [x] With the local zone, GUI and `slp` (default `--tz local`) show the same times.
 
 ## Findings from the first run
 
@@ -240,3 +240,40 @@ before the fixes still fails those checks.
    the Apache access formats (`39c4a5f`).
 1. **Open: `stats` prints `span: N row(s)` without a time range** for
    `--by level`; `--by time` prints the actual span.
+
+### GUI results
+
+Run on 2026-10-26 with `build\release\bin\Release\StructuredLogViewer.exe`
+built from `feature/slp-cli` at `263ab5f`, on Windows 11 with a local zone of
+UTC+1. Unticked boxes above failed or were not run.
+
+| Step | Result                                                                                                                                                                       |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1   | Fail. Every file has 2,000 rows; levels, syslog, and Apache fields are right; error+fatal is 89. apache-error timestamps stay text (GUI finding 1).                          |
+| G2   | Pass: 44, 9, 798, 100; `level IN [` shows a parse error at position 11 and disables OK.                                                                                      |
+| G3   | Pass. The drag snaps to the 10-minute buckets: 13:00-14:00 UTC gives 15,664. Go to Timestamp lands on 13:00:00.019 UTC (`line_number` 97711).                                |
+| G4   | Pass: 4,000 rows (1000-4999) with history, 1,000 (4000-4999) without.                                                                                                        |
+| G5   | Pass: 1,000,000 rows about 2 s after launch; peak working set 518 MB; 47,448 and 2,534.                                                                                      |
+| G6   | Pass: rows stream in; 5,000 JSON and 2,000 logfmt rows, both parsed.                                                                                                         |
+| G7   | Pass. `rename`: the 10,000 retained rows are `line_number` 13950-23949 with no gaps. `copytruncate`: 6,000 of 6,000. `truncate`: 5,886 of 6,000 after 4 truncations.         |
+| G8   | Pass: TCP and UDP 1,000 each; two TCP senders give 3,000 rows and 0 errors; logfmt sent 13 s after listener start parses; TLS 100 rows, refused without `--tls-skip-verify`. |
+| G9   | Pass with `day.jsonl` moved away: 63,726 rows, timestamp descending; 222,019 after clearing; the GUI export counts 63,726 in `slp`.                                          |
+| G10  | Not run for UTC: the GUI has no display-zone setting (GUI finding 2). Local zone: GUI and `slp` both show 2026-03-01 01:00:00.082.                                           |
+
+GUI findings:
+
+1. **Open: Apache error timestamps never parse as time.** `slp validate $fxmt_apache-error.log` reports `timestamp present=2000 matching=0 (type mismatch)`. The GUI shows the raw text, marks the column with a warning,
+   and the histogram stays empty. The same happens for `Sun Mar 01 00:00:00 2026` and for six fractional digits, which are the template's own sample
+   forms.
+1. **Open: the GUI has no display-zone setting.** It always uses the Windows
+   zone, so the UTC half of G10 cannot run without changing the system zone.
+1. **Minor: `StructuredLogViewer --help` starts the GUI** and restores the
+   last session instead of printing usage; the parser defines no help option.
+1. **Minor: Preferences opens taller than the screen.** On the display used
+   for this run, OK and Cancel are below the bottom edge until the dialog is
+   maximized.
+1. **Minor: a network listener reads as down while it waits.** Before the
+   first client connects, the tab says `Disconnected` and the status bar says
+   `Source unavailable`, although the port is listening.
+1. **Minor: the Apache access `bytes` column shows a type warning** because
+   Apache writes `-` for a zero-byte response.
