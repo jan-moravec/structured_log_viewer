@@ -676,6 +676,15 @@ The two presets are intentionally split because `ctest --preset release -L bench
 
 Session-bundle library coverage lives in `test/lib/src/test_session_bundle.cpp`; bundle open/export smoke coverage lives in `test/app/src/main_window_test.cpp`.
 
+#### Simulated-time logs
+
+`log_generator` has two timestamp modes. **Live mode** (default, `--timeout`) stamps lines with the wall clock and really sleeps between them. **Simulated mode** (`--start-time`) uses a virtual clock and never sleeps, so hours of realistic traffic are written in well under a second. Gaps are exponentially distributed; `--profile daily` (default) adds a day/night cycle and `--bursts` adds short incident-like spikes with mostly warning/error records. `--timeout` and `--start-time` are mutually exclusive.
+
+```sh
+# 3 hours of JSON logs averaging 5 lines/s, with a daily cycle and bursts.
+log_generator --start-time 2026-01-01T08:00:00 --duration 3h --rate 5 --bursts --seed 1 -o three_hours.jsonl
+```
+
 #### Streaming smoke recipes
 
 These recipes assume both binaries were built from the same tree. Network examples use `File → Open Network Stream…` (`Ctrl+Shift+L`).

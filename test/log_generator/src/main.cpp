@@ -26,6 +26,7 @@
 // rotation-agnostic); gaps in the sequence at the consumer indicate
 // end-to-end drops.
 
+#include <test_common/arrival_clock.hpp>
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
 #include <test_common/log_record.hpp>
@@ -34,6 +35,7 @@
 #include <loglib/regex_templates.hpp>
 
 #include <CLI/CLI.hpp>
+#include <date/date.h>
 
 #include <array>
 #include <cctype>
@@ -48,6 +50,7 @@
 #include <optional>
 #include <ostream>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -644,6 +647,79 @@ std::uint64_t Rotate(
     return WriteFormatHeader(out, format, schema);
 }
 
+// Parse `--start-time`: `now`, or UTC `YYYY-MM-DD[THH:MM:SS[.mmm]]` with an
+// optional trailing `Z`.
+std::chrono::system_clock::time_point ParseStartTime(const std::string &text)
+{
+    if (text == "now")
+    {
+        return std::chrono::system_clock::now();
+    }
+    std::string trimmed = text;
+    if (!trimmed.empty() && (trimmed.back() == 'Z' || trimmed.back() == 'z'))
+    {
+        trimmed.pop_back();
+    }
+    for (const char *fmt : {"%FT%T", "%F"})
+    {
+        std::istringstream in(trimmed);
+        std::chrono::sys_time<std::chrono::milliseconds> tp;
+        in >> date::parse(fmt, tp);
+        if (!in.fail() && in.peek() == std::istringstream::traits_type::eof())
+        {
+            return tp;
+        }
+    }
+    throw std::invalid_argument("start time '" + text + "' must be 'now' or YYYY-MM-DD[THH:MM:SS[.mmm]] (UTC)");
+}
+
+// Parse `--duration`: a positive number with an `ms`/`s`/`m`/`h`/`d` suffix
+// (e.g. `90m`, `3h`, `1.5d`). A bare number means seconds.
+std::chrono::milliseconds ParseDuration(const std::string &text)
+{
+    std::size_t consumed = 0;
+    double value = 0.0;
+    try
+    {
+        value = std::stod(text, &consumed);
+    }
+    catch (const std::exception &)
+    {
+        throw std::invalid_argument("duration '" + text + "' must be a number with an ms/s/m/h/d suffix");
+    }
+    const std::string unit = text.substr(consumed);
+    double millisPerUnit = 0.0;
+    if (unit.empty() || unit == "s")
+    {
+        millisPerUnit = 1000.0;
+    }
+    else if (unit == "ms")
+    {
+        millisPerUnit = 1.0;
+    }
+    else if (unit == "m")
+    {
+        millisPerUnit = 60'000.0;
+    }
+    else if (unit == "h")
+    {
+        millisPerUnit = 3'600'000.0;
+    }
+    else if (unit == "d")
+    {
+        millisPerUnit = 86'400'000.0;
+    }
+    else
+    {
+        throw std::invalid_argument("duration '" + text + "' has unknown unit '" + unit + "' (expected ms|s|m|h|d)");
+    }
+    if (value <= 0.0)
+    {
+        throw std::invalid_argument("duration '" + text + "' must be positive");
+    }
+    return std::chrono::milliseconds(static_cast<std::int64_t>(value * millisPerUnit));
+}
+
 } // namespace
 
 // CLI tool; `ParseSize` and CLI11 surface errors via exceptions by design.
@@ -667,7 +743,7 @@ int main(int argc, char *argv[])
     program.set_version_flag("--version", "0.5.0");
 
     std::string sizeText = "10MB";
-    program.add_option(
+    CLI::Option *sizeOpt = program.add_option(
         "-s,--size",
         sizeText,
         "Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = "
@@ -725,13 +801,65 @@ int main(int argc, char *argv[])
     );
 
     std::string timeoutText = "0";
-    program.add_option(
+    CLI::Option *timeoutOpt = program.add_option(
         "-t,--timeout",
         timeoutText,
-        "Delay in milliseconds between line writes. Either a fixed value (e.g. 50) or a MIN-MAX range "
-        "(e.g. 10-200) sampled uniformly per line so timestamps look organically jittered. 0 disables "
-        "throttling."
+        "Live mode: delay in milliseconds between line writes, with timestamps from the wall clock. Either "
+        "a fixed value (e.g. 50) or a MIN-MAX range (e.g. 10-200) sampled uniformly per line so timestamps "
+        "look organically jittered. 0 disables throttling. Mutually exclusive with --start-time."
     );
+
+    std::optional<std::string> startTimeArg;
+    CLI::Option *startTimeOpt = program.add_option_function<std::string>(
+        "--start-time",
+        [&startTimeArg](const std::string &value) { startTimeArg = value; },
+        "Simulated mode: stamp lines with a virtual clock starting at this UTC time ('now' or "
+        "YYYY-MM-DD[THH:MM:SS[.mmm]]) and write as fast as possible, never sleeping. Lets you produce hours "
+        "of realistic log instantly. Use --duration to bound the covered time span."
+    );
+    startTimeOpt->excludes(timeoutOpt);
+
+    std::string durationText;
+    program
+        .add_option(
+            "--duration",
+            durationText,
+            "Simulated mode: stop once the virtual clock passes start + this span (suffix ms/s/m/h/d, e.g. "
+            "'3h'). When given without an explicit --size, the 10MB default size limit is lifted."
+        )
+        ->needs(startTimeOpt);
+
+    double rateLinesPerSecond = 20.0;
+    program
+        .add_option(
+            "--rate",
+            rateLinesPerSecond,
+            "Simulated mode: average arrival rate in lines per second (for --profile daily, the average over a "
+            "full day). Gaps between lines are exponentially distributed."
+        )
+        ->needs(startTimeOpt)
+        ->check(CLI::PositiveNumber);
+
+    std::string profileText = "daily";
+    program
+        .add_option(
+            "--profile",
+            profileText,
+            "Simulated mode: 'daily' varies the rate sinusoidally over 24h (peak 14:00 UTC, trough 02:00 UTC, "
+            "0.2x-1.8x of --rate); 'flat' keeps it constant."
+        )
+        ->needs(startTimeOpt)
+        ->check(CLI::IsMember({"flat", "daily"}));
+
+    bool bursts = false;
+    program
+        .add_flag(
+            "--bursts",
+            bursts,
+            "Simulated mode: add random 5-45s bursts (about one per 10 minutes) at 10x the current rate, "
+            "with mostly warning/error records."
+        )
+        ->needs(startTimeOpt);
 
     std::optional<int> seedArg;
     program.add_option_function<int>(
@@ -927,8 +1055,18 @@ int main(int argc, char *argv[])
     }
     int timeoutMinMs = 0;
     int timeoutMaxMs = 0;
+    std::chrono::system_clock::time_point simStart;
+    std::optional<std::chrono::system_clock::time_point> simEnd;
     try
     {
+        if (startTimeArg.has_value())
+        {
+            simStart = ParseStartTime(*startTimeArg);
+            if (!durationText.empty())
+            {
+                simEnd = simStart + ParseDuration(durationText);
+            }
+        }
         targetBytes = ParseSize(sizeText);
         targetLines = ParseCount(linesText);
         rollBytes = ParseSize(rollSizeText);
@@ -946,6 +1084,13 @@ int main(int argc, char *argv[])
     {
         std::cerr << "Invalid argument: " << err.what() << '\n' << program.help();
         return 1;
+    }
+
+    const bool simulated = startTimeArg.has_value();
+    // A time-bounded run should not be cut short by the byte-budget default.
+    if (simEnd.has_value() && sizeOpt->count() == 0)
+    {
+        targetBytes = 0;
     }
 
     if (timeoutMinMs < 0 || timeoutMaxMs < timeoutMinMs)
@@ -1156,7 +1301,7 @@ int main(int argc, char *argv[])
     }
     diag << ")\n";
 
-    if (targetBytes == 0 && targetLines == 0)
+    if (targetBytes == 0 && targetLines == 0 && !simEnd.has_value())
     {
         diag << "log_generator: both --size and --lines are 0; running until interrupted (Ctrl+C).\n";
     }
@@ -1195,9 +1340,51 @@ int main(int argc, char *argv[])
         return false;
     };
 
+    std::optional<test_common::ArrivalClock> clock;
+    if (simulated)
+    {
+        clock.emplace(
+            test_common::ArrivalClockOptions{
+                .start = simStart,
+                .linesPerSecond = rateLinesPerSecond,
+                .profile =
+                    profileText == "flat" ? test_common::TrafficProfile::Flat : test_common::TrafficProfile::Daily,
+                .bursts = bursts,
+            }
+        );
+        diag << "log_generator: simulated clock from "
+             << date::format("%FT%T", date::floor<std::chrono::milliseconds>(simStart)) << "Z, " << rateLinesPerSecond
+             << " lines/s avg, profile=" << profileText << (bursts ? ", bursts" : "") << ", no sleeping\n";
+    }
+    std::optional<std::chrono::system_clock::time_point> lastStamp;
+
     while (!reachedTotal())
     {
         test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, totalLines);
+        if (clock.has_value())
+        {
+            const auto stamp = clock->Next(rng);
+            if (simEnd.has_value() && stamp >= *simEnd)
+            {
+                break;
+            }
+            lastStamp = stamp;
+            record["timestamp"] = date::format("%FT%T", date::floor<std::chrono::milliseconds>(stamp));
+            if (clock->InBurst())
+            {
+                // Bursts model incidents: mostly warnings and errors.
+                std::uniform_int_distribution<int> pick(0, 9);
+                const int roll = pick(rng);
+                if (roll < 5)
+                {
+                    record["level"] = std::string("error");
+                }
+                else if (roll < 8)
+                {
+                    record["level"] = std::string("warning");
+                }
+            }
+        }
         // Session-global, rotation-agnostic counter so a tailing consumer
         // can detect drops by spotting gaps in the sequence.
         record["line_number"] = static_cast<std::int64_t>(totalLines);
@@ -1335,5 +1522,10 @@ int main(int argc, char *argv[])
 
     diag << "log_generator: wrote " << totalLines << " lines, " << totalBytes << " bytes in " << elapsedMs << " ms ("
          << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", " << targetDescription << ")\n";
+    if (lastStamp.has_value())
+    {
+        diag << "log_generator: simulated span " << date::format("%FT%T", date::floor<std::chrono::seconds>(simStart))
+             << " .. " << date::format("%FT%T", date::floor<std::chrono::seconds>(*lastStamp)) << " UTC\n";
+    }
     return 0;
 }
