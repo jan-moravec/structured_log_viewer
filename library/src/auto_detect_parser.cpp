@@ -46,13 +46,21 @@ std::string DrainPeek(
     peek.reserve(peekBudget);
     std::vector<char> chunk(PEEK_CHUNK_BYTES);
     const bool enforceDeadline = peekTimeout > std::chrono::milliseconds::zero();
-    const auto deadline = std::chrono::steady_clock::now() + peekTimeout;
+    // The deadline starts with the first byte, not with the peek:
+    // a network listener is typically started well before its
+    // senders connect, and an idle listener carries no format
+    // evidence. Until data arrives, wait for stop or close only.
+    std::optional<std::chrono::steady_clock::time_point> deadline;
     while (peek.size() < peekBudget && !stopToken.stop_requested())
     {
         const std::size_t want = std::min(chunk.size(), peekBudget - peek.size());
         const std::size_t got = producer.Read(std::span<char>(chunk.data(), want));
         if (got != 0)
         {
+            if (!deadline)
+            {
+                deadline = std::chrono::steady_clock::now() + peekTimeout;
+            }
             peek.append(chunk.data(), got);
             // Early exit: `TryDetectFormatFromBytes` only returns a
             // value when a probe actually claimed the buffer. Once
@@ -72,10 +80,10 @@ std::string DrainPeek(
         {
             break;
         }
-        if (enforceDeadline)
+        if (enforceDeadline && deadline)
         {
             const auto now = std::chrono::steady_clock::now();
-            if (now >= deadline)
+            if (now >= *deadline)
             {
                 break;
             }
@@ -84,7 +92,7 @@ std::string DrainPeek(
             // `PEEK_WAIT_INTERVAL`. `duration_cast` truncates
             // toward zero; guard against a zero-duration park
             // by breaking out instead.
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*deadline - now);
             const auto waitFor = std::min(remaining, PEEK_WAIT_INTERVAL);
             if (waitFor <= std::chrono::milliseconds::zero())
             {

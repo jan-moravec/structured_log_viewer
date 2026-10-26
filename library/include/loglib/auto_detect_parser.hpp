@@ -37,11 +37,14 @@ class AutoDetectParser : public LogParser
 {
 public:
     /**
-     * @brief Default wall-clock budget for the streaming peek. Matches
-     * `StdinPeek`'s timeout so a bursty producer that hasn't yet
-     * delivered enough bytes to disambiguate its format still
-     * hands control to the resolved parser within a bounded
-     * interval instead of blocking indefinitely on `WaitForBytes`.
+     * @brief Default wall-clock budget for the streaming peek, measured
+     * from the first byte the producer delivers.
+     *
+     * Matches `StdinPeek`'s timeout so a bursty producer that has not
+     * yet delivered enough bytes to disambiguate its format still
+     * hands control to the resolved parser within a bounded interval.
+     * An idle producer (a listener with no sender yet) does not start
+     * the clock.
      */
     static constexpr auto DEFAULT_PEEK_TIMEOUT = std::chrono::milliseconds(500);
 
@@ -50,7 +53,8 @@ public:
      *                     to run the probe. Defaults to
      *                     `PROBE_BYTES_BUDGET`, matching every
      *                     other detector.
-     * @param peekTimeout  Wall-clock deadline for the peek loop.
+     * @param peekTimeout  Wall-clock deadline for the peek loop,
+     *                     counted from the first received byte.
      *                     Zero or negative disables the deadline
      *                     (used by tests that want to drain the
      *                     full producer synchronously). Detection
@@ -81,8 +85,10 @@ public:
      * and pass that combined prefix to the resolved parser. The peek loop
      * respects `options.stopToken` and honours the producer's
      * `WaitForBytes` cadence, so it plays nicely with the
-     * existing streaming lifecycle. If no bytes are available after
-     * stop, timeout, or EOF, `JsonParser` preserves the sink lifecycle.
+     * existing streaming lifecycle. The loop waits for the first byte
+     * without a deadline; the peek timeout runs from that byte. If no
+     * bytes are available after stop or EOF, `JsonParser` preserves the
+     * sink lifecycle.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
