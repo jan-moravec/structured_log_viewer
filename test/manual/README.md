@@ -262,7 +262,7 @@ UTC+1. Unticked boxes above failed or were not run.
 
 GUI findings:
 
-1. **Open: Apache error timestamps never parse as time.** `slp validate $fxmt_apache-error.log` reports `timestamp present=2000 matching=0 (type mismatch)`. The GUI shows the raw text, marks the column with a warning,
+1. **Open: Apache error timestamps never parse as time.** `slp validate $fx\fmt_apache-error.log` reports `timestamp present=2000 matching=0 (type mismatch)`. The GUI shows the raw text, marks the column with a warning,
    and the histogram stays empty. The same happens for `Sun Mar 01 00:00:00 2026` and for six fractional digits, which are the template's own sample
    forms.
 1. **Open: the GUI has no display-zone setting.** It always uses the Windows
