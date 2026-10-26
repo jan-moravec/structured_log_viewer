@@ -19,7 +19,7 @@ enum class TrafficProfile
 struct ArrivalClockOptions
 {
     /** First virtual instant. `Next()` returns times strictly after it. */
-    std::chrono::system_clock::time_point start{};
+    std::chrono::system_clock::time_point start;
     /** Average lines per second; for `Daily` this is the mean over a full day. */
     double linesPerSecond = 20.0;
     TrafficProfile profile = TrafficProfile::Daily;
@@ -51,19 +51,19 @@ public:
     /** @brief Returns whether the most recent `Next()` fell inside a burst. */
     bool InBurst() const noexcept
     {
-        return m_inBurst;
+        return mInBurst;
     }
 
 private:
     double RateAt(double secondsSinceEpoch) const;
     void UpdateBurst(double now, std::mt19937 &rng);
 
-    ArrivalClockOptions m_options;
-    double m_now;
-    bool m_inBurst = false;
-    bool m_burstScheduled = false;
-    double m_burstStart = 0.0;
-    double m_burstEnd = 0.0;
+    ArrivalClockOptions mOptions;
+    double mNow;
+    bool mInBurst = false;
+    bool mBurstScheduled = false;
+    double mBurstStart = 0.0;
+    double mBurstEnd = 0.0;
 };
 
 } // namespace test_common

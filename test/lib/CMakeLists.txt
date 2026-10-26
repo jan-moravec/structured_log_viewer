@@ -35,6 +35,7 @@ add_executable(
     "src/test_arrival_clock.cpp"
     "src/test_log_factory.cpp"
     "src/test_log_file.cpp"
+    "src/test_log_generator_tool.cpp"
     "src/test_log_filter.cpp"
     "src/test_log_line.cpp"
     "src/test_log_processing.cpp"
@@ -86,6 +87,7 @@ target_link_libraries(
     PRIVATE
         loglib
         test_common
+        log_generator_core
         Catch2::Catch2WithMain
         project_warnings
         TBB::tbb

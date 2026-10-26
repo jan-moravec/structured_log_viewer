@@ -40,19 +40,19 @@ double SampleExponential(std::mt19937 &rng, double rate)
 } // namespace
 
 ArrivalClock::ArrivalClock(const ArrivalClockOptions &options)
-    : m_options(options), m_now(ToSeconds(options.start))
+    : mOptions(options), mNow(ToSeconds(options.start))
 {
 }
 
 double ArrivalClock::RateAt(double secondsSinceEpoch) const
 {
-    double rate = m_options.linesPerSecond;
-    if (m_options.profile == TrafficProfile::Daily)
+    double rate = mOptions.linesPerSecond;
+    if (mOptions.profile == TrafficProfile::Daily)
     {
         const double hour = std::fmod(secondsSinceEpoch, SECONDS_PER_DAY) / 3600.0;
         rate *= 1.0 + (DAILY_AMPLITUDE * std::cos(2.0 * std::numbers::pi * (hour - DAILY_PEAK_HOUR) / 24.0));
     }
-    if (m_inBurst)
+    if (mInBurst)
     {
         rate *= BURST_RATE_MULTIPLIER;
     }
@@ -63,34 +63,34 @@ void ArrivalClock::UpdateBurst(double now, std::mt19937 &rng)
 {
     const auto schedule = [&](double after) {
         std::uniform_real_distribution<double> length(BURST_MIN_SECONDS, BURST_MAX_SECONDS);
-        m_burstStart = after + SampleExponential(rng, 1.0 / BURST_MEAN_SPACING_SECONDS);
-        m_burstEnd = m_burstStart + length(rng);
+        mBurstStart = after + SampleExponential(rng, 1.0 / BURST_MEAN_SPACING_SECONDS);
+        mBurstEnd = mBurstStart + length(rng);
     };
 
-    if (!m_burstScheduled)
+    if (!mBurstScheduled)
     {
         schedule(now);
-        m_burstScheduled = true;
+        mBurstScheduled = true;
     }
-    while (now >= m_burstEnd)
+    while (now >= mBurstEnd)
     {
-        schedule(m_burstEnd);
+        schedule(mBurstEnd);
     }
-    m_inBurst = now >= m_burstStart;
+    mInBurst = now >= mBurstStart;
 }
 
 std::chrono::system_clock::time_point ArrivalClock::Next(std::mt19937 &rng)
 {
-    if (m_options.bursts)
+    if (mOptions.bursts)
     {
-        UpdateBurst(m_now, rng);
+        UpdateBurst(mNow, rng);
     }
-    m_now += SampleExponential(rng, RateAt(m_now));
-    if (m_options.bursts)
+    mNow += SampleExponential(rng, RateAt(mNow));
+    if (mOptions.bursts)
     {
-        UpdateBurst(m_now, rng);
+        UpdateBurst(mNow, rng);
     }
-    return FromSeconds(m_now);
+    return FromSeconds(mNow);
 }
 
 } // namespace test_common

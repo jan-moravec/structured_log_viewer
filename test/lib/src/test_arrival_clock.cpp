@@ -19,7 +19,10 @@ TEST_CASE("ArrivalClock is monotonic and deterministic for a seed", "[arrival_cl
 {
     const test_common::ArrivalClockOptions options{.start = START, .linesPerSecond = 50.0, .bursts = true};
 
+
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rngA(42);
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rngB(42);
     test_common::ArrivalClock a(options);
     test_common::ArrivalClock b(options);
@@ -39,6 +42,7 @@ TEST_CASE("ArrivalClock flat profile averages the configured rate", "[arrival_cl
     const test_common::ArrivalClockOptions options{
         .start = START, .linesPerSecond = 100.0, .profile = test_common::TrafficProfile::Flat
     };
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng(7);
     test_common::ArrivalClock clock(options);
 
@@ -57,6 +61,7 @@ TEST_CASE("ArrivalClock daily profile is busier in the afternoon than at night",
     const test_common::ArrivalClockOptions options{
         .start = START, .linesPerSecond = 20.0, .profile = test_common::TrafficProfile::Daily
     };
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng(11);
     test_common::ArrivalClock clock(options);
 
@@ -83,6 +88,7 @@ TEST_CASE("ArrivalClock bursts occur and raise the local rate", "[arrival_clock]
     const test_common::ArrivalClockOptions options{
         .start = START, .linesPerSecond = 5.0, .profile = test_common::TrafficProfile::Flat, .bursts = true
     };
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng(3);
     test_common::ArrivalClock clock(options);
 

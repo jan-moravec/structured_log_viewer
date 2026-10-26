@@ -158,6 +158,7 @@ jobs:
             -I${{ github.workspace }}/app/include
             -I${{ github.workspace }}/cli/include
             -I${{ github.workspace }}/test/common/include
+            -I${{ github.workspace }}/test/log_generator/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/fmt-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/robin_map-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/glaze-src/include
