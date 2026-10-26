@@ -14,6 +14,7 @@ add_executable(
     src/test_session_config.cpp
     src/test_stats_e2e.cpp
     src/test_tail_e2e.cpp
+    src/test_time_zone_e2e.cpp
 )
 
 # Compression codecs are linked so the source-matrix e2e cases can

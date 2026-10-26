@@ -273,7 +273,8 @@ void AddGlobalFlags(CLI::App &app, GlobalOptions &global)
         "--tz",
         global.timeZone,
         std::format(
-            "Time zone for naive timestamps and human-readable times. An IANA name, local, or UTC. The default is {}.",
+            "Time zone for human-readable times and for --since and --until values without a zone. An IANA name, "
+            "local, or UTC. Log timestamps without a zone are read as UTC. The default is {}.",
             global.timeZone
         )
     );
@@ -361,7 +362,7 @@ void AddFilterFlags(CLI::App &app, FilterOptions &filter, bool includeUntil)
         "--since",
         filter.since,
         "Keep rows at or after this time on the first time column. Accepts the column's formats, ISO-8601, now, and "
-        "relative values such as -30m. The default is no lower bound."
+        "relative values such as -30m. A value without Z or an offset is read in --tz. The default is no lower bound."
     );
     if (includeUntil)
     {
