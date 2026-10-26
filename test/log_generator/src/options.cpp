@@ -337,7 +337,8 @@ std::chrono::system_clock::time_point ParseStartTime(const std::string &text)
     {
         std::istringstream in(trimmed);
         std::chrono::sys_time<std::chrono::milliseconds> tp;
-        in >> date::parse(fmt, tp);
+        // Qualified call: `date::parse` makes `from_stream` ambiguous with `std::chrono::from_stream` on libc++.
+        date::from_stream(in, fmt, tp);
         if (!in.fail() && in.peek() == std::istringstream::traits_type::eof())
         {
             return tp;
