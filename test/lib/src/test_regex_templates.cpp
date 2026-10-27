@@ -557,11 +557,12 @@ TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][
         const RegexParser parser{tmpl->pattern};
 
         const TestLogFile file{"regex_templates_apache_dash_bytes.log"};
-        const std::string tail = name.find("Combined") != std::string_view::npos ? R"( "-" "curl/8.5.0")" : "";
-        file.Write(
-            R"(10.0.0.1 - - [11/Feb/2013:06:43:36 +0000] "GET /a HTTP/1.1" 200 5778)" + tail + "\n" +
-            R"(10.0.0.1 - - [11/Feb/2013:06:43:37 +0000] "HEAD /a HTTP/1.1" 304 -)" + tail + "\n"
-        );
+        const std::string tail = name.contains("Combined") ? R"( "-" "curl/8.5.0")" : "";
+        std::string content = R"(10.0.0.1 - - [11/Feb/2013:06:43:36 +0000] "GET /a HTTP/1.1" 200 5778)";
+        content.append(tail).append("\n");
+        content.append(R"(10.0.0.1 - - [11/Feb/2013:06:43:37 +0000] "HEAD /a HTTP/1.1" 304 -)");
+        content.append(tail).append("\n");
+        file.Write(content);
 
         const ParseResult result = ParseFile(parser, file.GetFilePath());
         REQUIRE(result.errors.empty());
