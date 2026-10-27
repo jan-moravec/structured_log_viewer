@@ -267,6 +267,36 @@ std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
     return cached != nullptr ? std::span<const RegexTemplate>(*cached) : std::span<const RegexTemplate>{};
 }
 
+std::vector<BuiltinRegexTemplateInfo> BuiltinRegexTemplateCatalog()
+{
+    std::vector<BuiltinRegexTemplateInfo> catalog;
+    for (const internal::EmbeddedRegexTemplate &entry : internal::EmbeddedBuiltinRegexTemplates())
+    {
+        try
+        {
+            BuiltinRegexTemplateInfo info;
+            const std::string_view source = entry.source;
+            constexpr std::string_view JSON_SUFFIX = ".json";
+            info.slug = source.ends_with(JSON_SUFFIX)
+                            ? std::string(source.substr(0, source.size() - JSON_SUFFIX.size()))
+                            : std::string(source);
+            info.tmpl = ParseEmbeddedOrThrow(entry);
+            catalog.push_back(std::move(info));
+        }
+        catch (const std::exception &) // NOLINT(bugprone-empty-catch)
+        {
+            // Same policy as the probe registry: one bad shipped file
+            // must not hide the rest of the catalog.
+        }
+    }
+    std::stable_sort(
+        catalog.begin(), catalog.end(), [](const BuiltinRegexTemplateInfo &lhs, const BuiltinRegexTemplateInfo &rhs) {
+            return lhs.tmpl.priority < rhs.tmpl.priority;
+        }
+    );
+    return catalog;
+}
+
 void SetExtraRegexTemplates(std::span<const RegexTemplate> extras)
 {
     const std::unique_lock<std::shared_mutex> write(RegistryMutex());

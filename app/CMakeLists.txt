@@ -44,10 +44,6 @@ set(PROJECT_SOURCES
     include/jump_to_tail_pill.hpp
     src/level_cell_delegate.cpp
     include/level_cell_delegate.hpp
-    src/log_string_matcher.cpp
-    include/log_string_matcher.hpp
-    src/leaf_rule_compile.cpp
-    include/leaf_rule_compile.hpp
     src/highlight_rule_set.cpp
     include/highlight_rule_set.hpp
     src/highlight_rules_editor.cpp
@@ -131,6 +127,7 @@ qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../resources/resources.qr
 qt_add_executable(StructuredLogViewer MANUAL_FINALIZATION src/main.cpp ${RESOURCES})
 
 target_link_libraries(StructuredLogViewer PUBLIC logapp)
+target_compile_definitions(StructuredLogViewer PRIVATE "SLV_VERSION_STRING=\"${PROJECT_VERSION}\"")
 
 set_target_properties(
     StructuredLogViewer

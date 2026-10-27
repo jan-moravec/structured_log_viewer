@@ -69,8 +69,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      # pull-requests: write lets cpp-linter-action post inline tidy review
-      # comments on PRs; id-token: write enables tokenless Codecov OIDC upload;
+      # pull-requests: write lets cpp-linter-action post its tidy comment
+      # on PRs; id-token: write enables tokenless Codecov OIDC upload;
       # contents: read is inherited.
       contents: read
       pull-requests: write
@@ -129,6 +129,9 @@ jobs:
         # when invoked directly on a header file. Headers are not entries in
         # compile_commands.json, so without these flags clang-tidy reports
         # spurious "file not found" frontend errors against changed `.hpp`s.
+        # Findings are listed in the PR comment and step summary (no inline
+        # review: 100s of suggestions trip GitHub's secondary rate limit) and
+        # fail the job through the "Fail on clang-tidy findings" step.
         # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
         id: cpp-linter
@@ -143,8 +146,8 @@ jobs:
           extensions: cpp,hpp,h,cc
           files-changed-only: true
           lines-changed-only: true
-          tidy-review: true
-          thread-comments: update
+          tidy-review: false
+          thread-comments: true
           step-summary: true
           # clang-tidy interprets `--extra-arg=-I...` paths relative to the
           # proxy TU's `directory` from compile_commands.json (the build dir),
@@ -153,13 +156,16 @@ jobs:
           extra-args: >-
             -I${{ github.workspace }}/library/include
             -I${{ github.workspace }}/app/include
+            -I${{ github.workspace }}/cli/include
             -I${{ github.workspace }}/test/common/include
+            -I${{ github.workspace }}/test/log_generator/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/fmt-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/robin_map-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/glaze-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/mio-src/include
             -I${{ github.workspace }}/build/clang-coverage/_deps/date-src/include
-            -I${{ github.workspace }}/build/clang-coverage/_deps/argparse-src/include
+            -I${{ github.workspace }}/build/clang-coverage/_deps/cli11-src/include
+            -I${{ github.workspace }}/build/clang-coverage/_deps/utf8proc-src
             -I${{ github.workspace }}/build/clang-coverage/_deps/tbb-src/include
             -std=c++23
 
@@ -210,6 +216,44 @@ jobs:
           verbose: true
           use_oidc: true
 
+      - name: Fail on clang-tidy findings
+        # Last step so tests and the coverage upload still run when tidy reports.
+        if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.clang-tidy-checks-failed != '0'
+        run: |
+          echo "clang-tidy reported ${{ steps.cpp-linter.outputs.clang-tidy-checks-failed }} finding(s) on changed lines; see the step summary." >&2
+          exit 1
+
+  build-qt-free:
+    needs: pre-commit
+    # Proves `slp` configures, builds, and tests with no Qt installed.
+    # The packaging jobs still build the GUI; this job is the one that
+    # fails if `find_package(Qt6)` leaks out of `app/`.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install newer GCC
+        run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 libssl-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+      - name: Install CMake
+        uses: lukka/get-cmake@fffaaafeea488556c2c12dad60690008bc1caacb # v4.4.2
+
+      - name: Configure without Qt
+        run: cmake --preset release -DSLV_BUILD_GUI=OFF
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Run tests
+        run: ctest --preset release
+
   build-linux:
     needs: pre-commit
     # Oldest supported runner so the AppImage links against an older glibc
@@ -246,8 +290,9 @@ jobs:
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
-        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates.
-        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev
+        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates;
+        # patchelf: points the slp tarball's binary at its bundled libraries.
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev patchelf
 
       - name: Configure
         # TLS pinned ON so the published AppImage can't silently lose it.
@@ -255,6 +300,16 @@ jobs:
 
       - name: Build
         run: cmake --build --preset release
+
+      - name: Assert slp does not link Qt
+        run: |
+          set -euo pipefail
+          SLP=build/release/bin/Release/slp
+          test -x "$SLP"
+          if ldd "$SLP" | grep -E 'libQt6|Qt6'; then
+            echo "slp links Qt" >&2
+            exit 1
+          fi
 
       - name: Run unit tests
         # release preset excludes the `benchmark` label; benchmarks run below.
@@ -341,16 +396,64 @@ jobs:
           rm -rf squashfs-root
           "./$APPIMAGE" --appimage-extract >/dev/null
           test -x "squashfs-root/usr/bin/${{ env.APP_NAME }}"
+          # slp ships in its own tarball; the AppImage only launches the GUI.
+          test ! -e "squashfs-root/usr/bin/slp"
+          test -f "squashfs-root/usr/share/doc/${{ env.APP_NAME }}/THIRD_PARTY_LICENSES.txt"
           test -f "squashfs-root/usr/lib/libQt6Core.so.6"
           test -f "squashfs-root/usr/lib/libQt6Widgets.so.6"
           test -d "squashfs-root/usr/share/tzdata"
           test -f "squashfs-root/usr/plugins/platforms/libqxcb.so"
           echo "AppImage structural sanity check passed."
 
+      - name: Package slp tarball
+        # Standalone command-line tool for servers, CI, and containers: no Qt,
+        # no FUSE. Bundles libtbb and the GCC 13 C++ runtime the binary was
+        # built against (newer than the base distro's); glibc and OpenSSL 3
+        # come from the host. The binary finds them through an $ORIGIN rpath
+        # and finds tzdata next to itself.
+        run: |
+          set -euo pipefail
+          VERSION="$(build/release/bin/Release/slp --version | awk '{print $2}')"
+          STAGE="slp-${VERSION}-linux-x86_64"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/lib"
+          cp build/release/bin/Release/slp "$STAGE/"
+          cp -r build/release/bin/Release/tzdata "$STAGE/"
+          for lib in $(ldd "$STAGE/slp" | awk '/=> \// {print $3}' | grep -E '/(libtbb[^/]*|libstdc\+\+[^/]*|libgcc_s[^/]*)$'); do
+            cp -L "$lib" "$STAGE/lib/"
+          done
+          test -n "$(ls "$STAGE"/lib/libtbb*)"
+          patchelf --set-rpath '$ORIGIN/lib' "$STAGE/slp"
+          cp build/release/bin/Release/THIRD_PARTY_LICENSES.txt build/release/bin/Release/LICENSE "$STAGE/"
+          cp doc/cli.md "$STAGE/README.md"
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+          echo "SLP_TARBALL=$STAGE.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Verify slp tarball
+        # Run from a fresh extraction with no build tree on the library path.
+        run: |
+          set -euo pipefail
+          rm -rf slp-check && mkdir slp-check
+          tar -xzf "$SLP_TARBALL" -C slp-check
+          SLP="$(echo slp-check/slp-*/slp)"
+          test -x "$SLP"
+          if ldd "$SLP" | grep -E 'not found|libQt6'; then
+            echo "slp in the tarball has unresolved or Qt dependencies" >&2
+            exit 1
+          fi
+          ldd "$SLP" | grep -q "$(dirname "$SLP")/lib/libtbb"
+          "$SLP" --version
+          # tzdata next to the binary must load: no fallback warning.
+          echo '{"msg":"hello"}' | "$SLP" query --tz Europe/Prague - 2>slp.stderr
+          if grep -q 'timezone data was not found' slp.stderr; then
+            echo "slp did not find the bundled tzdata" >&2
+            exit 1
+          fi
+
       - name: Compute SHA256 checksums
         run: |
           shopt -s nullglob
-          for file in ${{ env.APP_NAME }}-*.AppImage ${{ env.APP_NAME }}-*.AppImage.zsync; do
+          for file in ${{ env.APP_NAME }}-*.AppImage ${{ env.APP_NAME }}-*.AppImage.zsync slp-*-linux-x86_64.tar.gz; do
             sha256sum "$file" > "$file.sha256"
           done
 
@@ -365,6 +468,8 @@ jobs:
             ${{ env.APP_NAME }}-*.AppImage.zsync
             ${{ env.APP_NAME }}-*.AppImage.sha256
             ${{ env.APP_NAME }}-*.AppImage.zsync.sha256
+            slp-*-linux-x86_64.tar.gz
+            slp-*-linux-x86_64.tar.gz.sha256
           if-no-files-found: error
 
       - name: Release binaries
@@ -376,6 +481,8 @@ jobs:
             ${{ env.APP_NAME }}-*.AppImage.zsync
             ${{ env.APP_NAME }}-*.AppImage.sha256
             ${{ env.APP_NAME }}-*.AppImage.zsync.sha256
+            slp-*-linux-x86_64.tar.gz
+            slp-*-linux-x86_64.tar.gz.sha256
 
   build-windows:
     needs: pre-commit
@@ -383,13 +490,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
-    env:
-      # Single source for the choco install version and the path probe.
-      # slproweb's installer mirror only hosts the latest few versions;
-      # 4.0.1 was rotated off when 4.0.2 shipped on Aug 26 2026 (CI
-      # started 404-ing in `Install OpenSSL`). Bump in lockstep with
-      # the Chocolatey roster: https://community.chocolatey.org/packages/openssl.
-      OPENSSL_VERSION: "4.0.2"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -413,28 +513,39 @@ jobs:
         with:
           arch: x64
 
-      - name: Install OpenSSL
-        # Strawberry Perl's openssl lacks import libraries; use the full
-        # SLP build via choco. Install path varies, so the next step probes.
-        shell: powershell
-        run: choco install openssl --version=$env:OPENSSL_VERSION --yes --no-progress
-
-      - name: Locate OpenSSL and export OPENSSL_ROOT_DIR
-        # Probe known SLP / choco install roots for openssl.exe + headers
-        # and export the match into GITHUB_ENV for find_package(OpenSSL).
+      - name: Locate or install OpenSSL and export OPENSSL_ROOT_DIR
+        # The runner image ships a full OpenSSL (headers, import libraries, DLLs)
+        # under C:\Program Files\OpenSSL, so use it and download nothing. Only if
+        # no usable install is found do we fall back to Chocolatey, unpinned and
+        # retried: a pinned version 404s on slproweb's mirror once it rotates off.
+        # Strawberry Perl's openssl lacks import libraries, so it never counts.
+        # The match is exported into GITHUB_ENV for find_package(OpenSSL).
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $candidates = @(
-            "C:\Program Files\OpenSSL-Win64",
-            "C:\Program Files\OpenSSL",
-            "C:\Program Files\OpenSSL-Win64-$env:OPENSSL_VERSION"
-          )
-          $found = $null
-          foreach ($c in $candidates) {
-            if ((Test-Path "$c\bin\openssl.exe") -and (Test-Path "$c\include\openssl")) {
-              $found = $c
-              break
+          function Find-OpenSsl {
+            foreach ($c in @("C:\Program Files\OpenSSL-Win64", "C:\Program Files\OpenSSL")) {
+              if ((Test-Path "$c\bin\openssl.exe") -and
+                  (Test-Path "$c\include\openssl") -and
+                  (Test-Path "$c\bin\libssl*.dll") -and
+                  (Test-Path "$c\bin\libcrypto*.dll")) {
+                return $c
+              }
+            }
+            return $null
+          }
+          $found = Find-OpenSsl
+          if ($found) {
+            Write-Host "Using the OpenSSL preinstalled on the runner at $found"
+          } else {
+            Write-Host "No usable preinstalled OpenSSL; installing from Chocolatey."
+            for ($attempt = 1; $attempt -le 3 -and -not $found; $attempt++) {
+              choco install openssl --yes --no-progress --force
+              $found = Find-OpenSsl
+              if (-not $found) {
+                Write-Host "Attempt $attempt did not produce a usable OpenSSL."
+                Start-Sleep -Seconds (10 * $attempt)
+              }
             }
           }
           if (-not $found) {
@@ -455,6 +566,14 @@ jobs:
       - name: Build
         run: cmake --build --preset release
 
+      - name: Assert slp does not link Qt
+        shell: powershell
+        run: |
+          $slp = "build\release\bin\Release\slp.exe"
+          if (-not (Test-Path $slp)) { throw "slp.exe was not built" }
+          $deps = & dumpbin /dependents $slp | Out-String
+          if ($deps -match 'Qt6') { throw "slp links Qt: $deps" }
+
       - name: Run unit tests
         run: ctest --preset release
 
@@ -471,6 +590,7 @@ jobs:
           mkdir ${{ env.APP_NAME }}
           cd ${{ env.APP_NAME }}
           mv ../build/release/bin/Release/${{ env.APP_NAME }}.exe .
+          mv ../build/release/bin/Release/slp.exe .
           mv ../build/release/bin/Release/tzdata .
           Move-Item ../build/release/bin/Release/tbb*.dll .
           Move-Item ../build/release/bin/Release/msvcp*.dll .
@@ -500,6 +620,17 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Write-Host "Packaged binary started successfully and was terminated after 5s."
+
+          # slp ships beside the GUI and shares its runtime DLLs and tzdata.
+          & "${{ env.APP_NAME }}\slp.exe" --version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Packaged slp.exe --version exited with code $LASTEXITCODE"
+            exit 1
+          }
+          if (-not (Test-Path "${{ env.APP_NAME }}\THIRD_PARTY_LICENSES.txt")) {
+            Write-Error "THIRD_PARTY_LICENSES.txt missing next to slp.exe"
+            exit 1
+          }
 
       - name: Compute SHA256 checksums
         shell: powershell
@@ -577,6 +708,16 @@ jobs:
       - name: Build
         run: cmake --build --preset release
 
+      - name: Assert slp does not link Qt
+        run: |
+          set -euo pipefail
+          SLP=build/release/bin/Release/slp
+          test -x "$SLP"
+          if otool -L "$SLP" | grep -E 'Qt6|libQt6'; then
+            echo "slp links Qt" >&2
+            exit 1
+          fi
+
       - name: Run unit tests
         run: ctest --preset release
 
@@ -596,8 +737,47 @@ jobs:
             echo "ERROR: THIRD_PARTY_LICENSES.txt missing from bundle Resources" >&2
             exit 1
           fi
-          macdeployqt ${{ env.APP_NAME }}.app -dmg
-          mv ${{ env.APP_NAME }}.dmg "$GITHUB_WORKSPACE/${{ env.APP_NAME }}.dmg"
+          macdeployqt ${{ env.APP_NAME }}.app
+
+          # slp sits next to the .app, not inside it. Its TBB dylib is found
+          # through the build tree's rpath, so stage that dylib beside it.
+          DMG_ROOT="$GITHUB_WORKSPACE/dmg-root"
+          rm -rf "$DMG_ROOT"
+          mkdir -p "$DMG_ROOT"
+          cp -R ${{ env.APP_NAME }}.app "$DMG_ROOT/"
+          cp slp "$DMG_ROOT/slp"
+          cp ${{ env.APP_NAME }}.app/Contents/Resources/THIRD_PARTY_LICENSES.txt "$DMG_ROOT/"
+          for dep in $(otool -L slp | awk '/@rpath\/libtbb/ {print $1}'); do
+            lib="$(basename "$dep")"
+            src="$(find "$GITHUB_WORKSPACE/build/release" -name "$lib" -type f | head -n 1)"
+            if [ -z "$src" ]; then
+              echo "ERROR: could not locate $lib for slp" >&2
+              exit 1
+            fi
+            cp "$src" "$DMG_ROOT/$lib"
+          done
+          install_name_tool -add_rpath @executable_path "$DMG_ROOT/slp" || true
+          hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder "$DMG_ROOT" -ov -format UDZO \
+            "$GITHUB_WORKSPACE/${{ env.APP_NAME }}.dmg"
+
+      - name: Verify slp in the DMG
+        # slp lives beside the .app. There is no tzdata next to it, so this
+        # also exercises the UTC fallback: it must warn once and still run.
+        run: |
+          set -euo pipefail
+          MOUNT="$(mktemp -d)"
+          hdiutil attach "${{ env.APP_NAME }}.dmg" -mountpoint "$MOUNT" -nobrowse -quiet
+          trap 'hdiutil detach "$MOUNT" -quiet || true' EXIT
+          test -x "$MOUNT/slp"
+          test -d "$MOUNT/${{ env.APP_NAME }}.app"
+          test -f "$MOUNT/THIRD_PARTY_LICENSES.txt"
+          if ls "$MOUNT/${{ env.APP_NAME }}.app/Contents/MacOS" | grep -qx slp; then
+            echo "slp must not be inside the .app bundle" >&2
+            exit 1
+          fi
+          "$MOUNT/slp" --version
+          echo '{"msg":"hello"}' | "$MOUNT/slp" query --tz Europe/Prague - 2>slp.stderr
+          test "$(grep -c 'timezone data was not found' slp.stderr)" -eq 1
 
       - name: Smoke-test packaged .app bundle
         # Headless launch so a missing bundled framework / plugin or broken

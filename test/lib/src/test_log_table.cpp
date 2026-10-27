@@ -324,6 +324,36 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
     // legitimately back-fills. Column ordering is what we guard.
 }
 
+TEST_CASE("LogTable::AppendBatchArranged moves a new time column to the front", "[log_table][append_batch]")
+{
+    InitializeTimezoneData();
+
+    const TestLogFile testFile("arranged_time_column.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    table.AppendBatchArranged(BuildStreamedBatch(keys, *sourcePtr, {{{"msg", std::string("first")}}}, 0, 1));
+    REQUIRE(table.ColumnCount() == 1);
+    CHECK(table.TimeColumnsToFront(0).empty());
+
+    const TimeStamp ts = std::chrono::time_point_cast<std::chrono::microseconds>(
+        std::chrono::sys_days{std::chrono::year{2024} / std::chrono::January / 15}
+    );
+    table.AppendBatchArranged(
+        BuildStreamedBatch(keys, *sourcePtr, {{{"msg", std::string("second")}, {"timestamp", ts}}}, keys.Size(), 2)
+    );
+
+    REQUIRE(table.ColumnCount() == 2);
+    CHECK(table.GetHeader(0) == "timestamp");
+    CHECK(table.GetHeader(1) == "msg");
+    CHECK(table.TimeColumnsToFront(0).empty());
+}
+
 TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log_table][append_batch]")
 {
     const TestLogFile testFile("empty_rows.json");

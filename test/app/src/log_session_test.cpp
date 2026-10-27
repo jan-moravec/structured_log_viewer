@@ -956,12 +956,25 @@ private slots:
         }
         session.SetSourceWaiting(true);
         {
+            // A waiting network source is a listener with no sender yet.
+            const auto listening = session.PresentationSnapshot();
+            QVERIFY((listening.operations & static_cast<std::uint32_t>(SessionOperationState::Listening)) != 0U);
+            QVERIFY((listening.operations & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) == 0U);
+            QVERIFY((listening.operations & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) == 0U);
+            QCOMPARE(listening.statusSummary, QStringLiteral("Listening"));
+        }
+        session.SetSourceWaiting(false);
+
+        // A waiting stdin source has lost its writer.
+        session.MutableCurrentSource() = stdinSource;
+        session.SetSourceWaiting(true);
+        {
             const auto disconnected = session.PresentationSnapshot();
             QVERIFY((disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0U);
-            QVERIFY((disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) == 0U);
             QCOMPARE(disconnected.statusSummary, QStringLiteral("Disconnected"));
         }
         session.SetSourceWaiting(false);
+        session.MutableCurrentSource() = networkSource;
 
         session.QueueFailureNotice(QStringLiteral("Export Failed"), QStringLiteral("disk full"));
         {

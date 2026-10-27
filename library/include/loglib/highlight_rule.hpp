@@ -23,11 +23,9 @@ namespace loglib
  * time (editor greys them out).
  *
  * The `type` / `matchType` / `filter*` fields mirror `LeafRule`
- * so the shared `CompileLeaf` step applies uniformly to
- * filters and highlight rules (the app-side compile builds a
- * `LeafRule` shim from `HighlightRule` and passes it to the
- * same factory). Rules apply in vector order, last match wins
- * per row.
+ * so `ToLeafRule` and `CompileLeaf` apply uniformly to filters
+ * and highlight rules. Rules apply in vector order, last match
+ * wins per row.
  */
 struct HighlightRule
 {

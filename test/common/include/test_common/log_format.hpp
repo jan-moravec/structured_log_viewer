@@ -81,7 +81,8 @@ LogFormat ApacheCombinedFormat();
 LogFormat ApacheCommonFormat();
 
 // `Apache error log` -> "[<Www Mon DD HH:MM:SS YYYY>] [<module>:<level>]
-// [pid <n>] [client <ip>:<port>] <message>".
+// [pid <n>] [client <ip>:<port>] <message>", with the legacy
+// "[<time>] [<level>] [client <ip>] <message>" shape on ~1/4 of lines.
 LogFormat ApacheErrorFormat();
 
 // `Java / log4j / SLF4J Logback` -> "YYYY-MM-DD HH:MM:SS,mmm LEVEL

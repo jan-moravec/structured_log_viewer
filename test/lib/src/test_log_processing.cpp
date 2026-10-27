@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/column_schema.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_processing.hpp>
@@ -10,7 +11,12 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
+#include <optional>
 #include <regex>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace loglib;
 
@@ -514,6 +520,35 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     SECTION("Generic rejects malformed input")
     {
         CHECK_FALSE(TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out));
+    }
+}
+
+TEST_CASE("Default parse formats accept Apache error log timestamps", "[log_processing]")
+{
+    // 2026-03-01 00:00:00 UTC; Apache writes 0, 3, or 6 fraction digits.
+    constexpr std::int64_t BASE_US = 1772323200000000;
+    const std::vector<std::pair<std::string, std::int64_t>> cases = {
+        {"Sun Mar 01 00:00:00 2026", BASE_US},
+        {"Sun Mar 01 00:00:00.057 2026", BASE_US + 57000},
+        {"Sun Mar 01 00:00:00.290122 2026", BASE_US + 290122},
+    };
+
+    for (const auto &[input, expectedUs] : cases)
+    {
+        CAPTURE(input);
+        TimestampParseScratch scratch;
+        std::optional<TimeStamp> parsed;
+        for (const std::string &format : loglib::DefaultTimeParseFormats())
+        {
+            TimeStamp out{};
+            if (TryParseTimestamp(input, format, ClassifyTimestampFormat(format), scratch, out))
+            {
+                parsed = out;
+                break;
+            }
+        }
+        REQUIRE(parsed.has_value());
+        CHECK(parsed->time_since_epoch().count() == expectedUs);
     }
 }
 

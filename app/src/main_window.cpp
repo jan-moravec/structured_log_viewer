@@ -11,11 +11,9 @@
 #include "highlight_rules_editor.hpp"
 #include "histogram_model.hpp"
 #include "icon_loader.hpp"
-#include "leaf_rule_compile.hpp"
 #include "level_cell_delegate.hpp"
 #include "log_session.hpp"
 #include "log_session_view.hpp"
-#include "log_string_matcher.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qstring_path.hpp"
@@ -39,6 +37,7 @@
 #include <loglib/exports/row_exporter.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
+#include <loglib/leaf_rule_compile.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -49,8 +48,8 @@
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
-#include <loglib/rotation_siblings.hpp>
 #include <loglib/session_bundle.hpp>
+#include <loglib/source_plan.hpp>
 #include <loglib/stdin_bytes_producer.hpp>
 #include <loglib/stdin_peek.hpp>
 #include <loglib/stop_token.hpp>
@@ -58,6 +57,7 @@
 #include <loglib/tailing_bytes_producer.hpp>
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/theme.hpp>
+#include <loglib/tzdata_search.hpp>
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
@@ -161,7 +161,7 @@ namespace
         [&columns]<class N>(const N &node) -> bool {
             if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
             {
-                return ResolveLeafColumnByKeys(node.rule.columnKeys, columns) < 0;
+                return loglib::ResolveLeafColumnByKeys(node.rule.columnKeys, columns) < 0;
             }
             else if constexpr (
                 std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
@@ -223,66 +223,6 @@ QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
         return QStringLiteral("%1 %2 ago").arg(days).arg(days == 1 ? "day" : "days");
     }
     return QDateTime::fromMSecsSinceEpoch(timestampMsEpoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd"));
-}
-
-// Locate the staged `tzdata/` directory. Tries (in order) the binary
-// directory, the macOS Resources bundle, $APPDIR/usr/share/tzdata, then
-// the CWD ancestor chain. Empty path on miss; `searched` accumulates
-// candidates for diagnostics.
-std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
-{
-    auto pushAndCheck = [&searched](std::filesystem::path candidate) -> bool {
-        std::error_code ec;
-        const bool exists = std::filesystem::exists(candidate, ec);
-        searched.push_back(std::move(candidate));
-        return exists && !ec;
-    };
-
-    // Preserve non-ASCII Windows paths; constructing a path from
-    // `QString::toStdString()` would decode through the active code page.
-    const auto appDir = logapp::QStringToFsPath(QCoreApplication::applicationDirPath());
-    if (!appDir.empty() && pushAndCheck(appDir / "tzdata"))
-    {
-        return searched.back();
-    }
-
-#ifdef __APPLE__
-    if (!appDir.empty() && pushAndCheck(appDir.parent_path() / "Resources" / "tzdata"))
-    {
-        return searched.back();
-    }
-#endif
-
-#if !defined(_WIN32) && !defined(__APPLE__)
-    if (const char *appImageDir = std::getenv("APPDIR"))
-    {
-        if (pushAndCheck(std::filesystem::path(appImageDir) / "usr/share/tzdata"))
-        {
-            return searched.back();
-        }
-    }
-#endif
-
-    std::error_code cwdEc;
-    auto walk = std::filesystem::current_path(cwdEc);
-    if (!cwdEc)
-    {
-        while (true)
-        {
-            if (pushAndCheck(walk / "tzdata"))
-            {
-                return searched.back();
-            }
-            const auto parent = walk.parent_path();
-            if (parent.empty() || parent == walk)
-            {
-                break;
-            }
-            walk = parent;
-        }
-    }
-
-    return {};
 }
 
 // How long transient status-bar messages (filter rejection / drop notices)
@@ -501,7 +441,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     using LeafType = loglib::LeafRule::Type;
     using ColumnType = loglib::ColumnType;
 
-    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columns);
+    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
     if (resolvedRow < 0)
     {
         return FilterValidationFailure{
@@ -2536,6 +2476,11 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
         prefix = QStringLiteral("\u2205 "); // Empty set: disconnected placeholder.
         operationWord = tr("Disconnected");
     }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Listening)) != 0)
+    {
+        prefix = QStringLiteral("\u25cb "); // White circle: listener open, no sender yet.
+        operationWord = tr("Listening");
+    }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Paused)) != 0)
     {
         prefix = QStringLiteral("\u23F8 "); // Pause: user paused live-tail.
@@ -3054,7 +2999,11 @@ bool MainWindow::InitializeTimezoneDatabase()
     // `qCritical` instead of a modal: the offscreen Qt plugin used
     // by CI deadlocks on `exec()`-style modals.
     std::vector<std::filesystem::path> searched;
-    const auto tzdata = FindTzdata(searched);
+    // Preserve non-ASCII Windows paths; constructing a path from
+    // `QString::toStdString()` would decode through the active code page.
+    const auto tzdata = loglib::FindTzdataDirectory(
+        loglib::DefaultTzdataSearchRoots(logapp::QStringToFsPath(QCoreApplication::applicationDirPath())), searched
+    );
 
     if (tzdata.empty())
     {
@@ -4062,20 +4011,17 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
     }
 
     // Deduplicate only against locators still visible in this session.
-    std::unordered_set<std::string> alreadyLoaded;
+    std::vector<std::string> suppressKeys;
     if (consultDedup && currentSource.has_value())
     {
-        alreadyLoaded.reserve(currentSource->locators.size());
+        suppressKeys.reserve(currentSource->locators.size());
         for (const auto &locator : currentSource->locators)
         {
-            alreadyLoaded.insert(locator.dedupKey);
+            suppressKeys.push_back(locator.dedupKey);
         }
     }
 
     // Bundles bypass rotation-family expansion.
-    QStringList expanded;
-    expanded.reserve(logPaths.size());
-
     std::vector<std::filesystem::path> fsPaths;
     fsPaths.reserve(logPaths.size());
     QStringList nonExpandableInputs;
@@ -4100,69 +4046,28 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
         return logPaths;
     }
 
-    const loglib::PartitionedSelection partitioned =
-        loglib::PartitionAsRotationSeries(std::span<const std::filesystem::path>(fsPaths));
+    loglib::SourcePlanOptions options;
+    options.rotationHistory = true;
+    options.suppressKeys = suppressKeys;
+    const std::vector<loglib::ResolvedSource> plan =
+        loglib::ResolveSourcePlan(std::span<const std::filesystem::path>(fsPaths), options);
 
-    std::unordered_set<std::string> emittedKeys;
-    emittedKeys.reserve(fsPaths.size());
-
-    // Count only paths absent from the caller's canonical input set;
-    // caller-selected companions must not enable the expansion Undo.
-    std::unordered_set<std::string> userSelectedKeys;
-    userSelectedKeys.reserve(fsPaths.size());
-    for (const std::filesystem::path &fp : fsPaths)
+    QStringList expanded;
+    expanded.reserve(static_cast<qsizetype>(plan.size()) + nonExpandableInputs.size());
+    for (const loglib::ResolvedSource &entry : plan)
     {
-        userSelectedKeys.insert(loglib::CanonicalKeyForPath(fp));
-    }
-
-    // Emit each series oldest-first while preserving family order.
-    for (const loglib::RotationSeries &series : partitioned.series)
-    {
-        int seriesAdded = 0;
-        // Keep the actual family primary for the status message.
-        const QString seriesPrimaryDisplay = logapp::CanonicalDisplayPath(logapp::FsPathToQString(series.primary));
-        for (const loglib::RotatedFile &rf : series.files)
+        // Preserve native Windows encoding when returning paths to Qt.
+        expanded.append(logapp::CanonicalDisplayPath(logapp::FsPathToQString(entry.path)));
+        if (!entry.autoAdded)
         {
-            if (alreadyLoaded.contains(rf.canonicalKey))
-            {
-                continue;
-            }
-            if (!emittedKeys.insert(rf.canonicalKey).second)
-            {
-                continue;
-            }
-            // Preserve native Windows encoding when returning paths to Qt.
-            const QString display = logapp::CanonicalDisplayPath(logapp::FsPathToQString(rf.path));
-            expanded.append(display);
-            // Count only detected siblings not explicitly selected.
-            const bool autoDiscoveredByRotationDetection = rf.origin == loglib::RotatedFile::Origin::NumberedSuffix ||
-                                                           rf.origin == loglib::RotatedFile::Origin::DatedSuffix;
-            if (autoDiscoveredByRotationDetection && !userSelectedKeys.contains(rf.canonicalKey))
-            {
-                ++seriesAdded;
-            }
+            continue;
         }
-        addedOut += seriesAdded;
+        ++addedOut;
         // Use the first family that contributed an added sibling.
-        if (primaryOut != nullptr && seriesAdded > 0 && primaryOut->isEmpty())
+        if (primaryOut != nullptr && primaryOut->isEmpty())
         {
-            *primaryOut = seriesPrimaryDisplay;
+            *primaryOut = logapp::CanonicalDisplayPath(logapp::FsPathToQString(entry.familyPrimary));
         }
-    }
-
-    // Residual paths (no siblings, unrelated files) preserve order.
-    for (const std::filesystem::path &rp : partitioned.residual)
-    {
-        const std::string key = loglib::CanonicalKeyForPath(rp);
-        if (alreadyLoaded.contains(key))
-        {
-            continue;
-        }
-        if (!emittedKeys.insert(key).second)
-        {
-            continue;
-        }
-        expanded.append(logapp::CanonicalDisplayPath(logapp::FsPathToQString(rp)));
     }
 
     // Reattach non-expandable inputs for the upstream classifier.
@@ -7425,6 +7330,14 @@ void MainWindow::UpdateStreamingStatus()
     {
         text = tr("Parsing %1 - %2 lines, %3 errors").arg(mSession->StreamingFileName(), lineCount, errorCount);
     }
+    else if (
+        mSession->IsSourceWaiting() && mSession->CurrentSource().has_value() &&
+        mSession->CurrentSource()->kind == loglib::Source::Kind::NetworkStream
+    )
+    {
+        // Network producers wait only until the first sender delivers bytes.
+        text = tr("Listening on %1 - waiting for the first sender").arg(mSession->StreamingFileName());
+    }
     else if (mSession->IsSourceWaiting())
     {
         // Source unavailable takes precedence over Paused.
@@ -8006,7 +7919,7 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     entries.reserve(Filters().size());
     for (const auto &[id, filter] : Filters())
     {
-        const int row = ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
+        const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
         QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
                                   ? labels[static_cast<size_t>(row)]
                                   // Filter pointing at a column that no
@@ -9969,7 +9882,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                 for (auto &kv : mSession->MutableSimpleLeaves())
                 {
                     loglib::LeafRule &filter = kv.second;
-                    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+                    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
                     if (resolvedRow != columnIndex)
                     {
                         continue;
@@ -10022,7 +9935,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
         {
             return true;
         }
-        return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
+        return loglib::ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
     };
     bool rebuild = false;
     switch (reason)
@@ -10740,7 +10653,8 @@ void MainWindow::AddFilter(
     {
         // Column keys are the wire identity; the editor needs a
         // live column index, so resolve once here and forward.
-        const int editorRow = ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
+        const int editorRow =
+            loglib::ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
         if (resolvedFilter->type == loglib::LeafRule::Type::Time)
         {
             // At least one bound must be set; the other side may be
@@ -10940,7 +10854,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // `mSimpleLeaves`; safe because `isSimpleRepresentable` already
     // proved the resolve.
     const auto promoteToColumnKeys = [&columns](loglib::LeafRule rule) {
-        const int resolved = ResolveLeafColumnByKeys(rule.columnKeys, columns);
+        const int resolved = loglib::ResolveLeafColumnByKeys(rule.columnKeys, columns);
         if (resolved >= 0)
         {
             rule.columnKeys = columns[static_cast<std::size_t>(resolved)].keys;
@@ -11410,7 +11324,7 @@ void MainWindow::SyncColumnFilterIndicators()
         const auto &columns = mModel->Configuration().columns;
         for (const auto &[id, filter] : Filters())
         {
-            const int row = ResolveLeafColumnByKeys(filter.columnKeys, columns);
+            const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
             if (row < 0 || row >= cols)
             {
                 // Column keys don't resolve (dropped/renamed); hide
@@ -11624,7 +11538,7 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
         return true;
     }
     const auto &columnsCfg = mModel->Configuration().columns;
-    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
     if (resolvedRow < 0)
     {
         // Column keys don't resolve; leaf is inert and doesn't
@@ -11672,7 +11586,7 @@ void MainWindow::UpdateFilters(LogSession *session)
     // predicate construction, level-column expansion, and
     // cost-based ordering).
     loglib::CompiledFilterExpression compiled =
-        CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
+        loglib::CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
     filter->SetFilterExpression(std::move(compiled));
 }
 
@@ -11983,7 +11897,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     const auto &columnsForResolve = mModel->Configuration().columns;
     for (const auto &entry : Filters())
     {
-        if (ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
+        if (loglib::ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
         {
             filtersForColumn.push_back(
                 {.id = entry.first, .title = BuildFilterTitle(entry.second), .type = entry.second.type}

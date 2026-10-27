@@ -44,7 +44,7 @@ Thanks for your interest in contributing! This document is the developer referen
 
 ### Project Structure
 
-The project is organized into two main components: the `library` and the GUI `app`.
+The project is organized into three main components: the `library`, the GUI `app`, and the command-line `cli` (`slp`). `cli/` links `loglib` only and must never include Qt or link a Qt target. The `build-qt-free` CI job (`-DSLV_BUILD_GUI=OFF`) fails if Qt leaks out of `app/`, and the packaging jobs assert that `slp` has no Qt dependency. Logic `slp` needs that has a Qt-free signature belongs in `loglib`, not in `cli/`.
 
 ```plaintext
 structured_log_viewer/
@@ -70,14 +70,19 @@ structured_log_viewer/
 │   ├── include/              # GUI headers
 │   ├── src/                  # GUI implementation (including main_window.ui)
 │   └── CMakeLists.txt
+├── cli/                      # slp: Qt-free command-line tool (links loglib only)
+│   ├── include/              # CLI headers
+│   ├── src/                  # One command_<name>.cpp per subcommand, plus options and session helpers
+│   └── CMakeLists.txt
 ├── test/
 │   ├── lib/                  # Catch2 unit tests and benchmarks for loglib
 │   ├── app/                  # Qt Test smoke tests for MainWindow (+ JSONL/logfmt fixtures)
+│   ├── cli/                  # Catch2 option, golden, and end-to-end tests that run the real `slp` (CTest label `cli`)
 │   ├── common/               # Test helpers shared across lib/app/log_generator
 │   └── log_generator/        # Standalone multi-format fixture generator (`log_generator`)
 ├── cmake/                    # Shared CMake modules (warnings, FetchContent)
 ├── resources/                # Icons, .desktop entry, Qt resource file
-├── doc/                      # End-user guide (`README.md`) and contributor notes
+├── doc/                      # End-user guide (`README.md`), `slp` reference, contributor notes, examples
 ├── .github/workflows/        # CI: build + test on Linux / Windows / macOS
 ├── CMakeLists.txt
 └── README.md
@@ -390,10 +395,10 @@ To teach the viewer a new format (syslog, alternative-delimiter CSV, ...):
 1. **Generator + fixtures.** Every format plugs into one canonical, format-agnostic record type so the same synthetic data can be emitted in any format. Add a `test_common::LogFormat` serializer factory for your format in [`test/common/src/log_format.cpp`](test/common/src/log_format.cpp) (declared in [`test/common/include/test_common/log_format.hpp`](test/common/include/test_common/log_format.hpp)): a `writeLine` that serializes one `test_common::LogRecord` (and, for schema-bearing formats like CSV, a `writeHeader` over the `RecordSchema`). Schemaless-on-the-wire formats that need out-of-band configuration (like a regex-template pattern) pair a serializer factory with a well-known template name — e.g. `SyslogRfc3164Format()` alongside the shipped `"Syslog (RFC3164)"` `RegexTemplate` — so the benchmark and round-trip tests look the pattern up out-of-band via `FindTemplateByName` (see [`test/lib/include/common.hpp`](test/lib/include/common.hpp)). The RNG-driven generators in [`test/common/src/log_generator.cpp`](test/common/src/log_generator.cpp) already produce `LogRecord`s, so once the serializer exists you get three things for free:
 
    - **Unit-test fixtures** via `TestStructuredLogFile(records, MyFormat())` (materialized) or `TestStructuredLogFile(StreamedRecords{count, seed}, MyFormat())` (streamed, for the large case) in [`test/lib/include/common.hpp`](test/lib/include/common.hpp).
-   - **A standalone generator**: wire the new factory into the `--format` dispatch in [`test/log_generator/src/main.cpp`](test/log_generator/src/main.cpp) so `log_generator --format <fmt>` can drive manual / Stream-Mode smoke tests. For per-template synthesizers, extend the `REGEX_TEMPLATE_OPTIONS` shortlist in the same file so `log_generator --format <slug>` and `--list-formats` pick up the new factory.
+   - **A standalone generator**: add a `FormatSpec` row to the `FORMATS` table in [`test/log_generator/src/formats.cpp`](test/log_generator/src/formats.cpp) so `log_generator --format <name>` can drive manual / Stream-Mode smoke tests and `--list-formats` shows it. Per-template synthesizers set `family` to `FormatFamily::RegexTemplate` and `templateName` to the shipped template; a unit test checks that the name exists.
    - **A streaming benchmark**: add a `test/lib/src/benchmark_<fmt>.cpp` mirroring [`test/lib/src/benchmark_logfmt.cpp`](test/lib/src/benchmark_logfmt.cpp) — feed `RunStreamingBenchmark` your parser's `ParseStreaming` via a `bench::ParserStreamFn` (from [`test/lib/include/benchmark_common.hpp`](test/lib/include/benchmark_common.hpp)) and the same `StreamedRecords` fixture, so lines/s stays directly comparable to the other formats. Register it in [`test/lib/CMakeLists.txt`](test/lib/CMakeLists.txt) and add a row to the [Fixture inventory](#fixture-inventory).
 
-1. **Tests.** Add Catch2 unit tests under `test/lib/` mirroring `test/lib/src/test_json_parser.cpp`, `test/lib/src/test_logfmt_parser.cpp`, `test/lib/src/test_csv_parser.cpp`, or `test/lib/src/test_regex_parser.cpp` (the latter doubles as the template-registry coverage seam via `test/lib/src/test_regex_templates.cpp`), and pipeline tests under `test/lib/src/test_parser_pipeline.cpp` if you want coverage of the static-pipeline cancellation / coalescing / new-keys paths. Stream-Mode coverage lives in `test/lib/src/test_stream_line_source.cpp`, `test/lib/src/test_tailing_bytes_producer.cpp`, and `test/lib/src/test_stream_stop_teardown.cpp`; stdin coverage lives in `test_stdin_bytes_producer.cpp` and `test_stdin_peek.cpp`. For Qt Test smoke coverage, add fixtures under `test/app/fixtures/` and reference them from `fixtures.qrc`. Raw-byte fixtures (negative tests, hand-crafted edge cases) use `TestLogFile::Write(...)`; record-driven fixtures use `TestStructuredLogFile` as above. The `test/log_generator/` binary accepts a unified `--format` value (`json`, `logfmt`, `csv`, or a shipped regex-template slug like `syslog` / `apache-combined` / `java`; run `--list-formats` for the shortlist with descriptions), plus `--lines` / `--size` stop conditions, `--timeout` throttling, `--roll-strategy {rename,copytruncate,truncate}`, and stdout targets for stdin smoke tests.
+1. **Tests.** Add Catch2 unit tests under `test/lib/` mirroring `test/lib/src/test_json_parser.cpp`, `test/lib/src/test_logfmt_parser.cpp`, `test/lib/src/test_csv_parser.cpp`, or `test/lib/src/test_regex_parser.cpp` (the latter doubles as the template-registry coverage seam via `test/lib/src/test_regex_templates.cpp`), and pipeline tests under `test/lib/src/test_parser_pipeline.cpp` if you want coverage of the static-pipeline cancellation / coalescing / new-keys paths. Stream-Mode coverage lives in `test/lib/src/test_stream_line_source.cpp`, `test/lib/src/test_tailing_bytes_producer.cpp`, and `test/lib/src/test_stream_stop_teardown.cpp`; stdin coverage lives in `test_stdin_bytes_producer.cpp` and `test_stdin_peek.cpp`. For Qt Test smoke coverage, add fixtures under `test/app/fixtures/` and reference them from `fixtures.qrc`. Raw-byte fixtures (negative tests, hand-crafted edge cases) use `TestLogFile::Write(...)`; record-driven fixtures use `TestStructuredLogFile` as above. The `test/log_generator/` binary takes `--format` (`json`, `logfmt`, `csv`, or a regex-template format like `syslog` / `apache-combined` / `java`; run `--list-formats`), `--lines` / `--size` / `--duration` limits, `--rate` pacing, `--roll-*` rotation, and `-o -` for stdin smoke tests; see [Generating logs](#generating-logs).
 
 Timestamp parsing / back-fill, key interning, column-layout updates, retention eviction, and Qt-side bridging fall out of the existing infrastructure as long as your decoder emits `LogLine`s through one of the two harnesses.
 
@@ -405,7 +410,7 @@ To teach the viewer a new regex-based log format (a vendor-specific syslog diale
 >
 > - **Logrus default text formatter** emits `time="..." level=info msg="..." key=val` — that's logfmt. Use [`LogfmtParser`](library/include/loglib/parsers/logfmt_parser.hpp), no template needed.
 > - **Heroku router log** emits `at=info method=GET path="/" host=... fwd="..." dyno=... connect=Xms service=Yms status=200 bytes=N` — also pure logfmt. Same parser.
-> - **Python `logging` default** has no portable shape (each app calls `logging.basicConfig` with its own format string), so we don't ship a built-in. The conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` shape is documented as a stock example under [`docs/regex_templates_examples/python_logging.json`](docs/regex_templates_examples/python_logging.json); copy it into `<AppDataLocation>/regex_templates/` if your app uses that layout. (Documented; not auto-detected.)
+> - **Python `logging` default** has no portable shape (each app calls `logging.basicConfig` with its own format string), so we don't ship a built-in. The conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` shape is documented as a stock example under [`doc/regex_templates_examples/python_logging.json`](doc/regex_templates_examples/python_logging.json); copy it into `<AppDataLocation>/regex_templates/` if your app uses that layout. (Documented; not auto-detected.)
 
 #### Built-in templates (shipped with the binary)
 
@@ -446,7 +451,7 @@ To teach the viewer a new regex-based log format (a vendor-specific syslog diale
 
 1. **(Optional, for popular formats) synthesizer + round-trip + benchmark.** If the new template covers a widely-shipped format (syslog, an Apache/nginx dialect, a common language runtime logger, ...), add a matching `test_common::LogFormat` factory in [`test/common/src/log_format.cpp`](test/common/src/log_format.cpp) that emits random lines conforming to the template's pattern (see `SyslogRfc3164Format()` / `ApacheCombinedFormat()` / `JavaLogFormat()` for the pattern). Wire it into all three seams so the format lands in every downstream harness:
 
-   - **`log_generator` CLI:** add a `REGEX_TEMPLATE_OPTIONS` row in [`test/log_generator/src/main.cpp`](test/log_generator/src/main.cpp) so `log_generator --format <slug>` picks it up (and the row shows in `--list-formats`).
+   - **`log_generator` CLI:** add a `FORMATS` row in [`test/log_generator/src/formats.cpp`](test/log_generator/src/formats.cpp) so `log_generator --format <name>` picks it up (and the row shows in `--list-formats`).
    - **Round-trip test:** add a `TEST_CASE` in [`test/lib/src/test_regex_template_generators.cpp`](test/lib/src/test_regex_template_generators.cpp) that runs 1000 synthesized records through `RegexParser(template.pattern)` and asserts zero errors. This is the load-bearing drift guard between the synthesizer and the pattern.
    - **Streaming benchmark:** add a `[.][benchmark][regex_parser][large]` case in [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) via the shared `RunRegexTemplateBenchmark(...)` helper so per-template MB/s and lines/s land in the same regression-gate row.
 
@@ -663,13 +668,30 @@ The two presets are intentionally split because `ctest --preset release -L bench
 
 ### Targets
 
-| Target          | Coverage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests`         | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing) **and** the parser/lookup micro-benchmarks. The benchmark cases are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label.                                                                                                                                                                                                                                                                                                                                                        |
-| `apptest`       | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `log_generator` | Standalone multi-format fixture generator (manual UI smoke testing); not run by CTest. Unified `--format` accepts either a wire format (`json`, `logfmt`, `csv`) or a shipped regex-template synthesizer slug / display-name (`syslog`, `apache-combined`, `apache-common`, `apache-error`, `java`, ...; case-insensitive; run `--list-formats` for the full shortlist with descriptions). Also supports `--lines` / `--size` stop conditions, `--timeout` throttling, in-flight `--roll-strategy {rename,copytruncate,truncate}` for Stream Mode rotation tests, network URLs through `--target`, and stdout through `--target stdout://`, `--target -`, bare `stdout`, or `--output -`. |
+| Target          | Coverage                                                                                                                                                                                                                                                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests`         | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing) **and** the parser/lookup micro-benchmarks. The benchmark cases are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. |
+| `apptest`       | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                                              |
+| `log_generator` | Standalone multi-format log generator for fixtures and manual UI smoke testing; not run by CTest. Its option parsing, outputs, and rotation live in the `log_generator_core` library, covered by the `[log_generator_tool]` cases in `tests`. See [Generating logs](#generating-logs).                                             |
 
 Session-bundle library coverage lives in `test/lib/src/test_session_bundle.cpp`; bundle open/export smoke coverage lives in `test/app/src/main_window_test.cpp`.
+
+#### Generating logs
+
+`log_generator --help` groups its options by concern:
+
+- **Output:** `-f/--format` picks the line format (`--list-formats` lists them). `-o/--output` takes a file path, `-` for stdout, or `tcp://`, `tcp+tls://`, or `udp://HOST:PORT`. Without `-o`, the file is `generated.<ext>`, or `generated_<format>.log` for regex-template formats.
+- **Limits:** `-n/--lines`, `-s/--size`, and `-d/--duration` stop the run at the first one reached. Without any of them, the run stops after 10MiB; `--forever` runs until interrupted. Counts take K/M/G (powers of 1000), sizes take K/KB/KiB, M, G (powers of 1024), and durations need a unit (`ms`, `s`, `m`, `h`, `d`).
+- **Timing:** a live run stamps lines with the wall clock and writes as fast as it can. `--rate N` paces it at an average of N lines/s with exponentially distributed gaps. `--start-time` switches to a virtual clock that never sleeps, so hours of traffic are written in well under a second (default rate 20 lines/s). With either, `--profile daily` (default) adds a day/night cycle and `--bursts` adds short incident spikes with mostly warning and error records.
+- **Rotation** (file output only): `--roll-size` and `--roll-lines` rotate in flight using `--roll-strategy rename|copytruncate|truncate`, keeping `--roll-keep` backups.
+- **TLS** (`tcp+tls://` only): `--tls-ca`, `--tls-cert` with `--tls-key`, `--tls-sni`, and `--tls-skip-verify`.
+
+`--seed` makes a run reproducible. Every record has a 0-based `line_number` that keeps counting across rotations, so a reader can spot dropped lines.
+
+```sh
+# 3 hours of JSON logs averaging 5 lines/s, with a daily cycle and bursts.
+log_generator --start-time 2026-01-01T08:00:00 -d 3h --rate 5 --bursts --seed 1 -o three_hours.jsonl
+```
 
 #### Streaming smoke recipes
 
@@ -677,14 +699,14 @@ These recipes assume both binaries were built from the same tree. Network exampl
 
 ```sh
 # Standard input: generate JSON Lines and pipe them into the viewer.
-log_generator --format json --lines 1000 --timeout 5 --target stdout | StructuredLogViewer -
+log_generator -n 1000 --rate 200 -o - | StructuredLogViewer -
 
 # Plain TCP: launch the app, open a network stream on TCP port 5141,
 # then push 1000 lines through it from a second terminal.
-log_generator --target tcp://127.0.0.1:5141 --lines 1000 --timeout 5
+log_generator -n 1000 --rate 200 -o tcp://127.0.0.1:5141
 
 # Plain UDP: same shape but datagram-per-line.
-log_generator --target udp://127.0.0.1:5142 --lines 1000 --timeout 5
+log_generator -n 1000 --rate 200 -o udp://127.0.0.1:5142
 
 # TLS: mint a self-signed dev cert, point the GUI at it, then push
 # from log_generator with --tls-skip-verify (matching CN= would be
@@ -693,11 +715,10 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
     -days 1 -nodes -subj "/CN=localhost"
 # In the GUI: Open Network Stream... -> TCP, port 5143, Enable TLS,
 # pick cert.pem / key.pem, leave CA blank, OK.
-log_generator --target tcp+tls://127.0.0.1:5143 --lines 100 \
-    --timeout 50 --tls-skip-verify
+log_generator -n 100 --rate 20 -o tcp+tls://127.0.0.1:5143 --tls-skip-verify
 ```
 
-The `--roll-*` and `--append` flags are rejected on network and stdout targets (rotation is a filesystem concept), and `--tls-*` flags only apply to `tcp+tls://`. The lib-level Catch2 tests (`test/lib/src/test_tcp_server_producer.cpp`, `test_tcp_server_producer_tls.cpp`, `test_udp_server_producer.cpp`) already cover the producer side; the recipes above are for human eyes-on-screen verification of the GUI status-bar / row-flow paths.
+The `--roll-*` and `--append` options are rejected for network and stdout output, and `--tls-*` options are rejected for anything but `tcp+tls://`. The lib-level Catch2 tests (`test/lib/src/test_tcp_server_producer.cpp`, `test_tcp_server_producer_tls.cpp`, `test_udp_server_producer.cpp`) already cover the producer side; the recipes above are for human eyes-on-screen verification of the GUI status-bar / row-flow paths.
 
 ### Common pitfalls
 

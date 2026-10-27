@@ -1,9 +1,10 @@
 """Enforce loglib public/internal header policy.
 
 library/src and test/lib may include internals. Supported headers,
-app/, and test/app/ must not. Supported headers must also stay
-Qt-free and must not include implementation libraries (`mio`,
-`date`, simdjson, glaze, fmt, TBB, PCRE2).
+app/, test/app/, cli/, and test/cli/ must not. cli/ and test/cli/
+must also stay Qt-free. Supported headers must stay Qt-free and
+must not include implementation libraries (`mio`, `date`, simdjson,
+glaze, fmt, TBB, PCRE2).
 
 Invoked from pre-commit.
 """
@@ -15,7 +16,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONSUMER_TREES = (ROOT / "app", ROOT / "test" / "app")
+CONSUMER_TREES = (ROOT / "app", ROOT / "test" / "app", ROOT / "cli", ROOT / "test" / "cli")
+QT_FREE_TREES = (ROOT / "cli", ROOT / "test" / "cli")
 PUBLIC_HEADER_ROOT = ROOT / "library" / "include" / "loglib"
 SOURCE_SUFFIXES = {".hpp", ".h", ".cpp", ".cc"}
 
@@ -58,6 +60,12 @@ def main() -> int:
             text = path.read_text(encoding="utf-8")
             if INTERNAL_INCLUDE_RE.search(text):
                 violations.append(f"{rel(path)}: includes loglib/internal")
+
+    for tree in QT_FREE_TREES:
+        for path in iter_sources(tree):
+            text = path.read_text(encoding="utf-8")
+            if QT_INCLUDE_RE.search(text):
+                violations.append(f"{rel(path)}: includes a Qt header")
 
     for path in public_headers():
         text = path.read_text(encoding="utf-8")

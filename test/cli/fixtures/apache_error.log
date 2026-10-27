@@ -1,0 +1,4 @@
+[Sun Mar 01 00:00:00.017 2026] [access:warn] [pid 29982] [client 198.51.100.9:43994] request throttled
+[Sun Mar 01 00:00:01.120 2026] [authz_core:error] [pid 29982] [client 198.51.100.9:43995] AH01630: client denied
+[Sun Mar 01 00:00:02.004 2026] [core:notice] [pid 1] AH00094: Command line: httpd
+[Sun Mar 01 00:00:03 2026] [error] [client 127.0.0.1] File does not exist: /var/www/html/foo

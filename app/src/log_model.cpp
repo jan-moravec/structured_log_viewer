@@ -478,11 +478,11 @@ loglib::StopToken LogModel::BeginStreaming(
     options.stopToken = stopToken;
 
     // Live-tail is never unbounded: load the user's retention from
-    // `StreamingControl` (fallback to `DEFAULT_RETENTION_LINES`).
+    // `StreamingControl` (fallback to `loglib::DEFAULT_RETENTION_LINES`).
     size_t cap = StreamingControl::RetentionLines();
     if (cap == 0)
     {
-        cap = StreamingControl::DEFAULT_RETENTION_LINES;
+        cap = loglib::DEFAULT_RETENTION_LINES;
     }
     mRetentionCap = cap;
     mSink->SetRetentionCap(mRetentionCap);
@@ -854,29 +854,15 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    // Match `LogConfigurationManager::Update`: bubble each freshly
-    // appended `Type::Time` column to position 0.
+    // Bubble each freshly appended `Type::Time` column to position 0.
     if (columnsGrew)
     {
-        const auto &columns = mLogTable.Configuration().Configuration().columns;
-        std::vector<int> newTimestampColumnIndices;
-        for (int columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
+        for (const size_t srcIndex : mLogTable.TimeColumnsToFront(static_cast<size_t>(oldColumnCount)))
         {
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::ColumnType::Time)
+            const int source = static_cast<int>(srcIndex);
+            if (beginMoveColumns(QModelIndex(), source, source, QModelIndex(), 0))
             {
-                newTimestampColumnIndices.push_back(columnIndex);
-            }
-        }
-        // Process low-to-high so unprocessed (higher) indices don't shift.
-        for (const int srcIndex : newTimestampColumnIndices)
-        {
-            if (srcIndex == 0)
-            {
-                continue;
-            }
-            if (beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), 0))
-            {
-                mLogTable.MoveColumn(static_cast<size_t>(srcIndex), 0);
+                mLogTable.MoveColumn(srcIndex, 0);
                 endMoveColumns();
             }
         }

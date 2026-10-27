@@ -138,6 +138,8 @@ enum class SessionOperationState : std::uint32_t
     Disconnected = 1U << 6,
     /** @brief A queued operation failure is waiting to be presented. */
     Failed = 1U << 7,
+    /** @brief A network listener is waiting for its first sender. */
+    Listening = 1U << 8,
 };
 
 /**

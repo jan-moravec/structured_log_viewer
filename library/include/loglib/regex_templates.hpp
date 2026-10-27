@@ -153,6 +153,28 @@ struct RegexTemplate
 [[nodiscard]] std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept;
 
 /**
+ * @brief A built-in template plus the slug printed by `slp formats`.
+ *
+ * `slug` is the data-file stem (`apache_combined` for
+ * `apache_combined.json`) and stays stable when the display name
+ * changes.
+ */
+struct BuiltinRegexTemplateInfo
+{
+    std::string slug;
+    RegexTemplate tmpl;
+};
+
+/**
+ * @brief Copies each built-in template with its data-file slug.
+ *
+ * Entries whose embedded JSON fails to parse are omitted. Order
+ * matches `BuiltinRegexTemplates()`: lower `priority` first, and
+ * filename order within one priority.
+ */
+[[nodiscard]] std::vector<BuiltinRegexTemplateInfo> BuiltinRegexTemplateCatalog();
+
+/**
  * @brief Register a snapshot of *extra* templates (user-supplied,
  * app-side) so `RegexParser::IsValid` / `DetectRegexTemplate` see
  * them in the merged probe loop. Replaces any previously

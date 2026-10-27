@@ -1,0 +1,2 @@
+{"ts":"2024-01-01T00:00:00.000000Z","level":"info","msg":"hello","service":"auth"}
+{"ts":"2024-01-01T00:00:01.000000Z","level":"error","msg":"boom","service":"auth"}

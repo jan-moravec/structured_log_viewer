@@ -109,6 +109,27 @@ TEST_CASE("user_timestamp: zoned formats are not naive", "[user_timestamp]")
     REQUIRE_FALSE(zoned->isNaive);
 }
 
+TEST_CASE("user_timestamp: a trailing Z is not naive", "[user_timestamp]")
+{
+    const std::vector<std::string> isoFormats{"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
+    const auto utc = ParseUserTimestamp("2024-04-28T12:34:56Z", isoFormats, ReferenceNow());
+    REQUIRE(utc.has_value());
+    REQUIRE_FALSE(utc->isNaive);
+
+    const auto offset = ParseUserTimestamp("2024-04-28T12:34:56+00:00", isoFormats, ReferenceNow());
+    REQUIRE(offset.has_value());
+    REQUIRE(utc->micros == offset->micros);
+
+    const auto fractional = ParseUserTimestamp("2024-04-28 12:34:56.5Z", {}, ReferenceNow());
+    REQUIRE(fractional.has_value());
+    REQUIRE_FALSE(fractional->isNaive);
+
+    const auto naive = ParseUserTimestamp("2024-04-28T12:34:56", isoFormats, ReferenceNow());
+    REQUIRE(naive.has_value());
+    REQUIRE(naive->isNaive);
+    REQUIRE(naive->micros == utc->micros);
+}
+
 TEST_CASE("user_timestamp: empty and garbage input is rejected", "[user_timestamp]")
 {
     REQUIRE_FALSE(ParseUserTimestamp("", {}, ReferenceNow()).has_value());

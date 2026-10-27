@@ -4,6 +4,7 @@
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/time_zone_context.hpp>
+#include <loglib/tzdata_search.hpp>
 
 #include <test_common/log_generator.hpp>
 
@@ -18,6 +19,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 using namespace loglib;
 
@@ -260,22 +262,11 @@ std::unique_ptr<loglib::FileLineSource> TestLogFile::CreateFileLineSource() cons
 
 std::filesystem::path FindTestTzdata()
 {
-    static const auto TZ_DATA = std::filesystem::path("tzdata");
-    std::filesystem::path path = std::filesystem::current_path();
-    while (true)
+    std::vector<std::filesystem::path> searched;
+    const loglib::TzdataSearchRoots roots{.startDirectory = std::filesystem::current_path()};
+    if (auto found = loglib::FindTzdataDirectory(roots, searched); !found.empty())
     {
-        const auto tzdataPath = path / TZ_DATA;
-        std::error_code ec;
-        if (std::filesystem::exists(tzdataPath, ec) && std::filesystem::is_directory(tzdataPath, ec))
-        {
-            return tzdataPath;
-        }
-        const auto parent = path.parent_path();
-        if (parent.empty() || parent == path)
-        {
-            break;
-        }
-        path = parent;
+        return found;
     }
 
     FAIL(

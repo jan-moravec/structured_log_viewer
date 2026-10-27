@@ -185,9 +185,10 @@ private:
 
 /**
  * @brief String predicate that defers to a caller-supplied callback.
- * Keeps Qt-flavoured regex/wildcard semantics in the GUI without
- * pulling Qt into the lib. The caller owns callback thread-safety;
- * the GUI builder pre-JITs its `QRegularExpression`.
+ *
+ * `MakeStringMatcher` supplies the PCRE2 and wildcard callbacks.
+ * The caller owns callback thread-safety; matchers used from filter
+ * workers must be safe to copy and to call concurrently.
  */
 class CallbackStringRowPredicate
 {

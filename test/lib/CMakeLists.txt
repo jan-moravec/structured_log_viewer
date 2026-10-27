@@ -28,16 +28,21 @@ add_executable(
     "src/test_histogram_bucket_index.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
+    "src/test_leaf_rule_compile.cpp"
     "src/test_log_configuration.cpp"
     "src/test_log_compare.cpp"
     "src/test_log_data.cpp"
+    "src/test_arrival_clock.cpp"
     "src/test_log_factory.cpp"
     "src/test_log_file.cpp"
+    "src/test_log_generator_tool.cpp"
     "src/test_log_filter.cpp"
     "src/test_log_line.cpp"
     "src/test_log_processing.cpp"
+    "src/test_log_string_matcher.cpp"
     "src/test_log_table.cpp"
     "src/test_logfmt_parser.cpp"
+    "src/test_parse_error_text.cpp"
     "src/test_parser_pipeline.cpp"
     "src/test_query_parser.cpp"
     "src/test_regex_parser.cpp"
@@ -47,14 +52,18 @@ add_executable(
     "src/test_rotation_siblings.cpp"
     "src/test_row_ordering.cpp"
     "src/test_session_bundle.cpp"
+    "src/test_source_plan.cpp"
     "src/test_stdin_bytes_producer.cpp"
     "src/test_stdin_peek.cpp"
     "src/test_stream_line_source.cpp"
+    "src/test_stream_sink.cpp"
     "src/test_stream_stop_teardown.cpp"
     "src/test_tailing_bytes_producer.cpp"
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"
     "src/test_udp_server_producer.cpp"
+    "src/test_tzdata_search.cpp"
+    "src/test_user_paths.cpp"
     "src/test_user_timestamp.cpp"
 )
 
@@ -78,6 +87,7 @@ target_link_libraries(
     PRIVATE
         loglib
         test_common
+        log_generator_core
         Catch2::Catch2WithMain
         project_warnings
         TBB::tbb

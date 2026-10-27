@@ -8,6 +8,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <optional>
@@ -685,6 +686,31 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
 std::vector<KeyId> LogTable::TakePendingLevelBubbleKeys() noexcept
 {
     return mEnum.TakePendingLevelBubbleKeys();
+}
+
+std::vector<size_t> LogTable::TimeColumnsToFront(size_t firstColumn) const
+{
+    std::vector<size_t> moves;
+    const auto &columns = mConfiguration.Configuration().columns;
+    for (size_t columnIndex = std::max<size_t>(firstColumn, 1); columnIndex < columns.size(); ++columnIndex)
+    {
+        if (columns[columnIndex].type == ColumnType::Time)
+        {
+            moves.push_back(columnIndex);
+        }
+    }
+    return moves;
+}
+
+void LogTable::AppendBatchArranged(StreamedBatch batch)
+{
+    const size_t oldColumnCount = ColumnCount();
+    AppendBatch(std::move(batch));
+    for (const size_t srcIndex : TimeColumnsToFront(oldColumnCount))
+    {
+        MoveColumn(srcIndex, 0);
+    }
+    ApplyPendingLevelBubbles();
 }
 
 void LogTable::ApplyPendingLevelBubbles()

@@ -33,6 +33,7 @@ add_library(
     src/format_detection.cpp
     src/histogram_bucket_index.cpp
     src/key_index.cpp
+    src/parse_error_text.cpp
     src/parse_file.cpp
     src/static_parser_pipeline.cpp
     src/stream_line_source.cpp
@@ -54,13 +55,19 @@ add_library(
     src/log_level.cpp
     src/log_line.cpp
     src/log_parser.cpp
+    src/leaf_rule_compile.cpp
     src/log_processing.cpp
+    src/log_string_matcher.cpp
     src/time_zone_context.cpp
     src/user_timestamp.cpp
     src/log_table.cpp
     src/normalized_json_row.cpp
     src/query_parser.cpp
     src/rotation_siblings.cpp
+    src/source_plan.cpp
+    src/tzdata_search.cpp
+    src/user_paths.cpp
+    src/version.cpp
     src/row_ordering.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
@@ -103,6 +110,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/highlight_rule.hpp
     include/loglib/histogram_bucket_index.hpp
     include/loglib/key_index.hpp
+    include/loglib/leaf_rule_compile.hpp
     include/loglib/line_source.hpp
     include/loglib/log_compare.hpp
     include/loglib/log_configuration.hpp
@@ -115,8 +123,10 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/log_parse_sink.hpp
     include/loglib/log_parser.hpp
     include/loglib/log_processing.hpp
+    include/loglib/log_string_matcher.hpp
     include/loglib/log_table.hpp
     include/loglib/log_value.hpp
+    include/loglib/parse_error_text.hpp
     include/loglib/parse_file.hpp
     include/loglib/parser_options.hpp
     include/loglib/parsers/csv_parser.hpp
@@ -130,6 +140,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/session_bundle.hpp
     include/loglib/session_view.hpp
     include/loglib/source_descriptor.hpp
+    include/loglib/source_plan.hpp
     include/loglib/stdin_bytes_producer.hpp
     include/loglib/stdin_peek.hpp
     include/loglib/stop_token.hpp
@@ -140,7 +151,10 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/time_zone_context.hpp
     include/loglib/transparent_string_hash.hpp
     include/loglib/udp_server_producer.hpp
+    include/loglib/tzdata_search.hpp
+    include/loglib/user_paths.hpp
     include/loglib/user_timestamp.hpp
+    include/loglib/version.hpp
 )
 
 file(
@@ -165,6 +179,10 @@ endif()
 target_sources(loglib PUBLIC FILE_SET HEADERS BASE_DIRS include FILES ${LOGLIB_PUBLIC_HEADERS})
 
 target_compile_features(loglib PUBLIC cxx_std_23)
+
+# `Version()` is the only version surface. The string is private to
+# this target so dependents cannot depend on the macro name.
+target_compile_definitions(loglib PRIVATE "LOGLIB_VERSION_STRING=\"${PROJECT_VERSION}\"")
 
 target_link_libraries(
     loglib
@@ -193,9 +211,12 @@ target_link_libraries(
     # no efsw type appears in any public loglib header, so it stays PRIVATE.
     # asio is used by Tcp/UdpServerProducer; no Asio type leaks through the public
     # loglib headers (pimpl), so it stays PRIVATE.
-    # PCRE2 backs the regex-template parser (RegexParser). All PCRE2 includes
-    # are confined to `library/src/parsers/regex_parser.cpp`; no `pcre2_*`
-    # type appears in any public loglib header. PRIVATE link.
+    # PCRE2 backs the regex-template parser (RegexParser) and
+    # `MakeStringMatcher`. Includes stay in `regex_parser.cpp` and
+    # `log_string_matcher.cpp`; no `pcre2_*` type appears in any public
+    # loglib header. PRIVATE link.
+    # utf8proc decodes UTF-8 and classifies whitespace for `MakeStringMatcher`;
+    # it is included only by `log_string_matcher.cpp`. PRIVATE link.
     # zlib / bzip2 / liblzma / zstd back `loglib::internal::DecompressingByteSource`
     # for transparent decompression of the four canonical codecs. All codec
     # includes are confined to `library/src/decompressing_byte_source.cpp`;
@@ -212,6 +233,7 @@ target_link_libraries(
         $<BUILD_INTERFACE:efsw>
         $<BUILD_INTERFACE:asio::asio>
         $<BUILD_INTERFACE:PCRE2::pcre2-8>
+        $<BUILD_INTERFACE:utf8proc::utf8proc>
         $<BUILD_INTERFACE:ZLIB::ZLIB>
         $<BUILD_INTERFACE:BZip2::BZip2>
         $<BUILD_INTERFACE:LibLZMA::LibLZMA>

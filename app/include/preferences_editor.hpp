@@ -10,6 +10,8 @@
 #include <QWidget>
 
 class QCloseEvent;
+class QScrollArea;
+class QShowEvent;
 class ThemeControl;
 
 class PreferencesEditor : public QWidget
@@ -35,6 +37,15 @@ protected:
     /// slots set `mClosingViaButton` to bypass this path -- they've
     /// already taken care of state.
     void closeEvent(QCloseEvent *event) override;
+
+    /**
+     * @brief Sizes the window to its content on the first show.
+     *
+     * The height is capped at 90% of the screen's available height and
+     * the window is moved up when needed, so Ok and Cancel stay on
+     * screen; the settings above them scroll.
+     */
+    void showEvent(QShowEvent *event) override;
 
 signals:
     /// Fired after Ok commits the new retention cap to `QSettings`.
@@ -103,6 +114,10 @@ private:
     QComboBox *mOverviewRailWidthComboBox;
     QCheckBox *mRestoreLastSessionCheckBox;
     QSpinBox *mRecentSessionsMaxSpinBox;
+    QScrollArea *mScrollArea = nullptr;
+
+    /// Whether the first `showEvent` already sized the window.
+    bool mSizedToScreen = false;
 
     /// Non-owning. Outlives this dialog (lives in `main()`).
     /// `nullptr` is tolerated for tests; the theme group skips
