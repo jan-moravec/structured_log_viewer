@@ -1,0 +1,3 @@
+{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"ok"}
+this is not json
+{"ts":"2024-01-01T00:00:02Z","level":"error","msg":"also-ok"}

@@ -215,12 +215,17 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     {
         ops |= static_cast<std::uint32_t>(SessionOperationState::Exporting);
     }
-    const bool isNetworkOrStdin =
-        mCurrentSource.has_value() && (mCurrentSource->kind == loglib::Source::Kind::NetworkStream ||
-                                       mCurrentSource->kind == loglib::Source::Kind::Stdin);
+    const bool isNetwork = mCurrentSource.has_value() && mCurrentSource->kind == loglib::Source::Kind::NetworkStream;
+    const bool isStdin = mCurrentSource.has_value() && mCurrentSource->kind == loglib::Source::Kind::Stdin;
     if (mSourceWaiting)
     {
-        if (isNetworkOrStdin)
+        // Network producers report waiting only until the first bytes
+        // arrive, so a waiting network source is a listener with no sender.
+        if (isNetwork)
+        {
+            ops |= static_cast<std::uint32_t>(SessionOperationState::Listening);
+        }
+        else if (isStdin)
         {
             ops |= static_cast<std::uint32_t>(SessionOperationState::Disconnected);
         }
@@ -260,6 +265,10 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     else if (hasOp(SessionOperationState::Disconnected))
     {
         snapshot.statusSummary = tr("Disconnected");
+    }
+    else if (hasOp(SessionOperationState::Listening))
+    {
+        snapshot.statusSummary = tr("Listening");
     }
     else if (hasOp(SessionOperationState::Paused))
     {

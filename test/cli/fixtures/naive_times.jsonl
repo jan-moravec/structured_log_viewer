@@ -1,0 +1,6 @@
+{"timestamp":"2026-03-01T00:00:00.082","msg":"first"}
+{"timestamp":"2026-03-01T12:30:00","msg":"before"}
+{"timestamp":"2026-03-01T13:00:00","msg":"start"}
+{"timestamp":"2026-03-01T13:30:00","msg":"middle"}
+{"timestamp":"2026-03-01T14:00:00","msg":"end"}
+{"timestamp":"2026-03-01T14:30:00","msg":"after"}

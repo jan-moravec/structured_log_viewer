@@ -1,6 +1,8 @@
 #include "regex_template_registry.hpp"
+#include "qstring_path.hpp"
 
 #include <loglib/regex_templates.hpp>
+#include <loglib/user_paths.hpp>
 
 #include <QByteArray>
 #include <QChar>
@@ -116,7 +118,18 @@ std::optional<loglib::RegexTemplate> RegexTemplateRegistry::Load(const QString &
 
 QDir RegexTemplateRegistry::UserTemplatesDir()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    // Tests enable `QStandardPaths` test mode and a private organization
+    // name so they stay out of the real profile. Production uses the
+    // loglib resolver, which is the same AppData location with test mode off.
+    QString base;
+    if (QStandardPaths::isTestModeEnabled())
+    {
+        base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    }
+    else
+    {
+        base = logapp::FsPathToQString(loglib::UserDataDirectory());
+    }
     if (base.isEmpty())
     {
         base = QDir::tempPath() + QStringLiteral("/StructuredLogViewer");

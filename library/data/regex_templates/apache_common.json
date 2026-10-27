@@ -1,6 +1,6 @@
 {
     "name": "Apache/nginx Common Log Format",
-    "pattern": "^(?<clientip>\\S+)\\s+(?<ident>\\S+)\\s+(?<auth>\\S+)\\s+\\[(?<timestamp>[^\\]]+)\\]\\s+\"(?:(?<verb>\\S+)\\s+(?<request>\\S+)(?:\\s+HTTP/(?<httpversion>\\S+))?|-)\"\\s+(?<response>\\d+)\\s+(?<bytes>\\d+|-)$",
+    "pattern": "^(?<clientip>\\S+)\\s+(?<ident>\\S+)\\s+(?<auth>\\S+)\\s+\\[(?<timestamp>[^\\]]+)\\]\\s+\"(?:(?<verb>\\S+)\\s+(?<request>\\S+)(?:\\s+HTTP/(?<httpversion>\\S+))?|-)\"\\s+(?<response>\\d+)\\s+(?:(?<bytes>\\d+)|-)$",
     "sampleLines": [
         "127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326",
         "10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] \"POST /api/1/rest/foo HTTP/1.1\" 200 -",

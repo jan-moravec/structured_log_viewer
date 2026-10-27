@@ -29,6 +29,7 @@ repos:
     rev: 1.0.0
     hooks:
       - id: mdformat
+        exclude: ^test/cli/golden/
         additional_dependencies:
           - mdformat-gfm
           - mdformat-footnote
@@ -42,7 +43,7 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        args: ["--ignore-words-list=merrors,worstcase"]
+        args: ["--ignore-words-list=merrors,unparseable,worstcase"]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.4

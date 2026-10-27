@@ -509,6 +509,69 @@ TEST_CASE(
     CHECK(std::get<std::string_view>(row1message) == std::string_view{"Application starting"});
 }
 
+TEST_CASE("Apache error log splits module:level into module and level", "[regex_templates][regex_parser]")
+{
+    // Apache 2.4 writes `[module:level]`; a bare level would otherwise
+    // keep the column from resolving to canonical log levels.
+    const RegexTemplate *tmpl = FindTemplateByName("Apache error log");
+    REQUIRE(tmpl != nullptr);
+    const RegexParser parser{tmpl->pattern};
+
+    const TestLogFile file{"regex_templates_apache_error_module_level.log"};
+    file.Write(
+        "[Sun Mar 01 00:00:00.017 2026] [authz_core:error] [pid 29982] [client 198.51.100.9:43994] AH01630: denied\n"
+        "[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] File does not exist: /var/www/html/foo\n"
+    );
+
+    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    const auto row0module = result.data.Lines()[0].GetValue("module");
+    const auto row0level = result.data.Lines()[0].GetValue("level");
+    const auto row0client = result.data.Lines()[0].GetValue("client");
+    REQUIRE(std::holds_alternative<std::string_view>(row0module));
+    CHECK(std::get<std::string_view>(row0module) == std::string_view{"authz_core"});
+    REQUIRE(std::holds_alternative<std::string_view>(row0level));
+    CHECK(std::get<std::string_view>(row0level) == std::string_view{"error"});
+    REQUIRE(std::holds_alternative<std::string_view>(row0client));
+    CHECK(std::get<std::string_view>(row0client) == std::string_view{"198.51.100.9:43994"});
+
+    // Legacy form: no module, the whole tag is the level.
+    const auto row1module = result.data.Lines()[1].GetValue("module");
+    const auto row1level = result.data.Lines()[1].GetValue("level");
+    CHECK_FALSE(std::holds_alternative<std::string_view>(row1module));
+    REQUIRE(std::holds_alternative<std::string_view>(row1level));
+    CHECK(std::get<std::string_view>(row1level) == std::string_view{"error"});
+}
+
+TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][regex_parser]")
+{
+    // A `-` byte count means no body; capturing it as text would mark the
+    // otherwise numeric `bytes` column as mixed.
+    for (const std::string_view name : {"Apache/nginx Combined Log Format", "Apache/nginx Common Log Format"})
+    {
+        CAPTURE(name);
+        const RegexTemplate *tmpl = FindTemplateByName(name);
+        REQUIRE(tmpl != nullptr);
+        const RegexParser parser{tmpl->pattern};
+
+        const TestLogFile file{"regex_templates_apache_dash_bytes.log"};
+        const std::string tail = name.contains("Combined") ? R"( "-" "curl/8.5.0")" : "";
+        std::string content = R"(10.0.0.1 - - [11/Feb/2013:06:43:36 +0000] "GET /a HTTP/1.1" 200 5778)";
+        content.append(tail).append("\n");
+        content.append(R"(10.0.0.1 - - [11/Feb/2013:06:43:37 +0000] "HEAD /a HTTP/1.1" 304 -)");
+        content.append(tail).append("\n");
+        file.Write(content);
+
+        const ParseResult result = ParseFile(parser, file.GetFilePath());
+        REQUIRE(result.errors.empty());
+        REQUIRE(result.data.Lines().size() == 2);
+        CHECK_FALSE(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue("bytes")));
+        CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[1].GetValue("bytes")));
+    }
+}
+
 namespace
 {
 

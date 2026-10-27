@@ -110,6 +110,17 @@ namespace
     return UserTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
 }
 
+/**
+ * @brief Returns whether @p text ends in an ISO 8601 UTC designator.
+ *
+ * The ISO fast path for `%FT%T` and `%F %T` accepts a trailing `Z`
+ * although those formats have no zone specifier.
+ */
+[[nodiscard]] bool EndsWithUtcDesignator(std::string_view text) noexcept
+{
+    return text.size() >= 2 && text.back() == 'Z' && text[text.size() - 2] >= '0' && text[text.size() - 2] <= '9';
+}
+
 } // namespace
 
 bool FormatHasZoneSpecifier(std::string_view format) noexcept
@@ -179,7 +190,8 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
         if (TryParseTimestamp(trimmed, fmt, ClassifyTimestampFormat(fmt), scratch, parsed))
         {
             return UserTimestampParse{
-                .micros = parsed.time_since_epoch().count(), .isNaive = !FormatHasZoneSpecifier(fmt)
+                .micros = parsed.time_since_epoch().count(),
+                .isNaive = !FormatHasZoneSpecifier(fmt) && !EndsWithUtcDesignator(trimmed)
             };
         }
     }

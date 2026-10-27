@@ -11,6 +11,7 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_parse_sink.hpp"
+#include "loglib/parse_error_text.hpp"
 #include "loglib/parser_options.hpp"
 #include "loglib/stop_token.hpp"
 
@@ -401,9 +402,7 @@ void RunStaticParserPipeline(
             out.reserve(out.size() + parsed.errors.size());
             for (auto &err : parsed.errors)
             {
-                out.push_back(
-                    fmt::format("Error on line {}: {}", err.relativeLine + lineNumberDelta, std::move(err.body))
-                );
+                out.push_back(FormatLineError(err.relativeLine + lineNumberDelta, err.body));
             }
             parsed.errors.clear();
         };

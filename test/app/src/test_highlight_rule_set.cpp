@@ -11,9 +11,9 @@
 // test for the shared `CompileExpression` path (`leaf_rule_compile`).
 
 #include "highlight_rule_set.hpp"
-#include "leaf_rule_compile.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include <loglib/leaf_rule_compile.hpp>
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
@@ -576,7 +576,7 @@ private slots:
         andChildren.push_back(loglib::MakeLeaf(std::move(rightLeaf)));
         const loglib::FilterExpression expr = loglib::MakeNot(loglib::MakeAnd(std::move(andChildren)));
 
-        const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
+        const loglib::CompiledFilterExpression compiled = loglib::CompileExpression(expr, columns, /*table=*/nullptr);
 
         // Absence propagates: whole tree compiles to match-all,
         // not match-none. `IsMatchAllCompiled` catches the fix
@@ -618,7 +618,7 @@ private slots:
         topChildren.push_back(loglib::MakeNot(loglib::MakeAnd(std::move(notInner))));
         const loglib::FilterExpression expr = loglib::MakeAnd(std::move(topChildren));
 
-        const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
+        const loglib::CompiledFilterExpression compiled = loglib::CompileExpression(expr, columns, /*table=*/nullptr);
         // Sibling survives: top-level `And` has one child (the
         // svc leaf) and one referenced column (svc's index).
         const auto *rootAnd = std::get_if<loglib::CompiledFilterExpression::And>(&compiled.node);
@@ -653,7 +653,7 @@ private slots:
         loglib::FilterExpression bareNullNot;
         bareNullNot.node = loglib::FilterExpression::Not{};
         const loglib::CompiledFilterExpression compiledBare =
-            CompileExpression(bareNullNot, columns, /*table=*/nullptr);
+            loglib::CompileExpression(bareNullNot, columns, /*table=*/nullptr);
         QVERIFY2(
             loglib::IsMatchAllCompiled(compiledBare),
             "`Not{child=null}` at the root must compile to match-all, matching `EvaluateExpression`"
@@ -675,7 +675,8 @@ private slots:
         orChildren.push_back(loglib::MakeLeaf(std::move(svcLeaf)));
         const loglib::FilterExpression orExpr = loglib::MakeOr(std::move(orChildren));
 
-        const loglib::CompiledFilterExpression compiledOr = CompileExpression(orExpr, columns, /*table=*/nullptr);
+        const loglib::CompiledFilterExpression compiledOr =
+            loglib::CompileExpression(orExpr, columns, /*table=*/nullptr);
         // Cheap-first ordering plus short-circuit accept means the
         // Or contains a match-all child; `IsMatchAllCompiled` only
         // catches the fully-collapsed shape, so assert the

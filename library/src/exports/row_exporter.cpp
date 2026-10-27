@@ -112,26 +112,17 @@ public:
         ProgressCallback progress,
         void *progressUserData
     ) override;
-
-private:
-    /// Append one RFC 4180 cell. Prefix `=` and `@` values with `'`
-    /// to prevent spreadsheet formula injection.
-    static void AppendCsvCell(std::string &out, std::string_view cell);
-
-    /// True iff @p cell starts with a spreadsheet formula / DDE
-    /// prefix (`=` or `@`).
-    [[nodiscard]] static bool IsFormulaTrigger(std::string_view cell) noexcept
-    {
-        if (cell.empty())
-        {
-            return false;
-        }
-        const char first = cell.front();
-        return first == '=' || first == '@';
-    }
 };
 
-void CsvExporter::AppendCsvCell(std::string &out, std::string_view cell)
+/// True iff @p cell starts with a spreadsheet formula / DDE prefix (`=` or `@`).
+[[nodiscard]] bool IsFormulaTrigger(std::string_view cell) noexcept
+{
+    return !cell.empty() && (cell.front() == '=' || cell.front() == '@');
+}
+
+} // namespace
+
+void AppendCsvField(std::string &out, std::string_view cell)
 {
     const bool formulaTrigger = IsFormulaTrigger(cell);
     const bool hasSpecial = cell.find_first_of(",\"\r\n") != std::string_view::npos;
@@ -161,6 +152,9 @@ void CsvExporter::AppendCsvCell(std::string &out, std::string_view cell)
     out.push_back('"');
 }
 
+namespace
+{
+
 void CsvExporter::Run(
     const RowSource &source,
     ExportSink &sink,
@@ -189,7 +183,7 @@ void CsvExporter::Run(
             first = false;
             if (col < config.columns.size())
             {
-                AppendCsvCell(scratch, config.columns[col].header);
+                AppendCsvField(scratch, config.columns[col].header);
             }
         }
         // Use LF consistently across export formats.
@@ -225,7 +219,7 @@ void CsvExporter::Run(
             first = false;
             cellBuffer.clear();
             const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
-            AppendCsvCell(scratch, formatted);
+            AppendCsvField(scratch, formatted);
         }
         scratch.push_back('\n');
         sink.Write(scratch);

@@ -14,9 +14,10 @@ namespace loglib
  * @brief Parsed Go-to-timestamp input.
  *
  * `micros` is epoch microseconds. `isNaive` is true when the
- * accepted format has no time-zone specifier, so the caller must
- * shift through the display zone before comparing stored UTC
- * timestamps. Relative shortcuts always set `isNaive` to false.
+ * accepted format has no time-zone specifier and the input does not
+ * end in an ISO 8601 `Z`, so the caller must shift through the
+ * display zone before comparing stored UTC timestamps. Relative
+ * shortcuts always set `isNaive` to false.
  */
 struct UserTimestampParse
 {

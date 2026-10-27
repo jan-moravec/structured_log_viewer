@@ -33,6 +33,9 @@ struct ParsedCli
 /// Parse CLI arguments. Unknown flags are reported to stderr but
 /// the positional arguments still flow through, so a typo in the
 /// middle of an open-files gesture does not fail the entire launch.
+/// `--help` and `--version` print usage or the application version
+/// and exit the process before any window opens; on Windows, Qt shows
+/// the text in a message box when no console is attached.
 /// `env` lets tests drive the parser with a hermetic environment;
 /// production passes `QProcessEnvironment::systemEnvironment()`.
 [[nodiscard]] inline ParsedCli ParseCli(const QStringList &args, const QProcessEnvironment &env)
@@ -42,6 +45,8 @@ struct ParsedCli
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Structured Log Viewer"));
     parser.setSingleDashWordOptionMode(QCommandLineParser::ParseAsLongOptions);
+    const QCommandLineOption helpOption = parser.addHelpOption();
+    const QCommandLineOption versionOption = parser.addVersionOption();
 
     const QCommandLineOption newInstanceOption(
         QStringLiteral("new-instance"),
@@ -104,6 +109,14 @@ struct ParsedCli
     if (!parser.parse(filteredArgs))
     {
         ::logapp::LogWarning() << "Unrecognised CLI argument:" << parser.errorText();
+    }
+    if (parser.isSet(helpOption))
+    {
+        parser.showHelp(0);
+    }
+    if (parser.isSet(versionOption))
+    {
+        parser.showVersion();
     }
 
     result.allowNewInstance = parser.isSet(newInstanceOption);

@@ -2440,16 +2440,20 @@ private:
     };
 
     /**
-     * @brief Expand rotation families in oldest-first order and deduplicate
-     * them according to @p gating. Bundles pass through unchanged.
-     * @p addedOut counts only auto-discovered paths absent from the
-     * input. @p primaryOut receives the first expanded family's
-     * canonical primary, or remains empty when nothing was added.
-     * @param logPaths The `logPaths` value.
-     * @param addedOut The `addedOut` value.
-     * @param gating The `gating` value.
-     * @param primaryOut The `primaryOut` value.
-     * @return The result described above.
+     * @brief Expand rotation families through `loglib::ResolveSourcePlan`.
+     *
+     * Session opt-out and loaded-locator dedup stay here: @p gating
+     * decides whether the current source turns rotation off or supplies
+     * `SourcePlanOptions::suppressKeys`. Empty paths and session bundles
+     * are not planned; they are appended after the plan. @p addedOut
+     * counts `ResolvedSource::autoAdded`. @p primaryOut receives the
+     * first auto-added entry's family primary, or stays empty.
+     *
+     * @param logPaths Log paths to open, in caller order.
+     * @param addedOut Receives the auto-added sibling count.
+     * @param gating Which parts of the current source constrain expansion.
+     * @param primaryOut Optional toast anchor for the first expanded family.
+     * @return Paths in load order.
      */
     [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(
         const QStringList &logPaths, int &addedOut, RotationSourceGating gating, QString *primaryOut = nullptr

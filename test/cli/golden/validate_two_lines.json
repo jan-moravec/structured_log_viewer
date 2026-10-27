@@ -1,0 +1,38 @@
+{
+  "format": "json",
+  "linesConsumed": 2,
+  "rowsProduced": 2,
+  "parseErrorCount": 0,
+  "errorRatePercent": 0,
+  "errors": [],
+  "columnHealth": [
+    {
+      "header": "ts",
+      "totalSlots": 2,
+      "presentSlots": 2,
+      "matchingSlots": 2,
+      "typeMismatch": false
+    },
+    {
+      "header": "level",
+      "totalSlots": 2,
+      "presentSlots": 2,
+      "matchingSlots": 2,
+      "typeMismatch": false
+    },
+    {
+      "header": "msg",
+      "totalSlots": 2,
+      "presentSlots": 2,
+      "matchingSlots": 2,
+      "typeMismatch": false
+    },
+    {
+      "header": "service",
+      "totalSlots": 2,
+      "presentSlots": 2,
+      "matchingSlots": 2,
+      "typeMismatch": false
+    }
+  ]
+}

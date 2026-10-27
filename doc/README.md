@@ -247,7 +247,7 @@ Network Stream Mode listens on a local TCP or UDP port and ingests structured lo
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
-- **Format** — **Auto-detect** (recommended default), JSON Lines, logfmt, CSV, or **Regex template**. *Auto-detect* peeks the first bytes off the socket and runs the same probe file and stdin openings use, so an untagged producer stream lands in the right parser without extra configuration; the peek is fed to the resolved parser via `ParserOptions::initialCarry`, so no bytes are lost. Pick a manual format when the initial line is genuinely ambiguous (short JSON that also looks like logfmt, an empty first regex line, etc.). **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
+- **Format** — **Auto-detect** (recommended default), JSON Lines, logfmt, CSV, or **Regex template**. *Auto-detect* waits for the first sender's data (an idle listener can wait indefinitely), peeks up to 500 ms or 16 KiB from that first byte, and runs the same probe file and stdin openings use, so an untagged producer stream lands in the right parser without extra configuration; the peek is fed to the resolved parser via `ParserOptions::initialCarry`, so no bytes are lost. Pick a manual format when the initial line is genuinely ambiguous (short JSON that also looks like logfmt, an empty first regex line, etc.). **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
@@ -267,7 +267,7 @@ The dialog values are persisted via `QSettings` so the next invocation defaults 
 
 ### Status bar and toolbar
 
-Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) and status-bar labels. The "filename" shown in the label is the listener URL — for example `Streaming tcp://0.0.0.0:5141 — N lines, M errors` or `Streaming udp://127.0.0.1:5142 — …`. Until the first byte arrives the label shows `Source unavailable — last seen tcp://… — 0 lines, 0 errors` (TCP) or the matching UDP variant, which makes a misconfigured client side obvious. Both protocols flip to `Streaming` on the first byte / datagram and never fall back, since there is no connection state to track on either side.
+Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) and status-bar labels. The "filename" shown in the label is the listener URL — for example `Streaming tcp://0.0.0.0:5141 — N lines, M errors` or `Streaming udp://127.0.0.1:5142 — …`. Until the first byte arrives the label shows `Listening on tcp://… — waiting for the first sender` (or the matching UDP URL) and the tab reads **Listening**, which makes a misconfigured client side obvious. Both protocols flip to `Streaming` on the first byte / datagram and never fall back, since there is no connection state to track on either side.
 
 ### Stop semantics
 
@@ -279,6 +279,10 @@ Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) an
 - **DTLS** — UDP is plaintext-only by design.
 - **Encrypted private keys / hardware tokens** — the TLS configuration accepts plain PEM cert + key files only. Decrypt offline before pointing the dialog at them.
 - **Auto-discovery of services on the network** — bind address and port are always entered explicitly.
+
+## Companion CLI
+
+Every package also ships `slp`, a command-line tool that runs the same parsers, filters, and exports without a window. Use it in scripts and CI: `slp query` extracts rows, `slp stats` and `slp validate` summarise and check a log, `slp tail` follows a file, stdin, or a TCP/UDP listener, and `slp bundle` writes a `.slvbundle` that **File → Open** restores with its filter, sort, columns, anchors, and highlight rules. `--save-session` and `--config` exchange the same session JSON the GUI saves. See the [`slp` reference](cli.md) for every flag, the exit codes, and recipes.
 
 ## Automatic Column Detection
 
@@ -505,7 +509,7 @@ Highlight rules let you paint whole rows in a custom foreground / background col
 
 Each rule targets exactly one column, identified by its stable *key* (not by its current visual position, so [reordering columns](#column-management) never disturbs a rule). The v1 editor exposes three shapes:
 
-- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's compact single-line rendering. Embedded line breaks are normalized to spaces before matching.
+- **Text (string)** — Exactly, Contains, Regular expression (PCRE2), or Wildcard against the column's compact single-line rendering. Embedded line breaks are normalized to spaces before matching. Wildcard `*` and `?` match `/` and `\`, and the pattern must match the whole value.
 - **Number** — an optional minimum and maximum. Rows whose column value falls inside the interval match; leaving a bound empty makes it unbounded on that side.
 - **Boolean** — pick whether **true** and / or **false** should highlight.
 
@@ -626,6 +630,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 - Every keystroke re-parses. The status label beneath the field shows either **Parsed OK.** (or **Parsed OK — will save as: …** when the pretty-printer normalises the input, e.g. lower-cases `in` to `IN` or trims whitespace), or **Parse error at position N: …** with a caret offset into the text.
 - **OK** is enabled only when the query parses. On accept the expression replaces the current filter tree wholesale. Top-level leaves the simple editor can represent (a plain per-column rule) reappear as individual entries in the Filters menu, so Edit / Remove still work on them; any `OR` / `NOT` structure that the simple menu can't represent stays under **Advanced Filter…** and roundtrips through save/load.
 - Leave the field empty to match every row (equivalent to **Filters → Clear All**).
+- The same syntax drives `slp --filter` on the command line (see [Companion CLI](#companion-cli)).
 
 **Leaves** — the atoms of a query — pair a column with an operator and a value:
 
@@ -633,8 +638,8 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 | --------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
 | `col:value`     | *Contains* — substring match for strings    | `service:auth`                                                               |
 | `col="..."`     | *Exactly* — quoted string, exact match      | `service="auth-service"`                                                     |
-| `col~/.../`     | *Regular expression* (Qt regex flavour)     | `msg ~ /err(or)?/`                                                           |
-| `col%"..."`     | *Wildcard* (`*` / `?` glob)                 | `path % "*.log"`                                                             |
+| `col~/.../`     | *Regular expression* (PCRE2)                | `msg ~ /err(or)?/`                                                           |
+| `col%"..."`     | *Wildcard* (`*` / `?`, whole string)        | `path % "*.log"`                                                             |
 | `col=42`        | Numeric equality (bare number, no quotes)   | `latency=42`                                                                 |
 | `col>=N`        | Numeric one-sided (`>`, `>=`, `<`, `<=`)    | `latency >= 100`                                                             |
 | `col=true`      | Boolean equality                            | `succeeded=false`                                                            |
@@ -645,6 +650,8 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
 
 String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use an inline regex flag to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum aliases are case-insensitive. Folded multi-line values are matched through their compact single-line rendering, with line breaks normalized to spaces.
+
+A wildcard matches the whole value. `*` is any sequence and `?` is one character, and both match `/` and `\`. `.` and `+` are literal. An unclosed `[` matches nothing.
 
 Value lists and ranges must carry a payload: `col IN []` and `col IN [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency IN [100..10]`.
 
@@ -742,7 +749,7 @@ Every window hosts a tab strip for independent investigations. Each tab keeps it
 ### Tab labels and indicators
 
 - While a source is bound, the tab uses the same automatic name as **File → Recent Sessions**: a file basename, `name + N more` for multi-file opens, or the stdin / network locator. Empty tabs with no saved name read `Untitled`. After a launch restore, network and stdin placeholders keep the name they had when the workspace was saved. Right-click a tab and choose **Rename Tab**, use **File → Rename Tab**, or press `F2` while the tab strip is focused to assign a custom title. Clear the name to restore automatic naming. Custom titles persist with the workspace. Long labels may elide visually; the tooltip keeps the full source, operation, unsaved-change, and parse-error text.
-- Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `∅`, `⚠`) but is never the only representation.
+- Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Listening, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `○`, `∅`, `⚠`) but is never the only representation.
 - The label ends with `●` for unsaved session changes, including an unsaved Highlight Rules draft, and `!` when parse errors are present.
 
 ### Closing tabs safely

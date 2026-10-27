@@ -33,6 +33,7 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/time_zone_context.hpp>
+#include <loglib/tzdata_search.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -59,28 +60,16 @@
 namespace
 {
 
-// Walk the CWD ancestor chain for a `tzdata/` sibling and load it as
-// the process-default `TimeZoneContext`. Mirrors the search the lib's
-// `InitializeTimezoneData` helper performs, minus the Catch2 dependency.
+// Load the `tzdata/` found along the CWD ancestor chain as the
+// process-default `TimeZoneContext`.
 void StageTimezoneData()
 {
-    static const auto TZ_DATA = std::filesystem::path("tzdata");
-    std::filesystem::path path = std::filesystem::current_path();
-    while (true)
+    std::vector<std::filesystem::path> searched;
+    const loglib::TzdataSearchRoots roots{.startDirectory = std::filesystem::current_path()};
+    if (const auto tzdata = loglib::FindTzdataDirectory(roots, searched); !tzdata.empty())
     {
-        const auto tzdataPath = path / TZ_DATA;
-        std::error_code ec;
-        if (std::filesystem::exists(tzdataPath, ec))
-        {
-            loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdataPath));
-            return;
-        }
-        const auto parent = path.parent_path();
-        if (parent.empty() || parent == path)
-        {
-            break;
-        }
-        path = parent;
+        loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata));
+        return;
     }
     qWarning() << "tzdata/ not found in CWD ancestors; timestamp promotion disabled "
                   "for this run. Invoke from the directory holding the staged tzdata "
