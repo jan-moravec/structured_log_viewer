@@ -570,9 +570,7 @@ TEST_CASE("AutoDetectParser stop ends an idle network peek", "[AutoDetectParser]
 {
     loglib::TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
-    StreamLineSource source(
-        std::filesystem::path("<network>"), std::make_unique<loglib::TcpServerProducer>(opts)
-    );
+    StreamLineSource source(std::filesystem::path("<network>"), std::make_unique<loglib::TcpServerProducer>(opts));
 
     CollectingSink sink;
     ParserOptions options;

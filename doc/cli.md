@@ -33,17 +33,17 @@ Several sources concatenate in the order given. Rotated siblings of a file (`app
 
 ## Global flags
 
-| Flag                          | Default                 | Meaning                                                                        |
-| ----------------------------- | ----------------------- | ------------------------------------------------------------------------------ |
-| `-q`, `--quiet`               | off                     | Suppress warnings and progress. Errors still print.                            |
-| `-v`, `--verbose`             | off                     | Per-stage timing and row counts on stderr. Repeatable.                         |
-| `--color auto\|always\|never` | `auto`                  | Colour human-readable text only. `NO_COLOR` (any value) forces `never`.        |
-| `--threads N`                 | `0`                     | Parser threads. `0` is the library default.                                    |
-| `--tz ZONE`                   | `local`                 | Zone for rendered times and zone-less `--since`/`--until`. See below.          |
-| `--no-rotation-history`       | off                     | Skip rotated-sibling discovery.                                                |
-| `--template-dir DIR`          | platform user directory | Directory of user regex templates. Overrides `SLV_TEMPLATE_DIR`.               |
-| `-h`, `--help`                |                         | Help. `--help-advanced` adds `--batch-size`.                                   |
-| `--version`                   |                         | Print the `slp` and `loglib` versions.                                         |
+| Flag                          | Default                 | Meaning                                                                 |
+| ----------------------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `-q`, `--quiet`               | off                     | Suppress warnings and progress. Errors still print.                     |
+| `-v`, `--verbose`             | off                     | Per-stage timing and row counts on stderr. Repeatable.                  |
+| `--color auto\|always\|never` | `auto`                  | Colour human-readable text only. `NO_COLOR` (any value) forces `never`. |
+| `--threads N`                 | `0`                     | Parser threads. `0` is the library default.                             |
+| `--tz ZONE`                   | `local`                 | Zone for rendered times and zone-less `--since`/`--until`. See below.   |
+| `--no-rotation-history`       | off                     | Skip rotated-sibling discovery.                                         |
+| `--template-dir DIR`          | platform user directory | Directory of user regex templates. Overrides `SLV_TEMPLATE_DIR`.        |
+| `-h`, `--help`                |                         | Help. `--help-advanced` adds `--batch-size`.                            |
+| `--version`                   |                         | Print the `slp` and `loglib` versions.                                  |
 
 If no `tzdata` directory is found next to the executable, `slp` warns once and uses UTC. The Linux tarball and the Windows zip ship `tzdata` beside `slp`.
 
