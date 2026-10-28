@@ -22,7 +22,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  QT_VERSION: "6.12.*"
+  # Newest Qt aqtinstall can install on Windows: 6.11+ moved the Windows
+  # packages to a per-package repository layout it does not know yet
+  # (miurahr/aqtinstall#1047). Raise this once a fixed aqtinstall ships.
+  QT_VERSION: "6.10.*"
   APP_NAME: "StructuredLogViewer"
 
 jobs:
