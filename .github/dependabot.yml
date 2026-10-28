@@ -4,6 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Let new action releases age before they are proposed, so a
+    # compromised release is more likely to be caught and pulled first.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       actions:

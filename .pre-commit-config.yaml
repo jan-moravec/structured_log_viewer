@@ -52,6 +52,25 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        # Vendored upstream LLVM installer; not maintained here.
+        exclude: ^scripts/ci/llvm\.sh$
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      - id: zizmor
+        # Offline: the online audits need a GitHub token.
+        args: [--offline]
+
   - repo: local
     hooks:
       - id: no-loglib-internal-from-app

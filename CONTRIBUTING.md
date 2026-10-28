@@ -814,7 +814,7 @@ The convention is to capture both **before** (clean-tree baseline) and **after**
 
 ## Code style and pre-commit
 
-All C/C++ sources are formatted with **clang-format** and CMake files with **cmake-format**. These are enforced via pre-commit hooks:
+All C/C++ sources are formatted with **clang-format** and CMake files with **gersemi**. Shell scripts are checked with **shellcheck**, GitHub Actions workflows with **actionlint**, and workflows, actions, and Dependabot settings with the **zizmor** security audit (rule settings in [`.github/zizmor.yml`](.github/zizmor.yml)). These are enforced via pre-commit hooks:
 
 ```sh
 pip install pre-commit
@@ -862,11 +862,12 @@ In **Settings → Branches → Branch protection rules** for `main`, consider en
 1. Keep commits focused; rebase onto `main` before opening a PR.
 1. Ensure `pre-commit run --all-files` passes locally.
 1. Make sure CI (Linux, Windows, macOS) is green — tests and packaging both must succeed.
+1. Pull request builds skip IPO/LTO and the benchmarks to keep CI fast. Pushes to `main`, `release/**`, and `v*` tags always build with LTO and run the benchmarks. To get benchmark numbers on a PR, add the `lto` label and push again, or start the `Build` workflow manually on your branch with the `lto` input checked.
 1. Describe the motivation and user-visible changes in the PR description.
 
 ## Release process
 
-Releases are cut from tags matching `v*` (e.g. `v0.7.0`). The [`Build` workflow](.github/workflows/build.yml) detects tag pushes, packages artifacts for all platforms, and attaches them to a GitHub Release.
+Releases are cut from tags matching `v*` (e.g. `v0.7.0`). The [`Build` workflow](.github/workflows/build.yml) detects tag pushes and packages artifacts for all platforms. Once every build and check job has passed, its `release` job attaches them to a single GitHub Release. The packaging and verification steps live in [`scripts/ci/`](scripts/ci), so they can be run against a local `release` build tree.
 
 ### Steps
 
