@@ -90,7 +90,7 @@ ctest --preset release -R tail          # e.g. only the slp tail cases
 
 ## Specialized presets
 
-Sanitizer and coverage presets pin `clang-22` / `clang++-22` and are intended for Linux (locally, under WSL, or in CI):
+Sanitizer and coverage presets pin `clang-23` / `clang++-23` and are intended for Linux (locally, under WSL, or in CI):
 
 ```sh
 cmake --workflow --preset clang-asan-ubsan  # ASan + UBSan

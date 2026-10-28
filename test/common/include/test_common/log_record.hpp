@@ -1,6 +1,11 @@
 #pragma once
 
+// Glaze names a local lambda `emit`; Qt's `emit` macro would rewrite it in
+// translation units that include Qt headers first.
+#pragma push_macro("emit")
+#undef emit
 #include <glaze/glaze.hpp>
+#pragma pop_macro("emit")
 
 #include <string>
 #include <vector>

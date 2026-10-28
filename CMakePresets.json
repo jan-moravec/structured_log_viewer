@@ -59,18 +59,18 @@
             "name": "_clang_ci_base",
             "hidden": true,
             "inherits": "_base",
-            "description": "Shared base for the Clang sanitizer / coverage CI presets. Pins clang-22, RelWithDebInfo, and disables IPO/LTO (LTO breaks sanitizer stack traces and skews coverage line mapping).",
+            "description": "Shared base for the Clang sanitizer / coverage CI presets. Pins clang-23, RelWithDebInfo, and disables IPO/LTO (LTO breaks sanitizer stack traces and skews coverage line mapping).",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-                "CMAKE_C_COMPILER": "clang-22",
-                "CMAKE_CXX_COMPILER": "clang++-22",
+                "CMAKE_C_COMPILER": "clang-23",
+                "CMAKE_CXX_COMPILER": "clang++-23",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "OFF"
             }
         },
         {
             "name": "clang-asan-ubsan",
             "displayName": "Clang AddressSanitizer + UndefinedBehaviorSanitizer",
-            "description": "Clang 22 RelWithDebInfo + ASan + UBSan. -fno-sanitize-recover=all makes the first hit fail the test binary so CTest turns it into a job failure. Mutually exclusive with TSan (cannot link both into one binary).",
+            "description": "Clang 23 RelWithDebInfo + ASan + UBSan. -fno-sanitize-recover=all makes the first hit fail the test binary so CTest turns it into a job failure. Mutually exclusive with TSan (cannot link both into one binary).",
             "inherits": "_clang_ci_base",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
@@ -83,7 +83,7 @@
         {
             "name": "clang-tsan",
             "displayName": "Clang ThreadSanitizer",
-            "description": "Clang 22 RelWithDebInfo + TSan for the loglib threading code (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel teardown). The matching test preset excludes the Qt-coupled `apptest` because Qt's private mutexes generate false positives; `apptest_queue` (pure C++ BoundedBatchQueue) still runs.",
+            "description": "Clang 23 RelWithDebInfo + TSan for the loglib threading code (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel teardown). The matching test preset excludes the Qt-coupled `apptest` because Qt's private mutexes generate false positives; `apptest_queue` (pure C++ BoundedBatchQueue) still runs.",
             "inherits": "_clang_ci_base",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
@@ -96,7 +96,7 @@
         {
             "name": "clang-coverage",
             "displayName": "Clang source-based coverage",
-            "description": "Clang 22 RelWithDebInfo + -fprofile-instr-generate -fcoverage-mapping. The CI coverage job also runs `cpp-linter-action` against this build's `compile_commands.json` (no separate tidy preset needed). Local repro: `cmake --workflow --preset clang-coverage` then `llvm-profdata-22 merge build/clang-coverage/profiles/*.profraw -o merged.profdata` + `llvm-cov-22 export -format=lcov ...`.",
+            "description": "Clang 23 RelWithDebInfo + -fprofile-instr-generate -fcoverage-mapping. The CI coverage job also runs `cpp-linter-action` against this build's `compile_commands.json` (no separate tidy preset needed). Local repro: `cmake --workflow --preset clang-coverage` then `llvm-profdata-23 merge build/clang-coverage/profiles/*.profraw -o merged.profdata` + `llvm-cov-23 export -format=lcov ...`.",
             "inherits": "_clang_ci_base",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
@@ -191,7 +191,7 @@
         {
             "name": "clang-coverage",
             "displayName": "Coverage tests (excludes benchmarks)",
-            "description": "Runs unit + Qt smoke tests under -fprofile-instr-generate. Each test binary writes its own .profraw under build/clang-coverage/profiles/; merge with `llvm-profdata-22 merge -sparse` and export with `llvm-cov-22 export -format=lcov` for upload.",
+            "description": "Runs unit + Qt smoke tests under -fprofile-instr-generate. Each test binary writes its own .profraw under build/clang-coverage/profiles/; merge with `llvm-profdata-23 merge -sparse` and export with `llvm-cov-23 export -format=lcov` for upload.",
             "configurePreset": "clang-coverage",
             "inherits": "_test_base",
             "filter": { "exclude": { "label": "benchmark" } },

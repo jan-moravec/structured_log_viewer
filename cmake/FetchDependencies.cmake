@@ -88,7 +88,7 @@ if(NOT USE_SYSTEM_CATCH2)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.15.3
+        GIT_TAG v3.16.1
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -117,7 +117,7 @@ if(NOT USE_SYSTEM_GLAZE)
     FetchContent_Declare(
         glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-        GIT_TAG v8.0.0
+        GIT_TAG v9.0.0
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -130,7 +130,7 @@ if(NOT USE_SYSTEM_SIMDJSON)
     FetchContent_Declare(
         simdjson
         GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-        GIT_TAG v4.6.6
+        GIT_TAG v5.0.6
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -236,6 +236,9 @@ endif()
 # stage next to the executable and the /MD vs /MT runtime-library setting
 # matches the rest of the project.
 if(NOT USE_SYSTEM_EFSW)
+    # Stay on 1.6.3: on Windows, efsw 1.7.x hangs in ~FileWatcher when a
+    # watched directory was deleted (a retired watch waits forever for an
+    # IOCP completion that never arrives after a failed re-arm).
     FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.6.3 SYSTEM EXCLUDE_FROM_ALL)
     block()
         # With BUILD_SHARED_LIBS=OFF, the bare `efsw` target is itself a
@@ -281,7 +284,7 @@ if(NOT USE_SYSTEM_PCRE2)
     FetchContent_Declare(
         pcre2
         GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
-        GIT_TAG pcre2-10.47
+        GIT_TAG pcre2-10.49
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -484,7 +487,7 @@ if(NOT USE_SYSTEM_XZ)
     FetchContent_Declare(
         xz
         GIT_REPOSITORY https://github.com/tukaani-project/xz.git
-        GIT_TAG v5.8.3
+        GIT_TAG v5.8.4
         SYSTEM
         EXCLUDE_FROM_ALL
     )
