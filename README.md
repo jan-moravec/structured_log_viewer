@@ -8,7 +8,7 @@
 ![Downloads](https://img.shields.io/github/downloads/jan-moravec/structured_log_viewer/total)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-blue)
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)
-![Qt 6.8](https://img.shields.io/badge/Qt-6.8-41cd52?logo=qt&logoColor=white)
+![Qt 6.8 | 6.12](https://img.shields.io/badge/Qt-6.8%20%7C%206.12-41cd52?logo=qt&logoColor=white)
 [![License: MIT](https://img.shields.io/github/license/jan-moravec/structured_log_viewer.svg)](LICENSE)
 
 ## Overview

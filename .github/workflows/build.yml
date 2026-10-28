@@ -22,7 +22,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  QT_VERSION: "6.8.*"
+  # Only LTS lines are used: 6.12 here (Linux, macOS) and 6.8 on Windows.
+  QT_VERSION: "6.12.*"
+  # Windows stays on 6.8 LTS: aqtinstall 3.3.0 cannot install Windows Qt 6.11+
+  # (new per-package repository layout, miurahr/aqtinstall#1047). Move it to
+  # QT_VERSION once a fixed aqtinstall ships.
+  QT_VERSION_WINDOWS: "6.8.*"
   APP_NAME: "StructuredLogViewer"
 
 jobs:
@@ -52,13 +57,13 @@ jobs:
             pre-commit-${{ runner.os }}-
 
       - name: Install pre-commit
-        run: pip install pre-commit==4.2.0
+        run: pip install pre-commit==4.7.0
 
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure --color=always
 
   clang-ci:
-    # Clang 22 matrix:
+    # Clang 23 matrix:
     #   asan-ubsan -> AddressSanitizer + UBSan
     #   tsan       -> ThreadSanitizer (excludes apptest; Qt trips it)
     #   coverage   -> source-based coverage + Codecov upload; also runs
@@ -83,19 +88,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Clang 22 + LLVM tools
-        # llvm.sh 22 all installs clang-22, clang-tidy-22, llvm-profdata/cov-22,
-        # sanitizer runtimes, libc++-22-dev. The compiler is pinned via the
+      - name: Install Clang 23 + LLVM tools
+        # llvm.sh 23 all installs clang-23, clang-tidy-23, llvm-profdata/cov-23,
+        # sanitizer runtimes, libc++-23-dev. The compiler is pinned via the
         # preset's CMAKE_C(XX)_COMPILER, not apt's default `clang` symlink.
         # Script is vendored under scripts/ci so CI does not downloadThenRun.
         run: |
           set -euo pipefail
           chmod +x scripts/ci/llvm.sh
-          sudo ./scripts/ci/llvm.sh 22 all
-          clang-22 --version
-          clang-tidy-22 --version
-          llvm-cov-22 --version
-          which clang-tidy-diff-22.py
+          sudo ./scripts/ci/llvm.sh 23 all
+          clang-23 --version
+          clang-tidy-23 --version
+          llvm-cov-23 --version
+          which clang-tidy-diff-23.py
 
       - name: Install Qt
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
@@ -139,7 +144,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          version: "22"
+          version: "23"
           style: ""
           tidy-checks: ""
           database: build/clang-coverage
@@ -180,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           BIN_DIR=build/clang-coverage/bin/RelWithDebInfo
-          llvm-profdata-22 merge -sparse \
+          llvm-profdata-23 merge -sparse \
             build/clang-coverage/profiles/*.profraw \
             -o build/clang-coverage/merged.profdata
           OBJECTS=(
@@ -188,13 +193,13 @@ jobs:
             -object "$BIN_DIR/apptest"
             -object "$BIN_DIR/apptest_queue"
           )
-          llvm-cov-22 export -format=lcov \
+          llvm-cov-23 export -format=lcov \
             -instr-profile=build/clang-coverage/merged.profdata \
             -ignore-filename-regex='(_deps|build|test)/' \
             "${OBJECTS[@]}" \
             > coverage.lcov
           echo "::group::Coverage summary (library + app only)"
-          llvm-cov-22 report \
+          llvm-cov-23 report \
             -instr-profile=build/clang-coverage/merged.profdata \
             -ignore-filename-regex='(_deps|build|test)/' \
             "${OBJECTS[@]}"
@@ -263,7 +268,8 @@ jobs:
     permissions:
       contents: write
     env:
-      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
+      # Qt 6.10+ ships a single Wayland platform plugin.
+      EXTRA_PLATFORM_PLUGINS: "libqwayland.so"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -487,7 +493,7 @@ jobs:
   build-windows:
     needs: pre-commit
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: write
     steps:
@@ -497,7 +503,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
-          version: ${{ env.QT_VERSION }}
+          version: ${{ env.QT_VERSION_WINDOWS }}
           host: "windows"
           target: "desktop"
           arch: "win64_msvc2022_64"
@@ -659,13 +665,7 @@ jobs:
 
   build-macos:
     needs: pre-commit
-    # Pinned to macos-15 (Sequoia). macos-latest was rolled forward to
-    # macos-26 (Tahoe) on 2026-07-02, which removed the deprecated AGL
-    # framework. Qt 6.8.3's CMake targets still reference it, so the
-    # release link fails with `ld: framework 'AGL' not found`. Pin
-    # until we can move to Qt 6.9+ (where the AGL dependency is
-    # dropped) or a Qt 6.8 patch release without it.
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 60
     permissions:
       contents: write
