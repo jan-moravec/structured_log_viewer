@@ -268,7 +268,8 @@ jobs:
     permissions:
       contents: write
     env:
-      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
+      # Qt 6.10+ ships a single Wayland platform plugin.
+      EXTRA_PLATFORM_PLUGINS: "libqwayland.so"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
