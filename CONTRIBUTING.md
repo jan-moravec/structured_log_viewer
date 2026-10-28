@@ -482,7 +482,7 @@ The `Network Stream` dialog only consumes the picker; the `Save as template...` 
 ## Prerequisites
 
 - **CMake** 3.28 or newer
-- **Qt** 6.1 or newer (Qt 6.10 is used in CI)
+- **Qt** 6.1 or newer (Qt 6.8 LTS and 6.12 LTS are used in CI)
 - A C++23-capable toolchain:
   - Linux: GCC 13+ or Clang 17+
   - Windows: MSVC 2022 (Visual Studio 2022)
@@ -560,7 +560,7 @@ For paths that differ between machines (typically your Qt install), add a `CMake
             "name": "local",
             "inherits": "release",
             "cacheVariables": {
-                "CMAKE_PREFIX_PATH": "C:/Qt/6.10.3/msvc2022_64"
+                "CMAKE_PREFIX_PATH": "C:/Qt/6.12.0/msvc2022_64"
             }
         }
     ],

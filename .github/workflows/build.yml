@@ -22,10 +22,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Newest Qt aqtinstall can install on Windows: 6.11+ moved the Windows
-  # packages to a per-package repository layout it does not know yet
-  # (miurahr/aqtinstall#1047). Raise this once a fixed aqtinstall ships.
-  QT_VERSION: "6.10.*"
+  # Only LTS lines are used: 6.12 here (Linux, macOS) and 6.8 on Windows.
+  QT_VERSION: "6.12.*"
+  # Windows stays on 6.8 LTS: aqtinstall 3.3.0 cannot install Windows Qt 6.11+
+  # (new per-package repository layout, miurahr/aqtinstall#1047). Move it to
+  # QT_VERSION once a fixed aqtinstall ships.
+  QT_VERSION_WINDOWS: "6.8.*"
   APP_NAME: "StructuredLogViewer"
 
 jobs:
@@ -500,7 +502,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
-          version: ${{ env.QT_VERSION }}
+          version: ${{ env.QT_VERSION_WINDOWS }}
           host: "windows"
           target: "desktop"
           arch: "win64_msvc2022_64"
