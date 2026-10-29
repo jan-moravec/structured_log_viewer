@@ -236,10 +236,7 @@ endif()
 # stage next to the executable and the /MD vs /MT runtime-library setting
 # matches the rest of the project.
 if(NOT USE_SYSTEM_EFSW)
-    # Stay on 1.6.3: on Windows, efsw 1.7.x hangs in ~FileWatcher when a
-    # watched directory was deleted (a retired watch waits forever for an
-    # IOCP completion that never arrives after a failed re-arm).
-    FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.6.3 SYSTEM EXCLUDE_FROM_ALL)
+    FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.7.3 SYSTEM EXCLUDE_FROM_ALL)
     block()
         # With BUILD_SHARED_LIBS=OFF, the bare `efsw` target is itself a
         # static library (efsw's CMakeLists uses `add_library(efsw)` without
