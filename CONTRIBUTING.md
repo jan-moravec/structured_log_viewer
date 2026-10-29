@@ -814,7 +814,7 @@ The convention is to capture both **before** (clean-tree baseline) and **after**
 
 ## Code style and pre-commit
 
-All C/C++ sources are formatted with **clang-format** and CMake files with **gersemi**. Shell scripts are checked with **shellcheck**, GitHub Actions workflows with **actionlint**, and workflows, actions, and Dependabot settings with the **zizmor** security audit (rule settings in [`.github/zizmor.yml`](.github/zizmor.yml)). These are enforced via pre-commit hooks:
+All C/C++ sources are formatted with **clang-format** and CMake files with **gersemi**, and YAML files with **yamlfmt** (with **yamllint** checking the 120-column limit). Shell scripts are checked with **shellcheck**, GitHub Actions workflows with **actionlint**, and workflows, actions, and Dependabot settings with the **zizmor** security audit (rule settings in [`.github/zizmor.yml`](.github/zizmor.yml)). These are enforced via pre-commit hooks:
 
 ```sh
 pip install pre-commit
