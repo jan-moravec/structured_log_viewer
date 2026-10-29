@@ -4,6 +4,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Wait a week before proposing a new release, so a bad or compromised one is likely pulled first.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       actions:

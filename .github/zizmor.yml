@@ -1,0 +1,4 @@
+rules:
+  # Keep the common `./` form for local actions.
+  self-repository:
+    disable: true
