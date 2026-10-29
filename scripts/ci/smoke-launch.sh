@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Launches a GUI binary under the headless `offscreen` QPA and fails if it
-# exits within five seconds, which catches missing libraries, plugins, and
-# broken rpaths in a packaged build.
+# Starts a GUI binary without a display and fails if it quits within 5 seconds.
+# This catches missing libraries, plugins, and broken library paths in a package.
 #
 # Usage: smoke-launch.sh <executable>
 set -euo pipefail

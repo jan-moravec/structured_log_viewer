@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Packages the standalone Linux `slp` tarball for servers, CI, and
-# containers: no Qt, no FUSE. It bundles libtbb and the GCC C++ runtime the
-# binary was built against (newer than the base distro's); glibc and
-# OpenSSL 3 come from the host. The binary finds them through an
-# $ORIGIN rpath and finds tzdata next to itself.
+# Packages the standalone Linux `slp` tarball (no Qt, no FUSE) for servers and containers.
+# It bundles libtbb and the GCC 13 C++ runtime, which are newer than the host's. glibc and OpenSSL come from the host.
 #
-# Prints the tarball name and, under GitHub Actions, exports it as
-# SLP_TARBALL.
+# Prints the tarball name and, on GitHub Actions, sets SLP_TARBALL.
 set -euo pipefail
 
 BIN_DIR="build/release/bin/Release"
@@ -21,7 +17,7 @@ for lib in $(ldd "$STAGE/slp" | awk '/=> \// {print $3}' | grep -E '/(libtbb[^/]
     cp -L "$lib" "$STAGE/lib/"
 done
 test -n "$(ls "$STAGE"/lib/libtbb*)"
-# Literal $ORIGIN: the dynamic loader expands it, not the shell.
+# $ORIGIN is for the dynamic loader, not the shell.
 # shellcheck disable=SC2016
 patchelf --set-rpath '$ORIGIN/lib' "$STAGE/slp"
 cp "$BIN_DIR/THIRD_PARTY_LICENSES.txt" "$BIN_DIR/LICENSE" "$STAGE/"

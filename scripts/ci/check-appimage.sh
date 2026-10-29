@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Verifies the AppImage produced by package-appimage.sh: it must launch
-# headless, and its payload must contain the binary, Qt libraries, the xcb
-# platform plugin, tzdata, and the license file, but not `slp`.
+# Checks the AppImage: it must start, and it must contain the app, the Qt libraries and xcb plugin, tzdata, and the
+# license file, but not `slp`.
 #
 # Environment: APP_NAME (default StructuredLogViewer).
 set -euo pipefail
@@ -20,11 +19,11 @@ chmod +x "$APPIMAGE"
 
 "$SCRIPT_DIR/smoke-launch.sh" "./$APPIMAGE"
 
-# Structural check independent of Qt's launch path.
+# Check the contents too, in case the app starts without everything it needs.
 rm -rf squashfs-root
 "./$APPIMAGE" --appimage-extract >/dev/null
 test -x "squashfs-root/usr/bin/$APP_NAME"
-# slp ships in its own tarball; the AppImage only launches the GUI.
+# slp ships in its own tarball.
 test ! -e "squashfs-root/usr/bin/slp"
 test -f "squashfs-root/usr/share/doc/$APP_NAME/THIRD_PARTY_LICENSES.txt"
 test -f "squashfs-root/usr/lib/libQt6Core.so.6"

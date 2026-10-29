@@ -52,11 +52,25 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  - repo: https://github.com/google/yamlfmt
+    rev: v0.21.0
+    hooks:
+      - id: yamlfmt
+        # Not .clang-format or .clang-tidy, which keep their own layout.
+        files: \.ya?ml$
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict]
+        files: \.ya?ml$
+
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
-        # Vendored upstream LLVM installer; not maintained here.
+        # Upstream LLVM installer, copied unchanged.
         exclude: ^scripts/ci/llvm\.sh$
 
   - repo: https://github.com/rhysd/actionlint
@@ -68,7 +82,7 @@ repos:
     rev: v1.31.1
     hooks:
       - id: zizmor
-        # Offline: the online audits need a GitHub token.
+        # The online audits need a GitHub token.
         args: [--offline]
 
   - repo: local

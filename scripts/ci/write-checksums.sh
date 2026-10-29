@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Writes a `<file>.sha256` next to each file in `sha256sum` format.
+# Writes `<file>.sha256` next to each file, in `sha256sum` format.
 #
 # Usage: write-checksums.sh <file>...
 set -euo pipefail

@@ -1,6 +1,4 @@
-# Smoke-tests the staged Windows package headless so a missing DLL
-# (STATUS_DLL_NOT_FOUND, 0xc0000135) fails CI before a broken zip ships.
-# `slp.exe` shares the GUI's runtime DLLs and tzdata.
+# Starts the packaged app without a display and runs `slp.exe --version`, so a missing DLL fails CI.
 #
 # Environment: APP_NAME (default StructuredLogViewer).
 
@@ -13,7 +11,8 @@ $exe = "$appName\$appName.exe"
 $p = Start-Process -FilePath $exe -PassThru -NoNewWindow
 Start-Sleep -Seconds 5
 if ($p.HasExited) {
-    Write-Error "Packaged binary exited prematurely with code $($p.ExitCode) (STATUS_DLL_NOT_FOUND = -1073741515 / 0xc0000135)"
+    # A missing DLL shows up as STATUS_DLL_NOT_FOUND: -1073741515 (0xc0000135).
+    Write-Error "Packaged binary exited prematurely with code $($p.ExitCode)"
     exit 1
 }
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue

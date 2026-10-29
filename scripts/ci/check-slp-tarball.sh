@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Verifies the `slp` tarball from a fresh extraction with no build tree on
-# the library path: every dependency resolves, none is Qt, libtbb comes from
-# the bundle, and the bundled tzdata loads.
+# Checks the `slp` tarball after a fresh extract: all libraries resolve, none is Qt, libtbb comes from the bundle,
+# and the bundled tzdata loads.
 #
 # Usage: check-slp-tarball.sh <tarball>
 set -euo pipefail
@@ -18,7 +17,7 @@ if ldd "$SLP" | grep -E 'not found|libQt6'; then
 fi
 ldd "$SLP" | grep -q "$(dirname "$SLP")/lib/libtbb"
 "$SLP" --version
-# tzdata next to the binary must load: no fallback warning.
+# tzdata next to the binary must load, so no fallback warning.
 echo '{"msg":"hello"}' | "$SLP" query --tz Europe/Prague - 2>slp.stderr
 if grep -q 'timezone data was not found' slp.stderr; then
     echo "slp did not find the bundled tzdata" >&2

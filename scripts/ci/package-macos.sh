@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# Builds the macOS DMG: the deployed .app bundle, plus `slp` and its TBB
-# dylib beside it (not inside the bundle).
-#
-# POST_BUILD rules in app/CMakeLists.txt stage tzdata and the licenses into
-# the bundle's Resources/; they are verified before macdeployqt rewrites the
-# @rpaths.
+# Builds the macOS DMG: the .app bundle, plus `slp` and its TBB library next to it.
 #
 # Environment: APP_NAME (default StructuredLogViewer).
 set -euo pipefail
@@ -30,8 +25,7 @@ mkdir -p "$DMG_ROOT"
 cp -R "$APP_NAME.app" "$DMG_ROOT/"
 cp slp "$DMG_ROOT/slp"
 cp "$APP_NAME.app/Contents/Resources/THIRD_PARTY_LICENSES.txt" "$DMG_ROOT/"
-# slp finds its TBB dylib through the build tree's rpath, so stage that
-# dylib beside it.
+# slp finds TBB through the build tree's rpath, so copy the library next to it.
 for dep in $(otool -L slp | awk '/@rpath\/libtbb/ {print $1}'); do
     lib="$(basename "$dep")"
     src="$(find "$ROOT/build/release" -name "$lib" -type f | head -n 1)"

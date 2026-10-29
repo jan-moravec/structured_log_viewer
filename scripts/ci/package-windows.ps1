@@ -1,9 +1,6 @@
-# Builds the portable Windows zip from the `release` build tree.
-#
-# All runtime DLLs (TBB, MSVC CRT, OpenSSL) and license files are staged
-# next to the .exe by POST_BUILD rules in app/CMakeLists.txt.
-# `--no-compiler-runtime` skips the ~25 MB vc_redist.x64.exe installer; the
-# individual CRT DLLs ship instead so the zip stays portable.
+# Builds the portable Windows zip from the `release` build.
+# CMake already copies the runtime DLLs (TBB, MSVC runtime, OpenSSL) and license files next to the .exe.
+# windeployqt skips the vc_redist installer; the zip ships the runtime DLLs instead.
 #
 # Environment: APP_NAME (default StructuredLogViewer).
 

@@ -1,14 +1,9 @@
-"""Prints clang-tidy extra arguments for checking headers on their own.
+"""Prints clang-tidy arguments for checking a header file on its own.
 
-Headers are not entries in compile_commands.json, so clang-tidy run on a
-changed header has no include paths. This collects every include directory
-used by any translation unit in the database and prints them, together with
-the language standard, as one space-separated line.
+Headers aren't in compile_commands.json, so clang-tidy has no include paths for them. This prints every include path
+used in the compile database, made absolute, plus the C++ standard, on one line.
 
-clang-tidy resolves relative `--extra-arg` paths against the build
-directory of the proxy translation unit, so every path is made absolute.
-
-Usage: python3 tidy-include-args.py <build-dir> [<source-include-dir>...]
+Usage: python3 tidy-include-args.py <build-dir> [<project-include-dir>...]
 """
 
 import json
@@ -45,7 +40,7 @@ def main():
 
     result = []
     seen = set()
-    # Project include roots first so they win over same-named headers.
+    # Project include paths first, so they win over same-named headers.
     for path in sys.argv[2:]:
         pair = ("-I", os.path.abspath(path))
         seen.add(pair)
@@ -56,8 +51,7 @@ def main():
                 seen.add(pair)
                 result.append(pair)
 
-    # Joined form (`-isystem/path`) so each item survives the action's
-    # split on spaces as a single argument.
+    # Joined form (`-isystem/path`), because the action splits the line on spaces.
     args = [f"{flag}{path}" for flag, path in result]
     args.append("-std=c++23")
     print(" ".join(args))

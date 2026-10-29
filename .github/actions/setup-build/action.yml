@@ -1,12 +1,9 @@
 name: Set up build
-description: >-
-  Installs the shared toolchain for a CMake preset build: optional apt
-  packages and GCC 13, optional Qt, CMake + Ninja, and sccache. The calling
-  job checks out the repository first.
+description: Installs apt packages, GCC 13, Qt, CMake + Ninja, and sccache. Run it after checkout.
 
 inputs:
   qt-version:
-    description: Qt version spec for install-qt-action; empty skips Qt.
+    description: Qt version for install-qt-action. Empty skips Qt.
     default: ""
   qt-host:
     description: Qt host (linux, windows, mac).
@@ -15,13 +12,10 @@ inputs:
     description: Qt architecture, e.g. linux_gcc_64.
     default: ""
   gcc13:
-    description: >-
-      Install GCC 13 from the ubuntu-toolchain-r PPA and make it the default
-      gcc/g++. Ubuntu 22.04 ships only GCC 10 and 12, and the code needs
-      libstdc++ 13 for <format>.
+    description: Install GCC 13 and make it the default. Ubuntu 22.04 has only GCC 10 and 12; `<format>` needs 13.
     default: "false"
   apt-packages:
-    description: Space-separated apt packages to install (Linux only).
+    description: Space-separated apt packages (Linux only).
     default: ""
 
 runs:
@@ -41,8 +35,7 @@ runs:
           PACKAGES="gcc-13 g++-13 $PACKAGES"
         fi
         sudo apt-get update
-        # Word splitting is intended: one package per word.
-        # shellcheck disable=SC2086
+        # shellcheck disable=SC2086 # one package per word
         sudo apt-get install -y $PACKAGES
         if [ "$GCC13" = "true" ]; then
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
@@ -57,14 +50,14 @@ runs:
         host: ${{ inputs.qt-host }}
         target: desktop
         arch: ${{ inputs.qt-arch }}
-        # Tag builds publish releases, so they download Qt fresh.
+        # Release (tag) builds don't use caches.
         cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
     - name: Install CMake and Ninja
       uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
 
     - name: Set up sccache
-      # The workflow sets SCCACHE_GHA_ENABLED and the CMake launcher variables.
+      # The workflow's env enables it and sets it as the CMake compiler launcher.
       uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       with:
         version: "v0.18.0"

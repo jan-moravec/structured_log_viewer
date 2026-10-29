@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Merges the `clang-coverage` test profiles and writes coverage.lcov plus a
-# summary report. `_deps/` (FetchContent), `build/` (generated headers), and
-# `test/` are dropped so the report covers only library and app sources.
+# Merges the `clang-coverage` test profiles into coverage.lcov and prints a summary.
+# Only library and app sources are counted: `_deps/`, `build/`, and `test/` are excluded.
 set -euo pipefail
 
 BUILD_DIR=build/clang-coverage

@@ -1,0 +1,11 @@
+# yamllint settings. yamlfmt does the formatting; this checks line length and YAML problems.
+extends: default
+rules:
+  line-length:
+    max: 120
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  # GitHub Actions uses `on:` as a key.
+  truthy:
+    check-keys: false

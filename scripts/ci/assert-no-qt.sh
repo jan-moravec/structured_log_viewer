@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Fails if a Linux or macOS binary links any Qt library. `slp` must stay
-# Qt-free.
+# Fails if a Linux or macOS binary links Qt. `slp` must stay Qt-free.
 #
 # Usage: assert-no-qt.sh <binary>
 set -euo pipefail

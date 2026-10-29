@@ -1,11 +1,6 @@
-# Locates a full OpenSSL install (headers, import libraries, DLLs) on a
-# Windows runner and exports it as OPENSSL_ROOT_DIR for find_package(OpenSSL).
-#
-# The runner image ships one under C:\Program Files\OpenSSL, so nothing is
-# downloaded. Only if no usable install is found does it fall back to
-# Chocolatey, unpinned and retried: a pinned version 404s on slproweb's
-# mirror once it rotates off. Strawberry Perl's openssl lacks import
-# libraries, so it never counts.
+# Finds a full OpenSSL install (headers, import libraries, DLLs) and sets OPENSSL_ROOT_DIR for CMake.
+# The runner image has one. If it is missing, installs OpenSSL from Chocolatey, unpinned because old versions
+# disappear from the mirror. Strawberry Perl's OpenSSL has no import libraries, so it is skipped.
 
 $ErrorActionPreference = "Stop"
 

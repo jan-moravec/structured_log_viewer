@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Installs OpenSSL 3 through Homebrew (a no-op when present) and exports its
-# prefix as OPENSSL_ROOT_DIR for find_package(OpenSSL). The keg prefix
-# differs between Intel and Apple Silicon, so it is resolved here.
+# Installs OpenSSL 3 with Homebrew (no-op if present) and sets OPENSSL_ROOT_DIR for CMake.
 set -euo pipefail
 
 brew install openssl@3

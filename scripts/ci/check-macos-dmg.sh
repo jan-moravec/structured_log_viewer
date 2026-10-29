@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Verifies the DMG from package-macos.sh and smoke-launches the deployed
-# .app bundle headless.
-#
-# `slp` lives beside the .app with no tzdata next to it, so the check also
-# exercises the UTC fallback: it must warn once and still run.
+# Checks the DMG and starts the .app without a display.
+# `slp` has no tzdata next to it in the DMG, so it must warn once and fall back to UTC.
 #
 # Environment: APP_NAME (default StructuredLogViewer).
 set -euo pipefail

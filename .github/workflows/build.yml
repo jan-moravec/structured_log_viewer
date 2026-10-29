@@ -14,48 +14,40 @@ on:
   workflow_dispatch:
     inputs:
       lto:
-        description: "Build with IPO/LTO and run the benchmarks (always on for main, release/** and tags)"
+        description: "Build with LTO and run the benchmarks (always on for main, release/** and tags)"
         type: boolean
         default: false
 
 permissions:
   contents: read
 
-# Cancel superseded PR runs; let push/tag runs finish so we never abort a
-# half-published release. `run_id` fallback gives each push its own group.
+# Cancel outdated PR runs. Push and tag runs always finish, so a release is never cut short.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # IPO/LTO for the `release` preset jobs. LTO links of the ~20 test
-  # executables dominate the build, so pull requests skip it by default.
-  # It is forced on for main, release/** and tags, which publish the
-  # binaries. A PR opts in with the `lto` label (takes effect on the next
-  # push) and a manual run with the `lto` input. Benchmarks run only with
-  # LTO so their numbers stay comparable to the shipped build.
-  SLV_LTO: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/') || inputs.lto || contains(github.event.pull_request.labels.*.name, 'lto')) && 'ON' || 'OFF' }}
-  # sccache caches object files in the GitHub Actions cache. CMake picks the
-  # launcher up from the environment and leaves it out of
-  # compile_commands.json, so clang-tidy is unaffected. A cache outage falls
-  # back to plain compilation instead of failing the build.
-  # Tag builds publish releases, so they compile from scratch rather than
-  # trust objects cached by earlier runs.
+  # LTO for the `release` preset. It is always on for main, release/** and tags, which publish binaries. PRs skip it
+  # because the LTO links are slow; add the `lto` label (next push) or run manually with `lto` to enable it.
+  # Benchmarks run only with LTO, so their numbers match the shipped build.
+  SLV_LTO: >-
+    ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+    || startsWith(github.ref, 'refs/tags/') || inputs.lto
+    || contains(github.event.pull_request.labels.*.name, 'lto')) && 'ON' || 'OFF' }}
+  # sccache stores compiled objects in the GitHub Actions cache. If the cache is down, it compiles normally.
+  # Release (tag) builds don't use the cache.
   SCCACHE_GHA_ENABLED: ${{ startsWith(github.ref, 'refs/tags/') && 'false' || 'true' }}
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   CMAKE_C_COMPILER_LAUNCHER: sccache
   CMAKE_CXX_COMPILER_LAUNCHER: sccache
-  # Only LTS lines are used: 6.12 here (Linux, macOS) and 6.8 on Windows.
   QT_VERSION: "6.12.*"
-  # Windows stays on 6.8 LTS: aqtinstall 3.3.0 cannot install Windows Qt 6.11+
-  # (new per-package repository layout, miurahr/aqtinstall#1047). Move it to
-  # QT_VERSION once a fixed aqtinstall ships.
+  # Windows stays on Qt 6.8 LTS until aqtinstall can install Windows Qt 6.11+ (miurahr/aqtinstall#1047).
   QT_VERSION_WINDOWS: "6.8.*"
   APP_NAME: "StructuredLogViewer"
 
 jobs:
   pre-commit:
-    # Fails fast on formatting / lint issues before any expensive build runs.
+    # Runs first so formatting and lint problems fail before the long builds.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -71,13 +63,14 @@ jobs:
           python-version: "3.x"
 
       - name: Cache pre-commit environments
-        # Resolved Python version in the key so a runner-image 3.12 -> 3.13
-        # bump invalidates venvs with stale interpreter paths. Only lint
-        # tools come from this cache; nothing in it reaches a release.
+        # The Python version is in the key, so a new runner Python gets fresh environments.
+        # The cache holds only lint tools, so it can't affect a release.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # zizmor: ignore[cache-poisoning]
         with:
           path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          key: >-
+            pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{
+            hashFiles('.pre-commit-config.yaml') }}
           restore-keys: |
             pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-
             pre-commit-${{ runner.os }}-
@@ -88,25 +81,15 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure --color=always
 
-
   clang-ci:
-    # Clang 23 matrix:
-    #   asan-ubsan -> AddressSanitizer + UBSan
-    #   tsan       -> ThreadSanitizer (excludes apptest; Qt trips it)
-    #   coverage   -> source-based coverage + Codecov upload; also runs
-    #                 cpp-linter-action against the build's compile_commands.json.
-    # Coverage uploads tokenlessly via OIDC; the Codecov GitHub App must be
-    # installed on the repo (fail_ci_if_error=true catches a misconfigured app).
+    # Clang 23 builds: ASan + UBSan, TSan, and coverage. The coverage leg also runs clang-tidy and uploads to Codecov.
     needs: pre-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
-      # pull-requests: write lets cpp-linter-action post its tidy comment
-      # on PRs; id-token: write enables tokenless Codecov OIDC upload;
-      # contents: read is inherited.
       contents: read
-      pull-requests: write
-      id-token: write
+      pull-requests: write # clang-tidy PR comment
+      id-token: write # Codecov upload without a token
     strategy:
       fail-fast: false
       matrix:
@@ -118,10 +101,8 @@ jobs:
           persist-credentials: false
 
       - name: Install Clang 23 + LLVM tools
-        # llvm.sh 23 all installs clang-23, clang-tidy-23, llvm-profdata/cov-23,
-        # sanitizer runtimes, libc++-23-dev. The compiler is pinned via the
-        # preset's CMAKE_C(XX)_COMPILER, not apt's default `clang` symlink.
-        # Script is vendored under scripts/ci so CI does not downloadThenRun.
+        # Installs clang-23, clang-tidy-23, llvm-cov-23 and the sanitizer runtimes. The presets name clang-23 directly.
+        # llvm.sh is kept in the repository so CI doesn't download and run a script.
         run: |
           set -euo pipefail
           chmod +x scripts/ci/llvm.sh
@@ -134,24 +115,21 @@ jobs:
       - name: Set up build
         uses: ./.github/actions/setup-build
         with:
-          # libssl-dev: find_package(OpenSSL); libxcb-cursor0: offscreen QPA.
+          # libssl-dev for OpenSSL; libxcb-cursor0 for the offscreen Qt platform.
           apt-packages: libssl-dev libxcb-cursor0
           qt-version: ${{ env.QT_VERSION }}
           qt-host: linux
           qt-arch: linux_gcc_64
 
       - name: Configure
-        # TLS pinned ON so TcpServerProducer + asio::ssl is in scope for tidy/sanitizers.
+        # TLS on so the TLS code is sanitized and checked by clang-tidy.
         run: cmake --preset clang-${{ matrix.mode }} -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset clang-${{ matrix.mode }}
 
       - name: Collect clang-tidy include paths
-        # Headers are not entries in compile_commands.json, so clang-tidy run
-        # directly on a changed `.hpp` needs the include roots spelled out.
-        # They are read from the compile database, so new dependencies are
-        # picked up automatically.
+        # Headers aren't in compile_commands.json, so clang-tidy needs the include paths for a changed header.
         if: matrix.mode == 'coverage'
         id: tidy-args
         run: |
@@ -161,13 +139,8 @@ jobs:
           echo "extra-args=$ARGS" >> "$GITHUB_OUTPUT"
 
       - name: Run clang-tidy on PR changes
-        # Coverage leg only, after the build so AUTOMOC/AUTOUIC/AUTORCC outputs
-        # exist (without them clang-tidy fails with "<file>.moc: file not found").
-        # style/tidy-checks empty -> defer to pre-commit and .clang-tidy.
-        # Findings are listed in the PR comment and step summary (no inline
-        # review: 100s of suggestions trip GitHub's secondary rate limit) and
-        # fail the job through the "Fail on clang-tidy findings" step.
-        # SHA-pinned so a tag re-cut can't change what we run.
+        # Runs after the build, which generates the Qt moc files. Checks come from .clang-tidy. Findings go to a PR
+        # comment and the step summary (inline review comments hit GitHub's rate limit). A later step fails the job.
         if: matrix.mode == 'coverage'
         id: cpp-linter
         uses: cpp-linter/cpp-linter-action@774040af57f011a5fc47911f08ff0c3059d1835a # v2.24.0
@@ -187,7 +160,7 @@ jobs:
           extra-args: ${{ steps.tidy-args.outputs.extra-args }}
 
       - name: Run tests
-        # Sanitizer + LLVM_PROFILE_FILE env comes from the preset.
+        # The test preset sets the sanitizer and coverage environment.
         run: ctest --preset clang-${{ matrix.mode }}
 
       - name: Merge coverage profiles + export lcov
@@ -195,13 +168,8 @@ jobs:
         run: scripts/ci/export-coverage.sh
 
       - name: Upload coverage to Codecov
-        # Tokenless OIDC upload via the Codecov GitHub App (installed on the repo).
-        # fail_ci_if_error: a broken upload (e.g. app uninstalled) fails the leg
-        # loudly instead of silently producing zero-coverage runs.
-        # SHA-pinned so a tag re-cut can't change what we run.
-        # v7.0.0: ships the new `codecovsecops` GPG key after Codecov's
-        # `codecovsecurity` keybase migration left the wrapper unable to verify
-        # the uploader binary's signature on `v6.0.1` and earlier.
+        # Uses the Codecov GitHub App, no token. A failed upload fails the job instead of reporting zero coverage.
+        # v7+ is needed: older versions can't verify the uploader's signature.
         if: matrix.mode == 'coverage'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
@@ -211,7 +179,7 @@ jobs:
           use_oidc: true
 
       - name: Fail on clang-tidy findings
-        # Last step so tests and the coverage upload still run when tidy reports.
+        # Last, so the tests and the coverage upload still run.
         if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.clang-tidy-checks-failed != '0'
         env:
           TIDY_FAILED: ${{ steps.cpp-linter.outputs.clang-tidy-checks-failed }}
@@ -220,10 +188,8 @@ jobs:
           exit 1
 
   build-qt-free:
+    # Builds and tests `slp` with no Qt installed, so it fails if Qt leaks out of `app/`.
     needs: pre-commit
-    # Proves `slp` configures, builds, and tests with no Qt installed.
-    # The packaging jobs still build the GUI; this job is the one that
-    # fails if `find_package(Qt6)` leaks out of `app/`.
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -248,13 +214,12 @@ jobs:
         run: ctest --preset release
 
   build-linux:
+    # The oldest supported runner, so the AppImage works on Ubuntu 22.04 and other distributions of that age.
     needs: pre-commit
-    # Oldest supported runner so the AppImage links against an older glibc
-    # and stays compatible with Ubuntu 22.04 / equivalent distros.
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
-      # Qt 6.10+ ships a single Wayland platform plugin.
+      # Qt 6.10+ has a single Wayland platform plugin.
       EXTRA_PLATFORM_PLUGINS: "libqwayland.so"
     steps:
       - name: Checkout code
@@ -266,17 +231,15 @@ jobs:
         uses: ./.github/actions/setup-build
         with:
           gcc13: true
-          # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
-          # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta
-          # updates; patchelf: points the slp tarball's binary at its bundled
-          # libraries.
+          # libfuse2 runs AppImages, libxcb-cursor0 is needed by the offscreen Qt platform, zsync makes the update
+          # file, and patchelf sets the slp tarball's library path.
           apt-packages: libfuse2 libxcb-cursor0 zsync libssl-dev patchelf
           qt-version: ${{ env.QT_VERSION }}
           qt-host: linux
           qt-arch: linux_gcc_64
 
       - name: Configure
-        # TLS pinned ON so the published AppImage can't silently lose it.
+        # TLS is always on in published builds.
         run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE="$SLV_LTO"
 
       - name: Build
@@ -286,7 +249,6 @@ jobs:
         run: scripts/ci/assert-no-qt.sh build/release/bin/Release/slp
 
       - name: Run unit tests
-        # release preset excludes the `benchmark` label; benchmarks run below.
         run: ctest --preset release
 
       - name: Run parser benchmarks
@@ -294,10 +256,6 @@ jobs:
         run: ctest --preset release-benchmark
 
       - name: Package AppImage
-        env:
-          # Enables delta/zsync updates; linuxdeploy embeds this entry and
-          # writes a sibling .zsync file.
-          UPDATE_INFORMATION: "gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|latest|${{ env.APP_NAME }}-*x86_64.AppImage.zsync"
         run: scripts/ci/package-appimage.sh
 
       - name: Check AppImage
@@ -313,9 +271,8 @@ jobs:
         run: scripts/ci/write-checksums.sh "$APP_NAME"-*.AppImage "$APP_NAME"-*.AppImage.zsync "$SLP_TARBALL"
 
       - name: Upload artifact
-        # No `if: always()`: with `if-no-files-found: error` it would pile a
-        # second failure on top of an earlier build failure. Pull request
-        # builds are kept for a week; 0 means the repository default.
+        # No `if: always()`: after a failed build, the missing files would add a second, misleading error.
+        # PR artifacts are kept 7 days; 0 means the repository default.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.APP_NAME }}-linux
@@ -350,8 +307,7 @@ jobs:
           qt-arch: win64_msvc2022_64
 
       - name: Set up MSVC environment
-        # vswhere-based discovery so we don't hard-code a VS edition path
-        # (the hosted image has flipped Community <-> Enterprise before).
+        # Finds Visual Studio with vswhere, because the runner image has switched editions before.
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
@@ -360,7 +316,7 @@ jobs:
         run: scripts/ci/find-openssl.ps1
 
       - name: Configure
-        # TLS pinned ON so the published binary can't silently lose it.
+        # TLS is always on in published builds.
         run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE="$env:SLV_LTO"
 
       - name: Build
@@ -391,7 +347,7 @@ jobs:
         run: bash scripts/ci/write-checksums.sh "$APP_NAME.zip"
 
       - name: Upload artifact
-        # See build-linux for the `if: always()` and retention choices.
+        # Same choices as build-linux.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.APP_NAME }}-windows
@@ -422,7 +378,7 @@ jobs:
         run: scripts/ci/find-openssl.sh
 
       - name: Configure
-        # TLS pinned ON so the published DMG can't silently lose it.
+        # TLS is always on in published builds.
         run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE="$SLV_LTO"
 
       - name: Build
@@ -448,7 +404,7 @@ jobs:
         run: scripts/ci/write-checksums.sh "$APP_NAME.dmg"
 
       - name: Upload artifact
-        # See build-linux for the `if: always()` and retention choices.
+        # Same choices as build-linux.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.APP_NAME }}-macos
@@ -459,9 +415,8 @@ jobs:
           retention-days: ${{ github.event_name == 'pull_request' && 7 || 0 }}
 
   release:
-    # Publishes one GitHub Release from the three platform artifacts once
-    # every job has passed, so a tag never gets a partial release. This is
-    # the only job with write access to the repository contents.
+    # Publishes one GitHub Release after every job passes, so a tag never gets a partial release.
+    # This is the only job that can write to the repository.
     if: startsWith(github.ref, 'refs/tags/')
     needs: [clang-ci, build-qt-free, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
@@ -477,12 +432,11 @@ jobs:
           merge-multiple: true
 
       - name: Release binaries
-        # Creates the release for the tag, or replaces its files when the job
-        # is re-run.
+        # Creates the release, or replaces its files when the job is re-run.
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
+        run: |-
           set -euo pipefail
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
