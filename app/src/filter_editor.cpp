@@ -486,10 +486,11 @@ void FilterEditor::SetupLayout()
 
     // The edits hold display-zone wall-clock fields; UTC keeps Qt from
     // shifting them through the host zone.
-    for (QDateTimeEdit *edit : {static_cast<QDateTimeEdit *>(mBeginDateEdit),
-                                static_cast<QDateTimeEdit *>(mBeginTimeEdit),
-                                static_cast<QDateTimeEdit *>(mEndDateEdit),
-                                static_cast<QDateTimeEdit *>(mEndTimeEdit)})
+    for (QDateTimeEdit *edit :
+         {static_cast<QDateTimeEdit *>(mBeginDateEdit),
+          static_cast<QDateTimeEdit *>(mBeginTimeEdit),
+          static_cast<QDateTimeEdit *>(mEndDateEdit),
+          static_cast<QDateTimeEdit *>(mEndTimeEdit)})
     {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
         edit->setTimeZone(QTimeZone::utc());
