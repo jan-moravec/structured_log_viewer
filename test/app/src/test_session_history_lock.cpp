@@ -117,7 +117,6 @@ private:
     bool mPending = false;
 };
 #endif
-} // namespace
 
 class SessionHistoryLockTest : public QObject
 {
@@ -155,7 +154,7 @@ private slots:
         DeletePendingFile pending(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
         QVERIFY(pending.IsPending());
 
-        std::jthread releaser([&pending]() {
+        const std::jthread releaser([&pending] {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             pending.Release();
         });
@@ -182,6 +181,7 @@ private slots:
     }
 #endif
 };
+} // namespace
 
 QTEST_GUILESS_MAIN(SessionHistoryLockTest)
 #include "test_session_history_lock.moc"

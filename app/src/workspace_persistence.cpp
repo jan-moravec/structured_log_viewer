@@ -35,7 +35,7 @@ namespace
 /// File scanners, indexers, and sync clients briefly open files that
 /// were just written, which makes copies and `QSaveFile::commit` fail.
 /// `QSaveFile` cannot commit twice, so @p attempt redoes the whole write.
-template <typename Attempt> bool RetryWhileFileBusy(Attempt &&attempt)
+template <typename Attempt> bool RetryWhileFileBusy(const Attempt &attempt)
 {
     constexpr int RETRY_TIMEOUT_MS = 1000;
     constexpr int RETRY_INTERVAL_MS = 20;
@@ -393,7 +393,7 @@ bool WorkspacePersistence::Write(Workspace workspace)
     const QString path = dir.filePath(QLatin1String(WORKSPACE_FILE_NAME));
     const QJsonDocument doc = BuildDoc(workspace);
     const QByteArray raw = doc.toJson(QJsonDocument::Indented);
-    return RetryWhileFileBusy([&path, &raw]() {
+    return RetryWhileFileBusy([&path, &raw] {
         QSaveFile saveFile(path);
         if (!saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
         {
@@ -557,7 +557,7 @@ bool CopySnapshotFile(const QString &from, const QString &to)
     {
         return false;
     }
-    return RetryWhileFileBusy([&from, &to]() {
+    return RetryWhileFileBusy([&from, &to] {
         QFile::remove(to);
         return QFile::copy(from, to);
     });

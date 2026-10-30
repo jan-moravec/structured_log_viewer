@@ -573,7 +573,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
 #ifdef _WIN32
     // Same-volume staging enables atomic replacement. `FileHandle::Close`
     // durably flushes the file before this rename.
-    const std::error_code moveError = internal::RetryWhileFileBusy([&temporary, &destination]() {
+    const std::error_code moveError = internal::RetryWhileFileBusy([&temporary, &destination] {
         if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
         {
             return std::error_code{};

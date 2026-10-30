@@ -18,7 +18,7 @@ namespace loglib::internal
  * @param attempt Callable that performs the operation and returns its `std::error_code`.
  * @return The result of the last attempt.
  */
-template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(Attempt &&attempt)
+template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(const Attempt &attempt)
 {
 #ifdef _WIN32
     constexpr int ERROR_ACCESS_DENIED_CODE = 5;

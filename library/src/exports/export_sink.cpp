@@ -209,7 +209,7 @@ void FileSink::Finish()
     }
     mFile = nullptr;
 
-    const std::error_code ec = internal::RetryWhileFileBusy([this]() {
+    const std::error_code ec = internal::RetryWhileFileBusy([this] {
         std::error_code renameError;
         std::filesystem::rename(mTempPath, mDestination, renameError);
         return renameError;

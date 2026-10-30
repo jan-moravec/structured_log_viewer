@@ -68,6 +68,7 @@ private:
 #ifdef _WIN32
         _putenv_s("TMP", path.c_str());
 #else
+        // NOLINTNEXTLINE(concurrency-mt-unsafe): each test case runs in its own process, on one thread here.
         setenv("TMPDIR", path.c_str(), 1);
 #endif
     }

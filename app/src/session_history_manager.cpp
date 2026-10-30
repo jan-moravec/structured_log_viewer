@@ -89,7 +89,7 @@ void SyncWarnIfNeeded(QSettings &settings, const char *context)
 /// the pending values can then be lost. The status of a `QSettings`
 /// object never clears, so each attempt uses a new object and repeats
 /// the write. @p write must therefore be safe to run more than once.
-template <typename WriteFn> void WriteSettingsWithRetry(const char *context, WriteFn &&write)
+template <typename WriteFn> void WriteSettingsWithRetry(const char *context, const WriteFn &write)
 {
     constexpr int RETRY_TIMEOUT_MS = 1000;
     constexpr int RETRY_INTERVAL_MS = 20;
