@@ -143,7 +143,11 @@ private:
     void UpdateEnumSelectionCount();
     /// Drop the red warning border from the empty-submit guard.
     void ClearWarningStyles();
+    /// Converts UTC epoch microseconds to display-zone wall-clock fields,
+    /// held in a UTC `QDateTime` so Qt applies no zone of its own.
     static QDateTime ConvertToQDateTime(qint64 timestamp);
+    /// Reads @p date and @p time as display-zone wall clock and returns
+    /// UTC epoch microseconds.
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);
 
 private slots:

@@ -56,6 +56,8 @@
 #include <loglib/tailing_bytes_producer.hpp>
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/theme.hpp>
+#include <loglib/time_zone_context.hpp>
+#include <loglib/tzdata_search.hpp>
 #include <loglib/udp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
@@ -135,6 +137,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -10730,6 +10733,80 @@ private slots:
         QCOMPARE(*it->second.filterEnd, row2Micros);
 
         QCoreApplication::processEvents();
+    }
+
+    // The time-range editor must show bounds in the display zone (the
+    // zone the table renders) and emit them back unchanged when Ok is
+    // clicked without edits. `Asia/Kolkata` (+05:30, no DST) keeps the
+    // expectation independent of the host zone.
+    void TestFilterEditorTimeRangeRoundTripsInNonUtcDisplayZone()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        const auto *model = mWindow->Model();
+        const qint64 row0Micros = model->data(model->index(0, timeCol), LogModelItemDataRole::SortRole).toLongLong();
+        const qint64 row2Micros = model->data(model->index(2, timeCol), LogModelItemDataRole::SortRole).toLongLong();
+        QVERIFY2(row0Micros > 0 && row2Micros > row0Micros, "fixture rows must carry increasing timestamps");
+
+        std::vector<std::filesystem::path> searched;
+        const auto tzdata = loglib::FindTzdataDirectory(
+            loglib::DefaultTzdataSearchRoots(logapp::QStringToFsPath(QCoreApplication::applicationDirPath())), searched
+        );
+        QVERIFY2(!tzdata.empty(), "tzdata must be available next to the test binary");
+        const loglib::TimeZoneContext previousZone = loglib::ProcessDefaultTimeZone();
+        const QScopeGuard zoneRestorer([&previousZone] { loglib::SetProcessDefaultTimeZone(previousZone); });
+        loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata, "Asia/Kolkata"));
+
+        FilterEditor editor(*model, QStringLiteral("tz-round-trip"));
+        editor.Load(timeCol, std::optional<qint64>{row0Micros}, std::optional<qint64>{row2Micros});
+
+        const auto *beginDate = editor.findChild<QDateEdit *>(QStringLiteral("beginDateEdit"));
+        const auto *beginTime = editor.findChild<QTimeEdit *>(QStringLiteral("beginTimeEdit"));
+        const auto *endDate = editor.findChild<QDateEdit *>(QStringLiteral("endDateEdit"));
+        const auto *endTime = editor.findChild<QTimeEdit *>(QStringLiteral("endTimeEdit"));
+        QVERIFY(beginDate != nullptr);
+        QVERIFY(beginTime != nullptr);
+        QVERIFY(endDate != nullptr);
+        QVERIFY(endTime != nullptr);
+
+        const auto shownWallClock = [](const QDateEdit *date, const QTimeEdit *time) {
+            return date->date().toString(QStringLiteral("yyyy-MM-dd")) + QLatin1Char(' ') +
+                   time->time().toString(QStringLiteral("HH:mm:ss.zzz"));
+        };
+        const auto displayZoneWallClock = [](qint64 micros) {
+            return QString::fromStdString(
+                loglib::ProcessDefaultTimeZone().Format(loglib::TimeStamp{std::chrono::microseconds{micros}}, "%F %T")
+            );
+        };
+        QCOMPARE(shownWallClock(beginDate, beginTime), displayZoneWallClock(row0Micros));
+        QCOMPARE(shownWallClock(endDate, endTime), displayZoneWallClock(row2Micros));
+
+        std::optional<qint64> submittedBegin;
+        std::optional<qint64> submittedEnd;
+        int submissions = 0;
+        QObject::connect(
+            &editor,
+            &FilterEditor::FilterTimeStampSubmitted,
+            &editor,
+            [&](const QString &, int, std::optional<qint64> begin, std::optional<qint64> end) {
+                submittedBegin = begin;
+                submittedEnd = end;
+                ++submissions;
+            }
+        );
+        auto *ok = editor.findChild<QPushButton *>(QStringLiteral("okButton"));
+        QVERIFY(ok != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
+        ok->click();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(submissions, 1);
+        QVERIFY(submittedBegin.has_value());
+        QVERIFY(submittedEnd.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QCOMPARE(*submittedBegin, row0Micros);
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QCOMPARE(*submittedEnd, row2Micros);
     }
 
     // `Column::visible` survives the Save / Reset / Load round-trip
