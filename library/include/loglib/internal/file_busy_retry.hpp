@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <filesystem>
 #include <system_error>
 #include <thread>
 
@@ -41,6 +42,24 @@ template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(con
 #else
     return attempt();
 #endif
+}
+
+/**
+ * @brief Renames a file through `RetryWhileFileBusy`.
+ *
+ * @param from Existing path.
+ * @param to New path, replaced when it already exists.
+ * @return The result of the last attempt.
+ */
+[[nodiscard]] inline std::error_code RenameRetryingWhileFileBusy(
+    const std::filesystem::path &from, const std::filesystem::path &to
+)
+{
+    return RetryWhileFileBusy([&from, &to] {
+        std::error_code error;
+        std::filesystem::rename(from, to, error);
+        return error;
+    });
 }
 
 } // namespace loglib::internal

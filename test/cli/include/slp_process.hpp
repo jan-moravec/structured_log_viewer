@@ -28,6 +28,14 @@ struct CommandResult
 /** @brief Absolute path of `test/cli/golden`. */
 [[nodiscard]] std::filesystem::path GoldenDir();
 
+/**
+ * @brief Absolute path of a scratch directory private to this process.
+ *
+ * Test cases run in parallel processes, so a shared directory would let
+ * them collide. The directory is removed at process exit.
+ */
+[[nodiscard]] const std::filesystem::path &ScratchRoot();
+
 /** @brief Spawns `slp` with @p args and captures both streams. */
 [[nodiscard]] CommandResult RunSlp(const std::vector<std::string> &args);
 

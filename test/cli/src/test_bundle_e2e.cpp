@@ -5,8 +5,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <test_common/temp_dir.hpp>
-
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +14,7 @@
 
 using slp::test::FixturesDir;
 using slp::test::RunSlp;
+using slp::test::ScratchRoot;
 
 namespace
 {
@@ -25,13 +24,6 @@ constexpr std::string_view FOUR_ROWS =
     "{\"ts\":\"2024-01-01T00:00:01Z\",\"level\":\"error\",\"msg\":\"bravo\",\"service\":\"auth\"}\n"
     "{\"ts\":\"2024-01-01T00:00:02Z\",\"level\":\"warn\",\"msg\":\"charlie\",\"service\":\"db\"}\n"
     "{\"ts\":\"2024-01-01T00:00:03Z\",\"level\":\"error\",\"msg\":\"delta\",\"service\":\"db\"}\n";
-
-[[nodiscard]] std::filesystem::path ScratchRoot()
-{
-    // One directory per process, because test cases run in parallel processes.
-    static const test_common::TempDir ROOT("slp_cli_bundle");
-    return ROOT.Path();
-}
 
 [[nodiscard]] std::string EmptyTemplates()
 {

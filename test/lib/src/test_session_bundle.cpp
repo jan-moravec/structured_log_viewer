@@ -7,6 +7,8 @@
 #include <loglib/parse_file.hpp>
 #include <loglib/session_bundle.hpp>
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_all.hpp>
 #include <zstd.h>
 
@@ -16,7 +18,6 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -26,12 +27,12 @@
 namespace
 {
 
-/// Returns a token shared by this process and distinct from other test
-/// processes, which run at the same time and use the same temp directory.
-[[nodiscard]] const std::string &ProcessToken()
+/// Returns a directory private to this process, because test cases run
+/// in parallel processes.
+[[nodiscard]] const std::filesystem::path &ScratchRoot()
 {
-    static const std::string TOKEN = std::to_string(std::random_device{}());
-    return TOKEN;
+    static const test_common::TempDir ROOT("session_bundle");
+    return ROOT.Path();
 }
 
 class TempPath
@@ -40,8 +41,7 @@ public:
     explicit TempPath(std::string suffix)
     {
         static std::atomic<unsigned> counter{0};
-        mPath = std::filesystem::temp_directory_path() /
-                ("slv-session-bundle-" + ProcessToken() + "-" + std::to_string(++counter) + std::move(suffix));
+        mPath = ScratchRoot() / ("slv-session-bundle-" + std::to_string(++counter) + std::move(suffix));
     }
 
     ~TempPath()
@@ -586,10 +586,9 @@ TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBun
                                      "\xC3\xA9"     // U+00E9 e-acute
                                      "\xE6\x97\xA5" // U+65E5 CJK "day"
                                      "-" +
-                                     ProcessToken() + "-" + std::to_string(++counter) + ".slvbundle";
+                                     std::to_string(++counter) + ".slvbundle";
     // Avoid Windows active-code-page conversion.
-    const std::filesystem::path bundlePath =
-        std::filesystem::temp_directory_path() / loglib::internal::Utf8ToPath(utf8Filename);
+    const std::filesystem::path bundlePath = ScratchRoot() / loglib::internal::Utf8ToPath(utf8Filename);
     std::error_code cleanupError;
     std::filesystem::remove(bundlePath, cleanupError);
     try

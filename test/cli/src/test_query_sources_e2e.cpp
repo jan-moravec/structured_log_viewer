@@ -12,8 +12,6 @@
 #include <zlib.h>
 #include <zstd.h>
 
-#include <test_common/temp_dir.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +23,7 @@
 using slp::test::FixturesDir;
 using slp::test::RunSlp;
 using slp::test::RunSlpWithStdin;
+using slp::test::ScratchRoot;
 
 namespace
 {
@@ -119,13 +118,6 @@ void WriteBytes(const std::filesystem::path &path, std::string_view bytes)
 void WriteCompressed(const std::filesystem::path &path, const std::vector<std::uint8_t> &bytes)
 {
     WriteBytes(path, std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
-}
-
-[[nodiscard]] std::filesystem::path ScratchRoot()
-{
-    // One directory per process, because test cases run in parallel processes.
-    static const test_common::TempDir ROOT("slp_cli_sources");
-    return ROOT.Path();
 }
 
 [[nodiscard]] std::string EmptyTemplates()

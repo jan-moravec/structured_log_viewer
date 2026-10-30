@@ -4,7 +4,6 @@
 #include <loglib/udp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
-#include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -24,6 +23,7 @@
 using slp::test::FixturesDir;
 using slp::test::RunSlp;
 using slp::test::RunSlpWithStdin;
+using slp::test::ScratchRoot;
 using slp::test::SlpChild;
 
 namespace
@@ -32,13 +32,6 @@ namespace
 using std::chrono::milliseconds;
 
 constexpr auto LONG_WAIT = milliseconds(30000);
-
-[[nodiscard]] std::filesystem::path ScratchRoot()
-{
-    // One directory per process, because test cases run in parallel processes.
-    static const test_common::TempDir ROOT("slp_cli_tail");
-    return ROOT.Path();
-}
 
 [[nodiscard]] std::string EmptyTemplates()
 {

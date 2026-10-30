@@ -209,11 +209,7 @@ void FileSink::Finish()
     }
     mFile = nullptr;
 
-    const std::error_code ec = internal::RetryWhileFileBusy([this] {
-        std::error_code renameError;
-        std::filesystem::rename(mTempPath, mDestination, renameError);
-        return renameError;
-    });
+    const std::error_code ec = internal::RenameRetryingWhileFileBusy(mTempPath, mDestination);
     if (ec)
     {
         // Rename fails cross-device or when the destination is

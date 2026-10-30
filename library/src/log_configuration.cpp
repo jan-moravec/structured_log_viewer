@@ -296,11 +296,7 @@ void LogConfigurationManager::Save(
             throw std::runtime_error("Failed to close file '" + tempPath.string() + "'.");
         }
     }
-    const std::error_code ec = internal::RetryWhileFileBusy([&tempPath, &path] {
-        std::error_code renameError;
-        std::filesystem::rename(tempPath, path, renameError);
-        return renameError;
-    });
+    const std::error_code ec = internal::RenameRetryingWhileFileBusy(tempPath, path);
     if (ec)
     {
         std::error_code cleanupEc;

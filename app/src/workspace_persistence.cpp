@@ -30,16 +30,22 @@ namespace logapp::persistence
 namespace
 {
 
-/// Runs @p attempt until it succeeds, for up to one second.
+constexpr int FILE_BUSY_TIMEOUT_MS = 1000;
+
+/// Runs @p attempt until it succeeds or @p deadline expires.
 ///
-/// File scanners, indexers, and sync clients briefly open files that
-/// were just written, which makes copies and `QSaveFile::commit` fail.
-/// `QSaveFile` cannot commit twice, so @p attempt redoes the whole write.
-template <typename Attempt> bool RetryWhileFileBusy(const Attempt &attempt)
+/// On Windows, file scanners, indexers, and sync clients briefly open
+/// files that were just written, which makes copies and
+/// `QSaveFile::commit` fail. `QSaveFile` cannot commit twice, so
+/// @p attempt redoes the whole write. Qt does not report the cause, so
+/// every failure is retried; a batch of files shares one @p deadline to
+/// keep a lasting failure from adding a wait per file. Other platforms
+/// make one attempt.
+template <typename Attempt>
+bool RetryWhileFileBusy([[maybe_unused]] const QDeadlineTimer &deadline, const Attempt &attempt)
 {
-    constexpr int RETRY_TIMEOUT_MS = 1000;
+#ifdef Q_OS_WIN
     constexpr int RETRY_INTERVAL_MS = 20;
-    const QDeadlineTimer deadline(RETRY_TIMEOUT_MS);
     while (!attempt())
     {
         if (deadline.hasExpired())
@@ -49,6 +55,9 @@ template <typename Attempt> bool RetryWhileFileBusy(const Attempt &attempt)
         QThread::msleep(RETRY_INTERVAL_MS);
     }
     return true;
+#else
+    return attempt();
+#endif
 }
 
 constexpr const char *WORKSPACE_FILE_NAME = "workspace.json";
@@ -393,7 +402,7 @@ bool WorkspacePersistence::Write(Workspace workspace)
     const QString path = dir.filePath(QLatin1String(WORKSPACE_FILE_NAME));
     const QJsonDocument doc = BuildDoc(workspace);
     const QByteArray raw = doc.toJson(QJsonDocument::Indented);
-    return RetryWhileFileBusy([&path, &raw] {
+    return RetryWhileFileBusy(QDeadlineTimer(FILE_BUSY_TIMEOUT_MS), [&path, &raw] {
         QSaveFile saveFile(path);
         if (!saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
         {
@@ -551,13 +560,13 @@ QString WorkspacePersistence::SessionSnapshotPath(std::uint64_t generation, cons
 namespace
 {
 
-bool CopySnapshotFile(const QString &from, const QString &to)
+bool CopySnapshotFile(const QString &from, const QString &to, const QDeadlineTimer &busyDeadline)
 {
     if (from.isEmpty() || to.isEmpty() || !QFile::exists(from))
     {
         return false;
     }
-    return RetryWhileFileBusy([&from, &to] {
+    return RetryWhileFileBusy(busyDeadline, [&from, &to] {
         QFile::remove(to);
         return QFile::copy(from, to);
     });
@@ -579,6 +588,7 @@ bool WorkspacePersistence::WriteGenerationSnapshots(std::uint64_t generation, Wo
     }
     const std::uint64_t previousGeneration = Read().generation;
     const QDir recentsDir = DefaultWorkspaceDir();
+    const QDeadlineTimer busyDeadline(FILE_BUSY_TIMEOUT_MS);
     for (WorkspaceWindow &window : workspace.windows)
     {
         for (WorkspaceTab &tab : window.tabs)
@@ -590,12 +600,12 @@ bool WorkspacePersistence::WriteGenerationSnapshots(std::uint64_t generation, Wo
             }
             const QString dest = SessionSnapshotPath(generation, tab.sessionUuid);
             const QString fromRecents = recentsDir.filePath(tab.sessionUuid + QStringLiteral(".json"));
-            if (CopySnapshotFile(fromRecents, dest))
+            if (CopySnapshotFile(fromRecents, dest, busyDeadline))
             {
                 continue;
             }
             if (previousGeneration != 0 && previousGeneration != generation &&
-                CopySnapshotFile(SessionSnapshotPath(previousGeneration, tab.sessionUuid), dest))
+                CopySnapshotFile(SessionSnapshotPath(previousGeneration, tab.sessionUuid), dest, busyDeadline))
             {
                 continue;
             }

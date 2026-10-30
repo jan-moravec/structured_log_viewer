@@ -2,7 +2,6 @@
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
-#include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,6 +14,7 @@
 using slp::test::FixturesDir;
 using slp::test::RequireGolden;
 using slp::test::RunSlp;
+using slp::test::ScratchRoot;
 
 namespace
 {
@@ -34,9 +34,7 @@ namespace
     const test_common::LogFormat &format, std::size_t lineCount, const std::string &fileName
 )
 {
-    // One directory per process, because test cases run in parallel processes.
-    static const test_common::TempDir ROOT("slp_cli_validate");
-    const auto path = ROOT.Path() / fileName;
+    const auto path = ScratchRoot() / fileName;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     REQUIRE(static_cast<bool>(output));
     for (const auto &record : test_common::GenerateRandomLogRecords(lineCount, 0xA11CE))

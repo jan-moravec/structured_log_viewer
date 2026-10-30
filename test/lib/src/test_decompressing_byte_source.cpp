@@ -559,24 +559,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
     const TempBinaryFile fixture(".log.gz");
     fixture.WriteBytes(compressed);
 
-    // Compare temp dir contents by `slv-decompressed-` count before
-    // vs. after (name pattern, not exact set) so unrelated temp
-    // files on shared CI hosts don't skew the check.
     const IsolatedTempDirectory isolatedTemp;
-    const std::filesystem::path tempDir = std::filesystem::temp_directory_path();
-    auto countSlvTemps = [&]() {
-        std::size_t n = 0;
-        std::error_code ec;
-        for (const auto &entry : std::filesystem::directory_iterator(tempDir, ec))
-        {
-            if (entry.path().filename().string().starts_with("slv-decompressed-"))
-            {
-                ++n;
-            }
-        }
-        return n;
-    };
-    const std::size_t beforeSlvTemps = countSlvTemps();
 
     StopSource stopSource;
 
@@ -602,7 +585,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
     // Cleanup: any temp file created by the worker must be gone;
     // source file intact.
     CHECK(std::filesystem::file_size(fixture.Path()) == compressed.size());
-    CHECK(countSlvTemps() == beforeSlvTemps);
+    CHECK(std::filesystem::is_empty(std::filesystem::temp_directory_path()));
 }
 
 TEST_CASE("DecompressingByteSource: DecompressionCancelled is not a std::runtime_error", "[DecompressingByteSource]")
@@ -669,20 +652,6 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     fixture.WriteBytes(compressed);
 
     const IsolatedTempDirectory isolatedTemp;
-    const std::filesystem::path tempDir = std::filesystem::temp_directory_path();
-    auto countSlvTemps = [&]() {
-        std::size_t n = 0;
-        std::error_code ec;
-        for (const auto &entry : std::filesystem::directory_iterator(tempDir, ec))
-        {
-            if (entry.path().filename().string().starts_with("slv-decompressed-"))
-            {
-                ++n;
-            }
-        }
-        return n;
-    };
-    const std::size_t beforeSlvTemps = countSlvTemps();
 
     DecompressingByteSource::Options options;
     // 16 KiB cap << 256 KiB payload => trip on the first output chunk.
@@ -691,7 +660,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::DecompressionSizeCapExceeded);
 
     // Partial temp cleaned up on unwind, same as the cancel path.
-    CHECK(countSlvTemps() == beforeSlvTemps);
+    CHECK(std::filesystem::is_empty(std::filesystem::temp_directory_path()));
 }
 
 TEST_CASE("DecompressingByteSource: max decompressed size cap of 0 is disabled", "[DecompressingByteSource]")

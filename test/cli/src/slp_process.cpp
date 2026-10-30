@@ -1,5 +1,7 @@
 #include "slp_process.hpp"
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -72,6 +74,12 @@ void WritePathBytes(const std::filesystem::path &path, std::string_view bytes)
 }
 
 } // namespace
+
+const std::filesystem::path &ScratchRoot()
+{
+    static const test_common::TempDir ROOT("slp_cli");
+    return ROOT.Path();
+}
 
 std::filesystem::path SlpBinary()
 {
