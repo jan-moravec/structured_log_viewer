@@ -1,4 +1,5 @@
 #include "loglib/exports/export_sink.hpp"
+#include "loglib/internal/file_busy_retry.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -208,8 +209,11 @@ void FileSink::Finish()
     }
     mFile = nullptr;
 
-    std::error_code ec;
-    std::filesystem::rename(mTempPath, mDestination, ec);
+    const std::error_code ec = internal::RetryWhileFileBusy([this] {
+        std::error_code renameError;
+        std::filesystem::rename(mTempPath, mDestination, renameError);
+        return renameError;
+    });
     if (ec)
     {
         // Rename fails cross-device or when the destination is

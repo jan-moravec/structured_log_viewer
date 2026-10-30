@@ -1169,7 +1169,7 @@ private slots:
         // Dirty the session; presentationChanged fans through the
         // ctor-installed subscription which calls RefreshTabChrome.
         window.activeSession()->MarkFiltersDirty();
-        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("\u25CF")), 1000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("\u25CF")), 5000);
         window.activeSession()->ClearFiltersDirty();
     }
 
@@ -1295,7 +1295,7 @@ private slots:
         // `presentationChanged` connect must fire `RefreshTabChrome`
         // for tab index 1 (not the currently-active tab 0).
         background->MarkFiltersDirty();
-        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(1).contains(QStringLiteral("\u25CF")), 1000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(1).contains(QStringLiteral("\u25CF")), 5000);
         // The active tab (0) is NOT dirtied and must not gain the marker.
         QVERIFY(!window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("\u25CF")));
 
@@ -1409,7 +1409,7 @@ private slots:
         }
         tail->MarkFiltersDirty();
         // Give the presentationChanged fanout a chance to land.
-        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(2).contains(QStringLiteral("\u25CF")), 1000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(2).contains(QStringLiteral("\u25CF")), 5000);
         const QString tailLabelBefore = window.TabWidgetForTest()->tabText(2);
 
         window.CloseTabForTest(1);

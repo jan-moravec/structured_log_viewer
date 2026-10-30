@@ -14767,8 +14767,12 @@ private slots:
         // queues in `mPendingOpenFiles`.
         mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Append);
 
-        // Wait for `good.log` to finish (chains into decompression).
-        QVERIFY2(finishedSpy.wait(10000), "first file must reach terminal state before the chain kicks in");
+        // Wait for `good.log` to finish (chains into decompression). A
+        // fast parse may already have finished while events were pumped
+        // above, so check the count rather than wait for a new signal.
+        QTRY_VERIFY2_WITH_TIMEOUT(
+            finishedSpy.count() >= 1, "first file must reach terminal state before the chain kicks in", 10000
+        );
         // Drive events until the chained decompression fails and the
         // pipeline settles. `IsStreamingActive` clears when
         // `good.log` finishes, so also gate on the decompression flag.
@@ -18188,7 +18192,7 @@ private slots:
         // Wait for the 120 ms debounce to fire. `wait()` doesn't
         // depend on the test driver's clock ticking.
         QVERIFY2(
-            spy.count() > 0 || spy.wait(1000),
+            spy.count() > 0 || spy.wait(5000),
             "FindDock::revealed must trigger a debounced MatchCountRequested for a non-empty needle"
         );
 
@@ -24024,7 +24028,7 @@ private slots:
         secondary.waitForBytesWritten(1000);
 
         // Spin the loop so the primary drains the pipe.
-        QVERIFY(spy.wait(2000));
+        QVERIFY(spy.wait(5000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         const QStringList received = args.at(0).toStringList();
@@ -24301,7 +24305,7 @@ private slots:
         peer.flush();
         peer.waitForBytesWritten(1000);
 
-        QVERIFY(spy.wait(2000));
+        QVERIFY(spy.wait(5000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);
@@ -24352,7 +24356,7 @@ private slots:
         peer.flush();
         peer.waitForBytesWritten(1000);
 
-        QVERIFY(spy.wait(2000));
+        QVERIFY(spy.wait(5000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);

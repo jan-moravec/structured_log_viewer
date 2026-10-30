@@ -1,5 +1,6 @@
 #include "loglib/session_bundle.hpp"
 
+#include "loglib/internal/file_busy_retry.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/internal/normalized_json_row.hpp"
 #include "loglib/internal/path_encoding.hpp"
@@ -572,9 +573,16 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
 #ifdef _WIN32
     // Same-volume staging enables atomic replacement. `FileHandle::Close`
     // durably flushes the file before this rename.
-    if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) == 0)
+    const std::error_code moveError = internal::RetryWhileFileBusy([&temporary, &destination] {
+        if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
+        {
+            return std::error_code{};
+        }
+        return std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+    });
+    if (moveError)
     {
-        const unsigned long win32Error = ::GetLastError();
+        const auto win32Error = static_cast<unsigned long>(moveError.value());
         // Give common Windows errors actionable messages.
         const std::string destUtf8 = internal::PathToUtf8(destination);
         if (win32Error == ERROR_SHARING_VIOLATION)

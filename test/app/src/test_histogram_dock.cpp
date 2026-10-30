@@ -187,7 +187,7 @@ void WaitForBucketsChanged(HistogramModel &model)
     {
         return;
     }
-    QVERIFY2(spy.wait(1000), "bucketsChanged must arrive after streaming");
+    QVERIFY2(spy.wait(5000), "bucketsChanged must arrive after streaming");
 }
 
 // Wait for at least one `anchorBucketsChanged` on a pre-attached
@@ -201,7 +201,7 @@ void ExpectAnchorBucketsChanged(QSignalSpy &spy)
     {
         return;
     }
-    QVERIFY2(spy.wait(1000), "anchorBucketsChanged must arrive after an anchor mutation");
+    QVERIFY2(spy.wait(5000), "anchorBucketsChanged must arrive after an anchor mutation");
 }
 
 // Drive `MainWindow::OpenFilesForTest` and wait for

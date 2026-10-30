@@ -4,6 +4,7 @@
 #include <loglib/udp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
+#include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -34,10 +35,9 @@ constexpr auto LONG_WAIT = milliseconds(30000);
 
 [[nodiscard]] std::filesystem::path ScratchRoot()
 {
-    const auto root = std::filesystem::temp_directory_path() / "slp_cli_tail";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    return root;
+    // One directory per process, because test cases run in parallel processes.
+    static const test_common::TempDir ROOT("slp_cli_tail");
+    return ROOT.Path();
 }
 
 [[nodiscard]] std::string EmptyTemplates()

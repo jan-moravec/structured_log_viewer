@@ -3,6 +3,7 @@
 #include "log_warning.hpp"
 #include "uuid_utils.hpp"
 
+#include <QDeadlineTimer>
 #include <QFileInfo>
 #include <QLatin1String>
 #include <QLockFile>
@@ -13,6 +14,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QThread>
 #include <QUuid>
 #include <QVariant>
 
@@ -78,6 +80,32 @@ void SyncWarnIfNeeded(QSettings &settings, const char *context)
     }
     logapp::LogWarning() << "QSettings::sync() returned" << static_cast<int>(status) << "after" << context
                          << "; subsequent failures will be silent this process.";
+}
+
+/// Applies @p write to a fresh `QSettings` and syncs it.
+///
+/// `QSettings::sync` reports `AccessError` when another process, such
+/// as a file scanner, briefly holds the settings file or its lock, and
+/// the pending values can then be lost. The status of a `QSettings`
+/// object never clears, so each attempt uses a new object and repeats
+/// the write. @p write must therefore be safe to run more than once.
+template <typename WriteFn> void WriteSettingsWithRetry(const char *context, const WriteFn &write)
+{
+    constexpr int RETRY_TIMEOUT_MS = 1000;
+    constexpr int RETRY_INTERVAL_MS = 20;
+    const QDeadlineTimer deadline(RETRY_TIMEOUT_MS);
+    while (true)
+    {
+        QSettings settings;
+        write(settings);
+        settings.sync();
+        if (settings.status() != QSettings::AccessError || deadline.hasExpired())
+        {
+            SyncWarnIfNeeded(settings, context);
+            return;
+        }
+        QThread::msleep(RETRY_INTERVAL_MS);
+    }
 }
 
 /// Cross-process lock timeouts.
@@ -165,19 +193,18 @@ QStringList ReadOpenWindowsAtQuit()
 
 void WriteOpenWindowsAtQuit(const QStringList &uuids)
 {
-    QSettings settings;
-    if (uuids.isEmpty())
-    {
-        // Remove the key so a later read returns an empty list
-        // without us having to special-case it.
-        settings.remove(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY));
-    }
-    else
-    {
-        settings.setValue(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY), uuids);
-    }
-    settings.sync();
-    SyncWarnIfNeeded(settings, "WriteOpenWindowsAtQuit");
+    WriteSettingsWithRetry("WriteOpenWindowsAtQuit", [&uuids](QSettings &settings) {
+        if (uuids.isEmpty())
+        {
+            // Remove the key so a later read returns an empty list
+            // without us having to special-case it.
+            settings.remove(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY));
+        }
+        else
+        {
+            settings.setValue(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY), uuids);
+        }
+    });
 }
 
 /// Serialises read-modify-write of `openWindowsAtQuit` across the
@@ -187,6 +214,27 @@ QMutex &OpenWindowsMutex()
 {
     static QMutex mutex;
     return mutex;
+}
+
+/// Acquires @p lock, waiting at most @p timeoutMs.
+///
+/// `QLockFile::tryLock` returns at once on `PermissionError`, ignoring
+/// its timeout. Windows reports that error while another process, such
+/// as a file scanner, keeps the previous lock file open during its
+/// deletion, so the refusal is retried until the timeout.
+bool TryLockWithinTimeout(QLockFile &lock, int timeoutMs)
+{
+    constexpr int PERMISSION_RETRY_INTERVAL_MS = 10;
+    const QDeadlineTimer deadline(timeoutMs);
+    while (!lock.tryLock(static_cast<int>(deadline.remainingTime())))
+    {
+        if (lock.error() != QLockFile::PermissionError || deadline.hasExpired())
+        {
+            return false;
+        }
+        QThread::msleep(PERMISSION_RETRY_INTERVAL_MS);
+    }
+    return true;
 }
 
 LockFileGuard AcquireRecentsLock(const QDir &sessionsDir, int timeoutMs)
@@ -203,7 +251,7 @@ LockFileGuard AcquireRecentsLock(const QDir &sessionsDir, int timeoutMs)
     // contention still fails closed via the `tryLock` timeout below.
     constexpr int STALE_LOCK_TIMEOUT_MS = 30 * 1000;
     guard.lock->setStaleLockTime(STALE_LOCK_TIMEOUT_MS);
-    guard.locked = guard.lock->tryLock(timeoutMs);
+    guard.locked = TryLockWithinTimeout(*guard.lock, timeoutMs);
     if (!guard.locked && !g_recents_lock_warned.exchange(true))
     {
         // First failure only; error code disambiguates contention
@@ -237,10 +285,9 @@ bool SessionHistoryManager::RestoreLastSessionOnLaunch()
 
 void SessionHistoryManager::SetRestoreLastSessionOnLaunch(bool enabled)
 {
-    QSettings settings;
-    settings.setValue(QLatin1String(SETTINGS_RESTORE_LAST_KEY), enabled);
-    settings.sync();
-    SyncWarnIfNeeded(settings, "SetRestoreLastSessionOnLaunch");
+    WriteSettingsWithRetry("SetRestoreLastSessionOnLaunch", [enabled](QSettings &settings) {
+        settings.setValue(QLatin1String(SETTINGS_RESTORE_LAST_KEY), enabled);
+    });
 }
 
 int SessionHistoryManager::MaxEntries()
@@ -262,11 +309,10 @@ int SessionHistoryManager::MaxEntries()
 
 void SessionHistoryManager::SetMaxEntries(int maxEntries)
 {
-    QSettings settings;
     const int clamped = std::clamp(maxEntries, MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND);
-    settings.setValue(QLatin1String(SETTINGS_MAX_ENTRIES_KEY), clamped);
-    settings.sync();
-    SyncWarnIfNeeded(settings, "SetMaxEntries");
+    WriteSettingsWithRetry("SetMaxEntries", [clamped](QSettings &settings) {
+        settings.setValue(QLatin1String(SETTINGS_MAX_ENTRIES_KEY), clamped);
+    });
 }
 
 SessionHistoryManager::SessionHistoryManager(
@@ -998,35 +1044,33 @@ QList<RecentSessionEntry> QSettingsRecentsIndexStorage::Read() const
 
 void QSettingsRecentsIndexStorage::Write(const QList<RecentSessionEntry> &entries)
 {
-    QSettings settings;
-
-    // Wipe the entries sub-group so a shrinking list doesn't leave
-    // stale per-slot keys. `size` and `lastSessionUuid` are outside
-    // the group and survive.
-    settings.beginGroup(QLatin1String(SETTINGS_ENTRIES_GROUP));
-    settings.remove(QString());
-    settings.endGroup();
-
     // Write slots + sync, then publish `size`. A crash between
     // the two syncs keeps `size` at the old value (old list, not
     // a half-written new one).
-    for (int i = 0; i < entries.size(); ++i)
-    {
-        const auto &e = entries[i];
-        settings.setValue(EntryKey(i, QStringLiteral("uuid")), e.uuid);
-        settings.setValue(EntryKey(i, QStringLiteral("label")), e.label);
-        settings.setValue(EntryKey(i, QStringLiteral("primary")), e.primaryLocator);
-        settings.setValue(EntryKey(i, QStringLiteral("fileCount")), e.fileCount);
-        settings.setValue(EntryKey(i, QStringLiteral("ts")), e.timestampMsEpoch);
-    }
-    settings.sync();
-    SyncWarnIfNeeded(settings, "Write entries");
+    WriteSettingsWithRetry("Write entries", [&entries](QSettings &settings) {
+        // Wipe the entries sub-group so a shrinking list doesn't leave
+        // stale per-slot keys. `size` and `lastSessionUuid` are outside
+        // the group and survive.
+        settings.beginGroup(QLatin1String(SETTINGS_ENTRIES_GROUP));
+        settings.remove(QString());
+        settings.endGroup();
 
-    settings.setValue(QLatin1String(SETTINGS_SIZE_KEY), entries.size());
-    // Stamp the layout version for future migration detection.
-    settings.setValue(QLatin1String(SETTINGS_VERSION_KEY), CURRENT_RECENTS_VERSION);
-    settings.sync();
-    SyncWarnIfNeeded(settings, "Write size");
+        for (int i = 0; i < entries.size(); ++i)
+        {
+            const auto &e = entries[i];
+            settings.setValue(EntryKey(i, QStringLiteral("uuid")), e.uuid);
+            settings.setValue(EntryKey(i, QStringLiteral("label")), e.label);
+            settings.setValue(EntryKey(i, QStringLiteral("primary")), e.primaryLocator);
+            settings.setValue(EntryKey(i, QStringLiteral("fileCount")), e.fileCount);
+            settings.setValue(EntryKey(i, QStringLiteral("ts")), e.timestampMsEpoch);
+        }
+    });
+
+    WriteSettingsWithRetry("Write size", [&entries](QSettings &settings) {
+        settings.setValue(QLatin1String(SETTINGS_SIZE_KEY), entries.size());
+        // Stamp the layout version for future migration detection.
+        settings.setValue(QLatin1String(SETTINGS_VERSION_KEY), CURRENT_RECENTS_VERSION);
+    });
 }
 
 std::optional<QString> QSettingsRecentsIndexStorage::ReadLastUuid() const
@@ -1047,15 +1091,14 @@ std::optional<QString> QSettingsRecentsIndexStorage::ReadLastUuid() const
 
 void QSettingsRecentsIndexStorage::WriteLastUuid(const std::optional<QString> &uuid)
 {
-    QSettings settings;
-    if (uuid.has_value() && !uuid->isEmpty())
-    {
-        settings.setValue(QLatin1String(SETTINGS_LAST_UUID_KEY), *uuid);
-    }
-    else
-    {
-        settings.remove(QLatin1String(SETTINGS_LAST_UUID_KEY));
-    }
-    settings.sync();
-    SyncWarnIfNeeded(settings, "WriteLastUuid");
+    WriteSettingsWithRetry("WriteLastUuid", [&uuid](QSettings &settings) {
+        if (uuid.has_value() && !uuid->isEmpty())
+        {
+            settings.setValue(QLatin1String(SETTINGS_LAST_UUID_KEY), *uuid);
+        }
+        else
+        {
+            settings.remove(QLatin1String(SETTINGS_LAST_UUID_KEY));
+        }
+    });
 }

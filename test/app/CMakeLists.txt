@@ -191,6 +191,18 @@ add_test(
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_scoped_connections>
 )
 
+qt_add_executable(apptest_session_history_lock src/test_session_history_lock.cpp)
+
+target_link_libraries(apptest_session_history_lock PRIVATE Qt6::Test logapp)
+
+target_include_directories(apptest_session_history_lock PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(
+    NAME apptest_session_history_lock
+    COMMAND apptest_session_history_lock
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_session_history_lock>
+)
+
 # Focused characterization + direct `LogSession` / `LogSessionView`
 # / `SessionBindContext` / tab / workspace-persistence test targets
 # for the MainWindow-architecture / multi-source-tabs feature (see
