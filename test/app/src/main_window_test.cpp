@@ -10754,7 +10754,7 @@ private slots:
         );
         QVERIFY2(!tzdata.empty(), "tzdata must be available next to the test binary");
         const loglib::TimeZoneContext previousZone = loglib::ProcessDefaultTimeZone();
-        const QScopeGuard zoneRestorer([&previousZone]() { loglib::SetProcessDefaultTimeZone(previousZone); });
+        const QScopeGuard zoneRestorer([&previousZone] { loglib::SetProcessDefaultTimeZone(previousZone); });
         loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata, "Asia/Kolkata"));
 
         FilterEditor editor(*model, QStringLiteral("tz-round-trip"));
