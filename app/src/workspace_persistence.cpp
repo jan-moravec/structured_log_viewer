@@ -6,6 +6,7 @@
 #include "uuid_utils.hpp"
 
 #include <QByteArray>
+#include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -18,6 +19,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QStringConverter>
+#include <QThread>
 #include <QUuid>
 
 #include <algorithm>
@@ -27,6 +29,27 @@ namespace logapp::persistence
 {
 namespace
 {
+
+/// Runs @p attempt until it succeeds, for up to one second.
+///
+/// File scanners, indexers, and sync clients briefly open files that
+/// were just written, which makes copies and `QSaveFile::commit` fail.
+/// `QSaveFile` cannot commit twice, so @p attempt redoes the whole write.
+template <typename Attempt> bool RetryWhileFileBusy(Attempt &&attempt)
+{
+    constexpr int RETRY_TIMEOUT_MS = 1000;
+    constexpr int RETRY_INTERVAL_MS = 20;
+    const QDeadlineTimer deadline(RETRY_TIMEOUT_MS);
+    while (!attempt())
+    {
+        if (deadline.hasExpired())
+        {
+            return false;
+        }
+        QThread::msleep(RETRY_INTERVAL_MS);
+    }
+    return true;
+}
 
 constexpr const char *WORKSPACE_FILE_NAME = "workspace.json";
 constexpr const char *GENERATIONS_DIR_NAME = "generations";
@@ -368,19 +391,21 @@ bool WorkspacePersistence::Write(Workspace workspace)
         return false;
     }
     const QString path = dir.filePath(QLatin1String(WORKSPACE_FILE_NAME));
-    QSaveFile saveFile(path);
-    if (!saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        return false;
-    }
     const QJsonDocument doc = BuildDoc(workspace);
     const QByteArray raw = doc.toJson(QJsonDocument::Indented);
-    if (saveFile.write(raw) != raw.size())
-    {
-        saveFile.cancelWriting();
-        return false;
-    }
-    return saveFile.commit();
+    return RetryWhileFileBusy([&path, &raw]() {
+        QSaveFile saveFile(path);
+        if (!saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            return false;
+        }
+        if (saveFile.write(raw) != raw.size())
+        {
+            saveFile.cancelWriting();
+            return false;
+        }
+        return saveFile.commit();
+    });
 }
 
 bool WorkspacePersistence::HasPersistedWorkspace()
@@ -532,8 +557,10 @@ bool CopySnapshotFile(const QString &from, const QString &to)
     {
         return false;
     }
-    QFile::remove(to);
-    return QFile::copy(from, to);
+    return RetryWhileFileBusy([&from, &to]() {
+        QFile::remove(to);
+        return QFile::copy(from, to);
+    });
 }
 
 } // namespace

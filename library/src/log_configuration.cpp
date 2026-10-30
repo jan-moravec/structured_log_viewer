@@ -1,6 +1,6 @@
 #include "loglib/log_configuration.hpp"
-
 #include "loglib/ascii_case.hpp"
+#include "loglib/internal/file_busy_retry.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/internal/log_configuration_glaze_opts.hpp"
 #include "loglib/log_data.hpp"
@@ -296,8 +296,11 @@ void LogConfigurationManager::Save(
             throw std::runtime_error("Failed to close file '" + tempPath.string() + "'.");
         }
     }
-    std::error_code ec;
-    std::filesystem::rename(tempPath, path, ec);
+    const std::error_code ec = internal::RetryWhileFileBusy([&tempPath, &path]() {
+        std::error_code renameError;
+        std::filesystem::rename(tempPath, path, renameError);
+        return renameError;
+    });
     if (ec)
     {
         std::error_code cleanupEc;

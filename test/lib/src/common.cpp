@@ -7,6 +7,7 @@
 #include <loglib/tzdata_search.hpp>
 
 #include <test_common/log_generator.hpp>
+#include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -31,22 +32,12 @@ namespace
 // `"regex_templates_<template>.log"`) resolve inside this directory so ad-hoc
 // runs of a test binary from the workspace root can't leak stray files into
 // the source tree. The random suffix keeps parallel `ctest -j` runs (and
-// concurrent test binaries) from colliding on a fixed path; the directory
-// itself is not removed at process exit because individual fixtures already
-// remove their own files in their dtors and the OS reclaims the empty dir
-// on its usual temp-cleanup cadence.
+// concurrent test binaries) from colliding on a fixed path. The directory is
+// removed at process exit.
 const std::filesystem::path &ScratchDir()
 {
-    static const std::filesystem::path SCRATCH_DIR = [] {
-        std::random_device rd;
-        std::mt19937_64 gen(rd());
-        const std::uint64_t suffix = gen();
-        auto path = std::filesystem::temp_directory_path() / ("loglib_tests_" + std::to_string(suffix));
-        std::error_code ec;
-        std::filesystem::create_directories(path, ec);
-        return path;
-    }();
-    return SCRATCH_DIR;
+    static const test_common::TempDir SCRATCH_DIR("tests");
+    return SCRATCH_DIR.Path();
 }
 
 // Resolve a caller-supplied path to a concrete on-disk location. Absolute

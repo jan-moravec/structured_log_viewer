@@ -6,6 +6,8 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <bzlib.h>
@@ -19,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -39,6 +42,39 @@ using loglib::StopSource;
 
 namespace
 {
+
+/// Points this process's temp directory at a private folder, so a test
+/// can count its own temp files while other test processes run.
+class IsolatedTempDirectory
+{
+public:
+    IsolatedTempDirectory()
+        : mOriginal(std::filesystem::temp_directory_path().string())
+    {
+        Apply(mDirectory.Path().string());
+    }
+
+    IsolatedTempDirectory(const IsolatedTempDirectory &) = delete;
+    IsolatedTempDirectory &operator=(const IsolatedTempDirectory &) = delete;
+
+    ~IsolatedTempDirectory()
+    {
+        Apply(mOriginal);
+    }
+
+private:
+    static void Apply(const std::string &path)
+    {
+#ifdef _WIN32
+        _putenv_s("TMP", path.c_str());
+#else
+        setenv("TMPDIR", path.c_str(), 1);
+#endif
+    }
+
+    test_common::TempDir mDirectory{"decompress"};
+    std::string mOriginal;
+};
 
 /// RAII fixture with a unique on-disk path removed on destruction.
 /// Used for raw-byte writes (compressed streams); `TestLogFile` is
@@ -525,6 +561,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
     // Compare temp dir contents by `slv-decompressed-` count before
     // vs. after (name pattern, not exact set) so unrelated temp
     // files on shared CI hosts don't skew the check.
+    const IsolatedTempDirectory isolatedTemp;
     const std::filesystem::path tempDir = std::filesystem::temp_directory_path();
     auto countSlvTemps = [&]() {
         std::size_t n = 0;
@@ -630,6 +667,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     const TempBinaryFile fixture(".log.gz");
     fixture.WriteBytes(compressed);
 
+    const IsolatedTempDirectory isolatedTemp;
     const std::filesystem::path tempDir = std::filesystem::temp_directory_path();
     auto countSlvTemps = [&]() {
         std::size_t n = 0;

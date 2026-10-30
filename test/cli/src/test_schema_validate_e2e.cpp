@@ -2,6 +2,7 @@
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
+#include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -33,9 +34,9 @@ namespace
     const test_common::LogFormat &format, std::size_t lineCount, const std::string &fileName
 )
 {
-    const auto root = std::filesystem::temp_directory_path() / "slp_cli_validate";
-    std::filesystem::create_directories(root);
-    const auto path = root / fileName;
+    // One directory per process, because test cases run in parallel processes.
+    static const test_common::TempDir ROOT("slp_cli_validate");
+    const auto path = ROOT.Path() / fileName;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     REQUIRE(static_cast<bool>(output));
     for (const auto &record : test_common::GenerateRandomLogRecords(lineCount, 0xA11CE))

@@ -78,6 +78,18 @@ endif()
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` from `test/lib` to test builds.
 include(CTest)
 if(BUILD_TESTING)
+    if(WIN32)
+        # Empties the folder that the `local` test preset uses as TEMP before
+        # each CTest run. Windows cannot delete a memory-mapped file, so tests
+        # that remove a fixture while a window still maps it leave files behind.
+        set(SLV_TEST_TMP_DIR "${CMAKE_BINARY_DIR}/test-tmp")
+        file(
+            WRITE "${CMAKE_BINARY_DIR}/CTestCustom.cmake"
+            "set(CTEST_CUSTOM_PRE_TEST\n"
+            "    \"\\\"${CMAKE_COMMAND}\\\" -E rm -rf \\\"${SLV_TEST_TMP_DIR}\\\"\"\n"
+            "    \"\\\"${CMAKE_COMMAND}\\\" -E make_directory \\\"${SLV_TEST_TMP_DIR}\\\"\")\n"
+        )
+    endif()
     include(Catch)
     # `test/common` ships the helpers used by `test/lib` and `test/log_generator`;
     # must come before `test/lib`.
