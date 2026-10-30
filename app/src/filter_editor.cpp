@@ -484,6 +484,20 @@ void FilterEditor::SetupLayout()
     mBeginTimeEdit->setDisplayFormat("HH:mm:ss.zzz");
     mEndTimeEdit->setDisplayFormat("HH:mm:ss.zzz");
 
+    // The edits hold display-zone wall-clock fields; UTC keeps Qt from
+    // shifting them through the host zone.
+    for (QDateTimeEdit *edit : {static_cast<QDateTimeEdit *>(mBeginDateEdit),
+                                static_cast<QDateTimeEdit *>(mBeginTimeEdit),
+                                static_cast<QDateTimeEdit *>(mEndDateEdit),
+                                static_cast<QDateTimeEdit *>(mEndTimeEdit)})
+    {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+        edit->setTimeZone(QTimeZone::utc());
+#else
+        edit->setTimeSpec(Qt::UTC);
+#endif
+    }
+
     auto *secondPage = new QWidget(this);
     auto *secondPageLayout = new QVBoxLayout(secondPage);
     auto *beginLayout = new QHBoxLayout;
@@ -567,7 +581,8 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
         {
             return ConvertToQDateTime(*fallback);
         }
-        return QDateTime::currentDateTime();
+        constexpr qint64 MICROSECONDS_PER_MILLISECOND = 1000;
+        return ConvertToQDateTime(QDateTime::currentMSecsSinceEpoch() * MICROSECONDS_PER_MILLISECOND);
     };
     const QDateTime beginDateTime = pickSeed(begin, end);
     const QDateTime endDateTime = pickSeed(end, begin);
@@ -622,14 +637,13 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
 
 QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp)
 {
-    return QDateTime::fromMSecsSinceEpoch(UtcMicrosecondsToLocalMilliseconds(timestamp), QTimeZone::systemTimeZone());
+    return QDateTime::fromMSecsSinceEpoch(UtcMicrosecondsToLocalMilliseconds(timestamp), QTimeZone::utc());
 }
 
 qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
 {
-    constexpr qint64 MICROSECONDS_PER_MILLISECOND = 1000;
-    const QDateTime dateTime(date, time, QTimeZone::systemTimeZone());
-    return dateTime.toMSecsSinceEpoch() * MICROSECONDS_PER_MILLISECOND;
+    const QDateTime wallClock(date, time, QTimeZone::utc());
+    return LocalMillisecondsSinceEpochToTimeStamp(wallClock.toMSecsSinceEpoch()).time_since_epoch().count();
 }
 
 void FilterEditor::OnOkClicked()
