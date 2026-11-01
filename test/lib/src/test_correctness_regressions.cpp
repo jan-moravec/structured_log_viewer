@@ -17,6 +17,7 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/query_parser.hpp>
+#include <loglib/session_bundle.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
@@ -634,6 +635,58 @@ TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[
     REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }));
     CHECK(collected == expected);
     producer.Stop();
+}
+
+TEST_CASE("Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation]")
+{
+    const test_common::TempDir dir("tail_rotate_queue");
+    const std::filesystem::path path = dir.Write("app.log", "start\n");
+
+    TailingBytesProducer::Options options;
+    options.disableNativeWatcher = true;
+    options.pollInterval = 5ms;
+    options.readChunkBytes = 1024;
+    options.maxQueuedBytes = 4096;
+    TailingBytesProducer producer(path, 10, options);
+
+    std::string collected;
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("start\n"); }));
+
+    std::string appended;
+    for (int i = 0; i < 2000; ++i)
+    {
+        appended += "line " + std::to_string(i) + "\n";
+    }
+    {
+        std::ofstream append(path, std::ios::binary | std::ios::app);
+        append << appended;
+    }
+    std::filesystem::rename(path, dir.Path() / "app.log.1");
+    (void)dir.Write("app.log", "after\n");
+
+    // With nothing consumed, the drain stays parked and rotation cannot finish.
+    std::this_thread::sleep_for(200ms);
+    CHECK(producer.RotationCount() == 0);
+
+    const std::string expected = "start\n" + appended + "after\n";
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }));
+    CHECK(collected == expected);
+    CHECK(producer.RotationCount() == 1);
+    producer.Stop();
+}
+
+TEST_CASE("Session bundle metadata rejects a very deep filter tree", "[session_bundle][nesting]")
+{
+    constexpr int DEPTH = 100000;
+    std::string tree;
+    for (int i = 0; i < DEPTH; ++i)
+    {
+        tree += R"({"kind":"not","child":)";
+    }
+    tree += R"({"kind":"leaf","rule":{"type":"string","columnKeys":["n"],"matchType":"contains","filterString":"1"}})";
+    tree += std::string(DEPTH, '}');
+    const std::string json = R"({"bundle":{"configuration":{"expression":)" + tree + "}}}";
+    CHECK_THROWS_AS(ParseSessionBundleMetadata(json), SessionBundleReadError);
 }
 
 TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode]")

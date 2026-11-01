@@ -1,6 +1,7 @@
 #include "loglib/query_parser.hpp"
 
 #include "loglib/filter_expression.hpp"
+#include "loglib/time_zone_context.hpp"
 
 #include <algorithm>
 #include <array>
@@ -480,7 +481,9 @@ private:
                 {
                     cursor += 3;
                 }
-                if (cursor < mInput.size() && (mInput[cursor] == '.' || mInput[cursor] == ','))
+                // A fraction needs a digit, so `..` after a bound stays a token.
+                if (cursor + 1 < mInput.size() && (mInput[cursor] == '.' || mInput[cursor] == ',') &&
+                    std::isdigit(static_cast<unsigned char>(mInput[cursor + 1])) != 0)
                 {
                     ++cursor;
                     while (cursor < mInput.size() && (std::isdigit(static_cast<unsigned char>(mInput[cursor])) != 0))
@@ -773,6 +776,7 @@ private:
     int second = 0;
     std::int64_t fractionalMicros = 0;
     std::int64_t offsetSeconds = 0;
+    bool hasZone = false;
     std::size_t cursor = ISO_DATE_LEN;
     if (cursor < text.size() && (text[cursor] == 'T' || text[cursor] == ' '))
     {
@@ -842,10 +846,12 @@ private:
             const char tzCh = text[cursor];
             if (tzCh == 'Z')
             {
+                hasZone = true;
                 ++cursor;
             }
             else if (tzCh == '+' || tzCh == '-')
             {
+                hasZone = true;
                 const int sign = (tzCh == '-') ? -1 : 1;
                 ++cursor;
                 const auto tzH = readInt(text, cursor, 2);
@@ -903,9 +909,9 @@ private:
     const long long secondsSinceEpoch = (daysSinceEpoch * 86400LL) + (static_cast<long long>(hour) * 3600LL) +
                                         (static_cast<long long>(minute) * 60LL) + static_cast<long long>(second) -
                                         offsetSeconds;
-    // Bare-date: `hour`/`minute`/`second` stay 0 = midnight UTC.
+    // Bare-date: `hour`/`minute`/`second` stay 0 = midnight.
     const std::int64_t micros = (secondsSinceEpoch * 1'000'000LL) + fractionalMicros;
-    return micros;
+    return hasZone ? micros : ProcessDefaultTimeZone().LocalMicrosecondsToUtc(micros);
 }
 
 /// ASCII-only case-insensitive equality; the keyword set is closed

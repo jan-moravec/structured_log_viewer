@@ -4,6 +4,7 @@
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
+#include "loglib/time_zone_context.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -23,6 +24,8 @@ struct LastTimestampBytesHit
     std::string bytes;
     TimeStamp parsed{};
     bool valid = false;
+    /// Last zone offset used for a value with no zone of its own.
+    LocalOffsetWindow offsetWindow;
 };
 
 /// Pre-resolved view of one configured `Type::Time` column: keys resolved to
@@ -32,6 +35,8 @@ struct TimeColumnSpec
     std::vector<KeyId> keyIds;
     std::vector<std::string> parseFormats;
     std::vector<TimestampFormatKind> formatKinds;
+    /// Zone in which values with no zone of their own are read.
+    TimeZoneContext timeZone;
 };
 
 /// Builds one `TimeColumnSpec` per `Type::Time` column. Returns empty when

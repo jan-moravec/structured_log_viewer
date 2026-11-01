@@ -288,7 +288,7 @@ Every package also ships `slp`, a command-line tool that runs the same parsers, 
 
 The first time you open a file (in either mode), Structured Log Viewer builds the column list from the keys it sees in the JSON records:
 
-- Any key named `timestamp`, `time`, `ts`, `@timestamp`, `datetime`, or `created_at` (case-insensitive) is treated as a **timestamp column**. Its values are parsed with the ISO 8601 formats `%FT%T%Ez`, `%F %T%Ez`, `%FT%T`, `%F %T` (fractional digits past microseconds are truncated, and a value with trailing text is not a timestamp) and displayed with the format `%F %H:%M:%S` in the local timezone. Timestamp columns are moved to the front of the table.
+- Any key named `timestamp`, `time`, `ts`, `@timestamp`, `datetime`, or `created_at` (case-insensitive) is treated as a **timestamp column**. Its values are parsed with the ISO 8601 formats `%FT%T%Ez`, `%F %T%Ez`, `%FT%T`, `%F %T` (fractional digits past microseconds are truncated, and a value with trailing text is not a timestamp) and displayed with the format `%F %H:%M:%S` in the local timezone. A value with no `Z` or offset is read in the local timezone, so it displays as written. Timestamp columns are moved to the front of the table.
 
   > **Note:** the heuristic is **destructive** for streaming opens. If a key matching the heuristic appears mid-parse, the corresponding column is flipped from `any` to `time` in-place and every row already in the table is back-filled with the parsed `TimeStamp`. The original raw string variant is replaced by the parsed value, so disabling the column's `time` type later (via a saved configuration) does not bring the original textual value back without re-opening the file.
 

@@ -3,8 +3,11 @@
 #include "loglib/compact_log_value.hpp"
 #include "loglib/line_source.hpp"
 #include "loglib/log_line.hpp"
+#include "loglib/user_timestamp.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <optional>
 #include <string_view>
@@ -87,6 +90,21 @@ std::optional<std::string_view> ExtractStringBytes(
     return std::nullopt;
 }
 
+/// Converts a wall clock to UTC. A zone lookup is slow, so @p window keeps
+/// the last offset, and the full lookup runs only next to a transition.
+std::int64_t LocalToUtc(std::int64_t localMicros, const TimeZoneContext &timeZone, LocalOffsetWindow &window)
+{
+    if (!window.Contains(localMicros))
+    {
+        window = timeZone.OffsetWindowAt(localMicros);
+        if (!window.Contains(localMicros))
+        {
+            return timeZone.LocalMicrosecondsToUtc(localMicros);
+        }
+    }
+    return localMicros - window.utcOffset;
+}
+
 } // namespace
 
 std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration)
@@ -96,6 +114,7 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfig
     {
         return result;
     }
+    const TimeZoneContext timeZone = ProcessDefaultTimeZone();
     for (const Column &column : configuration->columns)
     {
         if (column.type != ColumnType::Time)
@@ -103,6 +122,7 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfig
             continue;
         }
         TimeColumnSpec spec;
+        spec.timeZone = timeZone;
         spec.keyIds.reserve(column.keys.size());
         for (const std::string &key : column.keys)
         {
@@ -147,6 +167,12 @@ bool PromoteLineTimestamps(
             if (!TryParseTimestamp(sv, format, kind, tsScratch, parsed))
             {
                 return false;
+            }
+            if (IsNaiveTimestamp(sv, format))
+            {
+                parsed = TimeStamp{std::chrono::microseconds{
+                    LocalToUtc(parsed.time_since_epoch().count(), spec.timeZone, bytesHit.offsetWindow)
+                }};
             }
             line.SetValue(keyId, parsed);
             bytesHit.keyId = keyId;

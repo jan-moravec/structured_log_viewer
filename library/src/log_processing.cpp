@@ -436,11 +436,37 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
     return TryParseSyslogRfc3164Timestamp(sv, out, std::chrono::system_clock::now());
 }
 
+namespace
+{
+
+/// Removes fraction digits past microseconds. `date::from_stream` stops at
+/// microseconds and would read the digits left over as a UTC offset.
+void DropExcessFractionDigits(std::string &text)
+{
+    const auto isDigit = [](char ch) { return ch >= '0' && ch <= '9'; };
+    for (size_t dot = text.find('.'); dot != std::string::npos; dot = text.find('.', dot + 1))
+    {
+        const size_t firstDigit = dot + 1;
+        size_t end = firstDigit;
+        while (end < text.size() && isDigit(text[end]))
+        {
+            ++end;
+        }
+        if (end - firstDigit > FRACTION_DIGITS_SCALE)
+        {
+            text.erase(firstDigit + FRACTION_DIGITS_SCALE, end - firstDigit - FRACTION_DIGITS_SCALE);
+        }
+    }
+}
+
+} // namespace
+
 bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
 {
     scratch.str.assign(sv.data(), sv.size());
+    DropExcessFractionDigits(scratch.str);
     scratch.stream.clear();
     scratch.stream.str(scratch.str);
     out = TimeStamp{};
@@ -513,6 +539,7 @@ bool MakeBackfillState(
     {
         spec.formatKinds.push_back(ClassifyTimestampFormat(format));
     }
+    spec.timeZone = ProcessDefaultTimeZone();
     specsOut[0] = std::move(spec);
     lastValidOut.assign(1, std::nullopt);
     bytesHitsOut.assign(1, internal::LastTimestampBytesHit{});

@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -134,6 +135,41 @@ std::int64_t TimeZoneContext::LocalMicrosecondsToUtc(std::int64_t localMicroseco
     catch (const std::exception &)
     {
         return localMicroseconds;
+    }
+}
+
+LocalOffsetWindow TimeZoneContext::OffsetWindowAt(std::int64_t localMicroseconds) const
+{
+    if (mImpl->zone == nullptr)
+    {
+        return {
+            .beginLocal = std::numeric_limits<std::int64_t>::min(),
+            .endLocal = std::numeric_limits<std::int64_t>::max(),
+            .utcOffset = 0
+        };
+    }
+    const date::local_time<std::chrono::microseconds> localTime{std::chrono::microseconds{localMicroseconds}};
+    try
+    {
+        const auto info = mImpl->zone->get_info(localTime);
+        if (info.result != date::local_info::unique)
+        {
+            return {};
+        }
+        // Stay a day clear of transitions, where a wall clock can repeat or not exist.
+        constexpr std::chrono::microseconds MARGIN = std::chrono::hours{24};
+        const std::chrono::microseconds offset = info.first.offset;
+        const std::chrono::microseconds begin = info.first.begin.time_since_epoch();
+        const std::chrono::microseconds end = info.first.end.time_since_epoch();
+        return {
+            .beginLocal = (begin + offset + MARGIN).count(),
+            .endLocal = (end + offset - MARGIN).count(),
+            .utcOffset = offset.count()
+        };
+    }
+    catch (const std::exception &)
+    {
+        return {};
     }
 }
 

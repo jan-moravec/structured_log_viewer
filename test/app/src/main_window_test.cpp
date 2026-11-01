@@ -1002,16 +1002,16 @@ private slots:
     {
         const FixtureFile fixture(":/fixtures/iso_t_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
-        // 2024-04-28T07:14:30 UTC → 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
+        // 2024-04-28T07:14:30 → 1714288470 seconds since epoch as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470000000), 3);
     }
 
     static void TestFixtureIsoSpaceTimestamp()
     {
         const FixtureFile fixture(":/fixtures/iso_space_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
-        // 2024-04-28 07:14:30 UTC → 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
+        // 2024-04-28 07:14:30 → 1714288470 seconds since epoch as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470000000), 3);
     }
 
     static void TestFixtureIsoOffsetTimestamp()
@@ -1026,16 +1026,16 @@ private slots:
     {
         const FixtureFile fixture(":/fixtures/iso_fractional_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
-        // 2024-04-28T07:14:30.123 UTC → 1714288470.123 → 1714288470123000 µs.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470123000), 3);
+        // 2024-04-28T07:14:30.123 → 1714288470.123 → 1714288470123000 µs as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470123000), 3);
 
         // Spot-check the µs and 0.5s rows separately so all three fractional
         // widths in the fixture are exercised.
         const int tsCol = ColumnByHeader(*run.model, QStringLiteral("timestamp"));
         const qint64 row1Us = run.model->data(run.model->index(1, tsCol), LogModelItemDataRole::SortRole).toLongLong();
-        QCOMPARE(row1Us, qint64(1714288470123456));
+        QCOMPARE(row1Us, NaiveToUtcUs(1714288470123456));
         const qint64 row2Us = run.model->data(run.model->index(2, tsCol), LogModelItemDataRole::SortRole).toLongLong();
-        QCOMPARE(row2Us, qint64(1714288470500000));
+        QCOMPARE(row2Us, NaiveToUtcUs(1714288470500000));
     }
 
     static void TestFixtureAltTimestampKeys()
@@ -1259,8 +1259,8 @@ private slots:
     {
         const FixtureFile fixture(":/fixtures/iso_t_timestamp.logfmt");
         StreamingRun run = RunStreamingLogfmt(fixture.Path());
-        // 2024-04-28T07:14:30 UTC -> 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
+        // 2024-04-28T07:14:30 -> 1714288470 seconds since epoch as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470000000), 3);
     }
 
     // Regression: `LogModel::AppendBatch` must fire `beginInsertRows` /
@@ -18550,6 +18550,29 @@ private slots:
     //   - filter matches every row -> "N lines", button still shown
     //     (the comment in `UpdateRowsShownStatus` calls this out
     //      explicitly; left untested in the original change).
+    void TestFilterProblemLabelReportsUnknownColumn()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        QCoreApplication::processEvents();
+
+        auto *label = mWindow->findChild<QLabel *>(QStringLiteral("filterProblemLabel"));
+        QVERIFY2(label != nullptr, "MainWindow must own the filter problem label");
+        QVERIFY(label->isHidden());
+
+        loglib::LeafRule leaf;
+        leaf.type = loglib::LeafRule::Type::String;
+        leaf.columnKeys = {"no_such_column"};
+        leaf.matchType = loglib::LeafRule::Match::Contains;
+        leaf.filterString = "x";
+        mWindow->CommitAdvancedFilterForTest(WireLeavesAsExpression({leaf}));
+        QVERIFY(!label->isHidden());
+        QVERIFY(label->text().contains(QStringLiteral("no_such_column")));
+
+        mWindow->CommitAdvancedFilterForTest(loglib::FilterExpression{});
+        QVERIFY(label->isHidden());
+    }
+
     void TestRowsShownStatusReflectsFilter()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -23375,6 +23398,13 @@ private slots:
             "second trigger must also revert under offscreen QPA -- the action stays unchecked until the host is "
             "realised"
         );
+    }
+
+    // A log value with no zone is read in the display zone. Outside
+    // `private slots:` so moc doesn't expose it as a test method.
+    static qint64 NaiveToUtcUs(qint64 wallClockUs)
+    {
+        return loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(wallClockUs);
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`

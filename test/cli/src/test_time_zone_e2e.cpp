@@ -40,6 +40,14 @@ constexpr const char *FIXED_ZONE = "Asia/Tokyo";
     return result.out;
 }
 
+[[nodiscard]] std::string CountMatching(const std::string &zone, const std::string &filter)
+{
+    const auto result = RunNaiveTimes(zone, {"--count", "--allow-empty", "--filter", filter});
+    INFO("stderr:\n" << result.err);
+    REQUIRE(result.exitCode == 0);
+    return result.out;
+}
+
 } // namespace
 
 TEST_CASE("slp --since/--until read a trailing Z as UTC whatever --tz says", "[cli][e2e][time]")
@@ -48,13 +56,14 @@ TEST_CASE("slp --since/--until read a trailing Z as UTC whatever --tz says", "[c
     {
         SKIP("tzdata is not staged next to slp");
     }
-    for (const std::string zone : {"UTC", FIXED_ZONE})
-    {
-        INFO("--tz " << zone);
-        CHECK(CountInWindow(zone, "2026-03-01T13:00:00Z", "2026-03-01T14:00:00Z") == "3\n");
-        CHECK(CountInWindow(zone, "2026-03-01T13:00:00+00:00", "2026-03-01T14:00:00+00:00") == "3\n");
-        CHECK(CountInWindow(zone, "2026-03-01 13:00:00Z", "2026-03-01 14:00:00Z") == "3\n");
-    }
+    CHECK(CountInWindow("UTC", "2026-03-01T13:00:00Z", "2026-03-01T14:00:00Z") == "3\n");
+    CHECK(CountInWindow("UTC", "2026-03-01T13:00:00+00:00", "2026-03-01T14:00:00+00:00") == "3\n");
+    CHECK(CountInWindow("UTC", "2026-03-01 13:00:00Z", "2026-03-01 14:00:00Z") == "3\n");
+
+    // The log has no zones, so under Tokyo its 13:00-14:00 is 04:00-05:00 UTC.
+    CHECK(CountInWindow(FIXED_ZONE, "2026-03-01T04:00:00Z", "2026-03-01T05:00:00Z") == "3\n");
+    CHECK(CountInWindow(FIXED_ZONE, "2026-03-01T04:00:00+00:00", "2026-03-01T05:00:00+00:00") == "3\n");
+    CHECK(CountInWindow(FIXED_ZONE, "2026-03-01T13:00:00Z", "2026-03-01T14:00:00Z") == "0\n");
 }
 
 TEST_CASE("slp --since/--until read a value without a zone in --tz", "[cli][e2e][time]")
@@ -63,13 +72,29 @@ TEST_CASE("slp --since/--until read a value without a zone in --tz", "[cli][e2e]
     {
         SKIP("tzdata is not staged next to slp");
     }
-    CHECK(CountInWindow("UTC", "2026-03-01T13:00:00", "2026-03-01T14:00:00") == "3\n");
-    // 22:00-23:00 in Tokyo is 13:00-14:00 UTC.
-    CHECK(CountInWindow(FIXED_ZONE, "2026-03-01T22:00:00", "2026-03-01T23:00:00") == "3\n");
-    CHECK(CountInWindow(FIXED_ZONE, "2026-03-01T13:00:00", "2026-03-01T14:00:00") == "0\n");
+    for (const std::string zone : {"UTC", FIXED_ZONE})
+    {
+        INFO("--tz " << zone);
+        CHECK(CountInWindow(zone, "2026-03-01T13:00:00", "2026-03-01T14:00:00") == "3\n");
+        CHECK(CountInWindow(zone, "2026-03-01T22:00:00", "2026-03-01T23:00:00") == "0\n");
+    }
 }
 
-TEST_CASE("slp reads naive log timestamps as UTC and renders them in --tz", "[cli][e2e][time]")
+TEST_CASE("slp --filter bounds without a zone agree with --since", "[cli][e2e][time]")
+{
+    if (!TzdataStaged())
+    {
+        SKIP("tzdata is not staged next to slp");
+    }
+    for (const std::string zone : {"UTC", FIXED_ZONE})
+    {
+        INFO("--tz " << zone);
+        CHECK(CountMatching(zone, "timestamp IN [2026-03-01T13:00:00..2026-03-01T14:00:00]") == "3\n");
+    }
+    CHECK(CountMatching(FIXED_ZONE, "timestamp IN [2026-03-01T04:00:00Z..2026-03-01T05:00:00Z]") == "3\n");
+}
+
+TEST_CASE("slp prints naive log timestamps as written under any --tz", "[cli][e2e][time]")
 {
     if (!TzdataStaged())
     {
@@ -78,21 +103,12 @@ TEST_CASE("slp reads naive log timestamps as UTC and renders them in --tz", "[cl
     const std::vector<std::string> firstTimestamp = {
         "--limit", "1", "--columns", "timestamp", "-t", "csv", "--no-header"
     };
-
-    const auto utc = RunNaiveTimes("UTC", firstTimestamp);
-    INFO("stderr:\n" << utc.err);
-    REQUIRE(utc.exitCode == 0);
-    CHECK(utc.out == "2026-03-01 00:00:00.082\n");
-
-    const auto tokyo = RunNaiveTimes(FIXED_ZONE, firstTimestamp);
-    INFO("stderr:\n" << tokyo.err);
-    REQUIRE(tokyo.exitCode == 0);
-    CHECK(tokyo.out == "2026-03-01 09:00:00.082\n");
-
-    // A UTC filter bound matches the naive log value with no --tz shift.
-    const auto zonedFilter =
-        RunNaiveTimes(FIXED_ZONE, {"--count", "--filter", "timestamp IN [2026-03-01T00:00:00Z..2026-03-01T00:00:01Z]"});
-    INFO("stderr:\n" << zonedFilter.err);
-    REQUIRE(zonedFilter.exitCode == 0);
-    CHECK(zonedFilter.out == "1\n");
+    for (const std::string zone : {"UTC", FIXED_ZONE})
+    {
+        INFO("--tz " << zone);
+        const auto result = RunNaiveTimes(zone, firstTimestamp);
+        INFO("stderr:\n" << result.err);
+        REQUIRE(result.exitCode == 0);
+        CHECK(result.out == "2026-03-01 00:00:00.082\n");
+    }
 }

@@ -725,8 +725,22 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         mRotationInProgress = true;
 
         // The retired file may still hold bytes written before the rename.
-        while (!mStopRequested.load(std::memory_order_acquire) && ReadMoreBytes() > 0)
+        while (!mStopRequested.load(std::memory_order_acquire))
         {
+            {
+                std::unique_lock<std::mutex> lock(mMutex);
+                if (mReadyBuffer.size() - mReadyConsumed >= mOptions.maxQueuedBytes)
+                {
+                    mCv.wait_for(lock, mOptions.pollInterval, [&] {
+                        return mStopRequested.load(std::memory_order_acquire);
+                    });
+                    continue;
+                }
+            }
+            if (ReadMoreBytes() == 0)
+            {
+                break;
+            }
         }
         CloseHandle();
         mHandle = OpenForTail(mPath);

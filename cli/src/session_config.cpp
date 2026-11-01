@@ -203,7 +203,7 @@ std::optional<Failure> CheckLoadedFilter(
     std::string_view command
 )
 {
-    if (filter.filters.empty() || table.RowCount() == 0)
+    if (table.RowCount() == 0)
     {
         return std::nullopt;
     }
@@ -213,7 +213,8 @@ std::optional<Failure> CheckLoadedFilter(
     {
         return std::nullopt;
     }
-    return MakeFailure(ExitCode::Usage, command, std::format("--filter: {}.", problems.front()));
+    const std::string_view origin = filter.filters.empty() ? "configuration filter" : "--filter";
+    return MakeFailure(ExitCode::Usage, command, std::format("{}: {}.", origin, problems.front()));
 }
 
 std::expected<EffectiveSession, Failure> ApplySessionConfiguration(

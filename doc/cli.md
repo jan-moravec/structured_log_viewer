@@ -47,7 +47,9 @@ Several sources concatenate in the order given. Rotated siblings of a file (`app
 
 If no `tzdata` directory is found next to the executable, `slp` warns once and uses UTC. The Linux tarball and the Windows zip ship `tzdata` beside `slp`.
 
-`--tz` accepts an IANA name, `local`, or `UTC`. It sets the zone in which human-readable output renders times and in which `--since` and `--until` values without a zone are read. A value that ends in `Z` or carries an offset such as `+02:00` names its own zone. Timestamps in the log that carry no zone are read as UTC, whatever `--tz` says, as in the GUI; `--tz` only changes how they render. For example, with `--tz America/New_York` a log value `2026-03-01T00:00:00` renders as `2026-02-28 19:00:00`.
+`--tz` accepts an IANA name, `local`, or `UTC`. It sets the zone in which human-readable output renders times and in which values without a zone are read: `--since`, `--until`, `--filter` bounds, and timestamps in the log. A value that ends in `Z` or carries an offset such as `+02:00` names its own zone. So a log value with no zone prints as written under any `--tz`, while a zoned value converts. For example, with `--tz America/New_York` the log value `2026-03-01T00:00:00` renders as `2026-03-01 00:00:00`, and `2026-03-01T00:00:00Z` renders as `2026-02-28 19:00:00`.
+
+Bare decimals in logfmt, CSV, regex captures, and JSON numbers are stored as numbers and print in their shortest form, so `1.10` prints as `1.1` and a text filter `ver:1.10` finds nothing, while `ver=1.10` does. Quoted values stay strings.
 
 ## Parser flags (all commands except `formats`)
 

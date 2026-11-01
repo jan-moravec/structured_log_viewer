@@ -143,7 +143,8 @@ std::string DecodeUtf8(std::string_view bytes)
 }
 
 /// `fromUtf8` plus `simplified()`: trim both ends, collapse whitespace to one space.
-std::string Simplify(std::string_view bytes)
+/// With @p keepEdges, whitespace at an end becomes one space instead of being trimmed.
+std::string Simplify(std::string_view bytes, bool keepEdges = false)
 {
     std::string out;
     out.reserve(bytes.size());
@@ -156,7 +157,7 @@ std::string Simplify(std::string_view bytes)
         index += decoded.size;
         if (IsMatchWhitespace(decoded.codePoint))
         {
-            if (wrote)
+            if (wrote || keepEdges)
             {
                 pendingSpace = true;
             }
@@ -176,6 +177,10 @@ std::string Simplify(std::string_view bytes)
             AppendUtf8(out, REPLACEMENT);
         }
         wrote = true;
+    }
+    if (pendingSpace && keepEdges)
+    {
+        out.push_back(' ');
     }
     return out;
 }
@@ -349,7 +354,7 @@ std::string WildcardToPcre(std::string_view pattern)
 
 CallbackStringRowPredicate::MatchFn MakeWildcardMatcher(std::string_view pattern)
 {
-    const std::string translated = WildcardToPcre(DecodeUtf8(pattern));
+    const std::string translated = WildcardToPcre(Simplify(pattern));
     const CompiledRegex compiled = CompilePattern(translated);
     if (compiled.code == nullptr)
     {
@@ -377,7 +382,7 @@ CallbackStringRowPredicate::MatchFn MakeExactly(std::string_view pattern)
             return Simplify(haystack) == expected;
         };
     }
-    std::string expected = DecodeUtf8(pattern);
+    std::string expected = Simplify(pattern);
     return [expected = std::move(expected)](std::string_view haystack) { return Simplify(haystack) == expected; };
 }
 
@@ -394,7 +399,8 @@ CallbackStringRowPredicate::MatchFn MakeContains(std::string_view pattern)
             return Simplify(haystack).contains(needle);
         };
     }
-    std::string needle = DecodeUtf8(pattern);
+    // An edge space stays, so " foo " does not match "food".
+    std::string needle = Simplify(pattern, true);
     return [needle = std::move(needle)](std::string_view haystack) { return Simplify(haystack).contains(needle); };
 }
 

@@ -2,9 +2,12 @@
 
 #include <loglib/column_schema.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/filter_expression.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/query_parser.hpp>
 #include <loglib/time_zone_context.hpp>
+#include <loglib/user_timestamp.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
@@ -15,7 +18,9 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace loglib;
@@ -858,4 +863,105 @@ TEST_CASE("TimeStampToDateTimeString", "[log_processing]")
     const date::zoned_time futureLocalTime{tz, std::chrono::round<std::chrono::milliseconds>(futureDate)};
     const std::string expectedFutureDate = date::format("%F %T", futureLocalTime);
     CHECK(futureFormatted == expectedFutureDate);
+}
+
+namespace
+{
+
+/// Sets the process zone for one test and restores the previous zone.
+class ScopedProcessZone
+{
+public:
+    explicit ScopedProcessZone(const std::string &zone)
+        : mPrevious(ProcessDefaultTimeZone())
+    {
+        SetProcessDefaultTimeZone(TimeZoneContext::Load(FindTestTzdata(), zone));
+    }
+
+    ScopedProcessZone(const ScopedProcessZone &) = delete;
+    ScopedProcessZone &operator=(const ScopedProcessZone &) = delete;
+
+    ~ScopedProcessZone()
+    {
+        SetProcessDefaultTimeZone(mPrevious);
+    }
+
+private:
+    TimeZoneContext mPrevious;
+};
+
+} // namespace
+
+TEST_CASE("OffsetWindowAt agrees with LocalMicrosecondsToUtc across a year", "[time_zone][offset_window]")
+{
+    const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
+    constexpr std::int64_t HALF_HOUR_US = 1'800'000'000;
+    constexpr std::int64_t START_US = 1'704'067'200'000'000; // 2024-01-01T00:00:00
+    constexpr int STEPS = 2 * 24 * 366;
+
+    int inWindow = 0;
+    for (int step = 0; step < STEPS; ++step)
+    {
+        const std::int64_t local = START_US + (step * HALF_HOUR_US);
+        const LocalOffsetWindow window = berlin.OffsetWindowAt(local);
+        if (window.Contains(local))
+        {
+            ++inWindow;
+            INFO("local " << local);
+            REQUIRE(local - window.utcOffset == berlin.LocalMicrosecondsToUtc(local));
+        }
+    }
+    CHECK(inWindow > STEPS / 2);
+
+    // 2024-03-31T02:30:00 does not exist in Berlin; 2024-10-27T02:30:00 happens twice.
+    constexpr std::int64_t GAP_US = 1'711'852'200'000'000;
+    constexpr std::int64_t FOLD_US = 1'729'996'200'000'000;
+    CHECK_FALSE(berlin.OffsetWindowAt(GAP_US).Contains(GAP_US));
+    CHECK_FALSE(berlin.OffsetWindowAt(FOLD_US).Contains(FOLD_US));
+
+    const TimeZoneContext utc;
+    CHECK(utc.OffsetWindowAt(START_US).Contains(START_US));
+    CHECK(utc.OffsetWindowAt(START_US).utcOffset == 0);
+}
+
+TEST_CASE("Generic timestamps never read fraction digits as an offset", "[timestamp][generic]")
+{
+    const std::string format = "%d-%m-%Y %T%Ez";
+    TimestampParseScratch scratch;
+    TimeStamp parsed;
+
+    for (const std::string text : {"12-03-2024 10:00:00.1234567", "12-03-2024 10:00:00.12345678"})
+    {
+        INFO(text);
+        CHECK_FALSE(TryParseGenericTimestamp(text, format, scratch, parsed));
+    }
+
+    REQUIRE(TryParseGenericTimestamp("12-03-2024 10:00:00.123456+01:00", format, scratch, parsed));
+    const TimeStamp expected = parsed;
+    REQUIRE(TryParseGenericTimestamp("12-03-2024 10:00:00.123456789+01:00", format, scratch, parsed));
+    CHECK(parsed == expected);
+}
+
+TEST_CASE("IsNaiveTimestamp finds values that name no zone", "[timestamp][naive]")
+{
+    CHECK(IsNaiveTimestamp("2024-01-01T10:00:00", "%FT%T"));
+    CHECK_FALSE(IsNaiveTimestamp("2024-01-01T10:00:00Z", "%FT%T"));
+    CHECK_FALSE(IsNaiveTimestamp("2024-01-01T10:00:00+01:00", "%FT%T%Ez"));
+    CHECK(IsNaiveTimestamp("Jan  1 10:00:00", "%b %e %H:%M:%S"));
+}
+
+TEST_CASE("ParseQuery reads time bounds without a zone in the process zone", "[query_parser][naive]")
+{
+    const auto bound = [](std::string_view text) -> std::optional<std::int64_t> {
+        const auto parsed = ParseQuery("ts IN [" + std::string(text) + "..]");
+        REQUIRE(parsed.has_value());
+        return std::get<FilterExpression::Leaf>(parsed->node).rule.filterBegin;
+    };
+    const auto utcBound = bound("2024-01-01T01:00:00Z");
+
+    const ScopedProcessZone tokyo("Asia/Tokyo");
+    CHECK(bound("2024-01-01T10:00:00") == utcBound);
+    CHECK(bound("2024-01-01 10:00:00") == utcBound);
+    CHECK(bound("2024-01-01T01:00:00Z") == utcBound);
+    CHECK(bound("2024-01-01T10:00:00+09:00") == utcBound);
 }
