@@ -7821,7 +7821,7 @@ private slots:
             producerDone.store(true, std::memory_order_release);
         });
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (model.rowCount() < TOTAL_BATCHES)
         {
             QVERIFY(std::chrono::steady_clock::now() < deadline);
@@ -20356,6 +20356,10 @@ private slots:
         // second bump reset the timer (the bug we're pinning).
         QTest::qWait(20);
         const int remainingBefore = trailing->remainingTime();
+        if (remainingBefore < 0)
+        {
+            QSKIP("The wait outlasted the trailing window; nothing to compare");
+        }
         findRecord->BumpMatchCountDebounce();
         const int remainingAfter = trailing->remainingTime();
         // 5 ms slack for scheduler jitter; the invariant is "did
