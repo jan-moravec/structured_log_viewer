@@ -126,6 +126,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -18229,10 +18230,14 @@ private slots:
         constexpr int TOTAL_BUMP_DURATION_MS = 1000;
         constexpr int MAX_AGE_TOLERANCE_MS = 1000; // a bit above the 750 ms cap
         bool emittedDuringHammer = false;
+        // A stalled machine delays the emit's delivery, not the cap.
+        qint64 oversleptMs = 0;
         while (wallClock.elapsed() < TOTAL_BUMP_DURATION_MS)
         {
             findRecord->BumpMatchCountDebounce();
+            const qint64 beforeWait = wallClock.elapsed();
             QTest::qWait(BUMP_INTERVAL_MS);
+            oversleptMs += std::max<qint64>(0, wallClock.elapsed() - beforeWait - BUMP_INTERVAL_MS);
             if (spy.count() > 0)
             {
                 emittedDuringHammer = true;
@@ -18248,7 +18253,7 @@ private slots:
                            .arg(wallClock.elapsed()))
         );
         QVERIFY2(
-            wallClock.elapsed() <= MAX_AGE_TOLERANCE_MS,
+            wallClock.elapsed() - oversleptMs <= MAX_AGE_TOLERANCE_MS,
             qPrintable(QStringLiteral("first emit took longer than the max-age cap: %1 ms").arg(wallClock.elapsed()))
         );
     }

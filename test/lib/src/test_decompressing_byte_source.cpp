@@ -16,7 +16,6 @@
 #include <zstd.h>
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +31,6 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
-#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -563,24 +561,11 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
 
     StopSource stopSource;
 
-    std::atomic<bool> observedFirstProgress{false};
-
-    // Fire the stop from a helper thread on the first progress
-    // tick to guarantee we cancel mid-decompress.
-    auto callback = [&](const DecompressingByteSource::Progress &) {
-        observedFirstProgress.store(true, std::memory_order_release);
-    };
-    std::thread canceller([&stopSource, &observedFirstProgress]() {
-        while (!observedFirstProgress.load(std::memory_order_acquire))
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        stopSource.request_stop();
-    });
+    // Fire the stop from the first progress tick to guarantee we cancel
+    // mid-decompress, however fast the decompression runs.
+    auto callback = [&stopSource](const DecompressingByteSource::Progress &) { stopSource.request_stop(); };
 
     CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), callback, stopSource.get_token()), DecompressionCancelled);
-
-    canceller.join();
 
     // Cleanup: any temp file created by the worker must be gone;
     // source file intact.
