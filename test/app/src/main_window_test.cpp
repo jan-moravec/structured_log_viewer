@@ -18232,7 +18232,7 @@ private slots:
         bool emittedDuringHammer = false;
         // A stalled machine delays the emit's delivery, not the cap.
         qint64 oversleptMs = 0;
-        while (wallClock.elapsed() < TOTAL_BUMP_DURATION_MS)
+        while (wallClock.elapsed() - oversleptMs < TOTAL_BUMP_DURATION_MS)
         {
             findRecord->BumpMatchCountDebounce();
             const qint64 beforeWait = wallClock.elapsed();

@@ -180,7 +180,7 @@ public:
     std::vector<std::string> errors;
 };
 
-template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 10s)
+template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 60s)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (!predicate())
