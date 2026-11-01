@@ -4,14 +4,9 @@
 
 #include <loglib/log_configuration.hpp>
 
-#include <QCoreApplication>
 #include <QDir>
-#include <QFile>
-#include <QIODevice>
 #include <QList>
 #include <QLockFile>
-#include <QSettings>
-#include <QStandardPaths>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTest>
@@ -165,39 +160,6 @@ private slots:
         });
 
         QVERIFY(!manager.WriteSnapshot(MakeConfiguration()).isEmpty());
-    }
-
-    void TestOpenWindowsWriteWaitsForBusySettingsFile()
-    {
-        QStandardPaths::setTestModeEnabled(true);
-        QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
-        QCoreApplication::setApplicationName(QStringLiteral("apptest_session_history_lock"));
-        QSettings::setDefaultFormat(QSettings::IniFormat);
-
-        SessionHistoryManager::SetOpenWindowsAtQuit({QStringLiteral("before")});
-        const QString settingsPath = QSettings().fileName();
-        HANDLE exclusive = ::CreateFileW(
-            reinterpret_cast<const wchar_t *>(QDir::toNativeSeparators(settingsPath).utf16()),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            nullptr,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            nullptr
-        );
-        QVERIFY(exclusive != INVALID_HANDLE_VALUE);
-        const std::jthread releaser([exclusive] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            ::CloseHandle(exclusive);
-        });
-
-        SessionHistoryManager::SetOpenWindowsAtQuit({QStringLiteral("after")});
-
-        QFile written(settingsPath);
-        QVERIFY(written.open(QIODevice::ReadOnly));
-        QVERIFY(written.readAll().contains("after"));
-        written.close();
-        SessionHistoryManager::SetOpenWindowsAtQuit({});
     }
 
     void TestWriteSnapshotFailsClosedWhenLockFileStaysDeletePending()

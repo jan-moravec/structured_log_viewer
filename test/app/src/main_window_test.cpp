@@ -755,7 +755,6 @@ private slots:
         // real app profile.
         QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
         QCoreApplication::setApplicationName(QStringLiteral("apptest"));
-        QSettings::setDefaultFormat(QSettings::IniFormat);
 
         // Initialise loglib's timezone database before any test
         // loads a saved configuration containing a time-range

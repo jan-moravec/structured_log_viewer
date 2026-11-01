@@ -148,7 +148,6 @@ private slots:
         QStandardPaths::setTestModeEnabled(true);
         QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
         QCoreApplication::setApplicationName(QStringLiteral("apptest_cli_session_roundtrip"));
-        QSettings::setDefaultFormat(QSettings::IniFormat);
         QVERIFY(MainWindow::InitializeTimezoneDatabase());
         QVERIFY(std::filesystem::exists(std::string(SLP_EXECUTABLE)));
 

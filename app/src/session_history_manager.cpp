@@ -62,40 +62,6 @@ std::atomic<bool> g_recents_lock_warned{false};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,readability-identifier-naming)
 std::atomic<bool> g_publishing_enabled{true};
 
-/// Set once a busy settings file outlasts the retry window, so a read-only
-/// profile does not stall every later write.
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::atomic<bool> g_settings_retry_exhausted{false};
-
-/// Syncs @p settings, retrying while Windows reports the file as busy.
-///
-/// File scanners briefly open a settings file that was just written.
-/// `QSettings` then reports an access error, skips the write, and treats
-/// the file as empty for that read, so a transient refusal would lose data.
-void SyncRetryingWhileBusy(QSettings &settings)
-{
-    settings.sync();
-#ifdef Q_OS_WIN
-    if (settings.status() != QSettings::AccessError || g_settings_retry_exhausted.load())
-    {
-        return;
-    }
-    constexpr int RETRY_TIMEOUT_MS = 1000;
-    constexpr int RETRY_INTERVAL_MS = 20;
-    const QDeadlineTimer deadline(RETRY_TIMEOUT_MS);
-    while (!deadline.hasExpired())
-    {
-        QThread::msleep(RETRY_INTERVAL_MS);
-        settings.sync();
-        if (settings.status() != QSettings::AccessError)
-        {
-            return;
-        }
-    }
-    g_settings_retry_exhausted.store(true);
-#endif
-}
-
 /// Once-per-process warning when `QSettings::sync()` reports an
 /// error (read-only volume, ENOSPC, malformed profile). Same
 /// flag-and-skip pattern as `g_recents_lock_warned`.
@@ -197,11 +163,7 @@ struct LockFileGuard
 /// Read the persisted `openWindowsAtQuit` list.
 QStringList ReadOpenWindowsAtQuit()
 {
-    QSettings settings;
-    if (settings.status() != QSettings::NoError)
-    {
-        SyncRetryingWhileBusy(settings);
-    }
+    const QSettings settings;
     return settings.value(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY)).toStringList();
 }
 
@@ -218,7 +180,7 @@ void WriteOpenWindowsAtQuit(const QStringList &uuids)
     {
         settings.setValue(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY), uuids);
     }
-    SyncRetryingWhileBusy(settings);
+    settings.sync();
     SyncWarnIfNeeded(settings, "WriteOpenWindowsAtQuit");
 }
 
@@ -307,7 +269,7 @@ void SessionHistoryManager::SetRestoreLastSessionOnLaunch(bool enabled)
 {
     QSettings settings;
     settings.setValue(QLatin1String(SETTINGS_RESTORE_LAST_KEY), enabled);
-    SyncRetryingWhileBusy(settings);
+    settings.sync();
     SyncWarnIfNeeded(settings, "SetRestoreLastSessionOnLaunch");
 }
 
@@ -333,7 +295,7 @@ void SessionHistoryManager::SetMaxEntries(int maxEntries)
     QSettings settings;
     const int clamped = std::clamp(maxEntries, MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND);
     settings.setValue(QLatin1String(SETTINGS_MAX_ENTRIES_KEY), clamped);
-    SyncRetryingWhileBusy(settings);
+    settings.sync();
     SyncWarnIfNeeded(settings, "SetMaxEntries");
 }
 
@@ -1019,11 +981,7 @@ SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
 
 QList<RecentSessionEntry> QSettingsRecentsIndexStorage::Read() const
 {
-    QSettings settings;
-    if (settings.status() != QSettings::NoError)
-    {
-        SyncRetryingWhileBusy(settings);
-    }
+    const QSettings settings;
     int size = settings.value(QLatin1String(SETTINGS_SIZE_KEY), 0).toInt();
     // Cap against a corrupt profile (`size = INT_MAX` would allocate
     // gigabytes). Multiplier leaves room for a peer with a larger
@@ -1091,13 +1049,13 @@ void QSettingsRecentsIndexStorage::Write(const QList<RecentSessionEntry> &entrie
         settings.setValue(EntryKey(i, QStringLiteral("fileCount")), e.fileCount);
         settings.setValue(EntryKey(i, QStringLiteral("ts")), e.timestampMsEpoch);
     }
-    SyncRetryingWhileBusy(settings);
+    settings.sync();
     SyncWarnIfNeeded(settings, "Write entries");
 
     settings.setValue(QLatin1String(SETTINGS_SIZE_KEY), entries.size());
     // Stamp the layout version for future migration detection.
     settings.setValue(QLatin1String(SETTINGS_VERSION_KEY), CURRENT_RECENTS_VERSION);
-    SyncRetryingWhileBusy(settings);
+    settings.sync();
     SyncWarnIfNeeded(settings, "Write size");
 }
 
@@ -1128,6 +1086,6 @@ void QSettingsRecentsIndexStorage::WriteLastUuid(const std::optional<QString> &u
     {
         settings.remove(QLatin1String(SETTINGS_LAST_UUID_KEY));
     }
-    SyncRetryingWhileBusy(settings);
+    settings.sync();
     SyncWarnIfNeeded(settings, "WriteLastUuid");
 }
