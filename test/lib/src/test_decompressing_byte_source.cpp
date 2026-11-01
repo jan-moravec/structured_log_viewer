@@ -563,7 +563,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
 
     // Fire the stop from the first progress tick to guarantee we cancel
     // mid-decompress, however fast the decompression runs.
-    auto callback = [&stopSource](const DecompressingByteSource::Progress &) { stopSource.request_stop(); };
+    const auto callback = [&stopSource](const DecompressingByteSource::Progress &) { stopSource.request_stop(); };
 
     CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), callback, stopSource.get_token()), DecompressionCancelled);
 
