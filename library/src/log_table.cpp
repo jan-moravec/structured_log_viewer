@@ -396,32 +396,34 @@ void LogTable::EvictPrefixRows(size_t count)
         return;
     }
     auto &lines = mData.Lines();
+    const size_t evicted = std::min(count, lines.size());
 
-    auto evictSource = [&](size_t firstSurvivingLineId) {
-        for (auto &source : mData.Sources())
-        {
-            if (source != nullptr && source->SupportsEviction())
-            {
-                source->EvictBefore(firstSurvivingLineId);
-            }
-        }
-    };
-
-    if (count >= lines.size())
+    // Line ids are per source, so each source is trimmed by its own rows. A
+    // surviving row may belong to a different source than the evicted ones.
+    std::vector<std::pair<LineSource *, size_t>> lastEvicted;
+    for (size_t row = 0; row < evicted; ++row)
     {
-        size_t firstSurvivingLineId = 0;
-        if (!lines.empty())
+        LineSource *source = lines[row].Source();
+        if (source == nullptr || !source->SupportsEviction())
         {
-            firstSurvivingLineId = lines.back().LineId() + 1;
+            continue;
         }
-        lines.clear();
-        evictSource(firstSurvivingLineId);
-        return;
+        const auto it = std::ranges::find(lastEvicted, source, &std::pair<LineSource *, size_t>::first);
+        if (it == lastEvicted.end())
+        {
+            lastEvicted.emplace_back(source, lines[row].LineId());
+        }
+        else
+        {
+            it->second = std::max(it->second, lines[row].LineId());
+        }
     }
 
-    const size_t firstSurvivingLineId = lines[count].LineId();
-    lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(count));
-    evictSource(firstSurvivingLineId);
+    lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(evicted));
+    for (const auto &[source, lineId] : lastEvicted)
+    {
+        source->EvictBefore(lineId + 1);
+    }
 }
 
 KeyIndex &LogTable::Keys()

@@ -166,6 +166,10 @@ ExitCode RunQuery(
     {
         return console.Report(session.error());
     }
+    if (auto failure = CheckLoadedFilter(options.filter, *session, table, QueryOptions::NAME))
+    {
+        return console.Report(*failure);
+    }
 
     const auto filterStarted = std::chrono::steady_clock::now();
     const auto compiled =

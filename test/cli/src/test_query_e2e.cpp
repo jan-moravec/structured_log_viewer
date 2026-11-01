@@ -76,3 +76,22 @@ TEST_CASE("slp query rejects a malformed --filter with a caret", "[cli][e2e][que
     REQUIRE(bad.err.contains("invalid --filter expression"));
     REQUIRE(bad.err.contains('^'));
 }
+
+TEST_CASE("slp query rejects a filter that cannot work", "[cli][e2e][query]")
+{
+    const auto fixture = (FixturesDir() / "two_lines.jsonl").string();
+    const auto emptyTemplates = (FixturesDir() / "empty_templates").string();
+    const auto run = [&](const char *filter) {
+        return RunSlp({"query", "--tz", "UTC", "--template-dir", emptyTemplates, "--filter", filter, fixture});
+    };
+
+    const auto unknownColumn = run("nosuch:x");
+    INFO("stderr:" << unknownColumn.err);
+    CHECK(unknownColumn.exitCode == 2);
+    CHECK(unknownColumn.err.find("unknown column 'nosuch'") != std::string::npos);
+
+    const auto invalidRegex = run("level~/(/");
+    INFO("stderr:" << invalidRegex.err);
+    CHECK(invalidRegex.exitCode == 2);
+    CHECK(invalidRegex.err.find("invalid pattern") != std::string::npos);
+}

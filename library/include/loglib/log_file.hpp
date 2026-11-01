@@ -12,6 +12,11 @@
 namespace loglib
 {
 
+namespace internal
+{
+class StableByteArena;
+}
+
 /**
  * @brief Memory-mapped log file. Owns the mapping so `LogValue` instances can
  * hold `string_view`s into the content; move keeps the pointer stable.
@@ -89,20 +94,32 @@ public:
     }
 
     /**
-     * @brief Sliding view over the owned-string arena (escape-decoded values
-     * that cannot live in the mmap). `LogLine` materialisation indexes
-     * into this via `(offset, length)` stored in its compact values.
+     * @brief Resolves a range of the owned-string arena (escape-decoded values
+     * that cannot live in the mmap).
+     *
+     * Safe to call while another thread appends. The view stays valid for
+     * the lifetime of this file.
+     *
+     * @param offset Offset returned by `AppendOwnedStrings`.
+     * @param length Number of bytes.
+     * @return The bytes, or an empty view when the range was never stored.
      */
-    std::string_view OwnedStringsView() const noexcept;
+    [[nodiscard]] std::string_view OwnedString(uint64_t offset, uint64_t length) const noexcept;
 
     /**
-     * @brief Append @p bytes to the owned-string arena and return the byte
-     * offset of the first appended byte. Single-threaded contract: the
-     * streaming pipeline serialises arena writes through Stage C.
+     * @brief Appends @p bytes to the owned-string arena. Safe from any thread.
+     * @return The offset of the first appended byte.
      */
     uint64_t AppendOwnedStrings(std::string_view bytes);
 
-    /** @brief Heap bytes owned by `mOwnedStrings` (capacity). */
+    /**
+     * @brief Grows the owned string at (@p offset, @p length) in place when it
+     * is the arena's most recent data.
+     * @return Whether @p bytes were added. Otherwise the caller appends a copy.
+     */
+    bool TryExtendOwnedString(uint64_t offset, uint64_t length, std::string_view bytes);
+
+    /** @brief Heap bytes reserved by the owned-string arena. */
     size_t OwnedStringsMemoryBytes() const noexcept;
 
     /**
@@ -126,10 +143,10 @@ private:
     std::vector<uint64_t> mLineOffsets;
 
     /**
-     * @brief Concatenated escape-decoded strings referenced by this file's
-     * `LogLine` values via `(offset, length)`.
+     * @brief Escape-decoded strings referenced by this file's `LogLine` values
+     * via `(offset, length)`.
      */
-    std::string mOwnedStrings;
+    std::unique_ptr<internal::StableByteArena> mOwnedStrings;
 
     /**
      * @brief Maps each multi-line header to its final physical line.

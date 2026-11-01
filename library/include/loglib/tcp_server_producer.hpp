@@ -118,6 +118,13 @@ public:
         size_t maxQueueBytes = 16 * 1024 * 1024;
 
         /**
+         * @brief Longest line buffered per connection while waiting for its
+         * newline. A longer line is dropped up to its newline and counted
+         * in `DroppedByteCount`.
+         */
+        size_t maxLineBytes = 64 * 1024 * 1024;
+
+        /**
          * @brief `std::nullopt` for plaintext. Filled in to enable TLS.
          * `LOGLIB_NETWORK_TLS=OFF` builds reject any non-nullopt
          * value at the constructor.

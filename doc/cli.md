@@ -177,7 +177,7 @@ Output is flushed once per batch. Filters apply per arriving batch. Rows are emi
 | ---- | ---------------------------------------------------------------------------------------------------------- |
 | 0    | Success.                                                                                                   |
 | 1    | The command ran but the result was empty. `--allow-empty` turns this into 0.                               |
-| 2    | Usage error: unknown flag, bad value, malformed filter, unresolvable column.                               |
+| 2    | Usage error: unknown flag, bad value, malformed filter, a `--filter` naming an unknown column or an invalid pattern in `query`, `stats`, or `bundle`, unresolvable column.                               |
 | 3    | Input error: source missing, unreadable, undetectable, failed to decompress, or a listener could not bind. |
 | 4    | Data error: parse errors under `--strict`, or `validate` found errors.                                     |
 | 5    | Output error: destination unwritable, exists without `--force`, or disk full.                              |

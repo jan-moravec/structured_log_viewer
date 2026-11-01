@@ -85,6 +85,25 @@ struct EffectiveSession
  * @param command Subcommand name for error lines.
  * @return The merged session, or a usage failure.
  */
+/**
+ * @brief Rejects a `--filter` that names an unknown column or an invalid pattern.
+ *
+ * Commands that have finished loading call this. A live source may still gain
+ * columns, so `slp tail` does not. A table with no rows has no columns to check.
+ *
+ * @param filter Row-selection flags.
+ * @param session Effective session holding the built expression.
+ * @param table Loaded table.
+ * @param command Command name for the message.
+ * @return The failure to report, or `std::nullopt` when the filter is sound.
+ */
+[[nodiscard]] std::optional<Failure> CheckLoadedFilter(
+    const FilterOptions &filter,
+    const EffectiveSession &session,
+    const loglib::LogTable &table,
+    std::string_view command
+);
+
 [[nodiscard]] std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     const FilterOptions &filter,
     const ViewOptions &view,

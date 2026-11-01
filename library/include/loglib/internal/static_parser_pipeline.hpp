@@ -126,18 +126,18 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
         return ContinuationSpliceOutcome::NonStringTarget;
     }
 
-    const std::string_view arenaView = file.OwnedStringsView();
-
     // Avoid repeatedly copying records that span several batches.
-    if (slot->tag == CompactTag::OwnedString && slot->payload + slot->aux == arenaView.size())
+    if (slot->tag == CompactTag::OwnedString)
     {
         std::string extension;
         extension.reserve(1 + leadingContinuationBytes.size());
         extension.push_back('\n');
         extension.append(leadingContinuationBytes);
-        (void)file.AppendOwnedStrings(extension);
-        slot->aux = static_cast<uint32_t>(static_cast<size_t>(slot->aux) + extension.size());
-        return ContinuationSpliceOutcome::Ok;
+        if (file.TryExtendOwnedString(slot->payload, slot->aux, extension))
+        {
+            slot->aux = static_cast<uint32_t>(static_cast<size_t>(slot->aux) + extension.size());
+            return ContinuationSpliceOutcome::Ok;
+        }
     }
 
     std::string joined;
@@ -236,11 +236,11 @@ void RunStaticParserPipeline(
     size_t nextLineNumber = 1;
 
     // Stage C holds a batch's open final record until the next batch
-    // determines whether more continuation text follows.
+    // determines whether more continuation text follows. Line offsets are
+    // never held: they stay in physical-line order however rows are delayed.
     struct HeldTail
     {
         LogLine line;
-        std::vector<uint64_t> lineOffsets; // One offset per physical line in the record.
         KeyId continuationTargetKeyId = INVALID_KEY_ID;
         size_t absoluteLineNumber = 0; // header's absolute line number for `Prime`
         size_t headerLineIdx = 0;      // 0-based absolute physical-line index (mLineOffsets index)
@@ -338,31 +338,13 @@ void RunStaticParserPipeline(
                         }
                     );
                 }
-                // Preserve one offset per physical line and in source
-                // order; `LogLine::LineId` and multi-line spans index
-                // the same offset array.
                 if (parsed.leadingContinuationLineCount > 0)
                 {
-                    const size_t drop = std::min(parsed.leadingContinuationLineCount, parsed.localLineOffsets.size());
-                    if (drop > 0)
-                    {
-                        held->lineOffsets.insert(
-                            held->lineOffsets.end(),
-                            parsed.localLineOffsets.begin(),
-                            parsed.localLineOffsets.begin() + static_cast<std::ptrdiff_t>(drop)
-                        );
-                        parsed.localLineOffsets.erase(
-                            parsed.localLineOffsets.begin(),
-                            parsed.localLineOffsets.begin() + static_cast<std::ptrdiff_t>(drop)
-                        );
-                    }
                     held->lastLineIdx = lineNumberDelta + parsed.leadingContinuationLineCount - 1;
                 }
             }
             else
             {
-                // Keep orphan offsets so subsequent physical line IDs
-                // remain aligned with `mLineOffsets`.
                 parsed.errors.push_back(
                     ParsedLineError{
                         .relativeLine = 1,
@@ -372,11 +354,9 @@ void RunStaticParserPipeline(
             }
         }
 
-        // A fresh record seals the held tail. Emit both together so
-        // the held span's terminating offset is available at registration.
+        // A fresh record seals the held tail.
         const bool batchHasNewRecords = !parsed.lines.empty();
         std::optional<LogLine> heldLineToEmit;
-        std::vector<uint64_t> heldOffsetsToEmit;
         std::optional<MultiLineRecordSpan> heldSpanToEmit;
         size_t heldAbsoluteLineNumber = 0;
         if (batchHasNewRecords && held.has_value())
@@ -387,7 +367,6 @@ void RunStaticParserPipeline(
                 heldSpanToEmit =
                     MultiLineRecordSpan{.headerLineId = held->headerLineIdx, .lastLineId = held->lastLineIdx};
             }
-            heldOffsetsToEmit = std::move(held->lineOffsets);
             heldLineToEmit = std::move(held->line);
             held.reset();
         }
@@ -413,18 +392,11 @@ void RunStaticParserPipeline(
         {
             LogLine tailLine = std::move(parsed.lines.back());
             parsed.lines.pop_back();
-            std::vector<uint64_t> tailOffsets;
-            if (!parsed.localLineOffsets.empty())
-            {
-                tailOffsets.push_back(parsed.localLineOffsets.back());
-                parsed.localLineOffsets.pop_back();
-            }
             const size_t absoluteLine = tailLine.LineId() + 1; // Prime is 1-based
             const size_t headerAbs = lineNumberDelta + parsed.tailRecordHeaderPhysicalLine;
             const size_t lastAbs = lineNumberDelta + parsed.tailRecordLastPhysicalLine;
             newHeld = HeldTail{
                 std::move(tailLine),
-                std::move(tailOffsets),
                 parsed.continuationTargetKeyId,
                 absoluteLine,
                 headerAbs,
@@ -442,11 +414,6 @@ void RunStaticParserPipeline(
                 out.lines.push_back(std::move(*heldLineToEmit));
             }
             std::ranges::move(parsed.lines, std::back_inserter(out.lines));
-            if (!heldOffsetsToEmit.empty())
-            {
-                out.localLineOffsets.reserve(heldOffsetsToEmit.size() + parsed.localLineOffsets.size());
-                std::ranges::move(heldOffsetsToEmit, std::back_inserter(out.localLineOffsets));
-            }
             std::ranges::move(parsed.localLineOffsets, std::back_inserter(out.localLineOffsets));
             if (heldSpanToEmit.has_value())
             {
@@ -478,14 +445,6 @@ void RunStaticParserPipeline(
         {
             coalescer.Prime(heldAbsoluteLineNumber);
             pending.lines.push_back(std::move(*heldLineToEmit));
-            if (!heldOffsetsToEmit.empty())
-            {
-                pending.localLineOffsets.insert(
-                    pending.localLineOffsets.end(),
-                    std::make_move_iterator(heldOffsetsToEmit.begin()),
-                    std::make_move_iterator(heldOffsetsToEmit.end())
-                );
-            }
             if (heldSpanToEmit.has_value())
             {
                 pending.multiLineSpans.push_back(*heldSpanToEmit);
@@ -542,7 +501,7 @@ void RunStaticParserPipeline(
             oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
     );
 
-    // EOF seals the final held record; all of its offsets are present.
+    // EOF seals the final held record.
     if (held.has_value())
     {
         const MultiLineRecordSpan span{held->headerLineIdx, held->lastLineIdx};
@@ -552,7 +511,6 @@ void RunStaticParserPipeline(
         {
             StreamedBatch out;
             out.lines.push_back(std::move(held->line));
-            out.localLineOffsets = std::move(held->lineOffsets);
             if (isMultiLine)
             {
                 out.multiLineSpans.push_back(span);
@@ -566,14 +524,6 @@ void RunStaticParserPipeline(
             StreamedBatch &pending = coalescer.Pending();
             coalescer.Prime(held->absoluteLineNumber);
             pending.lines.push_back(std::move(held->line));
-            if (!held->lineOffsets.empty())
-            {
-                pending.localLineOffsets.insert(
-                    pending.localLineOffsets.end(),
-                    std::make_move_iterator(held->lineOffsets.begin()),
-                    std::make_move_iterator(held->lineOffsets.end())
-                );
-            }
             if (isMultiLine)
             {
                 pending.multiLineSpans.push_back(span);

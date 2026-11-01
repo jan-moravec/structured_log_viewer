@@ -104,11 +104,55 @@ TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")
 {
     CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601_T);
     CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601_Space);
-    CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Generic);
-    CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Generic);
+    CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Iso8601_T_Offset);
+    CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Iso8601_Space_Offset);
     CHECK(ClassifyTimestampFormat("") == TimestampFormatKind::Generic);
     CHECK(ClassifyTimestampFormat(" %FT%T") == TimestampFormatKind::Generic);
     CHECK(ClassifyTimestampFormat("%FT%T ") == TimestampFormatKind::Generic);
+}
+
+TEST_CASE(
+    "Default time formats keep the instant across fraction widths and zones", "[log_processing][timestamp_corpus]"
+)
+{
+    const auto parse = [](std::string_view text) -> std::optional<TimeStamp> {
+        TimestampParseScratch scratch;
+        for (const std::string &format : DefaultTimeParseFormats())
+        {
+            TimeStamp out{};
+            if (TryParseTimestamp(text, format, ClassifyTimestampFormat(format), scratch, out))
+            {
+                return out;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto at = [](std::int64_t seconds, std::int64_t fraction) {
+        return std::optional<TimeStamp>{TimeStamp{std::chrono::seconds{seconds} + std::chrono::microseconds{fraction}}};
+    };
+    constexpr std::int64_t BASE = 1704103200; // 2024-01-01T10:00:00Z
+
+    CHECK(parse("2024-01-01T10:00:00Z") == at(BASE, 0));
+    CHECK(parse("2024-01-01T10:00:00.123456Z") == at(BASE, 123456));
+    CHECK(parse("2024-01-01T10:00:00.1234567Z") == at(BASE, 123456));
+    CHECK(parse("2024-01-01T10:00:00.000000123Z") == at(BASE, 0));
+    CHECK(parse("2024-01-01T10:00:00.123456789Z") == at(BASE, 123456));
+    CHECK(parse("2024-01-01T10:00:00.999999999Z") == at(BASE, 999999));
+    CHECK(parse("2024-01-01 10:00:00.123456789") == at(BASE, 123456));
+    CHECK(parse("2024-01-01T10:00:00.12345678") == at(BASE, 123456));
+    CHECK(parse("2024-01-01T11:00:00+01:00") == at(BASE, 0));
+    CHECK(parse("2024-01-01T11:00:00.123456789+01:00") == at(BASE, 123456));
+    CHECK(parse("2024-01-01T04:30:00-05:30") == at(BASE, 0));
+    CHECK(parse("2024-01-01T11:00:00+0100") == at(BASE, 0));
+    CHECK(parse("2024-01-01T11:00:00+01") == at(BASE, 0));
+    CHECK(parse("2024-01-01 11:00:00+01:00") == at(BASE, 0));
+    CHECK(parse("01/Jan/2024:10:00:00 +0000") == at(BASE, 0));
+
+    CHECK_FALSE(parse("2024-01-01T10:00:00 garbage").has_value());
+    CHECK_FALSE(parse("2024-01-01T10:00:00+01:00 garbage").has_value());
+    CHECK_FALSE(parse("2024-01-01T10:00:00+25:00").has_value());
+    CHECK_FALSE(parse("2024-01-01T10:00:00+01:").has_value());
+    CHECK_FALSE(parse("01/Jan/2024:10:00:00 +0000 garbage").has_value());
 }
 
 TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601_fast_path]")
@@ -320,14 +364,6 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
         // Same rules apply to the ISO-8601 `,` separator as to `.`.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56,", 'T', out));
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56,Z", 'T', out));
-    }
-
-    SECTION("Sub-microsecond fractional precision")
-    {
-        // 7+ digits must fall through to the slow path; no precision loss.
-        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567", 'T', out));
-        // `Z` does not make excess precision valid.
-        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567Z", 'T', out));
     }
 
     SECTION("Trailing garbage after fractional digits")

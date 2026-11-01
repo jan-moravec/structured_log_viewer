@@ -1,4 +1,5 @@
 #include "loglib/tcp_server_producer.hpp"
+#include "loglib/internal/path_encoding.hpp"
 
 #include "loglib/internal/line_bytes_queue.hpp"
 
@@ -91,6 +92,7 @@ private:
 
     std::vector<char> mReadBuffer;
     std::string mCarry;
+    bool mSkippingOversizedLine = false;
     bool mFinalized = false;
 };
 
@@ -122,6 +124,9 @@ public:
     /// shared queue under the mutex, applying back-pressure.
     void OnSessionLines(std::string_view completeLines);
 
+    /// Counts bytes of a line a session dropped for exceeding `maxLineBytes`.
+    void OnOversizedLineBytes(size_t bytes) noexcept;
+
     /// Called from a session's `Finalize`. Drops the session from
     /// `mActiveSessions`, decrements the counter, and notifies the cv
     /// so callers waiting in `WaitForBytes` wake up to observe a
@@ -134,6 +139,11 @@ public:
     [[nodiscard]] size_t ReadChunkBytes() const noexcept
     {
         return mOptions.readChunkBytes;
+    }
+
+    [[nodiscard]] size_t MaxLineBytes() const noexcept
+    {
+        return mOptions.maxLineBytes;
     }
 
 private:
@@ -253,13 +263,30 @@ template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec,
     // queue. The trailing partial stays in the carry until the next
     // chunk -- this is what guarantees that lines from concurrent
     // peers don't tear in the shared queue.
-    mCarry.append(mReadBuffer.data(), bytes);
-
-    if (const auto lastNewline = mCarry.rfind('\n'); lastNewline != std::string::npos)
+    std::string_view incoming(mReadBuffer.data(), bytes);
+    if (mSkippingOversizedLine)
     {
-        const std::string_view completeLines(mCarry.data(), lastNewline + 1);
-        mImpl->OnSessionLines(completeLines);
-        mCarry.erase(0, lastNewline + 1);
+        const size_t newline = incoming.find('\n');
+        const size_t skipped = newline == std::string_view::npos ? incoming.size() : newline + 1;
+        mImpl->OnOversizedLineBytes(skipped);
+        incoming.remove_prefix(skipped);
+        mSkippingOversizedLine = newline == std::string_view::npos;
+    }
+
+    // Only the new bytes can hold a newline, because earlier ones were split off.
+    const size_t priorCarry = mCarry.size();
+    mCarry.append(incoming);
+    if (const auto lastNewline = incoming.rfind('\n'); lastNewline != std::string_view::npos)
+    {
+        const size_t completeBytes = priorCarry + lastNewline + 1;
+        mImpl->OnSessionLines(std::string_view(mCarry.data(), completeBytes));
+        mCarry.erase(0, completeBytes);
+    }
+    if (mCarry.size() > mImpl->MaxLineBytes())
+    {
+        mImpl->OnOversizedLineBytes(mCarry.size());
+        mCarry.clear();
+        mSkippingOversizedLine = true;
     }
 
     // NOLINTNEXTLINE(misc-no-recursion): async re-arm; not synchronous stack recursion.
@@ -323,29 +350,31 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
     );
 
     asio::error_code ec;
-    ctx.use_certificate_chain_file(tls.certificateChain.string(), ec);
+    ctx.use_certificate_chain_file(internal::PathToUtf8(tls.certificateChain), ec);
     if (ec)
     {
         throw std::runtime_error(
-            "TcpServerProducer: failed to load certificate chain '" + tls.certificateChain.string() +
+            "TcpServerProducer: failed to load certificate chain '" + internal::PathToUtf8(tls.certificateChain) +
             "': " + ec.message()
         );
     }
-    ctx.use_private_key_file(tls.privateKey.string(), asio::ssl::context::pem, ec);
+    ctx.use_private_key_file(internal::PathToUtf8(tls.privateKey), asio::ssl::context::pem, ec);
     if (ec)
     {
         throw std::runtime_error(
-            "TcpServerProducer: failed to load private key '" + tls.privateKey.string() + "': " + ec.message()
+            "TcpServerProducer: failed to load private key '" + internal::PathToUtf8(tls.privateKey) +
+            "': " + ec.message()
         );
     }
 
     if (!tls.caBundle.empty())
     {
-        ctx.load_verify_file(tls.caBundle.string(), ec);
+        ctx.load_verify_file(internal::PathToUtf8(tls.caBundle), ec);
         if (ec)
         {
             throw std::runtime_error(
-                "TcpServerProducer: failed to load CA bundle '" + tls.caBundle.string() + "': " + ec.message()
+                "TcpServerProducer: failed to load CA bundle '" + internal::PathToUtf8(tls.caBundle) +
+                "': " + ec.message()
             );
         }
         int verifyMode = asio::ssl::verify_peer;
@@ -578,6 +607,11 @@ void TcpServerProducerImpl::OnSessionLines(std::string_view completeLines)
     }
     MarkRunning();
     mCv.notify_all();
+}
+
+void TcpServerProducerImpl::OnOversizedLineBytes(size_t bytes) noexcept
+{
+    mDroppedByteCount.fetch_add(bytes, std::memory_order_acq_rel);
 }
 
 void TcpServerProducerImpl::OnSessionEnded(size_t sessionId)

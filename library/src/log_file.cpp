@@ -1,6 +1,7 @@
 #include "loglib/log_file.hpp"
 
 #include "loglib/internal/path_encoding.hpp"
+#include "loglib/internal/stable_byte_arena.hpp"
 
 #include <fmt/format.h>
 #include <mio/mmap.hpp>
@@ -69,7 +70,10 @@ LogFile::LogFile(const std::filesystem::path &filePath)
 }
 
 LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath)
-    : mPath(std::move(logicalPath)), mStoragePath(std::move(storagePath)), mMapping(std::make_unique<Mapping>())
+    : mPath(std::move(logicalPath)),
+      mStoragePath(std::move(storagePath)),
+      mMapping(std::make_unique<Mapping>()),
+      mOwnedStrings(std::make_unique<internal::StableByteArena>())
 {
     if (!std::filesystem::exists(mStoragePath))
     {
@@ -203,21 +207,24 @@ void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
     (*mMultiLineSpans)[headerLineId] = lastLineId;
 }
 
-std::string_view LogFile::OwnedStringsView() const noexcept
+std::string_view LogFile::OwnedString(uint64_t offset, uint64_t length) const noexcept
 {
-    return std::string_view(mOwnedStrings);
+    return mOwnedStrings->View(offset, length);
 }
 
 uint64_t LogFile::AppendOwnedStrings(std::string_view bytes)
 {
-    const uint64_t offset = mOwnedStrings.size();
-    mOwnedStrings.append(bytes.data(), bytes.size());
-    return offset;
+    return mOwnedStrings->Append(bytes);
+}
+
+bool LogFile::TryExtendOwnedString(uint64_t offset, uint64_t length, std::string_view bytes)
+{
+    return mOwnedStrings->TryExtend(offset, length, bytes);
 }
 
 size_t LogFile::OwnedStringsMemoryBytes() const noexcept
 {
-    return mOwnedStrings.capacity();
+    return mOwnedStrings->CapacityBytes();
 }
 
 void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept

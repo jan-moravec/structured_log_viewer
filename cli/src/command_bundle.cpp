@@ -126,6 +126,10 @@ ExitCode RunBundle(
     {
         return console.Report(session.error());
     }
+    if (auto failure = CheckLoadedFilter(options.filter, *session, loaded->table, BundleOptions::NAME))
+    {
+        return console.Report(*failure);
+    }
 
     loglib::LogConfiguration configuration = session->configuration;
     configuration.source.reset();

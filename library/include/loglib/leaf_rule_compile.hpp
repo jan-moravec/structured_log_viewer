@@ -63,6 +63,22 @@ class LogTable;
 [[nodiscard]] LeafRule ToLeafRule(const HighlightRule &rule);
 
 /**
+ * @brief Finds leaves of @p expression that can never work as written.
+ *
+ * Reports columns that no entry of @p columns carries and invalid regular
+ * expressions. `CompileExpression` tolerates both, because a live source may
+ * still gain the column. A host that has finished loading its rows should
+ * report these instead of filtering with them.
+ *
+ * @param expression Expression to inspect.
+ * @param columns Columns used to resolve leaf keys.
+ * @return One message per problem; empty when the expression is sound.
+ */
+[[nodiscard]] std::vector<std::string> FindFilterProblems(
+    const FilterExpression &expression, const std::vector<Column> &columns
+);
+
+/**
  * @brief Compiles @p expression into a `CompiledFilterExpression`.
  *
  * Every `And` / `Or` node's children are sorted cheap-first by

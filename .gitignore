@@ -93,6 +93,8 @@ CMakeUserPresets.json
 # Local AI task tooling and its generated plans.
 /ai-dev-tasks-main/
 /tasks/
+# Local pre-release analysis documents.
+/analysis/
 # Benchmark scratch dirs (one per investigation, freely named).
 # Pattern keeps `.bench-results/`, `.bench-results-prefix/`, etc. out.
 .bench-results*/

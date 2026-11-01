@@ -43,12 +43,7 @@ std::string_view FileLineSource::ResolveMmapBytes(uint64_t offset, uint32_t leng
 
 std::string_view FileLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t /*lineId*/) const noexcept
 {
-    const std::string_view arena = mFile->OwnedStringsView();
-    if (offset > arena.size() || offset + length > arena.size())
-    {
-        return {};
-    }
-    return arena.substr(offset, length);
+    return mFile->OwnedString(offset, length);
 }
 
 std::span<const char> FileLineSource::StableBytes() const noexcept

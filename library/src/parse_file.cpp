@@ -1,4 +1,5 @@
 #include "loglib/parse_file.hpp"
+#include "loglib/internal/path_encoding.hpp"
 
 #include "loglib/file_line_source.hpp"
 #include "loglib/format_detection.hpp"
@@ -32,11 +33,11 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
 {
     if (!std::filesystem::exists(file))
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist.", file.string()));
+        throw std::runtime_error(fmt::format("File '{}' does not exist.", internal::PathToUtf8(file)));
     }
     if (std::filesystem::file_size(file) == 0)
     {
-        throw std::runtime_error(fmt::format("File '{}' is empty.", file.string()));
+        throw std::runtime_error(fmt::format("File '{}' is empty.", internal::PathToUtf8(file)));
     }
 
     // The sink owns the `FileLineSource` for the duration of the parse;
@@ -60,7 +61,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
     const std::string head = ReadProbeHead(file, PROBE_BYTES_BUDGET);
     if (head.empty())
     {
-        throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));
+        throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
 
     const DetectedFormat detected = DetectFormatFromBytes(head);
@@ -74,7 +75,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
         const JsonParser probe;
         if (!probe.IsValidBytes(head))
         {
-            throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));
+            throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
         }
     }
 

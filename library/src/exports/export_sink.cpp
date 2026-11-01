@@ -1,5 +1,6 @@
 #include "loglib/exports/export_sink.hpp"
 #include "loglib/internal/file_busy_retry.hpp"
+#include "loglib/internal/path_encoding.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -139,7 +140,9 @@ FileSink::FileSink(std::filesystem::path destination)
 {
     if (mFile == nullptr)
     {
-        throw std::runtime_error("Failed to open '" + mTempPath.string() + "' for writing: " + DescribeErrno(errno));
+        throw std::runtime_error(
+            "Failed to open '" + internal::PathToUtf8(mTempPath) + "' for writing: " + DescribeErrno(errno)
+        );
     }
 }
 
@@ -175,7 +178,7 @@ void FileSink::Write(std::string_view bytes)
     if (written != bytes.size())
     {
         const std::string reason = DescribeErrno(errno);
-        throw std::runtime_error("Failed to write '" + mTempPath.string() + "': " + reason);
+        throw std::runtime_error("Failed to write '" + internal::PathToUtf8(mTempPath) + "': " + reason);
     }
 }
 
@@ -198,14 +201,14 @@ void FileSink::Finish()
         // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
         (void)std::fclose(mFile);
         mFile = nullptr;
-        throw std::runtime_error("Failed to flush '" + mTempPath.string() + "': " + reason);
+        throw std::runtime_error("Failed to flush '" + internal::PathToUtf8(mTempPath) + "': " + reason);
     }
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     if (std::fclose(mFile) != 0)
     {
         const std::string reason = DescribeErrno(errno);
         mFile = nullptr;
-        throw std::runtime_error("Failed to close '" + mTempPath.string() + "': " + reason);
+        throw std::runtime_error("Failed to close '" + internal::PathToUtf8(mTempPath) + "': " + reason);
     }
     mFile = nullptr;
 
@@ -226,8 +229,8 @@ void FileSink::Finish()
                 std::error_code cleanupEc;
                 std::filesystem::remove(mTempPath, cleanupEc);
                 throw std::runtime_error(
-                    "Failed to move '" + mTempPath.string() + "' to '" + mDestination.string() +
-                    "': " + copyEc.message()
+                    "Failed to move '" + internal::PathToUtf8(mTempPath) + "' to '" +
+                    internal::PathToUtf8(mDestination) + "': " + copyEc.message()
                 );
             }
             std::error_code removeEc;
@@ -238,7 +241,8 @@ void FileSink::Finish()
             std::error_code cleanupEc;
             std::filesystem::remove(mTempPath, cleanupEc);
             throw std::runtime_error(
-                "Failed to rename '" + mTempPath.string() + "' to '" + mDestination.string() + "': " + ec.message()
+                "Failed to rename '" + internal::PathToUtf8(mTempPath) + "' to '" + internal::PathToUtf8(mDestination) +
+                "': " + ec.message()
             );
         }
     }

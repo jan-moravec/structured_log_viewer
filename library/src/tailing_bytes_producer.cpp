@@ -1,6 +1,7 @@
 #include "loglib/tailing_bytes_producer.hpp"
 
 #include "loglib/internal/file_identity.hpp"
+#include "loglib/internal/path_encoding.hpp"
 
 #include <efsw/efsw.hpp>
 
@@ -20,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -265,6 +267,7 @@ public:
     void SetRotationCallback(const std::function<void()> &callback);
     void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] size_t RotationCount() const noexcept;
+    [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
     /// Called from the efsw thread. Wakes the worker.
     void OnWatcherEvent() noexcept;
@@ -307,11 +310,13 @@ private:
     size_t mReadyConsumed = 0;
     std::string mPartialLine;
     bool mWatcherEventPending = false;
+    bool mSkippingOversizedLine = false;
     bool mWaiting = false; // true in branch (ii) "path missing" state
 
     std::atomic<bool> mStopRequested{false};
     std::atomic<bool> mWorkerExited{false};
     std::atomic<size_t> mRotationCount{0};
+    std::atomic<size_t> mDroppedByteCount{0};
 
     // Separate mutex so we never call user callbacks while holding the
     // busy `mMutex`.
@@ -365,8 +370,8 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
     // Canonicalize up front so every downstream computation (basename,
     // display name, watcher parent) sees an absolute path.
     : mPath(CanonicalizeWatchedPath(std::move(path))),
-      mFileName(mPath.filename().string()),
-      mDisplayName(mPath.string()),
+      mFileName(PathToUtf8(mPath.filename())),
+      mDisplayName(PathToUtf8(mPath)),
       mRetentionLines(std::max<size_t>(retentionLines, 1)),
       mOptions(options),
       mHandle(OpenForTail(mPath))
@@ -376,7 +381,11 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
 
     if (!IsValidHandle(mHandle))
     {
+#ifdef _WIN32
+        const std::error_code ec(static_cast<int>(::GetLastError()), std::system_category());
+#else
         const std::error_code ec(errno, std::generic_category());
+#endif
         throw std::system_error(ec, "TailingBytesProducer: failed to open '" + mDisplayName + "'");
     }
     mIdentityAtOpen = FromOpenHandle(mHandle);
@@ -402,7 +411,7 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
                 parent = std::filesystem::current_path();
             }
 
-            mWatchID = mWatcher->addWatch(parent.string(), mWatcherListener.get(), false);
+            mWatchID = mWatcher->addWatch(PathToUtf8(parent), mWatcherListener.get(), false);
             if (mWatchID > 0)
             {
                 mWatcher->watch();
@@ -536,6 +545,11 @@ size_t TailingBytesProducerImpl::RotationCount() const noexcept
     return mRotationCount.load(std::memory_order_acquire);
 }
 
+size_t TailingBytesProducerImpl::DroppedByteCount() const noexcept
+{
+    return mDroppedByteCount.load(std::memory_order_acquire);
+}
+
 void TailingBytesProducerImpl::OnWatcherEvent() noexcept
 {
     {
@@ -563,7 +577,12 @@ void TailingBytesProducerImpl::WorkerMain()
             didWork = true;
         }
 
-        if (IsValidHandle(mHandle))
+        bool queueHasRoom = false;
+        {
+            const std::scoped_lock lock(mMutex);
+            queueHasRoom = mReadyBuffer.size() - mReadyConsumed < mOptions.maxQueuedBytes;
+        }
+        if (IsValidHandle(mHandle) && queueHasRoom)
         {
             const size_t n = ReadMoreBytes();
             if (n > 0)
@@ -705,6 +724,10 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
     {
         mRotationInProgress = true;
 
+        // The retired file may still hold bytes written before the rename.
+        while (!mStopRequested.load(std::memory_order_acquire) && ReadMoreBytes() > 0)
+        {
+        }
         CloseHandle();
         mHandle = OpenForTail(mPath);
         mIdentityAtOpen = FromOpenHandle(mHandle);
@@ -714,8 +737,9 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
 
         {
             const std::scoped_lock lock(mMutex);
-            mPartialLine.clear();
+            FlushPartialLineLocked();
         }
+        mCv.notify_all();
 
         mRotationCount.fetch_add(1, std::memory_order_acq_rel);
         FireRotationCallbackIfDebounced();
@@ -842,24 +866,37 @@ void TailingBytesProducerImpl::CloseHandle() noexcept
 
 void TailingBytesProducerImpl::AppendBytesAndSplitLocked(const char *data, size_t size)
 {
-    if (size == 0)
+    std::string_view incoming(data, size);
+    if (mSkippingOversizedLine)
+    {
+        const size_t newline = incoming.find('\n');
+        const size_t skipped = newline == std::string_view::npos ? incoming.size() : newline + 1;
+        mDroppedByteCount.fetch_add(skipped, std::memory_order_acq_rel);
+        incoming.remove_prefix(skipped);
+        mSkippingOversizedLine = newline == std::string_view::npos;
+    }
+    if (incoming.empty())
     {
         return;
     }
-    mPartialLine.append(data, size);
-    if (mPartialLine.empty())
+    // Only the new bytes can hold a newline, because earlier ones were split off.
+    const size_t lastNewline = incoming.rfind('\n');
+    const size_t priorPartial = mPartialLine.size();
+    mPartialLine.append(incoming);
+    if (lastNewline != std::string_view::npos)
     {
-        return;
+        const size_t completeBytes = priorPartial + lastNewline + 1;
+        const auto completeEnd =
+            std::next(mPartialLine.begin(), static_cast<std::string::difference_type>(completeBytes));
+        mReadyBuffer.insert(mReadyBuffer.end(), mPartialLine.begin(), completeEnd);
+        mPartialLine.erase(0, completeBytes);
     }
-    const size_t lastNewline = mPartialLine.find_last_of('\n');
-    if (lastNewline == std::string::npos)
+    if (mPartialLine.size() > mOptions.maxLineBytes)
     {
-        return;
+        mDroppedByteCount.fetch_add(mPartialLine.size(), std::memory_order_acq_rel);
+        mPartialLine.clear();
+        mSkippingOversizedLine = true;
     }
-    const size_t completeBytes = lastNewline + 1;
-    const auto completeEnd = std::next(mPartialLine.begin(), static_cast<std::string::difference_type>(completeBytes));
-    mReadyBuffer.insert(mReadyBuffer.end(), mPartialLine.begin(), completeEnd);
-    mPartialLine.erase(0, completeBytes);
 }
 
 void TailingBytesProducerImpl::FlushPartialLineLocked()
@@ -979,6 +1016,11 @@ void TailingBytesProducer::SetStatusCallback(const std::function<void(SourceStat
 size_t TailingBytesProducer::RotationCount() const noexcept
 {
     return mImpl->RotationCount();
+}
+
+size_t TailingBytesProducer::DroppedByteCount() const noexcept
+{
+    return mImpl->DroppedByteCount();
 }
 
 } // namespace loglib

@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace loglib
 {
@@ -142,6 +144,20 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
     const int64_t delta = tsUs - originUs;
     int64_t bucketIdx = FloorDivide(delta, widthUs);
 
+    const auto limit = static_cast<int64_t>(HISTOGRAM_MAX_BUCKETS);
+    const auto count = static_cast<int64_t>(mBuckets.size());
+    // Compare without forming `count - bucketIdx`, which a distant row could overflow.
+    if (bucketIdx >= limit || bucketIdx < count - limit)
+    {
+        if (mBucketSize != HistogramBucketSize::OneDay)
+        {
+            WidenBuckets();
+            AddRow(ts, level);
+            return;
+        }
+        bucketIdx = std::clamp<int64_t>(bucketIdx, 0, count - 1);
+    }
+
     if (bucketIdx < 0)
     {
         // Out-of-order backfill: shift right and rebase the origin.
@@ -166,6 +182,33 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
     {
         mMaxTimestamp = ts;
     }
+}
+
+void HistogramBucketIndex::WidenBuckets()
+{
+    const int64_t oldWidthUs = BucketWidth().count();
+    const int64_t oldOriginUs = mOrigin.time_since_epoch().count();
+    mBucketSize = static_cast<HistogramBucketSize>(static_cast<uint8_t>(mBucketSize) + 1U);
+    const int64_t newWidthUs = BucketWidth().count();
+    const TimeStamp newOrigin = TruncateToBucket(mOrigin, mBucketSize);
+    const int64_t newOriginUs = newOrigin.time_since_epoch().count();
+
+    std::vector<LevelBucket> merged;
+    for (size_t i = 0; i < mBuckets.size(); ++i)
+    {
+        const int64_t startUs = oldOriginUs + (static_cast<int64_t>(i) * oldWidthUs);
+        const auto index = static_cast<size_t>(FloorDivide(startUs - newOriginUs, newWidthUs));
+        if (index >= merged.size())
+        {
+            merged.resize(index + 1);
+        }
+        for (size_t slot = 0; slot < LEVEL_SLOT_COUNT; ++slot)
+        {
+            merged[index].counts[slot] += mBuckets[i].counts[slot];
+        }
+    }
+    mBuckets = std::move(merged);
+    mOrigin = newOrigin;
 }
 
 void HistogramBucketIndex::Reset() noexcept

@@ -33,6 +33,12 @@ enum class HistogramBucketSize : uint8_t
 inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
 
 /**
+ * @brief Most buckets `HistogramBucketIndex` holds. A row that would need more
+ * widens the buckets, so one outlier timestamp cannot exhaust memory.
+ */
+inline constexpr size_t HISTOGRAM_MAX_BUCKETS = size_t{1} << 20U;
+
+/**
  * @brief Named ladder step. `TenSeconds` / `TenMinutes` step by
  * `TEN_UNITS_PER_STRIDE` from their neighbours; `OneDay` groups
  * `HOURS_PER_DAY` hours. Pulled out so clang-tidy's
@@ -98,7 +104,10 @@ struct LevelBucket
  * `BucketWidth()`. `AddRow` extends the vector on demand; timestamps
  * before the origin shift the vector once (O(N) in current bucket
  * count), which is fine in append-only streams but worth knowing for
- * sources that produce heavy backfill.
+ * sources that produce heavy backfill. A row outside the
+ * `HISTOGRAM_MAX_BUCKETS` window moves the index to the first wider rung that
+ * covers it, and `BucketSize()` reports the new rung. Past the widest rung the
+ * row counts in the nearest bucket.
  */
 class HistogramBucketIndex
 {
@@ -219,6 +228,9 @@ public:
     }
 
 private:
+    /** @brief Moves to the next wider rung, merging existing buckets. */
+    void WidenBuckets();
+
     HistogramBucketSize mBucketSize = HistogramBucketSize::OneMinute;
     /**
      * @brief Start of bucket 0; only meaningful when `!mBuckets.empty()`.

@@ -3,6 +3,7 @@
 #include "loglib/internal/file_busy_retry.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/internal/path_encoding.hpp"
 #include "loglib/log_data.hpp"
 
 #include <glaze/glaze.hpp>
@@ -202,7 +203,7 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
     const std::ifstream file(path);
     if (!file.is_open())
     {
-        throw std::runtime_error("Failed to open file '" + path.string() + "'.");
+        throw std::runtime_error("Failed to open file '" + internal::PathToUtf8(path) + "'.");
     }
     std::ostringstream buffer;
     buffer << file.rdbuf();
@@ -270,12 +271,13 @@ void LogConfigurationManager::Save(
     // state, then rename. Prevents a crash / ENOSPC mid-write from
     // leaving a truncated `<uuid>.json` the recents index points at.
     // Stale `.tmp` files are swept by `CleanupOrphanFiles`.
-    const std::filesystem::path tempPath = path.string() + ".tmp";
+    std::filesystem::path tempPath = path;
+    tempPath += ".tmp";
     {
         std::ofstream file(tempPath);
         if (!file.is_open())
         {
-            throw std::runtime_error("Failed to open file '" + tempPath.string() + "'.");
+            throw std::runtime_error("Failed to open file '" + internal::PathToUtf8(tempPath) + "'.");
         }
         file << json;
         file.flush();
@@ -283,7 +285,7 @@ void LogConfigurationManager::Save(
         {
             std::error_code cleanupEc;
             std::filesystem::remove(tempPath, cleanupEc);
-            throw std::runtime_error("Failed to write file '" + tempPath.string() + "'.");
+            throw std::runtime_error("Failed to write file '" + internal::PathToUtf8(tempPath) + "'.");
         }
         // Explicit close + good() check so close-time failures
         // (network shares, deferred-write filesystems) are observable
@@ -293,7 +295,7 @@ void LogConfigurationManager::Save(
         {
             std::error_code cleanupEc;
             std::filesystem::remove(tempPath, cleanupEc);
-            throw std::runtime_error("Failed to close file '" + tempPath.string() + "'.");
+            throw std::runtime_error("Failed to close file '" + internal::PathToUtf8(tempPath) + "'.");
         }
     }
     const std::error_code ec = internal::RenameRetryingWhileFileBusy(tempPath, path);
@@ -302,7 +304,8 @@ void LogConfigurationManager::Save(
         std::error_code cleanupEc;
         std::filesystem::remove(tempPath, cleanupEc);
         throw std::runtime_error(
-            "Failed to rename '" + tempPath.string() + "' to '" + path.string() + "': " + ec.message()
+            "Failed to rename '" + internal::PathToUtf8(tempPath) + "' to '" + internal::PathToUtf8(path) +
+            "': " + ec.message()
         );
     }
 }

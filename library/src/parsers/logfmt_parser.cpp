@@ -34,6 +34,8 @@ namespace
 
 constexpr size_t INITIAL_FIELD_CAPACITY = 16;
 
+constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
+
 /// Crossover at which `InsertSorted` switches from a linear back-scan to
 /// `std::lower_bound`. Same threshold the JSON parser uses.
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
@@ -431,6 +433,10 @@ void DecodeLogfmtBatch(
         {
             line.remove_suffix(1);
         }
+        if (lineStart == fileBegin && line.starts_with(UTF8_BOM))
+        {
+            line.remove_prefix(UTF8_BOM.size());
+        }
 
         // `GetLine` subtracts 1 (the '\n'); for an unterminated last
         // line push `fileSize + 1` so we don't lose the final char.
@@ -608,6 +614,14 @@ public:
     {
         out.clear();
         outOwnedArena.clear();
+        if (!mSawFirstLine)
+        {
+            mSawFirstLine = true;
+            if (line.starts_with(UTF8_BOM))
+            {
+                line.remove_prefix(UTF8_BOM.size());
+            }
+        }
         if (line.empty())
         {
             mLastContinuationTarget = INVALID_KEY_ID;
@@ -670,6 +684,7 @@ public:
 private:
     std::string mQuotedScratch;
     bool mMultiline = true;
+    bool mSawFirstLine = false;
     KeyId mLastContinuationTarget = INVALID_KEY_ID;
 };
 

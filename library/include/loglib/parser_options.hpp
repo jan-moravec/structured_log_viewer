@@ -11,6 +11,9 @@ namespace loglib
 
 struct LogConfiguration;
 
+/** @brief Default for `ParserOptions::maxLineBytes` and the producers' line limits. */
+inline constexpr std::size_t DEFAULT_MAX_LINE_BYTES = std::size_t{64} * 1024 * 1024;
+
 /**
  * @brief Public options for `LogParser::ParseStreaming`.
  *
@@ -59,6 +62,16 @@ struct ParserOptions
      * spans batches.
      */
     std::size_t batchSizeBytes = 0;
+
+    /**
+     * @brief Longest line and longest multi-line record the live-stream loop
+     * buffers.
+     *
+     * A longer line is dropped with one error and parsing resumes after its
+     * newline. Further continuation lines of a longer record are dropped
+     * and counted in one error. The record itself is kept.
+     */
+    std::size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 };
 
 } // namespace loglib
