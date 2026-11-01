@@ -27,6 +27,7 @@
 
 using slp::test::FixturesDir;
 using slp::test::RunSlp;
+using slp::test::ScratchRoot;
 
 namespace
 {
@@ -36,14 +37,6 @@ constexpr std::string_view FOUR_ROWS =
     "{\"ts\":\"2024-01-01T00:00:01Z\",\"level\":\"error\",\"msg\":\"bravo\",\"service\":\"auth\"}\n"
     "{\"ts\":\"2024-01-01T00:00:02Z\",\"level\":\"warn\",\"msg\":\"charlie\",\"service\":\"db\"}\n"
     "{\"ts\":\"2024-01-01T00:00:03Z\",\"level\":\"error\",\"msg\":\"delta\",\"service\":\"db\"}\n";
-
-[[nodiscard]] std::filesystem::path ScratchRoot()
-{
-    const auto root = std::filesystem::temp_directory_path() / "slp_cli_session_config";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    return root;
-}
 
 [[nodiscard]] std::string EmptyTemplates()
 {

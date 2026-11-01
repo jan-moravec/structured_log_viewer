@@ -14,6 +14,7 @@
 using slp::test::FixturesDir;
 using slp::test::RequireGolden;
 using slp::test::RunSlp;
+using slp::test::ScratchRoot;
 
 namespace
 {
@@ -33,9 +34,7 @@ namespace
     const test_common::LogFormat &format, std::size_t lineCount, const std::string &fileName
 )
 {
-    const auto root = std::filesystem::temp_directory_path() / "slp_cli_validate";
-    std::filesystem::create_directories(root);
-    const auto path = root / fileName;
+    const auto path = ScratchRoot() / fileName;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     REQUIRE(static_cast<bool>(output));
     for (const auto &record : test_common::GenerateRandomLogRecords(lineCount, 0xA11CE))

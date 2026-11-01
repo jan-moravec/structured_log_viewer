@@ -78,6 +78,8 @@ endif()
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` from `test/lib` to test builds.
 include(CTest)
 if(BUILD_TESTING)
+    # Test presets can point TEMP here to keep scratch files in the build tree.
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-tmp")
     include(Catch)
     # `test/common` ships the helpers used by `test/lib` and `test/log_generator`;
     # must come before `test/lib`.

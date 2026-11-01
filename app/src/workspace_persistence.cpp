@@ -6,6 +6,7 @@
 #include "uuid_utils.hpp"
 
 #include <QByteArray>
+#include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -18,6 +19,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QStringConverter>
+#include <QThread>
 #include <QUuid>
 
 #include <algorithm>
@@ -27,6 +29,36 @@ namespace logapp::persistence
 {
 namespace
 {
+
+constexpr int FILE_BUSY_TIMEOUT_MS = 1000;
+
+/// Runs @p attempt until it succeeds or @p deadline expires.
+///
+/// On Windows, file scanners, indexers, and sync clients briefly open
+/// files that were just written, which makes copies and
+/// `QSaveFile::commit` fail. `QSaveFile` cannot commit twice, so
+/// @p attempt redoes the whole write. Qt does not report the cause, so
+/// every failure is retried; a batch of files shares one @p deadline to
+/// keep a lasting failure from adding a wait per file. Other platforms
+/// make one attempt.
+template <typename Attempt>
+bool RetryWhileFileBusy([[maybe_unused]] const QDeadlineTimer &deadline, const Attempt &attempt)
+{
+#ifdef Q_OS_WIN
+    constexpr int RETRY_INTERVAL_MS = 20;
+    while (!attempt())
+    {
+        if (deadline.hasExpired())
+        {
+            return false;
+        }
+        QThread::msleep(RETRY_INTERVAL_MS);
+    }
+    return true;
+#else
+    return attempt();
+#endif
+}
 
 constexpr const char *WORKSPACE_FILE_NAME = "workspace.json";
 constexpr const char *GENERATIONS_DIR_NAME = "generations";
@@ -368,19 +400,21 @@ bool WorkspacePersistence::Write(Workspace workspace)
         return false;
     }
     const QString path = dir.filePath(QLatin1String(WORKSPACE_FILE_NAME));
-    QSaveFile saveFile(path);
-    if (!saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        return false;
-    }
     const QJsonDocument doc = BuildDoc(workspace);
     const QByteArray raw = doc.toJson(QJsonDocument::Indented);
-    if (saveFile.write(raw) != raw.size())
-    {
-        saveFile.cancelWriting();
-        return false;
-    }
-    return saveFile.commit();
+    return RetryWhileFileBusy(QDeadlineTimer(FILE_BUSY_TIMEOUT_MS), [&path, &raw] {
+        QSaveFile saveFile(path);
+        if (!saveFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            return false;
+        }
+        if (saveFile.write(raw) != raw.size())
+        {
+            saveFile.cancelWriting();
+            return false;
+        }
+        return saveFile.commit();
+    });
 }
 
 bool WorkspacePersistence::HasPersistedWorkspace()
@@ -526,14 +560,16 @@ QString WorkspacePersistence::SessionSnapshotPath(std::uint64_t generation, cons
 namespace
 {
 
-bool CopySnapshotFile(const QString &from, const QString &to)
+bool CopySnapshotFile(const QString &from, const QString &to, const QDeadlineTimer &busyDeadline)
 {
     if (from.isEmpty() || to.isEmpty() || !QFile::exists(from))
     {
         return false;
     }
-    QFile::remove(to);
-    return QFile::copy(from, to);
+    return RetryWhileFileBusy(busyDeadline, [&from, &to] {
+        QFile::remove(to);
+        return QFile::copy(from, to);
+    });
 }
 
 } // namespace
@@ -552,6 +588,7 @@ bool WorkspacePersistence::WriteGenerationSnapshots(std::uint64_t generation, Wo
     }
     const std::uint64_t previousGeneration = Read().generation;
     const QDir recentsDir = DefaultWorkspaceDir();
+    const QDeadlineTimer busyDeadline(FILE_BUSY_TIMEOUT_MS);
     for (WorkspaceWindow &window : workspace.windows)
     {
         for (WorkspaceTab &tab : window.tabs)
@@ -563,12 +600,12 @@ bool WorkspacePersistence::WriteGenerationSnapshots(std::uint64_t generation, Wo
             }
             const QString dest = SessionSnapshotPath(generation, tab.sessionUuid);
             const QString fromRecents = recentsDir.filePath(tab.sessionUuid + QStringLiteral(".json"));
-            if (CopySnapshotFile(fromRecents, dest))
+            if (CopySnapshotFile(fromRecents, dest, busyDeadline))
             {
                 continue;
             }
             if (previousGeneration != 0 && previousGeneration != generation &&
-                CopySnapshotFile(SessionSnapshotPath(previousGeneration, tab.sessionUuid), dest))
+                CopySnapshotFile(SessionSnapshotPath(previousGeneration, tab.sessionUuid), dest, busyDeadline))
             {
                 continue;
             }

@@ -3,6 +3,7 @@
 #include "log_warning.hpp"
 #include "uuid_utils.hpp"
 
+#include <QDeadlineTimer>
 #include <QFileInfo>
 #include <QLatin1String>
 #include <QLockFile>
@@ -13,6 +14,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QThread>
 #include <QUuid>
 #include <QVariant>
 
@@ -86,6 +88,8 @@ void SyncWarnIfNeeded(QSettings &settings, const char *context)
 /// `AddOpenWindowUuid`, `RemoveOpenWindowUuid`, `CleanupOrphanFiles`).
 /// The timeout doubles as the worst-case GUI freeze under sibling
 /// contention; 1.5 s stays under the 2 s "UI feels wedged" threshold.
+/// A busy session file can add up to one second from
+/// `LogConfigurationManager::Save`.
 ///
 /// Shutdown: covers user-initiated / shutdown mutators (`Remove`,
 /// `Clear`, `SetOpenWindowsAtQuit`). Not on an interactive path; a
@@ -189,6 +193,32 @@ QMutex &OpenWindowsMutex()
     return mutex;
 }
 
+/// Acquires @p lock, waiting at most @p timeoutMs.
+///
+/// `QLockFile::tryLock` returns at once on `PermissionError`, ignoring
+/// its timeout. Windows reports that error while another process, such
+/// as a file scanner, keeps the previous lock file open during its
+/// deletion, so the refusal is retried until the timeout there. On
+/// other platforms the error is permanent and fails at once.
+bool TryLockWithinTimeout(QLockFile &lock, int timeoutMs)
+{
+#ifdef Q_OS_WIN
+    constexpr int PERMISSION_RETRY_INTERVAL_MS = 10;
+    const QDeadlineTimer deadline(timeoutMs);
+    while (!lock.tryLock(static_cast<int>(deadline.remainingTime())))
+    {
+        if (lock.error() != QLockFile::PermissionError || deadline.hasExpired())
+        {
+            return false;
+        }
+        QThread::msleep(PERMISSION_RETRY_INTERVAL_MS);
+    }
+    return true;
+#else
+    return lock.tryLock(timeoutMs);
+#endif
+}
+
 LockFileGuard AcquireRecentsLock(const QDir &sessionsDir, int timeoutMs)
 {
     LockFileGuard guard;
@@ -203,7 +233,7 @@ LockFileGuard AcquireRecentsLock(const QDir &sessionsDir, int timeoutMs)
     // contention still fails closed via the `tryLock` timeout below.
     constexpr int STALE_LOCK_TIMEOUT_MS = 30 * 1000;
     guard.lock->setStaleLockTime(STALE_LOCK_TIMEOUT_MS);
-    guard.locked = guard.lock->tryLock(timeoutMs);
+    guard.locked = TryLockWithinTimeout(*guard.lock, timeoutMs);
     if (!guard.locked && !g_recents_lock_warned.exchange(true))
     {
         // First failure only; error code disambiguates contention

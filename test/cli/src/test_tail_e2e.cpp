@@ -23,6 +23,7 @@
 using slp::test::FixturesDir;
 using slp::test::RunSlp;
 using slp::test::RunSlpWithStdin;
+using slp::test::ScratchRoot;
 using slp::test::SlpChild;
 
 namespace
@@ -31,14 +32,6 @@ namespace
 using std::chrono::milliseconds;
 
 constexpr auto LONG_WAIT = milliseconds(30000);
-
-[[nodiscard]] std::filesystem::path ScratchRoot()
-{
-    const auto root = std::filesystem::temp_directory_path() / "slp_cli_tail";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    return root;
-}
 
 [[nodiscard]] std::string EmptyTemplates()
 {

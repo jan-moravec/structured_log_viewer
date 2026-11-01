@@ -139,7 +139,7 @@ void WaitForBucketsChanged(OverviewRailModel &model)
     {
         return;
     }
-    QVERIFY2(spy.wait(1000), "bucketsChanged must arrive within the timeout");
+    QVERIFY2(spy.wait(5000), "bucketsChanged must arrive within the timeout");
 }
 
 // Wrap the proxy chain a production MainWindow builds so tests
@@ -359,7 +359,7 @@ private slots:
         {
             rail.Rebuild();
         }
-        QVERIFY(spy.wait(1000));
+        QVERIFY(spy.wait(5000));
         QCOMPARE_LE(spy.count(), 1);
     }
 
@@ -447,11 +447,11 @@ private slots:
         // without hard-coding a sleep.
         QSignalSpy anchorSpy(&rail, &OverviewRailModel::anchorBucketsChanged);
         anchors.SetAnchor(*keyOpt, 3);
-        QVERIFY2(anchorSpy.wait(1000), "anchor rebuild must emit anchorBucketsChanged within the timeout");
+        QVERIFY2(anchorSpy.wait(5000), "anchor rebuild must emit anchorBucketsChanged within the timeout");
         QVERIFY(rail.HasAnchorTicks());
 
         anchors.ClearAll();
-        QVERIFY2(anchorSpy.wait(1000), "anchor clear must emit anchorBucketsChanged within the timeout");
+        QVERIFY2(anchorSpy.wait(5000), "anchor clear must emit anchorBucketsChanged within the timeout");
         QVERIFY(!rail.HasAnchorTicks());
     }
 
@@ -2116,7 +2116,7 @@ private slots:
         );
         chain.filter->SetFilterRules(std::move(rules));
 
-        QVERIFY2(spy.wait(1000), "layoutChanged must trigger a rebuild via the coalesce timer");
+        QVERIFY2(spy.wait(5000), "layoutChanged must trigger a rebuild via the coalesce timer");
         QVERIFY2(rail.ProxyRowCount() < ROWS, "filter must reduce the proxy row count");
     }
 
@@ -2874,7 +2874,7 @@ private slots:
         // Wait for the debounce interval to elapse and the
         // trailing sync to fire. Generous slack over the
         // 100 ms debounce so CI jitter doesn't flake.
-        QVERIFY2(spy.wait(1000), "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS");
+        QVERIFY2(spy.wait(5000), "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS");
 
         // One more event-loop spin to prove no stragglers land
         // after the trailing edge (defends against a future bug

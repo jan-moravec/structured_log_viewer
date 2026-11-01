@@ -23,6 +23,7 @@
 using slp::test::FixturesDir;
 using slp::test::RunSlp;
 using slp::test::RunSlpWithStdin;
+using slp::test::ScratchRoot;
 
 namespace
 {
@@ -117,14 +118,6 @@ void WriteBytes(const std::filesystem::path &path, std::string_view bytes)
 void WriteCompressed(const std::filesystem::path &path, const std::vector<std::uint8_t> &bytes)
 {
     WriteBytes(path, std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
-}
-
-[[nodiscard]] std::filesystem::path ScratchRoot()
-{
-    const auto root = std::filesystem::temp_directory_path() / "slp_cli_sources";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    return root;
 }
 
 [[nodiscard]] std::string EmptyTemplates()
