@@ -296,7 +296,7 @@ TEST_CASE("Malformed JSON values fail the line instead of dropping fields", "[js
         dir,
         JsonParser{},
         "{\"a\":1,\"b\":2}\n"
-        "{\"a\":1,\"b\":tru}\n"
+        "{\"a\":1,\"b\":truex}\n"
         "{\"a\":1,,\"b\":2}\n"
         "{\"a\":1,\"b\":nul}\n"
         "{\"a\":1,\"b\":null}\n"
