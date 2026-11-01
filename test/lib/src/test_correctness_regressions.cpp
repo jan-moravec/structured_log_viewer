@@ -308,6 +308,29 @@ TEST_CASE("Malformed JSON values fail the line instead of dropping fields", "[js
     CHECK(result.errors[2].starts_with("Error on line 4:"));
 }
 
+TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser][malformed][stream]")
+{
+    // The first line caches each key's type, so later lines cover both decode paths.
+    StreamLineSource source(
+        "<test>",
+        std::make_unique<FixedBytesProducer>("{\"b\":true,\"s\":\"ok\",\"n\":1}\n"
+                                             "{\"b\":truex}\n"
+                                             "{\"s\":\"bad\\q\"}\n"
+                                             "{\"fresh\":truex}\n"
+                                             "{\"other\":\"bad\\q\"}\n"
+                                             "{\"num\":1e999}\n"
+                                             "{\"null\":nul}\n"
+                                             "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
+    );
+    CollectingSink sink;
+    JsonParser{}.ParseStreaming(source, sink, ParserOptions{});
+
+    CHECK(sink.lines.size() == 2);
+    REQUIRE(sink.errors.size() == 6);
+    CHECK(sink.errors[0].starts_with("Error on line 2:"));
+    CHECK(sink.errors[5].starts_with("Error on line 7:"));
+}
+
 TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed]")
 {
     const test_common::TempDir dir("json");
