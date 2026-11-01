@@ -38,9 +38,9 @@ enum class TimestampFormatKind : std::uint8_t
      */
     SyslogRfc3164NoYear,
     /** @brief `Iso8601_T` followed by a required numeric offset. */
-    Iso8601_T_Offset,
+    Iso8601TOffset,
     /** @brief `Iso8601_Space` followed by a required numeric offset. */
-    Iso8601_Space_Offset,
+    Iso8601SpaceOffset,
 };
 
 /**

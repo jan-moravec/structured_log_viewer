@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bytes_producer.hpp"
+#include "parser_options.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -122,7 +123,7 @@ public:
          * newline. A longer line is dropped up to its newline and counted
          * in `DroppedByteCount`.
          */
-        size_t maxLineBytes = 64 * 1024 * 1024;
+        size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 
         /**
          * @brief `std::nullopt` for plaintext. Filled in to enable TLS.

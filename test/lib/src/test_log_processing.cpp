@@ -104,8 +104,8 @@ TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")
 {
     CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601_T);
     CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601_Space);
-    CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Iso8601_T_Offset);
-    CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Iso8601_Space_Offset);
+    CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Iso8601TOffset);
+    CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Iso8601SpaceOffset);
     CHECK(ClassifyTimestampFormat("") == TimestampFormatKind::Generic);
     CHECK(ClassifyTimestampFormat(" %FT%T") == TimestampFormatKind::Generic);
     CHECK(ClassifyTimestampFormat("%FT%T ") == TimestampFormatKind::Generic);

@@ -637,7 +637,8 @@ void DecodeJsonBatch(
             {
                 parsed.errors.push_back(
                     internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber, .body = std::string(simdjson::error_message(parseError))
+                        .relativeLine = relativeLineNumber,
+                        .body = std::string(simdjson::error_message(parseError)),
                     }
                 );
                 relativeLineNumber++;

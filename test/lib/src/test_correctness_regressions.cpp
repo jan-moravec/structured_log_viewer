@@ -53,7 +53,7 @@ class CoalescingFileSink : public LogParseSink
 {
 public:
     explicit CoalescingFileSink(LogFile &file)
-        : mFile(file)
+        : mFile(&file)
     {
     }
 
@@ -66,10 +66,10 @@ public:
     }
     void OnBatch(StreamedBatch batch) override
     {
-        mFile.AppendLineOffsets(batch.localLineOffsets);
+        mFile->AppendLineOffsets(batch.localLineOffsets);
         for (const MultiLineRecordSpan &span : batch.multiLineSpans)
         {
-            mFile.RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
+            mFile->RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
         }
         std::ranges::move(batch.lines, std::back_inserter(lines));
     }
@@ -80,7 +80,7 @@ public:
     std::vector<LogLine> lines;
 
 private:
-    LogFile &mFile;
+    LogFile *mFile;
     KeyIndex mKeys;
 };
 
@@ -418,7 +418,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
     LogTable table;
     table.BeginStreaming(std::move(fileSource));
     KeyIndex &keys = table.Keys();
-    const KeyId valueKey = keys.GetOrInsert(std::string("value"));
+    const KeyId valueKey = keys.GetOrInsert("value");
 
     const auto makeLine = [&](LineSource &source, size_t lineId, const char *text) {
         std::vector<std::pair<KeyId, LogValue>> values;
@@ -627,7 +627,7 @@ TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicod
     CHECK_NOTHROW(TailingBytesProducer(path, 10));
 
     const std::filesystem::path config = dir.Path() / std::filesystem::path(u8"設定.json");
-    LogConfigurationManager manager;
+    const LogConfigurationManager manager;
     CHECK_NOTHROW(manager.Save(config));
     CHECK(std::filesystem::exists(config));
 

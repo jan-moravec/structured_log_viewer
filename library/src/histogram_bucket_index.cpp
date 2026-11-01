@@ -125,7 +125,6 @@ HistogramBucketSize HistogramBucketIndex::AutoBucketSize(TimeStamp min, TimeStam
 
 void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
 {
-    const auto widthUs = BucketWidth().count();
     const int64_t tsUs = ts.time_since_epoch().count();
 
     if (mBuckets.empty())
@@ -140,22 +139,22 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
         return;
     }
 
-    const int64_t originUs = mOrigin.time_since_epoch().count();
-    const int64_t delta = tsUs - originUs;
-    int64_t bucketIdx = FloorDivide(delta, widthUs);
-
     const auto limit = static_cast<int64_t>(HISTOGRAM_MAX_BUCKETS);
-    const auto count = static_cast<int64_t>(mBuckets.size());
+    int64_t widthUs = BucketWidth().count();
+    int64_t originUs = mOrigin.time_since_epoch().count();
+    int64_t bucketIdx = FloorDivide(tsUs - originUs, widthUs);
     // Compare without forming `count - bucketIdx`, which a distant row could overflow.
-    if (bucketIdx >= limit || bucketIdx < count - limit)
+    while (bucketIdx >= limit || bucketIdx < static_cast<int64_t>(mBuckets.size()) - limit)
     {
-        if (mBucketSize != HistogramBucketSize::OneDay)
+        if (mBucketSize == HistogramBucketSize::OneDay)
         {
-            WidenBuckets();
-            AddRow(ts, level);
-            return;
+            bucketIdx = std::clamp<int64_t>(bucketIdx, 0, static_cast<int64_t>(mBuckets.size()) - 1);
+            break;
         }
-        bucketIdx = std::clamp<int64_t>(bucketIdx, 0, count - 1);
+        WidenBuckets();
+        widthUs = BucketWidth().count();
+        originUs = mOrigin.time_since_epoch().count();
+        bucketIdx = FloorDivide(tsUs - originUs, widthUs);
     }
 
     if (bucketIdx < 0)

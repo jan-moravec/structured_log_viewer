@@ -36,6 +36,9 @@ constexpr int MAX_HOUR_INCLUSIVE = 23;
 constexpr int MAX_MINUTE_INCLUSIVE = 59;
 constexpr int MAX_SECOND_INCLUSIVE_LEAP = 60;
 
+constexpr std::int64_t SECONDS_PER_MINUTE = 60;
+constexpr std::int64_t SECONDS_PER_HOUR = 3600;
+
 bool ParseFixedDigits(const char *p, size_t n, int &out)
 {
     int value = 0;
@@ -78,11 +81,11 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
     }
     if (format == ISO_T_OFFSET)
     {
-        return TimestampFormatKind::Iso8601_T_Offset;
+        return TimestampFormatKind::Iso8601TOffset;
     }
     if (format == ISO_SPACE_OFFSET)
     {
-        return TimestampFormatKind::Iso8601_Space_Offset;
+        return TimestampFormatKind::Iso8601SpaceOffset;
     }
     if (format == SYSLOG_E || format == SYSLOG_D)
     {
@@ -103,6 +106,12 @@ enum class IsoZoneSuffix : std::uint8_t
     Offset,
 };
 
+/// Parses all of @p digits as a decimal number.
+bool ParseDigits(std::string_view digits, int &out)
+{
+    return ParseFixedDigits(digits.data(), digits.size(), out);
+}
+
 /// Parses `+h`, `+hh`, `+hh:mm`, or `+hhmm` covering all of @p sv.
 bool ParseIsoOffset(std::string_view sv, std::int64_t &offsetSeconds)
 {
@@ -121,19 +130,19 @@ bool ParseIsoOffset(std::string_view sv, std::int64_t &offsetSeconds)
     if (colon != std::string_view::npos)
     {
         if (colon == 0 || colon > MAX_HOUR_DIGITS || sv.size() != colon + 1 + 2 ||
-            !ParseFixedDigits(sv.data(), colon, hours) || !ParseFixedDigits(sv.data() + colon + 1, 2, minutes))
+            !ParseDigits(sv.substr(0, colon), hours) || !ParseDigits(sv.substr(colon + 1), minutes))
         {
             return false;
         }
     }
     else if (sv.size() == COMPACT_DIGITS)
     {
-        if (!ParseFixedDigits(sv.data(), 2, hours) || !ParseFixedDigits(sv.data() + 2, 2, minutes))
+        if (!ParseDigits(sv.substr(0, 2), hours) || !ParseDigits(sv.substr(2), minutes))
         {
             return false;
         }
     }
-    else if (sv.empty() || sv.size() > MAX_HOUR_DIGITS || !ParseFixedDigits(sv.data(), sv.size(), hours))
+    else if (sv.empty() || sv.size() > MAX_HOUR_DIGITS || !ParseDigits(sv, hours))
     {
         return false;
     }
@@ -141,7 +150,7 @@ bool ParseIsoOffset(std::string_view sv, std::int64_t &offsetSeconds)
     {
         return false;
     }
-    offsetSeconds = sign * ((static_cast<std::int64_t>(hours) * 3600) + (static_cast<std::int64_t>(minutes) * 60));
+    offsetSeconds = sign * ((hours * SECONDS_PER_HOUR) + (minutes * SECONDS_PER_MINUTE));
     return true;
 }
 
@@ -460,9 +469,9 @@ bool TryParseTimestamp(
         return TryParseIsoTimestamp(sv, 'T', out);
     case TimestampFormatKind::Iso8601_Space:
         return TryParseIsoTimestamp(sv, ' ', out);
-    case TimestampFormatKind::Iso8601_T_Offset:
+    case TimestampFormatKind::Iso8601TOffset:
         return TryParseIsoOffsetTimestamp(sv, 'T', out);
-    case TimestampFormatKind::Iso8601_Space_Offset:
+    case TimestampFormatKind::Iso8601SpaceOffset:
         return TryParseIsoOffsetTimestamp(sv, ' ', out);
     case TimestampFormatKind::SyslogRfc3164NoYear:
         return TryParseSyslogRfc3164Timestamp(sv, out);
