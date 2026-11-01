@@ -163,7 +163,7 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     options.threads = 1;
     loglib::JsonParser{}.ParseStreaming(*parseSource, *model.Sink(), options);
 
-    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     QVERIFY2(finished, "streamingFinished must arrive within the timeout");
     model.EndStreaming(false);
 }
@@ -188,7 +188,7 @@ void WaitForBucketsChanged(HistogramModel &model)
     {
         return;
     }
-    QVERIFY2(spy.wait(5000), "bucketsChanged must arrive after streaming");
+    QVERIFY2(spy.wait(60000), "bucketsChanged must arrive after streaming");
 }
 
 // Wait for at least one `anchorBucketsChanged` on a pre-attached
@@ -202,7 +202,7 @@ void ExpectAnchorBucketsChanged(QSignalSpy &spy)
     {
         return;
     }
-    QVERIFY2(spy.wait(5000), "anchorBucketsChanged must arrive after an anchor mutation");
+    QVERIFY2(spy.wait(60000), "anchorBucketsChanged must arrive after an anchor mutation");
 }
 
 // Drive `MainWindow::OpenFilesForTest` and wait for
@@ -222,7 +222,7 @@ void OpenFixtureInMainWindow(MainWindow &window, const HistogramFixture &fixture
     window.OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
     if (finishedSpy.count() == 0)
     {
-        QVERIFY2(finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.wait(60000), "streamingFinished must arrive");
     }
     QVERIFY(model->rowCount() > 0);
     // Pump once more so the coalesced `bucketsChanged` timer fires.

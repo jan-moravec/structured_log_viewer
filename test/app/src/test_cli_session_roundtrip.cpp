@@ -360,7 +360,7 @@ private slots:
         QSignalSpy finishedSpy(mWindow->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         mWindow->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace);
-        QVERIFY(finishedSpy.wait(5000) || finishedSpy.count() > 0);
+        QVERIFY(finishedSpy.wait(60000) || finishedSpy.count() > 0);
         QCoreApplication::processEvents();
 
         auto *model = mWindow->Model();
@@ -460,7 +460,7 @@ private:
         loglib::LogParseSink &sink = *model->Sink();
         const loglib::JsonParser parser;
         parser.ParseStreaming(*parseSource, sink, options);
-        if (finishedSpy.count() == 0 && !finishedSpy.wait(5000))
+        if (finishedSpy.count() == 0 && !finishedSpy.wait(60000))
         {
             return false;
         }

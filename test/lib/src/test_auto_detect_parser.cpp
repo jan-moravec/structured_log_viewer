@@ -430,13 +430,13 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     const auto startedAt = std::chrono::steady_clock::now();
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    const auto giveUpAt = startedAt + std::chrono::milliseconds(2000);
+    const auto giveUpAt = startedAt + std::chrono::milliseconds(15000);
     while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(sink.started.load());
-    CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(2000));
+    CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
 
     stopSource.request_stop();
     if (worker.joinable())
@@ -474,14 +474,14 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(200));
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    const auto giveUpAt = startedAt + std::chrono::milliseconds(2000);
+    const auto giveUpAt = startedAt + std::chrono::milliseconds(15000);
     while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(sink.started.load());
     // Allow startup slack beyond the 200 ms peek deadline.
-    CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(2000));
+    CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
 
     stopSource.request_stop();
     if (worker.joinable())

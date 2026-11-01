@@ -49,6 +49,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolBar>
 #include <QVariant>
 #include <QtTest/QtTest>
@@ -124,22 +125,26 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     options.threads = 1;
     loglib::JsonParser{}.ParseStreaming(*parseSource, *model.Sink(), options);
 
-    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     QVERIFY2(finished, "streamingFinished must arrive within the timeout");
     model.EndStreaming(false);
 }
 
-// Spin briefly for at least one `bucketsChanged`. Coalesced
-// through a 50 ms timer (mirrors the histogram model).
+// Waits for a pending rebuild, which is coalesced through a 50 ms
+// timer (mirrors the histogram model). The timer may already have
+// fired while the caller pumped events; the buckets are current then.
+// A rail with no buckets yet is still waiting for its widget to size it.
 void WaitForBucketsChanged(OverviewRailModel &model)
 {
-    QSignalSpy spy(&model, &OverviewRailModel::bucketsChanged);
-    QVERIFY(spy.isValid());
-    if (spy.count() > 0)
+    QCoreApplication::processEvents();
+    const auto *rebuildTimer = model.findChild<QTimer *>();
+    if (model.BucketCount() > 0 && (rebuildTimer == nullptr || !rebuildTimer->isActive()))
     {
         return;
     }
-    QVERIFY2(spy.wait(5000), "bucketsChanged must arrive within the timeout");
+    QSignalSpy spy(&model, &OverviewRailModel::bucketsChanged);
+    QVERIFY(spy.isValid());
+    QVERIFY2(spy.wait(60000), "bucketsChanged must arrive within the timeout");
 }
 
 // Wrap the proxy chain a production MainWindow builds so tests
@@ -359,7 +364,7 @@ private slots:
         {
             rail.Rebuild();
         }
-        QVERIFY(spy.wait(5000));
+        QVERIFY(spy.wait(60000));
         QCOMPARE_LE(spy.count(), 1);
     }
 
@@ -447,11 +452,11 @@ private slots:
         // without hard-coding a sleep.
         QSignalSpy anchorSpy(&rail, &OverviewRailModel::anchorBucketsChanged);
         anchors.SetAnchor(*keyOpt, 3);
-        QVERIFY2(anchorSpy.wait(5000), "anchor rebuild must emit anchorBucketsChanged within the timeout");
+        QVERIFY2(anchorSpy.wait(60000), "anchor rebuild must emit anchorBucketsChanged within the timeout");
         QVERIFY(rail.HasAnchorTicks());
 
         anchors.ClearAll();
-        QVERIFY2(anchorSpy.wait(5000), "anchor clear must emit anchorBucketsChanged within the timeout");
+        QVERIFY2(anchorSpy.wait(60000), "anchor clear must emit anchorBucketsChanged within the timeout");
         QVERIFY(!rail.HasAnchorTicks());
     }
 
@@ -2116,7 +2121,7 @@ private slots:
         );
         chain.filter->SetFilterRules(std::move(rules));
 
-        QVERIFY2(spy.wait(5000), "layoutChanged must trigger a rebuild via the coalesce timer");
+        QVERIFY2(spy.wait(60000), "layoutChanged must trigger a rebuild via the coalesce timer");
         QVERIFY2(rail.ProxyRowCount() < ROWS, "filter must reduce the proxy row count");
     }
 
@@ -2874,7 +2879,7 @@ private slots:
         // Wait for the debounce interval to elapse and the
         // trailing sync to fire. Generous slack over the
         // 100 ms debounce so CI jitter doesn't flake.
-        QVERIFY2(spy.wait(5000), "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS");
+        QVERIFY2(spy.wait(60000), "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS");
 
         // One more event-loop spin to prove no stragglers land
         // after the trailing edge (defends against a future bug

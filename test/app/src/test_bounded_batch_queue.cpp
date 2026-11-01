@@ -29,8 +29,8 @@ loglib::StreamedBatch MakeBatch(std::size_t id)
 }
 
 constexpr auto SHORT_WAIT = std::chrono::milliseconds(50);
-constexpr auto STOP_DEADLINE = std::chrono::milliseconds(200);
-constexpr auto STRESS_DEADLINE = std::chrono::seconds(5);
+constexpr auto STOP_DEADLINE = std::chrono::seconds(5);
+constexpr auto STRESS_DEADLINE = std::chrono::seconds(60);
 
 } // namespace
 

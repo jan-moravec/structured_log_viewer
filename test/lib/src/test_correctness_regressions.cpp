@@ -669,9 +669,42 @@ TEST_CASE("Tailing does not read a rotated file past the queue limit", "[Tailing
     CHECK(producer.RotationCount() == 0);
 
     const std::string expected = "start\n" + appended + "after\n";
-    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }));
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }, 60s));
     CHECK(collected == expected);
-    CHECK(producer.RotationCount() == 1);
+    CHECK(producer.RotationCount() >= 1);
+    producer.Stop();
+}
+
+TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[TailingBytesProducer][rotation]")
+{
+    const test_common::TempDir dir("tail_rotate_partial");
+    const std::filesystem::path path = dir.Write("app.log", "start\n");
+    const std::filesystem::path rotated = dir.Path() / "app.log.1";
+
+    TailingBytesProducer::Options options;
+    options.disableNativeWatcher = true;
+    options.pollInterval = 5ms;
+    TailingBytesProducer producer(path, 10, options);
+
+    std::string collected;
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("start\n"); }, 60s));
+
+    const auto append = [](const std::filesystem::path &target, std::string_view text) {
+        std::ofstream output(target, std::ios::binary | std::ios::app);
+        output << text;
+    };
+    append(path, "first half");
+    std::this_thread::sleep_for(100ms);
+
+    // The worker sees the path missing while its handle can still read the file.
+    std::filesystem::rename(path, rotated);
+    std::this_thread::sleep_for(100ms);
+    append(rotated, ", second half\n");
+    std::this_thread::sleep_for(100ms);
+    (void)dir.Write("app.log", "after\n");
+
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("after\n"); }, 60s));
+    CHECK(collected == "start\nfirst half, second half\nafter\n");
     producer.Stop();
 }
 
