@@ -73,7 +73,7 @@ TEST_CASE("UdpServerProducer: appends synthetic newline only when missing", "[ud
     client.Send("with-newline\n");
     client.Send("without-newline");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 30, ScaledMs(60000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 29, ScaledMs(60000ms));
     REQUIRE(drained == "with-newline\nwithout-newline\n");
 }
 
