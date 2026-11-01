@@ -145,7 +145,7 @@ LocalOffsetWindow TimeZoneContext::OffsetWindowAt(std::int64_t localMicroseconds
         return {
             .beginLocal = std::numeric_limits<std::int64_t>::min(),
             .endLocal = std::numeric_limits<std::int64_t>::max(),
-            .utcOffset = 0
+            .utcOffset = 0,
         };
     }
     const date::local_time<std::chrono::microseconds> localTime{std::chrono::microseconds{localMicroseconds}};
@@ -164,7 +164,7 @@ LocalOffsetWindow TimeZoneContext::OffsetWindowAt(std::int64_t localMicroseconds
         return {
             .beginLocal = (begin + offset + MARGIN).count(),
             .endLocal = (end + offset - MARGIN).count(),
-            .utcOffset = offset.count()
+            .utcOffset = offset.count(),
         };
     }
     catch (const std::exception &)

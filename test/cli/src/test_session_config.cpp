@@ -581,36 +581,36 @@ TEST_CASE("slp query --config parses a configured time column", "[cli][session][
         R"("parseFormats":["%d-%m-%Y %T"],"autoDetect":false}]})"
     );
 
-    const auto shown = RunSlp(
-        {"query",
-         "--tz",
-         "UTC",
-         "--template-dir",
-         EmptyTemplates(),
-         "--config",
-         config,
-         "-t",
-         "csv",
-         "--no-header",
-         logPath.string()}
-    );
+    const auto shown = RunSlp({
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--config",
+        config,
+        "-t",
+        "csv",
+        "--no-header",
+        logPath.string(),
+    });
     INFO(shown.err);
     REQUIRE(shown.exitCode == 0);
     CHECK(shown.out == "2024-03-12 10:00:00.000\n2024-03-13 11:30:00.000\n");
 
-    const auto filtered = RunSlp(
-        {"query",
-         "--tz",
-         "UTC",
-         "--template-dir",
-         EmptyTemplates(),
-         "--config",
-         config,
-         "--count",
-         "--filter",
-         "when>=2024-03-13T00:00:00Z",
-         logPath.string()}
-    );
+    const auto filtered = RunSlp({
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--config",
+        config,
+        "--count",
+        "--filter",
+        "when>=2024-03-13T00:00:00Z",
+        logPath.string(),
+    });
     INFO(filtered.err);
     REQUIRE(filtered.exitCode == 0);
     CHECK(filtered.out == "1\n");

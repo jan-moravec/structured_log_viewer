@@ -195,7 +195,8 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
         if (TryParseTimestamp(trimmed, fmt, ClassifyTimestampFormat(fmt), scratch, parsed))
         {
             return UserTimestampParse{
-                .micros = parsed.time_since_epoch().count(), .isNaive = IsNaiveTimestamp(trimmed, fmt)
+                .micros = parsed.time_since_epoch().count(),
+                .isNaive = IsNaiveTimestamp(trimmed, fmt),
             };
         }
     }

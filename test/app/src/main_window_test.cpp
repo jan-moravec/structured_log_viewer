@@ -14217,17 +14217,16 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // First open arms the worker but does NOT wait. Pump events
-        // just enough to enter the streaming state.
+        // First open arms the worker but does NOT wait. No events are
+        // pumped before the second open: the session only ends on the
+        // GUI thread, so it is still active however fast the worker is.
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QCoreApplication::processEvents();
+        QVERIFY(model->IsStreamingActive());
 
         // Second open is the regression case: with an in-flight
         // streaming worker, the file must defer onto
         // `mPendingOpenFiles` instead of tripping `AppendStreaming`'s
-        // `!isRunning()` assert. On a fast runner streaming may
-        // already have finished and the safer post-finish Append
-        // path runs.
+        // `!isRunning()` assert.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
 
         // Drain both `streamingFinished` events; the deferred file
@@ -14270,9 +14269,9 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        // Inflate fixture A so the second Append queues into
-        // `mPendingOpenFiles` while the first parse is still active
-        // (same trick as the Defer-vs-Crash test).
+        // No events are pumped between the opens, so the second Append
+        // queues into `mPendingOpenFiles`: the first session only ends
+        // on the GUI thread, however fast its worker is.
         QStringList fixtureLinesA;
         fixtureLinesA.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -14287,9 +14286,9 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QCoreApplication::processEvents();
+        QVERIFY(model->IsStreamingActive());
         // Second open lands in `mPendingOpenFiles` because the
-        // first parse is still in flight.
+        // first session is still active.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
 
         mWindow->statusBar()->clearMessage();
@@ -25028,6 +25027,8 @@ private slots:
 
         const QStringList taken = SessionHistoryManager::TakeOpenWindowsAtQuit();
         QCOMPARE(taken, QStringList{});
+        // A refused take leaves the persisted set alone.
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuid});
 
         holderLock.unlock();
 
