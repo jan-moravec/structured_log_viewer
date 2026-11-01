@@ -65,7 +65,7 @@ void AppendApplicationIdentity(std::filesystem::path &path)
 
 [[nodiscard]] bool IsJsonFile(const std::filesystem::path &path)
 {
-    return EqualsIgnoreCaseAscii(path.extension().string(), ".json");
+    return EqualsIgnoreCaseAscii(internal::PathToUtf8(path.extension()), ".json");
 }
 
 constexpr size_t FILE_READ_CHUNK_BYTES = 4096;

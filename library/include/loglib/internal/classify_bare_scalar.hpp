@@ -136,7 +136,9 @@ inline CompactLogValue MakeStringCompact(
 /// cells; quoted values bypass this and stay strings). Returns:
 /// monostate for empty, bool for `true`/`false`, `uint64` then
 /// `int64` for decimals, finite `double` for sign/dot/exponent forms,
-/// else string. Trailing junk (`42abc`) falls through to string.
+/// else string. Trailing junk (`42abc`) falls through to string. Values
+/// that a number cannot represent stay strings: a leading zero (`007`)
+/// and an integer past 64 bits are identifiers, not quantities.
 /// Inline for hot-path inlining.
 inline CompactLogValue ClassifyBareScalar(
     std::string_view raw, const char *fileBegin, size_t fileSize, std::string &ownedArena
@@ -159,6 +161,12 @@ inline CompactLogValue ClassifyBareScalar(
     const char *first = raw.data();
     const char *last = raw.data() + raw.size();
 
+    const std::string_view unsignedPart = raw.front() == '-' ? raw.substr(1) : raw;
+    if (unsignedPart.size() >= 2 && unsignedPart[0] == '0' && unsignedPart[1] >= '0' && unsignedPart[1] <= '9')
+    {
+        return MakeStringCompact(raw, fileBegin, fileSize, ownedArena);
+    }
+
     if (raw.front() == '-')
     {
         // NOLINTNEXTLINE(misc-const-correctness): mutated through from_chars' out-ref.
@@ -167,6 +175,10 @@ inline CompactLogValue ClassifyBareScalar(
         if (res.ec == std::errc{} && res.ptr == last)
         {
             return CompactLogValue::MakeInt64(i64);
+        }
+        if (res.ec == std::errc::result_out_of_range && res.ptr == last)
+        {
+            return MakeStringCompact(raw, fileBegin, fileSize, ownedArena);
         }
     }
     else if (raw.front() >= '0' && raw.front() <= '9')
@@ -179,9 +191,13 @@ inline CompactLogValue ClassifyBareScalar(
         {
             return CompactLogValue::MakeUint64(u64);
         }
+        if (res.ec == std::errc::result_out_of_range && res.ptr == last)
+        {
+            return MakeStringCompact(raw, fileBegin, fileSize, ownedArena);
+        }
     }
 
-    if (raw.front() == '-' || raw.front() == '+' || raw.front() == '.' || (raw.front() >= '0' && raw.front() <= '9'))
+    if (raw.front() == '-' || raw.front() == '.' || (raw.front() >= '0' && raw.front() <= '9'))
     {
         double d = 0.0;
         if (TryParseFiniteDouble(raw, d))

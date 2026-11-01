@@ -1,4 +1,5 @@
 #include "loglib/time_zone_context.hpp"
+#include "loglib/internal/path_encoding.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
@@ -41,7 +42,7 @@ void InstallTzdata(const std::filesystem::path &tzdataPath)
     std::error_code existsEc;
     if (!std::filesystem::exists(tzdataPath, existsEc) || !std::filesystem::is_directory(tzdataPath))
     {
-        throw std::runtime_error("tzdata directory does not exist: " + tzdataPath.string());
+        throw std::runtime_error("tzdata directory does not exist: " + internal::PathToUtf8(tzdataPath));
     }
     date::set_install(tzdataPath.string());
 }
@@ -81,7 +82,9 @@ TimeZoneContext TimeZoneContext::Load(const std::filesystem::path &tzdataPath)
     catch (const std::exception &ex)
     {
         throw std::runtime_error(
-            fmt::format("failed to resolve the system time zone from '{}': {}", tzdataPath.string(), ex.what())
+            fmt::format(
+                "failed to resolve the system time zone from '{}': {}", internal::PathToUtf8(tzdataPath), ex.what()
+            )
         );
     }
 }
@@ -104,7 +107,9 @@ TimeZoneContext TimeZoneContext::Load(const std::filesystem::path &tzdataPath, s
     catch (const std::exception &ex)
     {
         throw std::runtime_error(
-            fmt::format("timezone '{}' is unavailable in '{}': {}", zoneName, tzdataPath.string(), ex.what())
+            fmt::format(
+                "timezone '{}' is unavailable in '{}': {}", zoneName, internal::PathToUtf8(tzdataPath), ex.what()
+            )
         );
     }
 }

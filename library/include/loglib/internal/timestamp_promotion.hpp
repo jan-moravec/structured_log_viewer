@@ -45,9 +45,8 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfig
 ///
 /// @p ownedArena is the byte buffer that any `OwnedString` compact values
 /// on @p line currently reference: during Stage B that's the per-batch
-/// staging buffer (`ParsedPipelineBatch::ownedStringsArena`); for the
-/// post-stream `BackfillTimestampColumn` path it's the file's arena
-/// (`LogFile::OwnedStringsView()`).
+/// staging buffer (`ParsedPipelineBatch::ownedStringsArena`); empty means
+/// the payloads resolve through the line's `LineSource`.
 bool PromoteLineTimestamps(
     LogLine &line,
     std::span<const TimeColumnSpec> timeColumns,

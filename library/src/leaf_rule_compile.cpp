@@ -172,12 +172,9 @@ std::optional<loglib::RowPredicate> CompileLeaf(
                     expandedStorage.emplace_back(dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId)));
                 }
             }
-            if (expandedStorage.empty())
-            {
-                // No dictionary entry matches (e.g. rule targets
-                // `Trace` but dict has only `Info`/`Warn`).
-                return std::nullopt;
-            }
+            // With no matching dictionary entry (a rule for `Trace` when the
+            // data has only `Info`/`Warn`) the selection is empty, which
+            // rejects every row until a later rebuild sees that level.
             selectedViews.reserve(expandedStorage.size());
             for (const std::string &v : expandedStorage)
             {
@@ -228,6 +225,50 @@ std::optional<loglib::RowPredicate> CompileLeaf(
 
 namespace
 {
+
+// NOLINTNEXTLINE(misc-no-recursion)
+void CollectFilterProblems(
+    const loglib::FilterExpression &expr, const std::vector<loglib::Column> &columns, std::vector<std::string> &out
+)
+{
+    using Node = loglib::FilterExpression;
+    std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
+        [&columns, &out](const auto &n) {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Node::Leaf>)
+            {
+                if (!n.rule.columnKeys.empty() && ResolveLeafColumnByKeys(n.rule.columnKeys, columns) < 0)
+                {
+                    out.push_back("unknown column '" + n.rule.columnKeys.front() + "'");
+                }
+                if (n.rule.type == loglib::LeafRule::Type::String && n.rule.filterString.has_value() &&
+                    n.rule.matchType.has_value())
+                {
+                    if (auto problem = StringPatternProblem(*n.rule.filterString, *n.rule.matchType))
+                    {
+                        out.push_back(std::move(*problem));
+                    }
+                }
+            }
+            else if constexpr (std::is_same_v<T, Node::Not>)
+            {
+                if (n.child != nullptr)
+                {
+                    CollectFilterProblems(*n.child, columns, out);
+                }
+            }
+            else
+            {
+                for (const auto &child : n.children)
+                {
+                    CollectFilterProblems(child, columns, out);
+                }
+            }
+        },
+        expr.node
+    );
+}
 
 /// Recursive compile step. Returns `nullopt` when the sub-tree is
 /// **absent** (carries no constraint).
@@ -402,6 +443,15 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
 }
 
 } // namespace
+
+std::vector<std::string> FindFilterProblems(
+    const loglib::FilterExpression &expression, const std::vector<loglib::Column> &columns
+)
+{
+    std::vector<std::string> problems;
+    CollectFilterProblems(expression, columns, problems);
+    return problems;
+}
 
 loglib::CompiledFilterExpression CompileExpression(
     const loglib::FilterExpression &expression,

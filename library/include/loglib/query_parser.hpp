@@ -10,6 +10,9 @@
 namespace loglib
 {
 
+/** @brief Deepest group and `NOT` nesting `ParseQuery` accepts. */
+inline constexpr std::size_t MAX_QUERY_NESTING = 64;
+
 /**
  * @brief Parse error surfaced by `ParseQuery`: a byte offset into the
  * input (clamped to `input.size()` at EOI) and a one-line message.

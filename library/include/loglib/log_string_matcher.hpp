@@ -2,6 +2,8 @@
 
 #include "loglib/log_filter.hpp"
 
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace loglib
@@ -28,5 +30,14 @@ namespace loglib
  * @return Predicate over a UTF-8 haystack.
  */
 [[nodiscard]] CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, LeafRule::Match match);
+
+/**
+ * @brief Explains why `MakeStringMatcher` would match nothing for @p pattern.
+ *
+ * @param pattern UTF-8 pattern.
+ * @param match Comparison to perform.
+ * @return A message for an invalid pattern, or `std::nullopt` when it compiles.
+ */
+[[nodiscard]] std::optional<std::string> StringPatternProblem(std::string_view pattern, LeafRule::Match match);
 
 } // namespace loglib

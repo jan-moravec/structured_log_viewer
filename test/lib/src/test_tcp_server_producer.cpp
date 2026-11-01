@@ -73,6 +73,23 @@ TEST_CASE("TcpServerProducer: single client send-receive", "[tcp_producer]")
     REQUIRE(drained == "hello\nworld\n");
 }
 
+TEST_CASE("TcpServerProducer: drops an oversized line and resumes after it", "[tcp_producer]")
+{
+    TcpServerProducer::Options opts;
+    opts.bindAddress = "127.0.0.1";
+    opts.readChunkBytes = 1024;
+    opts.maxLineBytes = 1024;
+    TcpServerProducer producer(opts);
+
+    test_common::TcpLogClient client("127.0.0.1", producer.BoundPort());
+    client.SendRaw(std::string(5000, 'x'));
+    client.SendRaw("\nnext\n");
+
+    const std::string drained = DrainUntil(producer, /*target*/ 5, ScaledMs(2000ms));
+    CHECK(drained == "next\n");
+    CHECK(producer.DroppedByteCount() > 0);
+}
+
 TEST_CASE("TcpServerProducer: per-session carry preserves line boundaries with two clients", "[tcp_producer]")
 {
     TcpServerProducer::Options opts;

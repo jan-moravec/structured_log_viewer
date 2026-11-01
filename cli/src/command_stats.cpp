@@ -615,6 +615,10 @@ ExitCode RunStats(
     {
         return console.Report(session.error());
     }
+    if (auto failure = CheckLoadedFilter(options.filter, *session, table, StatsOptions::NAME))
+    {
+        return console.Report(*failure);
+    }
 
     const auto compiled =
         loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);

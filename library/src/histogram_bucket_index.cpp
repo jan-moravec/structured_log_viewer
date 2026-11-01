@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace loglib
 {
@@ -123,7 +125,6 @@ HistogramBucketSize HistogramBucketIndex::AutoBucketSize(TimeStamp min, TimeStam
 
 void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
 {
-    const auto widthUs = BucketWidth().count();
     const int64_t tsUs = ts.time_since_epoch().count();
 
     if (mBuckets.empty())
@@ -138,9 +139,23 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
         return;
     }
 
-    const int64_t originUs = mOrigin.time_since_epoch().count();
-    const int64_t delta = tsUs - originUs;
-    int64_t bucketIdx = FloorDivide(delta, widthUs);
+    const auto limit = static_cast<int64_t>(HISTOGRAM_MAX_BUCKETS);
+    int64_t widthUs = BucketWidth().count();
+    int64_t originUs = mOrigin.time_since_epoch().count();
+    int64_t bucketIdx = FloorDivide(tsUs - originUs, widthUs);
+    // Compare without forming `count - bucketIdx`, which a distant row could overflow.
+    while (bucketIdx >= limit || bucketIdx < static_cast<int64_t>(mBuckets.size()) - limit)
+    {
+        if (mBucketSize == HistogramBucketSize::OneDay)
+        {
+            bucketIdx = std::clamp<int64_t>(bucketIdx, 0, static_cast<int64_t>(mBuckets.size()) - 1);
+            break;
+        }
+        WidenBuckets();
+        widthUs = BucketWidth().count();
+        originUs = mOrigin.time_since_epoch().count();
+        bucketIdx = FloorDivide(tsUs - originUs, widthUs);
+    }
 
     if (bucketIdx < 0)
     {
@@ -166,6 +181,33 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
     {
         mMaxTimestamp = ts;
     }
+}
+
+void HistogramBucketIndex::WidenBuckets()
+{
+    const int64_t oldWidthUs = BucketWidth().count();
+    const int64_t oldOriginUs = mOrigin.time_since_epoch().count();
+    mBucketSize = static_cast<HistogramBucketSize>(static_cast<uint8_t>(mBucketSize) + 1U);
+    const int64_t newWidthUs = BucketWidth().count();
+    const TimeStamp newOrigin = TruncateToBucket(mOrigin, mBucketSize);
+    const int64_t newOriginUs = newOrigin.time_since_epoch().count();
+
+    std::vector<LevelBucket> merged;
+    for (size_t i = 0; i < mBuckets.size(); ++i)
+    {
+        const int64_t startUs = oldOriginUs + (static_cast<int64_t>(i) * oldWidthUs);
+        const auto index = static_cast<size_t>(FloorDivide(startUs - newOriginUs, newWidthUs));
+        if (index >= merged.size())
+        {
+            merged.resize(index + 1);
+        }
+        for (size_t slot = 0; slot < LEVEL_SLOT_COUNT; ++slot)
+        {
+            merged[index].counts[slot] += mBuckets[i].counts[slot];
+        }
+    }
+    mBuckets = std::move(merged);
+    mOrigin = newOrigin;
 }
 
 void HistogramBucketIndex::Reset() noexcept

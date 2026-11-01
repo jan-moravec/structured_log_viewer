@@ -199,6 +199,11 @@ void RunStreamingParseLoop(
     // on the default path where `initialCarry` is empty.
     std::string carry = options.initialCarry;
     std::vector<char> readBuffer(STREAMING_READ_BUFFER_SIZE);
+    // Bytes of `carry` already searched for a newline.
+    size_t carrySearched = 0;
+    // Set while discarding the rest of a line past `maxLineBytes`.
+    bool skippingOversizedLine = false;
+    const size_t maxLineBytes = options.maxLineBytes;
 
     // Reused per line; move-transferred into the source on success.
     std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
@@ -380,6 +385,11 @@ void RunStreamingParseLoop(
             if (pending)
             {
                 flushOrphanRun();
+                if (pending->continuationAcceptsText &&
+                    pending->continuationBytes.size() + trimmed.size() >= maxLineBytes)
+                {
+                    pending->continuationAcceptsText = false;
+                }
                 if (pending->continuationAcceptsText)
                 {
                     // Preserve blanks in raw text, but not in the target field.
@@ -445,10 +455,23 @@ void RunStreamingParseLoop(
     // Emit complete lines already present in `initialCarry` before
     // waiting for more producer bytes.
     auto scanCarry = [&]() {
+        if (skippingOversizedLine)
+        {
+            const size_t newline = carry.find('\n');
+            if (newline == std::string::npos)
+            {
+                carry.clear();
+                carrySearched = 0;
+                return;
+            }
+            carry.erase(0, newline + 1);
+            carrySearched = 0;
+            skippingOversizedLine = false;
+        }
         size_t scanStart = 0;
         while (scanStart < carry.size())
         {
-            const size_t newlineRel = carry.find('\n', scanStart);
+            const size_t newlineRel = carry.find('\n', std::max(scanStart, carrySearched));
             if (newlineRel == std::string::npos)
             {
                 break;
@@ -456,6 +479,7 @@ void RunStreamingParseLoop(
             std::string_view line(carry.data() + scanStart, newlineRel - scanStart);
             processLine(line);
             scanStart = newlineRel + 1;
+            carrySearched = 0;
 
             if (stopToken.stop_requested())
             {
@@ -465,6 +489,18 @@ void RunStreamingParseLoop(
         if (scanStart > 0)
         {
             carry.erase(0, scanStart);
+        }
+        carrySearched = carry.size();
+        if (carry.size() > maxLineBytes)
+        {
+            flushOrphanRun();
+            coalescer.Pending().errors.emplace_back(
+                FormatLineError(nextLineNumber, fmt::format("Line exceeds the {}-byte limit; dropped.", maxLineBytes))
+            );
+            ++nextLineNumber;
+            carry.clear();
+            carrySearched = 0;
+            skippingOversizedLine = true;
         }
     };
 

@@ -6,6 +6,7 @@
 
 #include <loglib/column_projection.hpp>
 #include <loglib/filter_expression.hpp>
+#include <loglib/leaf_rule_compile.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -193,6 +194,26 @@ std::expected<loglib::LogConfiguration, std::string> LoadConfigFile(const std::f
     loglib::LogConfiguration configuration = manager.Configuration();
     configuration.source.reset();
     return configuration;
+}
+
+std::optional<Failure> CheckLoadedFilter(
+    const FilterOptions &filter,
+    const EffectiveSession &session,
+    const loglib::LogTable &table,
+    std::string_view command
+)
+{
+    if (filter.filters.empty() || table.RowCount() == 0)
+    {
+        return std::nullopt;
+    }
+    const std::vector<std::string> problems =
+        loglib::FindFilterProblems(session.expression, table.Configuration().Configuration().columns);
+    if (problems.empty())
+    {
+        return std::nullopt;
+    }
+    return MakeFailure(ExitCode::Usage, command, std::format("--filter: {}.", problems.front()));
 }
 
 std::expected<EffectiveSession, Failure> ApplySessionConfiguration(

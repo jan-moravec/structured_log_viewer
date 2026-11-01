@@ -1,4 +1,5 @@
 #include "loglib/decompressing_byte_source.hpp"
+#include "loglib/internal/path_encoding.hpp"
 
 #include <fmt/format.h>
 
@@ -81,7 +82,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     std::ifstream stream(path, std::ios::binary);
     if (!stream.is_open())
     {
-        throw std::runtime_error(fmt::format("Failed to open '{}' for codec sniff", path.string()));
+        throw std::runtime_error(fmt::format("Failed to open '{}' for codec sniff", internal::PathToUtf8(path)));
     }
     std::vector<std::uint8_t> out(max);
     stream.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(max));
@@ -288,7 +289,9 @@ struct OpenExclusiveResult
             break;
         }
     }
-    throw std::runtime_error(fmt::format("Failed to create temp file '{}': errno {}", lastPath.string(), lastErrno));
+    throw std::runtime_error(
+        fmt::format("Failed to create temp file '{}': errno {}", internal::PathToUtf8(lastPath), lastErrno)
+    );
 }
 
 void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::filesystem::path &tempPath)
@@ -301,7 +304,7 @@ void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::f
     if (wrote != bytes)
     {
         throw std::runtime_error(
-            fmt::format("Short write to temp file '{}' ({} of {} bytes)", tempPath.string(), wrote, bytes)
+            fmt::format("Short write to temp file '{}' ({} of {} bytes)", internal::PathToUtf8(tempPath), wrote, bytes)
         );
     }
 }
@@ -325,7 +328,7 @@ void WriteOutput(
             fmt::format(
                 "Decompressed output for '{}' exceeded the {}-byte cap "
                 "(would need at least {} bytes)",
-                sourcePath.string(),
+                internal::PathToUtf8(sourcePath),
                 maxDecompressedBytes,
                 decompressedSize
             )
@@ -370,7 +373,7 @@ void DecodeGzip(
     // (RFC 1952), auto-detect across concatenated members.
     if (::inflateInit2(&strm, 15 + 32) != Z_OK)
     {
-        throw std::runtime_error(fmt::format("Failed to init zlib inflate for '{}'", sourcePath.string()));
+        throw std::runtime_error(fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath)));
     }
     class ZlibGuard
     {
@@ -405,7 +408,7 @@ void DecodeGzip(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", sourcePath.string()));
+            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         const bool eof = in.eof() || gotSigned == 0;
         strm.next_in = inBuf.data();
@@ -435,7 +438,11 @@ void DecodeGzip(
                 if (::inflateReset(&strm) != Z_OK)
                 {
                     throw std::runtime_error(
-                        fmt::format("zlib inflateReset failed on '{}' at input byte {}", sourcePath.string(), consumed)
+                        fmt::format(
+                            "zlib inflateReset failed on '{}' at input byte {}",
+                            internal::PathToUtf8(sourcePath),
+                            consumed
+                        )
                     );
                 }
             }
@@ -454,7 +461,10 @@ void DecodeGzip(
             case Z_STREAM_ERROR:
                 throw std::runtime_error(
                     fmt::format(
-                        "zlib inflate error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
+                        "zlib inflate error on '{}' at input byte {} (code {})",
+                        internal::PathToUtf8(sourcePath),
+                        consumed,
+                        ret
                     )
                 );
             default:
@@ -478,7 +488,9 @@ void DecodeGzip(
     if (ret != Z_STREAM_END)
     {
         throw std::runtime_error(
-            fmt::format("Unexpected EOF in gzip stream '{}' at input byte {}", sourcePath.string(), consumed)
+            fmt::format(
+                "Unexpected EOF in gzip stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
+            )
         );
     }
 }
@@ -500,7 +512,7 @@ void DecodeBzip2(
     bz_stream strm{};
     if (::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
     {
-        throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", sourcePath.string()));
+        throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
     }
     class BzGuard
     {
@@ -535,7 +547,7 @@ void DecodeBzip2(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", sourcePath.string()));
+            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         const bool eof = in.eof() || gotSigned == 0;
         strm.next_in = inBuf.data();
@@ -561,7 +573,9 @@ void DecodeBzip2(
                 if (::BZ2_bzDecompressEnd(&strm) != BZ_OK || ::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
                 {
                     throw std::runtime_error(
-                        fmt::format("bzip2 reset failed on '{}' at input byte {}", sourcePath.string(), consumed)
+                        fmt::format(
+                            "bzip2 reset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
+                        )
                     );
                 }
             }
@@ -573,7 +587,10 @@ void DecodeBzip2(
             {
                 throw std::runtime_error(
                     fmt::format(
-                        "bzip2 decompress error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
+                        "bzip2 decompress error on '{}' at input byte {} (code {})",
+                        internal::PathToUtf8(sourcePath),
+                        consumed,
+                        ret
                     )
                 );
             }
@@ -594,7 +611,9 @@ void DecodeBzip2(
     if (ret != BZ_STREAM_END)
     {
         throw std::runtime_error(
-            fmt::format("Unexpected EOF in bzip2 stream '{}' at input byte {}", sourcePath.string(), consumed)
+            fmt::format(
+                "Unexpected EOF in bzip2 stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
+            )
         );
     }
 }
@@ -646,7 +665,11 @@ void DecodeXz(
     if (initRet != LZMA_OK)
     {
         throw std::runtime_error(
-            fmt::format("Failed to init xz decoder for '{}' (code {})", sourcePath.string(), static_cast<int>(initRet))
+            fmt::format(
+                "Failed to init xz decoder for '{}' (code {})",
+                internal::PathToUtf8(sourcePath),
+                static_cast<int>(initRet)
+            )
         );
     }
     class XzGuard
@@ -684,7 +707,7 @@ void DecodeXz(
             const auto gotSigned = in.gcount();
             if (gotSigned < 0)
             {
-                throw std::runtime_error(fmt::format("Failed to read from '{}'", sourcePath.string()));
+                throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
             }
             strm.next_in = inBuf.data();
             strm.avail_in = static_cast<std::size_t>(gotSigned);
@@ -706,7 +729,7 @@ void DecodeXz(
             throw std::runtime_error(
                 fmt::format(
                     "xz decode error on '{}' at input byte {} (code {})",
-                    sourcePath.string(),
+                    internal::PathToUtf8(sourcePath),
                     consumed,
                     static_cast<int>(ret)
                 )
@@ -737,7 +760,7 @@ void DecodeZstd(
     ZSTD_DCtx *dctx = ::ZSTD_createDCtx();
     if (dctx == nullptr)
     {
-        throw std::runtime_error(fmt::format("Failed to create zstd DCtx for '{}'", sourcePath.string()));
+        throw std::runtime_error(fmt::format("Failed to create zstd DCtx for '{}'", internal::PathToUtf8(sourcePath)));
     }
     class ZstdGuard
     {
@@ -773,7 +796,7 @@ void DecodeZstd(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", sourcePath.string()));
+            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         if (gotSigned == 0)
         {
@@ -794,7 +817,7 @@ void DecodeZstd(
                 throw std::runtime_error(
                     fmt::format(
                         "zstd decode error on '{}' at input byte {} ({})",
-                        sourcePath.string(),
+                        internal::PathToUtf8(sourcePath),
                         (consumed - static_cast<std::size_t>(gotSigned)) + input.pos,
                         ::ZSTD_getErrorName(result)
                     )
@@ -808,7 +831,9 @@ void DecodeZstd(
                 if (discardedFirstLine.size() + prefixSize > maxDiscardedFirstLineBytes)
                 {
                     throw std::runtime_error(
-                        fmt::format("First decompressed line in '{}' exceeds metadata limit", sourcePath.string())
+                        fmt::format(
+                            "First decompressed line in '{}' exceeds metadata limit", internal::PathToUtf8(sourcePath)
+                        )
                     );
                 }
                 discardedFirstLine.append(produced.substr(0, prefixSize));
@@ -838,13 +863,15 @@ void DecodeZstd(
         // Non-zero result at EOF -> truncated input (last frame
         // not fully consumed).
         throw std::runtime_error(
-            fmt::format("Unexpected EOF in zstd stream '{}' at input byte {}", sourcePath.string(), consumed)
+            fmt::format(
+                "Unexpected EOF in zstd stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
+            )
         );
     }
     if (!firstLineComplete)
     {
         throw std::runtime_error(
-            fmt::format("Compressed stream '{}' has no metadata line terminator", sourcePath.string())
+            fmt::format("Compressed stream '{}' has no metadata line terminator", internal::PathToUtf8(sourcePath))
         );
     }
 }
@@ -869,13 +896,15 @@ DecompressingByteSource::DecompressingByteSource(
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     if (!std::filesystem::exists(mDisplayPath, ec) || ec)
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist", mDisplayPath.string()));
+        throw std::runtime_error(fmt::format("File '{}' does not exist", internal::PathToUtf8(mDisplayPath)));
     }
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(mDisplayPath, ec);
     if (ec)
     {
-        throw std::runtime_error(fmt::format("Failed to stat '{}': {}", mDisplayPath.string(), ec.message()));
+        throw std::runtime_error(
+            fmt::format("Failed to stat '{}': {}", internal::PathToUtf8(mDisplayPath), ec.message())
+        );
     }
     mCompressedSize = static_cast<std::size_t>(size);
 
@@ -887,7 +916,7 @@ DecompressingByteSource::DecompressingByteSource(
         if (options.discardFirstLine)
         {
             throw std::invalid_argument(
-                fmt::format("Cannot discard first line from empty file '{}'", mDisplayPath.string())
+                fmt::format("Cannot discard first line from empty file '{}'", internal::PathToUtf8(mDisplayPath))
             );
         }
         return;
@@ -905,7 +934,8 @@ DecompressingByteSource::DecompressingByteSource(
         {
             throw std::invalid_argument(
                 fmt::format(
-                    "discardFirstLine requires a compressed input; '{}' is not compressed", mDisplayPath.string()
+                    "discardFirstLine requires a compressed input; '{}' is not compressed",
+                    internal::PathToUtf8(mDisplayPath)
                 )
             );
         }
@@ -919,7 +949,7 @@ DecompressingByteSource::DecompressingByteSource(
         throw std::invalid_argument(
             fmt::format(
                 "discardFirstLine is only supported for zstd streams; '{}' uses {}",
-                mDisplayPath.string(),
+                internal::PathToUtf8(mDisplayPath),
                 CodecName(mCodec)
             )
         );
@@ -929,7 +959,9 @@ DecompressingByteSource::DecompressingByteSource(
     std::ifstream inStream(mDisplayPath, std::ios::binary);
     if (!inStream.is_open())
     {
-        throw std::runtime_error(fmt::format("Failed to open '{}' for decompression", mDisplayPath.string()));
+        throw std::runtime_error(
+            fmt::format("Failed to open '{}' for decompression", internal::PathToUtf8(mDisplayPath))
+        );
     }
 
     try
@@ -1008,7 +1040,7 @@ DecompressingByteSource::DecompressingByteSource(
         {
             const int savedErrno = errno;
             throw std::runtime_error(
-                fmt::format("Failed to flush temp file '{}': errno {}", tempPath.string(), savedErrno)
+                fmt::format("Failed to flush temp file '{}': errno {}", internal::PathToUtf8(tempPath), savedErrno)
             );
         }
     }

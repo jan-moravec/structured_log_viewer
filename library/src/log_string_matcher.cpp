@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -397,7 +398,52 @@ CallbackStringRowPredicate::MatchFn MakeContains(std::string_view pattern)
     return [needle = std::move(needle)](std::string_view haystack) { return Simplify(haystack).contains(needle); };
 }
 
+/// The compile error for @p pattern, or `nullopt` when it compiles.
+std::optional<std::string> CompileProblem(std::string_view pattern)
+{
+    constexpr std::size_t MESSAGE_BYTES = 256;
+    int errcode = 0;
+    PCRE2_SIZE erroffset = 0;
+    pcre2_code *raw = pcre2_compile(
+        reinterpret_cast<PCRE2_SPTR>(pattern.data()),
+        static_cast<PCRE2_SIZE>(pattern.size()),
+        PCRE2_UTF,
+        &errcode,
+        &erroffset,
+        nullptr
+    );
+    if (raw != nullptr)
+    {
+        pcre2_code_free(raw);
+        return std::nullopt;
+    }
+    std::array<PCRE2_UCHAR8, MESSAGE_BYTES> message{};
+    const int length = pcre2_get_error_message(errcode, message.data(), message.size());
+    std::string text = "invalid pattern '" + std::string(pattern) + "'";
+    if (length > 0)
+    {
+        text += ": ";
+        text.append(reinterpret_cast<const char *>(message.data()), static_cast<std::size_t>(length));
+    }
+    return text;
+}
+
 } // namespace
+
+std::optional<std::string> StringPatternProblem(std::string_view pattern, LeafRule::Match match)
+{
+    switch (match)
+    {
+    case LeafRule::Match::RegularExpression:
+        return CompileProblem(DecodeUtf8(pattern));
+    case LeafRule::Match::Wildcard:
+        return CompileProblem(WildcardToPcre(DecodeUtf8(pattern)));
+    case LeafRule::Match::Exactly:
+    case LeafRule::Match::Contains:
+        break;
+    }
+    return std::nullopt;
+}
 
 CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, LeafRule::Match match)
 {

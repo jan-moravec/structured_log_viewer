@@ -65,6 +65,7 @@ add_library(
     src/query_parser.cpp
     src/rotation_siblings.cpp
     src/source_plan.cpp
+    src/stable_byte_arena.cpp
     src/tzdata_search.cpp
     src/user_paths.cpp
     src/version.cpp

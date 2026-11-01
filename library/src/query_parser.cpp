@@ -1257,12 +1257,47 @@ private:
         return MakeAnd(std::move(children));
     }
 
+    /// Counts one level of recursion for the lifetime of a parse step.
+    class NestingScope
+    {
+    public:
+        explicit NestingScope(std::size_t &depth) noexcept
+            : mDepth(depth)
+        {
+            ++mDepth;
+        }
+        ~NestingScope()
+        {
+            --mDepth;
+        }
+        NestingScope(const NestingScope &) = delete;
+        NestingScope &operator=(const NestingScope &) = delete;
+        NestingScope(NestingScope &&) = delete;
+        NestingScope &operator=(NestingScope &&) = delete;
+
+    private:
+        std::size_t &mDepth;
+    };
+
+    [[nodiscard]] QueryParseError NestingError() const
+    {
+        QueryParseError err;
+        err.offset = mLookahead.offset;
+        err.message = "expression is nested too deeply";
+        return err;
+    }
+
     /// `not_expr := 'NOT' not_expr | atom`
     // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseNot()
     {
         if (mLookahead.kind == TokenKind::KwNot)
         {
+            const NestingScope scope(mNesting);
+            if (mNesting > MAX_QUERY_NESTING)
+            {
+                return std::unexpected(NestingError());
+            }
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
@@ -1283,6 +1318,11 @@ private:
     {
         if (mLookahead.kind == TokenKind::LParen)
         {
+            const NestingScope scope(mNesting);
+            if (mNesting > MAX_QUERY_NESTING)
+            {
+                return std::unexpected(NestingError());
+            }
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
@@ -1879,6 +1919,7 @@ private:
     Lexer mLexer;
     std::string_view mInput;
     Token mLookahead;
+    std::size_t mNesting = 0;
 };
 
 // ---- Pretty printer --------------------------------------------------------
@@ -1971,8 +2012,8 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         else
         {
-            // No bounds -> inert. Placeholder round-trips as the
-            // same tree; the compile step drops the leaf.
+            // No bounds -> inert. Debug placeholder only: the parser
+            // rejects an empty list.
             out.append(" IN []");
         }
         break;

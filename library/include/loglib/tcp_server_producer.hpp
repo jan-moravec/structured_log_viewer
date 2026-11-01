@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bytes_producer.hpp"
+#include "parser_options.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -116,6 +117,13 @@ public:
          * `DroppedByteCount`. `0` disables back-pressure.
          */
         size_t maxQueueBytes = 16 * 1024 * 1024;
+
+        /**
+         * @brief Longest line buffered per connection while waiting for its
+         * newline. A longer line is dropped up to its newline and counted
+         * in `DroppedByteCount`.
+         */
+        size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 
         /**
          * @brief `std::nullopt` for plaintext. Filled in to enable TLS.

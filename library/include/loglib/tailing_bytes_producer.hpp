@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bytes_producer.hpp"
+#include "parser_options.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -36,12 +37,18 @@ class TailingBytesProducerImpl; // pimpl forward decl
  *     missing / size-shrunk. Bursts within 1 s coalesce into a single
  *     rotation event.
  *   - `Read()` drains a byte queue holding only complete lines; the
- *     partial-line buffer is separate, discarded on rotation, flushed
- *     as a synthetic last line on `Stop`.
+ *     partial-line buffer is separate, discarded on truncation, flushed
+ *     as a synthetic last line on `Stop` and when a rename rotation
+ *     retires the file.
+ *   - A rename rotation reads the old file to its end before switching,
+ *     so bytes written before the rename are delivered.
  */
 class TailingBytesProducer final : public BytesProducer
 {
 public:
+    /** @brief Default for `Options::maxQueuedBytes`. */
+    static constexpr size_t DEFAULT_MAX_QUEUED_BYTES = size_t{64} * 1024 * 1024;
+
     /**
      * @brief Tuning knobs, exposed mainly so tests on slow CI runners can
      * shrink poll intervals and disable the native watcher.
@@ -79,6 +86,20 @@ public:
          * tests on CI runners where filesystem events are unreliable.
          */
         bool disableNativeWatcher = false;
+
+        /**
+         * @brief Longest line buffered while waiting for its newline. A longer
+         * line is dropped up to its newline and counted in
+         * `DroppedByteCount`.
+         */
+        size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
+
+        /**
+         * @brief Pause reading the file while this many unconsumed bytes are
+         * queued. Reading resumes once the consumer catches up; nothing
+         * is dropped.
+         */
+        size_t maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES;
     };
 
     /**
@@ -126,6 +147,9 @@ public:
      * callback fires less often than this counter increments).
      */
     [[nodiscard]] size_t RotationCount() const noexcept;
+
+    /** @brief Cumulative bytes dropped from lines past `Options::maxLineBytes`. */
+    [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
 private:
     std::unique_ptr<internal::TailingBytesProducerImpl> mImpl;

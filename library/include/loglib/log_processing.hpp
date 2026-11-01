@@ -37,11 +37,16 @@ enum class TimestampFormatKind : std::uint8_t
      * heuristic since RFC 3164 doesn't carry a year field.
      */
     SyslogRfc3164NoYear,
+    /** @brief `Iso8601_T` followed by a required numeric offset. */
+    Iso8601TOffset,
+    /** @brief `Iso8601_Space` followed by a required numeric offset. */
+    Iso8601SpaceOffset,
 };
 
 /**
  * @brief Returns the fast-path kind for @p format (`"%FT%T"` / `"%F %T"` /
- * `"%b %e %H:%M:%S"` / `"%b %d %H:%M:%S"`), else `Generic`.
+ * `"%FT%T%Ez"` / `"%F %T%Ez"` / `"%b %e %H:%M:%S"` / `"%b %d %H:%M:%S"`),
+ * else `Generic`.
  */
 TimestampFormatKind ClassifyTimestampFormat(std::string_view format);
 
@@ -64,11 +69,19 @@ struct TimestampParseScratch
 };
 
 /**
- * @brief ISO-8601 fast path. Accepts `YYYY-MM-DD<sep>HH:MM:SS[.fff[fff]]` with up to
- * six fractional digits; @p dateTimeSep is `'T'` or `' '`. An epoch-zero
- * result is reported as a failure.
+ * @brief ISO-8601 fast path. Accepts `YYYY-MM-DD<sep>HH:MM:SS[.fraction][Z]`;
+ * @p dateTimeSep is `'T'` or `' '`. Fractional digits past microseconds are
+ * truncated.
  */
 bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out);
+
+/**
+ * @brief ISO-8601 fast path for a timestamp with a numeric offset.
+ *
+ * Accepts `YYYY-MM-DD<sep>HH:MM:SS[.fraction]` followed by `+h`, `+hh`,
+ * `+hh:mm`, or `+hhmm` (or `-`). The result is UTC.
+ */
+bool TryParseIsoOffsetTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out);
 
 /**
  * @brief RFC 3164 header fast path. Accepts `Mmm d HH:MM:SS` and
@@ -88,7 +101,10 @@ bool TryParseSyslogRfc3164Timestamp(
 /** @brief RFC 3164 fast path using `system_clock::now()` as the reference. */
 bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out);
 
-/** @brief Slow-path `date::parse` fallback; reuses @p scratch across calls. */
+/**
+ * @brief Slow-path `date::parse` fallback; reuses @p scratch across calls.
+ * Fails unless @p format consumes all of @p sv.
+ */
 bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 );

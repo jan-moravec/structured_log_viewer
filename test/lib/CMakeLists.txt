@@ -18,6 +18,7 @@ add_executable(
     "src/test_column_projection.cpp"
     "src/test_column_key_id_cache.cpp"
     "src/test_column_type_health.cpp"
+    "src/test_correctness_regressions.cpp"
     "src/test_csv_parser.cpp"
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
