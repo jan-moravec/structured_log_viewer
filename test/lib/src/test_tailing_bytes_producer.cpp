@@ -379,7 +379,7 @@ TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[Tai
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Drain pre-rotation lines.
-    auto prefilled = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto prefilled = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 2;
     });
     auto preLines = SplitLines(prefilled);
@@ -505,7 +505,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     // Drain "complete" first.
-    auto first = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto first = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     auto firstLines = SplitLines(first);
@@ -535,7 +535,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
-    auto pre = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto pre = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     auto preLines = SplitLines(pre);
@@ -546,7 +546,8 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
     // last line.
     source.Stop();
 
-    auto post = DrainUntil(source, ScaledMs(60000ms), [&](const std::string & /*acc*/) { return source.IsClosed(); });
+    const auto post =
+        DrainUntil(source, ScaledMs(60000ms), [&](const std::string & /*acc*/) { return source.IsClosed(); });
     const auto postLines = SplitLines(post);
     REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "trailing-no-newline");
@@ -644,14 +645,14 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
     Overwrite(path, "only\n");
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
-    auto drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     CHECK(SplitLines(drained).front() == "only");
 
     source.Stop();
     // Allow the worker time to observe the stop flag and exit.
-    auto deadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
+    const auto deadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
     while (!source.IsClosed() && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::sleep_for(ScaledMs(5ms));
@@ -705,7 +706,7 @@ TEST_CASE(
     // Delete the file → branch (ii) → Waiting.
     std::filesystem::remove(path);
 
-    auto waitingDeadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
+    const auto waitingDeadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
     while (std::chrono::steady_clock::now() < waitingDeadline)
     {
         {
@@ -729,7 +730,7 @@ TEST_CASE(
     // Re-create the file — branch (i) / (ii-reopened) → Running.
     Overwrite(path, "after\n");
 
-    auto runningDeadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
+    const auto runningDeadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
     while (std::chrono::steady_clock::now() < runningDeadline)
     {
         {
