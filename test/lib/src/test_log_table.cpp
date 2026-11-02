@@ -2379,6 +2379,48 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
 }
 
+TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct small columns are not enums", "[log_table][finalize][enum]")
+{
+    const TestLogFile testFile("enum_finalize_distinct.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    KeyIndex keys;
+    std::vector<LogLine> lines;
+    for (const char *value : {"a1", "a2", "a3"})
+    {
+        lines.push_back(MakeLine(keys, *sourcePtr, {{"id", std::string(value)}}));
+    }
+    LogData data(std::move(source), std::move(lines), std::move(keys));
+    data.MarkTimestampsParsed();
+
+    const LogTable table(std::move(data), MakeUnknownColumnManager("id"));
+
+    CHECK(table.Configuration().Configuration().columns[0].type != ColumnType::Enumeration);
+}
+
+TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay levels", "[log_table][finalize][enum]")
+{
+    const TestLogFile testFile("enum_finalize_levels.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    KeyIndex keys;
+    std::vector<LogLine> lines;
+    for (const char *value : {"info", "warn", "error"})
+    {
+        lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(value)}}));
+    }
+    LogData data(std::move(source), std::move(lines), std::move(keys));
+    data.MarkTimestampsParsed();
+
+    const LogTable table(std::move(data), MakeUnknownColumnManager("level"));
+
+    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+}
+
 TEST_CASE(
     "LogTable::FinalizeAutoDetection -- promotes small-file candidates the per-batch threshold missed",
     "[log_table][finalize][enum][small_file]"

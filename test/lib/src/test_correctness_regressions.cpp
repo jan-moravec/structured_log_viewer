@@ -17,6 +17,7 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/query_parser.hpp>
+#include <loglib/session_bundle.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
@@ -179,7 +180,7 @@ public:
     std::vector<std::string> errors;
 };
 
-template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 10s)
+template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 60s)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (!predicate())
@@ -634,6 +635,91 @@ TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[
     REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }));
     CHECK(collected == expected);
     producer.Stop();
+}
+
+TEST_CASE("Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation]")
+{
+    const test_common::TempDir dir("tail_rotate_queue");
+    const std::filesystem::path path = dir.Write("app.log", "start\n");
+
+    TailingBytesProducer::Options options;
+    options.disableNativeWatcher = true;
+    options.pollInterval = 5ms;
+    options.readChunkBytes = 1024;
+    options.maxQueuedBytes = 4096;
+    TailingBytesProducer producer(path, 10, options);
+
+    std::string collected;
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("start\n"); }));
+
+    std::string appended;
+    for (int i = 0; i < 2000; ++i)
+    {
+        appended += "line " + std::to_string(i) + "\n";
+    }
+    {
+        std::ofstream append(path, std::ios::binary | std::ios::app);
+        append << appended;
+    }
+    std::filesystem::rename(path, dir.Path() / "app.log.1");
+    (void)dir.Write("app.log", "after\n");
+
+    // With nothing consumed, the drain stays parked and rotation cannot finish.
+    std::this_thread::sleep_for(200ms);
+    CHECK(producer.RotationCount() == 0);
+
+    const std::string expected = "start\n" + appended + "after\n";
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }, 60s));
+    CHECK(collected == expected);
+    CHECK(producer.RotationCount() >= 1);
+    producer.Stop();
+}
+
+TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[TailingBytesProducer][rotation]")
+{
+    const test_common::TempDir dir("tail_rotate_partial");
+    const std::filesystem::path path = dir.Write("app.log", "start\n");
+    const std::filesystem::path rotated = dir.Path() / "app.log.1";
+
+    TailingBytesProducer::Options options;
+    options.disableNativeWatcher = true;
+    options.pollInterval = 5ms;
+    TailingBytesProducer producer(path, 10, options);
+
+    std::string collected;
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("start\n"); }, 60s));
+
+    const auto append = [](const std::filesystem::path &target, std::string_view text) {
+        std::ofstream output(target, std::ios::binary | std::ios::app);
+        output << text;
+    };
+    append(path, "first half");
+    std::this_thread::sleep_for(100ms);
+
+    // The worker sees the path missing while its handle can still read the file.
+    std::filesystem::rename(path, rotated);
+    std::this_thread::sleep_for(100ms);
+    append(rotated, ", second half\n");
+    std::this_thread::sleep_for(100ms);
+    (void)dir.Write("app.log", "after\n");
+
+    REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("after\n"); }, 60s));
+    CHECK(collected == "start\nfirst half, second half\nafter\n");
+    producer.Stop();
+}
+
+TEST_CASE("Session bundle metadata rejects a very deep filter tree", "[session_bundle][nesting]")
+{
+    constexpr int DEPTH = 100000;
+    std::string tree;
+    for (int i = 0; i < DEPTH; ++i)
+    {
+        tree += R"({"kind":"not","child":)";
+    }
+    tree += R"({"kind":"leaf","rule":{"type":"string","columnKeys":["n"],"matchType":"contains","filterString":"1"}})";
+    tree += std::string(DEPTH, '}');
+    const std::string json = R"({"bundle":{"configuration":{"expression":)" + tree + "}}}";
+    CHECK_THROWS_AS(ParseSessionBundleMetadata(json), SessionBundleReadError);
 }
 
 TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode]")

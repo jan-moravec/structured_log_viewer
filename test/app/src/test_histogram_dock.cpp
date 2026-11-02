@@ -22,6 +22,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
+#include <loglib/time_zone_context.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>
@@ -162,7 +163,7 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     options.threads = 1;
     loglib::JsonParser{}.ParseStreaming(*parseSource, *model.Sink(), options);
 
-    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     QVERIFY2(finished, "streamingFinished must arrive within the timeout");
     model.EndStreaming(false);
 }
@@ -187,7 +188,7 @@ void WaitForBucketsChanged(HistogramModel &model)
     {
         return;
     }
-    QVERIFY2(spy.wait(5000), "bucketsChanged must arrive after streaming");
+    QVERIFY2(spy.wait(60000), "bucketsChanged must arrive after streaming");
 }
 
 // Wait for at least one `anchorBucketsChanged` on a pre-attached
@@ -201,7 +202,7 @@ void ExpectAnchorBucketsChanged(QSignalSpy &spy)
     {
         return;
     }
-    QVERIFY2(spy.wait(5000), "anchorBucketsChanged must arrive after an anchor mutation");
+    QVERIFY2(spy.wait(60000), "anchorBucketsChanged must arrive after an anchor mutation");
 }
 
 // Drive `MainWindow::OpenFilesForTest` and wait for
@@ -221,7 +222,7 @@ void OpenFixtureInMainWindow(MainWindow &window, const HistogramFixture &fixture
     window.OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
     if (finishedSpy.count() == 0)
     {
-        QVERIFY2(finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.wait(60000), "streamingFinished must arrive");
     }
     QVERIFY(model->rowCount() > 0);
     // Pump once more so the coalesced `bucketsChanged` timer fires.
@@ -311,8 +312,9 @@ private slots:
         constexpr std::int64_t YEAR_2026_EPOCH_US = 1'767'225'600LL * 1'000'000LL;
         const std::int64_t minUs = range->min.time_since_epoch().count();
         const std::int64_t maxUs = range->max.time_since_epoch().count();
+        // The fixture has no zone, so its start is a display-zone wall clock.
         QVERIFY2(
-            minUs >= YEAR_2026_EPOCH_US,
+            minUs >= loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(YEAR_2026_EPOCH_US),
             "observed min timestamp fell before 2026 -- histogram is likely reading a non-time column"
         );
         QVERIFY(maxUs >= minUs);

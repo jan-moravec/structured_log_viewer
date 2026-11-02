@@ -59,6 +59,8 @@ struct QueryParseError
  *                   parse as ISO timestamps, else Numeric;
  *                   either bound may be empty)
  *
+ * An ISO timestamp without `Z` or an offset is read in `ProcessDefaultTimeZone()`.
+ *
  * `AND`, `OR`, `NOT`, `IN` are case-insensitive; `FormatExpression`
  * canonicalises to uppercase. Column identity is captured
  * verbatim into `LeafRule::columnKeys` as a single element.

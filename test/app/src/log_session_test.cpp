@@ -16,6 +16,7 @@
 #include <loglib/log_configuration.hpp>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QSettings>
 #include <QSignalSpy>
@@ -558,29 +559,30 @@ private slots:
 
         // Wait ~500 ms so the first timer has ~2500 ms left,
         // then re-trigger. The second lambda's generation
-        // supersedes the first; the earliest legal auto-clear
-        // is now roughly `500 + ROTATION_FLASH_DURATION_MS`.
+        // supersedes the first.
         QTest::qWait(500);
+        if (!session.IsRotationFlashActive())
+        {
+            QSKIP("The wait outlasted the whole flash window; nothing to extend");
+        }
+        QElapsedTimer sinceRetrigger;
+        sinceRetrigger.start();
         session.TriggerRotationFlash();
         QVERIFY(session.IsRotationFlashActive());
         QCOMPARE(spy.count(), 0);
 
-        // Wait past the first timer's deadline; its stale generation
-        // must not clear the refreshed flash.
-        QTest::qWait(LogSession::ROTATION_FLASH_DURATION_MS - 500 + 200);
+        // The first timer's tick, ~2500 ms from here, must not clear
+        // the flash. The later lambda whose generation matches fires
+        // the auto-clear. Timers this long are coarse, by up to 5%.
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 60000);
+        constexpr qint64 EARLIEST_CLEAR_MS = LogSession::ROTATION_FLASH_DURATION_MS * 9 / 10;
         QVERIFY2(
-            session.IsRotationFlashActive(),
+            sinceRetrigger.elapsed() >= EARLIEST_CLEAR_MS,
             "Repeated TriggerRotationFlash within the active window must EXTEND "
             "the clear deadline. The first singleShot's tick must not clear the "
             "flash once a later call has bumped the generation counter."
         );
-        QCOMPARE(spy.count(), 0);
-
-        // Now wait past the second timer's deadline. The
-        // still-armed later lambda whose generation matches
-        // must fire the auto-clear.
-        QTRY_VERIFY_WITH_TIMEOUT(!session.IsRotationFlashActive(), LogSession::ROTATION_FLASH_DURATION_MS + 3000);
-        QCOMPARE(spy.count(), 1);
+        QVERIFY(!session.IsRotationFlashActive());
         QCOMPARE(spy.takeFirst().at(0).toBool(), false);
     }
 

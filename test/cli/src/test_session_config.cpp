@@ -535,3 +535,118 @@ TEST_CASE("slp stats honors a configuration expression", "[cli][session][e2e]")
     REQUIRE(result.exitCode == 0);
     CHECK(result.out.contains("\"total\": 2"));
 }
+
+namespace
+{
+
+[[nodiscard]] std::string WriteConfigText(const std::string &name, const std::string &text)
+{
+    const auto path = ScratchRoot() / name;
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << text;
+    output.close();
+    REQUIRE(output.good());
+    return path.string();
+}
+
+/** @brief Columns JSON with an `any` column `msg` and the given filter expression. */
+[[nodiscard]] std::string ConfigWithExpression(const std::string &expression)
+{
+    return R"({"columns":[{"header":"msg","keys":["msg"],"printFormat":"{}","type":"any"}],"expression":)" +
+           expression + "}";
+}
+
+[[nodiscard]] std::string NotChain(int depth, const std::string &leaf)
+{
+    std::string text;
+    for (int i = 0; i < depth; ++i)
+    {
+        text += R"({"kind":"not","child":)";
+    }
+    return text + leaf + std::string(static_cast<std::size_t>(depth), '}');
+}
+
+} // namespace
+
+TEST_CASE("slp query --config parses a configured time column", "[cli][session][e2e]")
+{
+    const auto logPath = ScratchRoot() / "configured_time.jsonl";
+    {
+        std::ofstream output(logPath, std::ios::binary | std::ios::trunc);
+        output << "{\"when\":\"12-03-2024 10:00:00\"}\n{\"when\":\"13-03-2024 11:30:00\"}\n";
+    }
+    const std::string config = WriteConfigText(
+        "configured_time.json",
+        R"({"columns":[{"header":"when","keys":["when"],"printFormat":"%F %T","type":"time",)"
+        R"("parseFormats":["%d-%m-%Y %T"],"autoDetect":false}]})"
+    );
+
+    const auto shown = RunSlp({
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--config",
+        config,
+        "-t",
+        "csv",
+        "--no-header",
+        logPath.string(),
+    });
+    INFO(shown.err);
+    REQUIRE(shown.exitCode == 0);
+    CHECK(shown.out == "2024-03-12 10:00:00.000\n2024-03-13 11:30:00.000\n");
+
+    const auto filtered = RunSlp({
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--config",
+        config,
+        "--count",
+        "--filter",
+        "when>=2024-03-13T00:00:00Z",
+        logPath.string(),
+    });
+    INFO(filtered.err);
+    REQUIRE(filtered.exitCode == 0);
+    CHECK(filtered.out == "1\n");
+}
+
+TEST_CASE("slp query --config rejects a configuration filter on an unknown column", "[cli][session][e2e]")
+{
+    const std::string config = WriteConfigText(
+        "unknown_column_filter.json",
+        ConfigWithExpression(
+            R"({"kind":"leaf","rule":{"type":"string","columnKeys":["missing"],"matchType":"contains","filterString":"x"}})"
+        )
+    );
+    const auto result =
+        RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", config, WriteLog().string()});
+    INFO(result.err);
+    CHECK(result.exitCode == 2);
+    CHECK(result.err.contains("configuration filter: unknown column 'missing'"));
+}
+
+TEST_CASE("slp query --config handles deep filter trees", "[cli][session][e2e][nesting]")
+{
+    const std::string leaf =
+        R"({"kind":"leaf","rule":{"type":"string","columnKeys":["msg"],"matchType":"contains","filterString":"alpha"}})";
+
+    const std::string deep = WriteConfigText("deep_filter.json", ConfigWithExpression(NotChain(250, leaf)));
+    const auto accepted = RunSlp(
+        {"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", deep, "--count", WriteLog().string()}
+    );
+    INFO(accepted.err);
+    CHECK(accepted.exitCode == 0);
+    CHECK(accepted.out == "1\n");
+
+    const std::string tooDeep = WriteConfigText("too_deep_filter.json", ConfigWithExpression(NotChain(100000, leaf)));
+    const auto rejected =
+        RunSlp({"query", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--config", tooDeep, WriteLog().string()});
+    INFO(rejected.err.substr(0, 200));
+    CHECK(rejected.exitCode == 3);
+}

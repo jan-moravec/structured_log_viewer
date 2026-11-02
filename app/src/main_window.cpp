@@ -1346,6 +1346,11 @@ MainWindow::MainWindow(
     mRowsShownLabel->hide();
     statusBar()->addPermanentWidget(mRowsShownLabel);
 
+    mFilterProblemLabel = new QLabel(this);
+    mFilterProblemLabel->setObjectName(QStringLiteral("filterProblemLabel"));
+    mFilterProblemLabel->hide();
+    statusBar()->addPermanentWidget(mFilterProblemLabel);
+
     mClearFiltersStatusButton = new QPushButton(this);
     mClearFiltersStatusButton->setObjectName(QStringLiteral("clearFiltersStatusButton"));
     mClearFiltersStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_LineEditClearButton));
@@ -7379,8 +7384,29 @@ void MainWindow::UpdateStreamingStatus()
     mStatusLabel->show();
 }
 
+void MainWindow::UpdateFilterProblemStatus()
+{
+    if (mFilterProblemLabel == nullptr)
+    {
+        return;
+    }
+    QString text;
+    if (mModel != nullptr && mModel->rowCount() > 0)
+    {
+        const std::vector<std::string> problems =
+            loglib::FindFilterProblems(mModel->Configuration().expression, mModel->Configuration().columns);
+        if (!problems.empty())
+        {
+            text = tr("Filter: %1").arg(QString::fromStdString(problems.front()));
+        }
+    }
+    mFilterProblemLabel->setText(text);
+    mFilterProblemLabel->setVisible(!text.isEmpty());
+}
+
 void MainWindow::UpdateRowsShownStatus()
 {
+    UpdateFilterProblemStatus();
     if (mRowsShownLabel == nullptr || mClearFiltersStatusButton == nullptr)
     {
         return;
@@ -11588,6 +11614,7 @@ void MainWindow::UpdateFilters(LogSession *session)
     loglib::CompiledFilterExpression compiled =
         loglib::CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
     filter->SetFilterExpression(std::move(compiled));
+    UpdateFilterProblemStatus();
 }
 
 void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex)

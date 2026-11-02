@@ -9,6 +9,8 @@
 #include "uuid_utils.hpp"
 #include "workspace_persistence.hpp"
 
+#include <loglib/worker_threads.hpp>
+
 #include <QApplication>
 #include <QAtomicInt>
 #include <QDir>
@@ -92,9 +94,7 @@ private:
     QPointer<MainWindow> mLiveWindow;
 };
 
-} // namespace
-
-int main(int argc, char *argv[])
+[[nodiscard]] int RunApplication(int argc, char *argv[])
 {
     const QApplication a(argc, argv);
 
@@ -496,4 +496,13 @@ int main(int argc, char *argv[])
     );
 
     return QApplication::exec();
+}
+
+} // namespace
+
+int main(int argc, char *argv[])
+{
+    const int code = RunApplication(argc, argv);
+    (void)loglib::JoinWorkerThreads();
+    return code;
 }

@@ -725,15 +725,30 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         mRotationInProgress = true;
 
         // The retired file may still hold bytes written before the rename.
-        while (!mStopRequested.load(std::memory_order_acquire) && ReadMoreBytes() > 0)
+        while (!mStopRequested.load(std::memory_order_acquire))
         {
+            {
+                std::unique_lock<std::mutex> lock(mMutex);
+                if (mReadyBuffer.size() - mReadyConsumed >= mOptions.maxQueuedBytes)
+                {
+                    mCv.wait_for(lock, mOptions.pollInterval, [&] {
+                        return mStopRequested.load(std::memory_order_acquire);
+                    });
+                    continue;
+                }
+            }
+            if (ReadMoreBytes() == 0)
+            {
+                break;
+            }
         }
         CloseHandle();
         mHandle = OpenForTail(mPath);
         mIdentityAtOpen = FromOpenHandle(mHandle);
         mReadOffset = 0;
         const bool wasWaiting = mWaiting;
-        mWaiting = false;
+        // A failed open is retried from the waiting state.
+        mWaiting = !IsValidHandle(mHandle);
 
         {
             const std::scoped_lock lock(mMutex);
@@ -743,9 +758,9 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
 
         mRotationCount.fetch_add(1, std::memory_order_acq_rel);
         FireRotationCallbackIfDebounced();
-        if (wasWaiting)
+        if (wasWaiting != mWaiting)
         {
-            FireStatusCallbackIfChanged(SourceStatus::Running);
+            FireStatusCallbackIfChanged(mWaiting ? SourceStatus::Waiting : SourceStatus::Running);
         }
         mRotationInProgress = false;
         return true;
@@ -759,6 +774,8 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         if (!mWaiting)
         {
             mWaiting = true;
+            // An open handle still reads the rest of a partial line.
+            if (!IsValidHandle(mHandle))
             {
                 const std::scoped_lock lock(mMutex);
                 mPartialLine.clear();
@@ -772,9 +789,13 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
     // handle is invalid, re-open.
     if (mWaiting && !IsValidHandle(mHandle))
     {
+        mHandle = OpenForTail(mPath);
+        if (!IsValidHandle(mHandle))
+        {
+            return false;
+        }
         mRotationInProgress = true;
 
-        mHandle = OpenForTail(mPath);
         mIdentityAtOpen = FromOpenHandle(mHandle);
         mReadOffset = 0;
         mWaiting = false;

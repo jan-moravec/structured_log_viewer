@@ -4,7 +4,8 @@
 // Qt 6.11 `QRegularExpression` oracle (see `apptest_log_string_matcher`).
 // `Wildcard` uses Qt's default conversion: anchored, and `*` / `?` do
 // not cross `/` or `\`. Haystacks are judged after the GUI's
-// `simplified()` normalisation; patterns are not.
+// `simplified()` normalisation. So are `Exactly` and `Wildcard` patterns;
+// `Contains` patterns collapse whitespace but keep one space at an end.
 
 #include <loglib/filter_expression.hpp>
 
@@ -40,7 +41,7 @@ struct StringMatcherCase
         {.id = "exactly-empty-pattern", .match = Match::Exactly, .pattern = "", .haystack = "x", .expected = false},
         {.id = "exactly-empty-haystack", .match = Match::Exactly, .pattern = "x", .haystack = "", .expected = false},
 
-        // Exactly — whitespace. Patterns are not simplified.
+        // Exactly — whitespace. Patterns are simplified too.
         {.id = "exactly-leading-space",
          .match = Match::Exactly,
          .pattern = "error",
@@ -56,16 +57,20 @@ struct StringMatcherCase
          .pattern = "a b",
          .haystack = "a   b",
          .expected = true},
-        {.id = "exactly-pattern-double-space",
-         .match = Match::Exactly,
-         .pattern = "a  b",
-         .haystack = "a b",
-         .expected = false},
-        {.id = "exactly-pattern-trailing-space",
-         .match = Match::Exactly,
-         .pattern = "error ",
-         .haystack = "error",
-         .expected = false},
+        {
+            .id = "exactly-pattern-double-space",
+            .match = Match::Exactly,
+            .pattern = "a  b",
+            .haystack = "a b",
+            .expected = true,
+        },
+        {
+            .id = "exactly-pattern-trailing-space",
+            .match = Match::Exactly,
+            .pattern = "error ",
+            .haystack = "error",
+            .expected = true,
+        },
         {.id = "exactly-tab", .match = Match::Exactly, .pattern = "a b", .haystack = "a\tb", .expected = true},
         {.id = "exactly-newline", .match = Match::Exactly, .pattern = "a b", .haystack = "a\nb", .expected = true},
         {.id = "exactly-crlf", .match = Match::Exactly, .pattern = "a b", .haystack = "a\r\nb", .expected = true},
@@ -135,11 +140,32 @@ struct StringMatcherCase
          .haystack = "  error  ",
          .expected = true},
         {.id = "contains-tab", .match = Match::Contains, .pattern = "a b", .haystack = "xa\tbx", .expected = true},
-        {.id = "contains-pattern-double-space",
+        {
+            .id = "contains-pattern-double-space",
+            .match = Match::Contains,
+            .pattern = "a  b",
+            .haystack = "xa  bx",
+            .expected = true,
+        },
+        {
+            .id = "contains-pattern-edge-space-word",
+            .match = Match::Contains,
+            .pattern = " foo ",
+            .haystack = "a foo b",
+            .expected = true,
+        },
+        {.id = "contains-pattern-edge-space-not-prefix",
          .match = Match::Contains,
-         .pattern = "a  b",
-         .haystack = "xa  bx",
+         .pattern = " foo ",
+         .haystack = "a food b",
          .expected = false},
+        {
+            .id = "wildcard-pattern-double-space",
+            .match = Match::Wildcard,
+            .pattern = "a  *",
+            .haystack = "a  b",
+            .expected = true,
+        },
         {.id = "contains-utf8",
          .match = Match::Contains,
          .pattern = "\xc3\xbc",

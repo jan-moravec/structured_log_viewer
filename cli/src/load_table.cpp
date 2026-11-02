@@ -24,6 +24,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -283,7 +284,7 @@ public:
         parserOptions.initialCarry = std::move(peek);
         try
         {
-            Parse(*format, source, parserOptions);
+            Parse(*format, source, std::move(parserOptions));
         }
         catch (const std::exception &ex)
         {
@@ -437,8 +438,11 @@ private:
     }
 
     template <typename Source>
-    void Parse(const loglib::DetectedFormat &format, Source &source, const loglib::ParserOptions &parserOptions)
+    void Parse(const loglib::DetectedFormat &format, Source &source, loglib::ParserOptions parserOptions)
     {
+        // The table skips columns it expects the parser to have converted.
+        parserOptions.configuration =
+            std::make_shared<const loglib::LogConfiguration>(mLoaded.table.Configuration().Configuration());
         const auto parser = loglib::MakeParserForFormat(format.format, format.regexPattern);
         TableSink sink(mLoaded);
         parser->ParseStreaming(source, sink, parserOptions);

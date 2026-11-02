@@ -12,6 +12,27 @@ namespace loglib
 {
 
 /**
+ * @brief Range of wall-clock times that share one UTC offset.
+ *
+ * A default-constructed window contains nothing.
+ */
+struct LocalOffsetWindow
+{
+    /** @brief First local microsecond in the window. */
+    std::int64_t beginLocal = 0;
+    /** @brief Local microsecond just past the window. */
+    std::int64_t endLocal = 0;
+    /** @brief Microseconds to subtract from a local time to get UTC. */
+    std::int64_t utcOffset = 0;
+
+    /** @brief Returns whether @p localMicroseconds is inside the window. */
+    [[nodiscard]] bool Contains(std::int64_t localMicroseconds) const noexcept
+    {
+        return beginLocal <= localMicroseconds && localMicroseconds < endLocal;
+    }
+};
+
+/**
  * @brief Immutable timezone used for local/UTC conversion and formatting.
  *
  * Owns the selected IANA zone after validating tzdata. Copies share the
@@ -74,6 +95,19 @@ public:
      * or corrupt-zone failures return @p localMicroseconds unchanged.
      */
     [[nodiscard]] std::int64_t LocalMicrosecondsToUtc(std::int64_t localMicroseconds) const;
+
+    /**
+     * @brief Returns the window of wall-clock times sharing the offset at @p localMicroseconds.
+     *
+     * Inside the window, subtracting `utcOffset` gives the same result as
+     * `LocalMicrosecondsToUtc` with no zone lookup. The window stays clear of
+     * transitions, so it does not contain @p localMicroseconds when that time
+     * is close to one.
+     *
+     * @param localMicroseconds Wall-clock local microseconds.
+     * @return The window, which may be empty.
+     */
+    [[nodiscard]] LocalOffsetWindow OffsetWindowAt(std::int64_t localMicroseconds) const;
 
     /** @brief Converts a UTC `TimeStamp` to local milliseconds since epoch. */
     [[nodiscard]] std::int64_t ToLocalMilliseconds(TimeStamp timeStamp) const;

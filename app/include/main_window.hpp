@@ -1679,6 +1679,15 @@ private slots:
     void UpdateRowsShownStatus();
 
     /**
+     * @brief Shows the active filter's first problem in the status bar.
+     *
+     * The label is hidden when the filter has no problem or the model has
+     * no rows. A filter on an unknown column stays in force as no constraint,
+     * and the label clears once the column appears.
+     */
+    void UpdateFilterProblemStatus();
+
+    /**
      * @brief Recount matches for the current find query and push the
      * result back into the find bar. Caches the row list keyed by
      * `(needle, wildcards, regex)` so Next / Previous clicks reuse
@@ -3332,6 +3341,11 @@ private:
      * @brief Status-bar label shown while a streaming session is active.
      */
     QLabel *mStatusLabel = nullptr;
+
+    /**
+     * @brief Status-bar label for the problem from `UpdateFilterProblemStatus`.
+     */
+    QLabel *mFilterProblemLabel = nullptr;
 
     /**
      * @brief Status-bar label that reads "*n* of *m* shown" while a

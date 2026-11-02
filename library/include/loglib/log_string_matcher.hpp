@@ -15,7 +15,10 @@ namespace loglib
  * The haystack is compared after single-line whitespace normalisation:
  * ends are trimmed and each internal whitespace run becomes one space.
  * `Exactly` and `Contains` skip that work when both sides are already
- * canonical ASCII. The pattern itself is not normalised.
+ * canonical ASCII. `Exactly` and `Wildcard` patterns get the same
+ * normalisation. `Contains` patterns also collapse whitespace runs but
+ * keep one space at an end, so `" foo "` finds a whole word.
+ * `RegularExpression` patterns are used as written.
  *
  * `RegularExpression` and `Wildcard` compile once, JIT-compile when the
  * platform allows, and prime the JIT. An invalid pattern matches

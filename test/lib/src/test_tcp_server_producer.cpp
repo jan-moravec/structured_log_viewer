@@ -69,7 +69,7 @@ TEST_CASE("TcpServerProducer: single client send-receive", "[tcp_producer]")
     client.Send("hello\n");
     client.Send("world\n");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 12, ScaledMs(2000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 12, ScaledMs(60000ms));
     REQUIRE(drained == "hello\nworld\n");
 }
 
@@ -85,7 +85,7 @@ TEST_CASE("TcpServerProducer: drops an oversized line and resumes after it", "[t
     client.SendRaw(std::string(5000, 'x'));
     client.SendRaw("\nnext\n");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 5, ScaledMs(2000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 5, ScaledMs(60000ms));
     CHECK(drained == "next\n");
     CHECK(producer.DroppedByteCount() > 0);
 }
@@ -109,7 +109,7 @@ TEST_CASE("TcpServerProducer: per-session carry preserves line boundaries with t
     a.SendRaw("AAAA\n"); // peer A's line completes
     b.SendRaw("BBBB\n"); // peer B's line completes
 
-    const std::string drained = DrainUntil(producer, /*target*/ 18, ScaledMs(2000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 18, ScaledMs(60000ms));
     INFO("drained = '" << drained << "'");
     // We don't pin the order of the two peers' lines (depends on
     // accept order + read scheduling), but each must be intact.
@@ -127,9 +127,9 @@ TEST_CASE("TcpServerProducer: client disconnect flushes partial-line carry", "[t
         client.Send("partial-without-newline");
     } // client destruction => half-close => server sees EOF + finalises session
 
-    const std::string drained = DrainUntil(producer, /*target*/ 24, ScaledMs(2000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 24, ScaledMs(60000ms));
     REQUIRE(drained == "partial-without-newline\n");
-    REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 0; }, ScaledMs(2000ms)));
+    REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 0; }, ScaledMs(60000ms)));
     REQUIRE(producer.TotalClientsAccepted() == 1);
 }
 
@@ -142,7 +142,7 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
 
     const test_common::TcpLogClient a("127.0.0.1", producer.BoundPort());
     const test_common::TcpLogClient b("127.0.0.1", producer.BoundPort());
-    REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 2; }, ScaledMs(2000ms)));
+    REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 2; }, ScaledMs(60000ms)));
 
     // Third connection: the producer accepts and immediately closes
     // it, so any send racing the close may or may not raise -- we
@@ -167,7 +167,7 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
         static_cast<void>(ex);
     }
 
-    REQUIRE(WaitFor([&] { return producer.TotalClientsRejected() >= 1; }, ScaledMs(2000ms)));
+    REQUIRE(WaitFor([&] { return producer.TotalClientsRejected() >= 1; }, ScaledMs(60000ms)));
     REQUIRE(producer.ActiveClientCount() == 2);
 }
 

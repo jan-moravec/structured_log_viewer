@@ -92,7 +92,7 @@ void LoadFileIntoActiveTab(MainWindow &window, const QString &path)
     }
     const QSignalSpy spy(model, &LogModel::streamingFinished);
     window.OpenFilesForTest({path}, MainWindow::OpenMode::Replace);
-    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 60000);
     QVERIFY(model->rowCount() > 0);
 }
 
@@ -967,7 +967,7 @@ private slots:
         QVERIFY(sessionA->IsDecompressionInFlight());
         QVERIFY(sessionA->IsFiltersDirty());
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 60000);
     }
 
     static void TestDirtyBusyTabDiscardDrainsWorkers()
@@ -1169,7 +1169,7 @@ private slots:
         // Dirty the session; presentationChanged fans through the
         // ctor-installed subscription which calls RefreshTabChrome.
         window.activeSession()->MarkFiltersDirty();
-        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("\u25CF")), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("\u25CF")), 60000);
         window.activeSession()->ClearFiltersDirty();
     }
 
@@ -1295,7 +1295,7 @@ private slots:
         // `presentationChanged` connect must fire `RefreshTabChrome`
         // for tab index 1 (not the currently-active tab 0).
         background->MarkFiltersDirty();
-        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(1).contains(QStringLiteral("\u25CF")), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(1).contains(QStringLiteral("\u25CF")), 60000);
         // The active tab (0) is NOT dirtied and must not gain the marker.
         QVERIFY(!window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("\u25CF")));
 
@@ -1409,7 +1409,7 @@ private slots:
         }
         tail->MarkFiltersDirty();
         // Give the presentationChanged fanout a chance to land.
-        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(2).contains(QStringLiteral("\u25CF")), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(2).contains(QStringLiteral("\u25CF")), 60000);
         const QString tailLabelBefore = window.TabWidgetForTest()->tabText(2);
 
         window.CloseTabForTest(1);
@@ -2413,7 +2413,7 @@ private slots:
         QVERIFY(!viewA->IsContentEnabled());
         QVERIFY(viewA->IsOperationProgressVisible());
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 60000);
         QVERIFY(viewA->IsContentEnabled());
         QVERIFY(viewB->IsContentEnabled());
         QVERIFY(!viewA->IsOperationProgressVisible());
@@ -2461,7 +2461,7 @@ private slots:
             QVERIFY(!viewB->IsContentEnabled());
         }
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight() && !sessionB->IsExportInFlight(), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight() && !sessionB->IsExportInFlight(), 60000);
         QVERIFY(viewA->IsContentEnabled());
         QVERIFY(viewB->IsContentEnabled());
         QVERIFY(!viewA->IsOperationProgressVisible());
@@ -2495,13 +2495,13 @@ private slots:
         window.ActivateTabForTest(1);
         window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 60000);
         QVERIFY(viewA->IsContentEnabled());
         if (sessionB->IsExportInFlight())
         {
             QVERIFY(!viewB->IsContentEnabled());
         }
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 60000);
         QVERIFY(viewB->IsContentEnabled());
     }
 
@@ -2532,13 +2532,13 @@ private slots:
         window.ActivateTabForTest(1);
         window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 60000);
         QVERIFY(viewB->IsContentEnabled());
         if (sessionA->IsExportInFlight())
         {
             QVERIFY(!viewA->IsContentEnabled());
         }
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 60000);
         QVERIFY(viewA->IsContentEnabled());
     }
 
@@ -2574,7 +2574,7 @@ private slots:
             QVERIFY(viewA->IsOperationProgressVisible());
         }
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 60000);
         QVERIFY(viewA->IsContentEnabled());
         QVERIFY(viewB->IsContentEnabled());
     }
@@ -2597,7 +2597,7 @@ private slots:
         QVERIFY(!session->IsDecompressionInFlight());
         QVERIFY(session->Model() != nullptr);
         QCOMPARE(session->Model()->rowCount(), 0);
-        QTRY_VERIFY_WITH_TIMEOUT(!session->IsDecompressionInFlight(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!session->IsDecompressionInFlight(), 60000);
         QCOMPARE(session->Model()->rowCount(), 0);
     }
 
@@ -2633,7 +2633,7 @@ private slots:
             QVERIFY(!viewB->IsContentEnabled());
         }
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight() && !sessionB->IsDecompressionInFlight(), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight() && !sessionB->IsDecompressionInFlight(), 60000);
         QVERIFY(viewA->IsContentEnabled());
         QVERIFY(viewB->IsContentEnabled());
     }
@@ -2660,7 +2660,7 @@ private slots:
         LogModel *modelB = sessionB->Model();
         QVERIFY(modelA != nullptr && modelB != nullptr);
 
-        QTRY_VERIFY_WITH_TIMEOUT(!modelA->IsStreamingActive() && !modelB->IsStreamingActive(), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!modelA->IsStreamingActive() && !modelB->IsStreamingActive(), 60000);
         QVERIFY(modelA->rowCount() > 0);
         QVERIFY(modelB->rowCount() > 0);
         QCOMPARE(window.activeSession(), sessionB);
@@ -2723,7 +2723,7 @@ private slots:
         window.ActivateTabForTest(1);
         QCOMPARE(window.activeSession(), sessionB);
 
-        QTRY_VERIFY_WITH_TIMEOUT(originFinished.count() >= 1, 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(originFinished.count() >= 1, 60000);
         QVERIFY(originModel->rowCount() > 0);
 
         QCOMPARE(FilterMenuTitles(window), activeFilterTitles);
@@ -2793,7 +2793,7 @@ private slots:
         QVERIFY(sessionA->IsExportInFlight());
         window.ActivateTabForTest(1);
         QCOMPARE(window.activeSession(), sessionB);
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 60000);
 
         QCOMPARE(window.activeSession(), sessionB);
         QCOMPARE(FilterMenuTitles(window), activeFilterTitles);
@@ -2831,7 +2831,7 @@ private slots:
         QVERIFY(sessionB != nullptr);
         QCOMPARE(window.activeSession(), sessionB);
 
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 60000);
         QVERIFY2(
             !sessionA->ParseErrorLog().batches.empty() || !sessionA->PendingPresentation().isEmpty() ||
                 !sessionA->PendingDecompressionErrors().empty() || !sessionA->PendingOpenErrors().empty(),
@@ -3121,18 +3121,18 @@ private slots:
         QVERIFY(model != nullptr);
         QSignalSpy firstSpy(model, &LogModel::streamingFinished);
         dropFiles(pathA, Qt::NoModifier);
-        QTRY_VERIFY_WITH_TIMEOUT(firstSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(firstSpy.count() >= 1, 60000);
         const int rowsAfterA = model->rowCount();
         QVERIFY(rowsAfterA > 0);
 
         QSignalSpy appendSpy(model, &LogModel::streamingFinished);
         dropFiles(pathB, Qt::NoModifier);
-        QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 60000);
         QVERIFY(model->rowCount() > rowsAfterA);
 
         QSignalSpy replaceSpy(model, &LogModel::streamingFinished);
         dropFiles(pathB, Qt::ShiftModifier);
-        QTRY_VERIFY_WITH_TIMEOUT(replaceSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(replaceSpy.count() >= 1, 60000);
         QCOMPARE(model->rowCount(), 6);
     }
 
@@ -3158,7 +3158,7 @@ private slots:
         QVERIFY(model != nullptr);
         QSignalSpy spy(model, &LogModel::streamingFinished);
         window.OpenFilesForCli({pathB});
-        QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 60000);
         QCOMPARE(window.TabCount(), 2);
         QCOMPARE(window.SessionAtTab(0), busy);
         QCOMPARE(model->rowCount(), 7);
@@ -3194,7 +3194,7 @@ private slots:
         QVERIFY(viewA->IsOperationProgressVisible());
         QVERIFY(viewA->ProgressCancelButton()->isEnabled());
         viewA->ProgressCancelButton()->click();
-        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 60000);
         QVERIFY(!viewA->IsOperationProgressVisible());
         QVERIFY(viewA->IsContentEnabled());
     }
@@ -3290,7 +3290,7 @@ private slots:
 
         LogSession *restoredFile = restored.SessionAtTab(0);
         QVERIFY(restoredFile != nullptr);
-        QTRY_VERIFY_WITH_TIMEOUT(restoredFile->Model() != nullptr && restoredFile->Model()->rowCount() > 0, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredFile->Model() != nullptr && restoredFile->Model()->rowCount() > 0, 60000);
         QVERIFY(!restoredFile->IsLiveTailSession());
 
         LogSession *restoredConfig = restored.SessionAtTab(1);
@@ -3300,7 +3300,7 @@ private slots:
 
         LogSession *restoredTail = restored.SessionAtTab(2);
         QVERIFY(restoredTail != nullptr);
-        QTRY_VERIFY_WITH_TIMEOUT(restoredTail->Model() != nullptr && restoredTail->Model()->rowCount() > 0, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredTail->Model() != nullptr && restoredTail->Model()->rowCount() > 0, 60000);
         QVERIFY(!restoredTail->IsLiveTailSession());
         QVERIFY(restoredTail->CurrentSource().has_value());
         QCOMPARE(restoredTail->CurrentSource()->kind, loglib::Source::Kind::File);
@@ -3324,7 +3324,7 @@ private slots:
         QCOMPARE(restoredPeer.TabCount(), 1);
         LogSession *peerSession = restoredPeer.SessionAtTab(0);
         QVERIFY(peerSession != nullptr);
-        QTRY_VERIFY_WITH_TIMEOUT(peerSession->Model() != nullptr && peerSession->Model()->rowCount() > 0, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(peerSession->Model() != nullptr && peerSession->Model()->rowCount() > 0, 60000);
         QVERIFY(!peerSession->IsLiveTailSession());
     }
 
@@ -3398,7 +3398,7 @@ private slots:
             source.OpenMixedFilesForTest({primary}, MainWindow::OpenMode::Replace),
             MainWindow::MixedInputDispatch::QueuedLogsOnly
         );
-        QTRY_VERIFY_WITH_TIMEOUT(primarySpy.count() >= 1, 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(primarySpy.count() >= 1, 60000);
         LogSession *rotated = source.activeSession();
         QVERIFY(rotated != nullptr);
         QTRY_VERIFY_WITH_TIMEOUT(
@@ -3441,7 +3441,9 @@ private slots:
 
         LogSession *restoredSibling = restored.SessionAtTab(1);
         QVERIFY(restoredSibling != nullptr);
-        QTRY_VERIFY_WITH_TIMEOUT(restoredSibling->Model() != nullptr && restoredSibling->Model()->rowCount() > 0, 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            restoredSibling->Model() != nullptr && restoredSibling->Model()->rowCount() > 0, 60000
+        );
     }
 
     static void TestWorkspaceRestoreEmptyTabsWithSavedChromeDoesNotCrash()

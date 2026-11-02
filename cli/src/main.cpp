@@ -9,6 +9,7 @@
 #include <loglib/exports/row_exporter.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/tzdata_search.hpp>
+#include <loglib/worker_threads.hpp>
 
 #include <cstdio>
 #include <exception>
@@ -116,9 +117,8 @@ public:
     }
 }
 
-} // namespace
-
-int main(int argc, char **argv)
+/** @brief Runs `slp` and reports a failure of the error reporting itself. */
+[[nodiscard]] int RunSlpGuarded(int argc, char **argv) noexcept
 {
     try
     {
@@ -130,4 +130,13 @@ int main(int argc, char **argv)
         (void)std::fputs("slp: internal error: an unexpected exception was thrown.\n", stderr);
         return Exit(slp::ExitCode::Internal);
     }
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    const int code = RunSlpGuarded(argc, argv);
+    (void)loglib::JoinWorkerThreads();
+    return code;
 }

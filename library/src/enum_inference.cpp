@@ -29,6 +29,13 @@ namespace
 /// stderr telemetry line; below it the demote cost is uninteresting.
 constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
 
+/// Whether a finished column's values repeat enough to be an enumeration.
+/// Log levels qualify however few rows the file has.
+bool ValuesRepeatOrAreLevels(const EnumCandidateTracker &tracker, const Column &column)
+{
+    return tracker.size * 2U <= tracker.presenceCount || std::ranges::any_of(column.keys, IsLogLevelKey);
+}
+
 } // namespace
 
 bool EnumColumnHealth::ShouldDemote(double tolerance, size_t minSamples) const noexcept
@@ -562,7 +569,10 @@ ColumnType EnumInference::RescanColumn(
     {
         configuration.SetColumnType(columnIndex, ColumnType::String);
     }
-    else if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= 2)
+    else if (
+        tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= 2 &&
+        ValuesRepeatOrAreLevels(tracker, columns[columnIndex])
+    )
     {
         PromoteColumnToEnum(data, configuration, columnIndex);
     }
@@ -607,7 +617,8 @@ bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configurati
                 configuration.SetColumnType(columnIndex, ColumnType::String);
                 continue;
             }
-            if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= 2)
+            if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= 2 &&
+                ValuesRepeatOrAreLevels(tracker, column))
             {
                 PromoteColumnToEnum(data, configuration, columnIndex);
                 promoted = true;

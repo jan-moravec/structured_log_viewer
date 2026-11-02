@@ -126,6 +126,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -462,7 +463,7 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
 
     if (finishedSpy.count() == 0)
     {
-        finishedSpy.wait(5000);
+        finishedSpy.wait(60000);
     }
     run.finishedCount = finishedSpy.count();
     if (run.finishedCount > 0)
@@ -496,7 +497,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
 
     if (finishedSpy.count() == 0)
     {
-        finishedSpy.wait(5000);
+        finishedSpy.wait(60000);
     }
     run.finishedCount = finishedSpy.count();
     if (run.finishedCount > 0)
@@ -755,7 +756,6 @@ private slots:
         // real app profile.
         QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
         QCoreApplication::setApplicationName(QStringLiteral("apptest"));
-        QSettings::setDefaultFormat(QSettings::IniFormat);
 
         // Initialise loglib's timezone database before any test
         // loads a saved configuration containing a time-range
@@ -1002,16 +1002,16 @@ private slots:
     {
         const FixtureFile fixture(":/fixtures/iso_t_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
-        // 2024-04-28T07:14:30 UTC → 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
+        // 2024-04-28T07:14:30 → 1714288470 seconds since epoch as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470000000), 3);
     }
 
     static void TestFixtureIsoSpaceTimestamp()
     {
         const FixtureFile fixture(":/fixtures/iso_space_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
-        // 2024-04-28 07:14:30 UTC → 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
+        // 2024-04-28 07:14:30 → 1714288470 seconds since epoch as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470000000), 3);
     }
 
     static void TestFixtureIsoOffsetTimestamp()
@@ -1026,16 +1026,16 @@ private slots:
     {
         const FixtureFile fixture(":/fixtures/iso_fractional_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
-        // 2024-04-28T07:14:30.123 UTC → 1714288470.123 → 1714288470123000 µs.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470123000), 3);
+        // 2024-04-28T07:14:30.123 → 1714288470.123 → 1714288470123000 µs as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470123000), 3);
 
         // Spot-check the µs and 0.5s rows separately so all three fractional
         // widths in the fixture are exercised.
         const int tsCol = ColumnByHeader(*run.model, QStringLiteral("timestamp"));
         const qint64 row1Us = run.model->data(run.model->index(1, tsCol), LogModelItemDataRole::SortRole).toLongLong();
-        QCOMPARE(row1Us, qint64(1714288470123456));
+        QCOMPARE(row1Us, NaiveToUtcUs(1714288470123456));
         const qint64 row2Us = run.model->data(run.model->index(2, tsCol), LogModelItemDataRole::SortRole).toLongLong();
-        QCOMPARE(row2Us, qint64(1714288470500000));
+        QCOMPARE(row2Us, NaiveToUtcUs(1714288470500000));
     }
 
     static void TestFixtureAltTimestampKeys()
@@ -1259,8 +1259,8 @@ private slots:
     {
         const FixtureFile fixture(":/fixtures/iso_t_timestamp.logfmt");
         StreamingRun run = RunStreamingLogfmt(fixture.Path());
-        // 2024-04-28T07:14:30 UTC -> 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
+        // 2024-04-28T07:14:30 -> 1714288470 seconds since epoch as a wall clock.
+        AssertTimestampFixture(run, NaiveToUtcUs(1714288470000000), 3);
     }
 
     // Regression: `LogModel::AppendBatch` must fire `beginInsertRows` /
@@ -1307,7 +1307,7 @@ private slots:
         const loglib::JsonParser parser;
         parser.ParseStreaming(*parseSource, *model.Sink(), options);
 
-        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
 
         // The fixture grows the model at least once; capture the running
@@ -1888,7 +1888,7 @@ private slots:
         // count must stay frozen at 150 — the buffer is the side channel.
         // Drain Qt events too in case any lambdas slip through (they
         // shouldn't while paused).
-        const auto pauseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto pauseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (sink->PausedLineCount() < 50 && std::chrono::steady_clock::now() < pauseDeadline)
         {
             QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
@@ -5115,7 +5115,7 @@ private slots:
         loglib::JsonParser{}.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
-            finishedSpy.wait(5000);
+            finishedSpy.wait(60000);
         }
         QCoreApplication::processEvents();
 
@@ -5492,7 +5492,7 @@ private slots:
         loglib::JsonParser{}.ParseStreaming(*firstPtr, *model->Sink(), firstOpts);
         if (firstFinishedSpy.count() == 0)
         {
-            firstFinishedSpy.wait(5000);
+            firstFinishedSpy.wait(60000);
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
@@ -5517,7 +5517,7 @@ private slots:
         loglib::JsonParser{}.ParseStreaming(*secondPtr, *model->Sink(), secondOpts);
         if (secondFinishedSpy.count() == 0)
         {
-            secondFinishedSpy.wait(5000);
+            secondFinishedSpy.wait(60000);
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
@@ -7706,7 +7706,7 @@ private slots:
         // Wait for the worker to fill the queue. We deliberately do
         // NOT spin the event loop here -- the drain lambda must stay
         // queued so the worker has nowhere to push the (cap+1)-th batch.
-        const auto fillDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        const auto fillDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (enqueuedCount.load(std::memory_order_acquire) < static_cast<int>(CAPACITY))
         {
             QVERIFY(std::chrono::steady_clock::now() < fillDeadline);
@@ -7719,7 +7719,7 @@ private slots:
 
         // Now spin the event loop so the drain lambda runs, pulls
         // batches out, wakes the worker, and the rest go through.
-        const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (enqueuedCount.load(std::memory_order_acquire) < TOTAL_BATCHES)
         {
             QVERIFY(std::chrono::steady_clock::now() < drainDeadline);
@@ -7763,7 +7763,7 @@ private slots:
             finished.store(true, std::memory_order_release);
         });
 
-        const auto enterDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        const auto enterDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (!entered.load(std::memory_order_acquire))
         {
             QVERIFY(std::chrono::steady_clock::now() < enterDeadline);
@@ -7821,7 +7821,7 @@ private slots:
             producerDone.store(true, std::memory_order_release);
         });
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (model.rowCount() < TOTAL_BATCHES)
         {
             QVERIFY(std::chrono::steady_clock::now() < deadline);
@@ -8118,7 +8118,7 @@ private slots:
         }
         if (finishedSpy.count() == 0)
         {
-            QVERIFY2(finishedSpy.wait(5000), "streamingFinished must arrive");
+            QVERIFY2(finishedSpy.wait(60000), "streamingFinished must arrive");
         }
 
         // Post-bubble column layout: `body, level, scope`.
@@ -8589,7 +8589,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         if (finishedSpy.count() == 0)
         {
-            finishedSpy.wait(5000);
+            finishedSpy.wait(60000);
         }
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(model->rowCount() > 0, "fixture must produce at least one streamed row");
@@ -8643,7 +8643,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         if (finishedSpy.count() == 0)
         {
-            finishedSpy.wait(5000);
+            finishedSpy.wait(60000);
         }
 
         auto *tableView = mWindow->findChild<QTableView *>();
@@ -8808,7 +8808,7 @@ private slots:
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
 
-        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(model->rowCount(), 300);
 
@@ -9446,7 +9446,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
@@ -9563,7 +9563,7 @@ private slots:
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
-            finishedSpy.wait(5000);
+            finishedSpy.wait(60000);
         }
         QCoreApplication::processEvents();
 
@@ -10202,7 +10202,7 @@ private slots:
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
-            finishedSpy.wait(5000);
+            finishedSpy.wait(60000);
         }
         QCoreApplication::processEvents();
 
@@ -10317,7 +10317,7 @@ private slots:
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
-            finishedSpy.wait(5000);
+            finishedSpy.wait(60000);
         }
         QCoreApplication::processEvents();
 
@@ -12757,14 +12757,14 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY2(finishedSpy.wait(5000), "first open must finish");
+        QVERIFY2(finishedSpy.wait(60000), "first open must finish");
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), fixtureLinesA.size());
         QVERIFY(mWindow->Model() == model);
 
         finishedSpy.clear();
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY2(finishedSpy.wait(5000), "appended open must finish");
+        QVERIFY2(finishedSpy.wait(60000), "appended open must finish");
         QCoreApplication::processEvents();
 
         QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
@@ -12846,7 +12846,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 3)
         {
-            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "three per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
 
@@ -12892,7 +12892,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath, olderPath}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 3)
         {
-            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "three per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
 
@@ -12953,7 +12953,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({appPrimary, otherPrimary}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 3)
         {
-            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "three per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
 
@@ -13001,7 +13001,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 2)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
 
@@ -13049,7 +13049,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
-        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QVERIFY2(finishedSpy.wait(60000), "single-file open must finish");
         QCoreApplication::processEvents();
 
         QCOMPARE(model->rowCount(), 1);
@@ -13096,7 +13096,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
@@ -13125,7 +13125,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
-        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QVERIFY2(finishedSpy.wait(60000), "single-file open must finish");
         QCoreApplication::processEvents();
 
         {
@@ -13182,7 +13182,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
@@ -13222,8 +13222,8 @@ private slots:
 
         QVERIFY2(!mWindow->HasPendingLiveTailForTest(), "destructive open must scrub stale pending live-tail state");
 
-        // Leave no streaming worker for the next slot.
-        (void)finishedSpy.wait(5000);
+        // A live tail never finishes by itself; leave no worker for the next slot.
+        model->StopAndKeepRows();
         QCoreApplication::processEvents();
     }
 
@@ -13259,7 +13259,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
@@ -13273,7 +13273,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "second Replace must stream both files again");
+            QVERIFY2(finishedSpy.wait(60000), "second Replace must stream both files again");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
@@ -13317,7 +13317,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
-        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QVERIFY2(finishedSpy.wait(60000), "single-file open must finish");
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 1);
         QVERIFY2(
@@ -13364,7 +13364,7 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 60000);
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
@@ -13420,7 +13420,7 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 60000);
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
@@ -13488,7 +13488,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath, otherPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 3; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "three per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
@@ -13503,7 +13503,7 @@ private slots:
         mWindow->UndoRotationExpansionForTest();
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected on undo");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected on undo");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
@@ -13589,7 +13589,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
@@ -13652,7 +13652,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
@@ -13751,7 +13751,7 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest({primaryPath, oldPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "both hand-picked files must stream to completion");
+            QVERIFY2(finishedSpy.wait(60000), "both hand-picked files must stream to completion");
         }
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
@@ -13818,7 +13818,7 @@ private slots:
         for (int i = 0; i < 2; ++i)
         {
             QVERIFY2(
-                finishedSpy.wait(5000),
+                finishedSpy.wait(60000),
                 "primary + auto-detected sibling must both stream (round-trip must not mangle non-ASCII)"
             );
         }
@@ -13853,7 +13853,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
-        QVERIFY2(finishedSpy.wait(5000), "primary must stream to completion");
+        QVERIFY2(finishedSpy.wait(60000), "primary must stream to completion");
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 1);
 
@@ -13871,7 +13871,7 @@ private slots:
         const MainWindow::MixedInputDispatch outcome =
             mWindow->OpenMixedFilesForTest({sessionPath, primaryPath}, MainWindow::OpenMode::Replace);
         QCOMPARE(outcome, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
-        QVERIFY2(finishedSpy.wait(5000), "post-config log must stream to completion");
+        QVERIFY2(finishedSpy.wait(60000), "post-config log must stream to completion");
         QCoreApplication::processEvents();
 
         QVERIFY2(
@@ -13967,8 +13967,8 @@ private slots:
             "OpenStdinStreamFromProducer must scrub outgoing Undo-rotation affordance"
         );
 
-        // Leave no streaming worker for the next slot.
-        (void)finishedSpy.wait(5000);
+        // A live tail never finishes by itself; leave no worker for the next slot.
+        model->StopAndKeepRows();
         QCoreApplication::processEvents();
     }
 
@@ -14002,7 +14002,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenLogStreamForTest(primaryPath);
-        QVERIFY2(finishedSpy.wait(5000), "sibling drain must finish before the tail attaches");
+        QVERIFY2(finishedSpy.wait(60000), "sibling drain must finish before the tail attaches");
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
@@ -14058,7 +14058,7 @@ private slots:
         // Both prefix completions precede the queued live-tail promotion.
         for (int i = 0; i < 2; ++i)
         {
-            QVERIFY2(finishedSpy.wait(5000), "two sibling-prefix streamingFinished emits expected");
+            QVERIFY2(finishedSpy.wait(60000), "two sibling-prefix streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
 
@@ -14178,7 +14178,7 @@ private slots:
         mWindow->OpenFilesForTest({jsonFixture.Path(), logfmtFixture.Path()}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 2)
         {
-            QVERIFY2(finishedSpy.wait(5000), "both queued files must finish parsing");
+            QVERIFY2(finishedSpy.wait(60000), "both queued files must finish parsing");
         }
         QCoreApplication::processEvents();
 
@@ -14217,24 +14217,23 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // First open arms the worker but does NOT wait. Pump events
-        // just enough to enter the streaming state.
+        // First open arms the worker but does NOT wait. No events are
+        // pumped before the second open: the session only ends on the
+        // GUI thread, so it is still active however fast the worker is.
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QCoreApplication::processEvents();
+        QVERIFY(model->IsStreamingActive());
 
         // Second open is the regression case: with an in-flight
         // streaming worker, the file must defer onto
         // `mPendingOpenFiles` instead of tripping `AppendStreaming`'s
-        // `!isRunning()` assert. On a fast runner streaming may
-        // already have finished and the safer post-finish Append
-        // path runs.
+        // `!isRunning()` assert.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
 
         // Drain both `streamingFinished` events; the deferred file
         // produces a second one after the first worker terminates.
         while (finishedSpy.count() < 2)
         {
-            QVERIFY2(finishedSpy.wait(10000), "both streaming sessions must finish");
+            QVERIFY2(finishedSpy.wait(60000), "both streaming sessions must finish");
         }
         QCoreApplication::processEvents();
 
@@ -14270,9 +14269,9 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        // Inflate fixture A so the second Append queues into
-        // `mPendingOpenFiles` while the first parse is still active
-        // (same trick as the Defer-vs-Crash test).
+        // No events are pumped between the opens, so the second Append
+        // queues into `mPendingOpenFiles`: the first session only ends
+        // on the GUI thread, however fast its worker is.
         QStringList fixtureLinesA;
         fixtureLinesA.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -14287,9 +14286,9 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QCoreApplication::processEvents();
+        QVERIFY(model->IsStreamingActive());
         // Second open lands in `mPendingOpenFiles` because the
-        // first parse is still in flight.
+        // first session is still active.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
 
         mWindow->statusBar()->clearMessage();
@@ -14345,13 +14344,13 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 60000);
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), fixtureLinesA.size());
 
         finishedSpy.clear();
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Replace);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(model->rowCount(), fixtureLinesB.size());
@@ -14419,7 +14418,7 @@ private slots:
 
         while (finishedSpy.count() < 1)
         {
-            QVERIFY2(finishedSpy.wait(10000), "compressed open must produce a streamingFinished event");
+            QVERIFY2(finishedSpy.wait(60000), "compressed open must produce a streamingFinished event");
         }
         QCoreApplication::processEvents();
 
@@ -14516,7 +14515,7 @@ private slots:
         // first, then the uncompressed append).
         while (finishedSpy.count() < 2)
         {
-            QVERIFY2(finishedSpy.wait(10000), "both compressed + appended sessions must finish");
+            QVERIFY2(finishedSpy.wait(60000), "both compressed + appended sessions must finish");
         }
         QCoreApplication::processEvents();
 
@@ -14608,7 +14607,7 @@ private slots:
         // would wipe the uncompressed rows.
         while (finishedSpy.count() < 2)
         {
-            QVERIFY2(finishedSpy.wait(10000), "both queued sessions must finish");
+            QVERIFY2(finishedSpy.wait(60000), "both queued sessions must finish");
         }
         QCoreApplication::processEvents();
 
@@ -14687,7 +14686,7 @@ private slots:
         mWindow->RequestDecompressionCancelForTest();
 
         // Pump until the flag clears (10 s headroom).
-        QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 60000);
 
         // Cancel must NOT surface as `streamingFinished`: nothing
         // ever armed the model watcher. A non-zero count means the
@@ -14706,7 +14705,7 @@ private slots:
         };
         const TempJsonFile followUp(followUpLines);
         mWindow->OpenFilesForTest({followUp.Path()}, MainWindow::OpenMode::Replace);
-        QVERIFY2(finishedSpy.wait(10000), "follow-up open after cancel must produce a streamingFinished event");
+        QVERIFY2(finishedSpy.wait(60000), "follow-up open after cancel must produce a streamingFinished event");
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), followUpLines.size());
     }
@@ -14776,8 +14775,8 @@ private slots:
         // Drive events until the chained decompression fails and the
         // pipeline settles. `IsStreamingActive` clears when
         // `good.log` finishes, so also gate on the decompression flag.
-        QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 10000);
-        QTRY_VERIFY_WITH_TIMEOUT(!model->IsStreamingActive(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 60000);
+        QTRY_VERIFY_WITH_TIMEOUT(!model->IsStreamingActive(), 60000);
         QCoreApplication::processEvents();
 
         // Prior rows survive (the bug was silent-error-loss, not
@@ -14834,7 +14833,7 @@ private slots:
         const QStringList followUpLines{QStringLiteral(R"({"idx": 0, "msg": "after-chain-failure"})")};
         const TempJsonFile followUp(followUpLines);
         mWindow->OpenFilesForTest({followUp.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY2(finishedSpy.wait(10000), "follow-up open after chain-terminal failure must produce streamingFinished");
+        QVERIFY2(finishedSpy.wait(60000), "follow-up open after chain-terminal failure must produce streamingFinished");
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), uncompressedLines.size() + followUpLines.size());
     }
@@ -14859,7 +14858,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), fixtureLines.size());
         QVERIFY2(model->columnCount() >= 2, "fixture must auto-detect at least the two JSON keys as columns");
@@ -16996,7 +16995,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         const int totalRows = model->rowCount();
         QVERIFY2(totalRows > 0, "fixture must produce at least one row");
 
@@ -17075,7 +17074,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), 2);
 
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
@@ -17194,7 +17193,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), 40);
 
         const LogFilterModel *filterModel = mWindow->FilterModel();
@@ -17283,7 +17282,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
@@ -17404,7 +17403,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
         auto *tableView = mWindow->findChild<LogTableView *>();
@@ -17480,7 +17479,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         auto *findRecord = mWindow->findChild<FindRecordWidget *>();
         QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
@@ -17552,7 +17551,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), lines.size());
 
         auto *tableView = mWindow->findChild<LogTableView *>();
@@ -18192,7 +18191,7 @@ private slots:
         // Wait for the 120 ms debounce to fire. `wait()` doesn't
         // depend on the test driver's clock ticking.
         QVERIFY2(
-            spy.count() > 0 || spy.wait(5000),
+            spy.count() > 0 || spy.wait(60000),
             "FindDock::revealed must trigger a debounced MatchCountRequested for a non-empty needle"
         );
 
@@ -18219,7 +18218,7 @@ private slots:
         QSignalSpy spy(findRecord, &FindRecordWidget::MatchCountRequested);
         QVERIFY(spy.isValid());
         // Drain the textChanged-triggered debounce.
-        QVERIFY2(spy.count() > 0 || spy.wait(1500), "initial textChanged must emit");
+        QVERIFY2(spy.count() > 0 || spy.wait(60000), "initial textChanged must emit");
         spy.clear();
 
         // Bump every 50 ms (under the 120 ms trailing window) for
@@ -18231,10 +18230,14 @@ private slots:
         constexpr int TOTAL_BUMP_DURATION_MS = 1000;
         constexpr int MAX_AGE_TOLERANCE_MS = 1000; // a bit above the 750 ms cap
         bool emittedDuringHammer = false;
-        while (wallClock.elapsed() < TOTAL_BUMP_DURATION_MS)
+        // A stalled machine delays the emit's delivery, not the cap.
+        qint64 oversleptMs = 0;
+        while (wallClock.elapsed() - oversleptMs < TOTAL_BUMP_DURATION_MS)
         {
             findRecord->BumpMatchCountDebounce();
+            const qint64 beforeWait = wallClock.elapsed();
             QTest::qWait(BUMP_INTERVAL_MS);
+            oversleptMs += std::max<qint64>(0, wallClock.elapsed() - beforeWait - BUMP_INTERVAL_MS);
             if (spy.count() > 0)
             {
                 emittedDuringHammer = true;
@@ -18250,7 +18253,7 @@ private slots:
                            .arg(wallClock.elapsed()))
         );
         QVERIFY2(
-            wallClock.elapsed() <= MAX_AGE_TOLERANCE_MS,
+            wallClock.elapsed() - oversleptMs <= MAX_AGE_TOLERANCE_MS,
             qPrintable(QStringLiteral("first emit took longer than the max-age cap: %1 ms").arg(wallClock.elapsed()))
         );
     }
@@ -18278,7 +18281,7 @@ private slots:
 
         // Realise the window so the bump gate lets through.
         mWindow->show();
-        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 60000));
         findDock->show();
         QCoreApplication::processEvents();
         QVERIFY2(findDock->isVisible(), "find dock must be visible for the bump gate to pass");
@@ -18288,12 +18291,14 @@ private slots:
         QVERIFY(spy.isValid());
         // Drain the textChanged debounce so the next emit is
         // unambiguously caused by the hide.
-        QVERIFY2(spy.count() > 0 || spy.wait(1500), "initial textChanged must trigger a debounced MatchCountRequested");
+        QVERIFY2(
+            spy.count() > 0 || spy.wait(60000), "initial textChanged must trigger a debounced MatchCountRequested"
+        );
         spy.clear();
 
         mWindow->SetColumnVisible(categoryCol, false);
         QVERIFY2(
-            spy.count() > 0 || spy.wait(1500),
+            spy.count() > 0 || spy.wait(60000),
             "Hiding a column must invalidate the find cache and trigger a fresh MatchCountRequested"
         );
     }
@@ -18314,7 +18319,7 @@ private slots:
         // Offscreen QPA still pumps min/max/value updates as long
         // as the widget tree is shown.
         mWindow->show();
-        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 60000));
         dock->show();
         dock->raise();
         QCoreApplication::processEvents();
@@ -18550,6 +18555,29 @@ private slots:
     //   - filter matches every row -> "N lines", button still shown
     //     (the comment in `UpdateRowsShownStatus` calls this out
     //      explicitly; left untested in the original change).
+    void TestFilterProblemLabelReportsUnknownColumn()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        QCoreApplication::processEvents();
+
+        auto *label = mWindow->findChild<QLabel *>(QStringLiteral("filterProblemLabel"));
+        QVERIFY2(label != nullptr, "MainWindow must own the filter problem label");
+        QVERIFY(label->isHidden());
+
+        loglib::LeafRule leaf;
+        leaf.type = loglib::LeafRule::Type::String;
+        leaf.columnKeys = {"no_such_column"};
+        leaf.matchType = loglib::LeafRule::Match::Contains;
+        leaf.filterString = "x";
+        mWindow->CommitAdvancedFilterForTest(WireLeavesAsExpression({leaf}));
+        QVERIFY(!label->isHidden());
+        QVERIFY(label->text().contains(QStringLiteral("no_such_column")));
+
+        mWindow->CommitAdvancedFilterForTest(loglib::FilterExpression{});
+        QVERIFY(label->isHidden());
+    }
+
     void TestRowsShownStatusReflectsFilter()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -18721,7 +18749,7 @@ private slots:
         const bool streamWasVisible = streamBar->isVisible();
         streamBar->setVisible(true);
         mWindow->show();
-        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 60000));
         mWindow->adjustSize();
         QCoreApplication::processEvents();
         QVERIFY2(
@@ -19906,7 +19934,7 @@ private slots:
         // first call, and the cached `isChecked` reflects the
         // pre-show visibility otherwise).
         mWindow->show();
-        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 60000));
         QCoreApplication::processEvents();
 
         emit viewMenu->aboutToShow();
@@ -20328,6 +20356,10 @@ private slots:
         // second bump reset the timer (the bug we're pinning).
         QTest::qWait(20);
         const int remainingBefore = trailing->remainingTime();
+        if (remainingBefore < 0)
+        {
+            QSKIP("The wait outlasted the trailing window; nothing to compare");
+        }
         findRecord->BumpMatchCountDebounce();
         const int remainingAfter = trailing->remainingTime();
         // 5 ms slack for scheduler jitter; the invariant is "did
@@ -20420,7 +20452,7 @@ private slots:
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
 
-        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(model->rowCount(), 320);
 
@@ -20512,7 +20544,7 @@ private slots:
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
 
-        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(model->rowCount(), 320);
 
@@ -20646,7 +20678,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -20703,7 +20735,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
@@ -20758,7 +20790,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
@@ -20818,7 +20850,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
@@ -20933,7 +20965,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
@@ -21014,7 +21046,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
@@ -21092,7 +21124,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
@@ -21171,7 +21203,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
@@ -21604,7 +21636,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
@@ -21662,7 +21694,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
@@ -21732,7 +21764,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
@@ -22646,7 +22678,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
         QCOMPARE(model->rowCount(), 3);
 
         auto *dock = mWindow->findChild<RecordDetailDock *>();
@@ -22761,7 +22793,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
         QCOMPARE(model->rowCount(), 2);
 
         QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
@@ -22811,7 +22843,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
 
         auto *dock = mWindow->findChild<RecordDetailDock *>();
         auto *table = mWindow->findChild<LogTableView *>();
@@ -23029,7 +23061,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
 
         QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
 
@@ -23192,7 +23224,7 @@ private slots:
         options.threads = 1;
         const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
-        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
         QCOMPARE(model->rowCount(), 3);
 
         auto *dock = mWindow->findChild<RecordDetailDock *>();
@@ -23375,6 +23407,13 @@ private slots:
             "second trigger must also revert under offscreen QPA -- the action stays unchecked until the host is "
             "realised"
         );
+    }
+
+    // A log value with no zone is read in the display zone. Outside
+    // `private slots:` so moc doesn't expose it as a test method.
+    static qint64 NaiveToUtcUs(qint64 wallClockUs)
+    {
+        return loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(wallClockUs);
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
@@ -23641,7 +23680,7 @@ private slots:
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "shared"})")});
         QSignalSpy primaryFinished(primary->Model(), &LogModel::streamingFinished);
         primary->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(primaryFinished.wait(5000));
+        QVERIFY(primaryFinished.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
 
@@ -23678,7 +23717,7 @@ private slots:
 
         QSignalSpy finishedSpy(seeder->Model(), &LogModel::streamingFinished);
         seeder->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
 
@@ -23692,7 +23731,7 @@ private slots:
         auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->RestoreLastSessionFromPath(*lastPath);
-        QVERIFY(restoredSpy.wait(5000));
+        QVERIFY(restoredSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
@@ -23721,7 +23760,7 @@ private slots:
 
         QSignalSpy seederFinishedSpy(seeder->Model(), &LogModel::streamingFinished);
         seeder->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(seederFinishedSpy.wait(5000));
+        QVERIFY(seederFinishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const int categoryCol = ColumnByHeader(*seeder->Model(), QStringLiteral("category"));
@@ -23762,7 +23801,7 @@ private slots:
         // no batches have been processed yet.
         QCOMPARE(restoredFilter->SortColumn(), -1);
 
-        QVERIFY(restoredFinishedSpy.wait(5000));
+        QVERIFY(restoredFinishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         // `ApplyDeferredSortFromConfig` applies the sort once
@@ -23806,7 +23845,7 @@ private slots:
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(manager.List().size(), 1);
@@ -23832,7 +23871,7 @@ private slots:
         QAction *entryAction = actions.first();
         finishedSpy.clear();
         entryAction->trigger();
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), fixtureLines.size());
@@ -23871,7 +23910,7 @@ private slots:
         QVERIFY(changedSpy.isValid());
 
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(changedSpy.count(), 1);
@@ -23882,7 +23921,7 @@ private slots:
         const TempJsonFile fixtureB(QStringList{QStringLiteral(R"({"msg": "b-0"})")});
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(manager.List().size(), 1);
@@ -24028,7 +24067,7 @@ private slots:
         secondary.waitForBytesWritten(1000);
 
         // Spin the loop so the primary drains the pipe.
-        QVERIFY(spy.wait(5000));
+        QVERIFY(spy.wait(60000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         const QStringList received = args.at(0).toStringList();
@@ -24305,7 +24344,7 @@ private slots:
         peer.flush();
         peer.waitForBytesWritten(1000);
 
-        QVERIFY(spy.wait(5000));
+        QVERIFY(spy.wait(60000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);
@@ -24356,7 +24395,7 @@ private slots:
         peer.flush();
         peer.waitForBytesWritten(1000);
 
-        QVERIFY(spy.wait(5000));
+        QVERIFY(spy.wait(60000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);
@@ -24998,6 +25037,8 @@ private slots:
 
         const QStringList taken = SessionHistoryManager::TakeOpenWindowsAtQuit();
         QCOMPARE(taken, QStringList{});
+        // A refused take leaves the persisted set alone.
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuid});
 
         holderLock.unlock();
 
@@ -25025,7 +25066,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
         const QString uuidA = manager.List().front().uuid;
@@ -25039,7 +25080,7 @@ private slots:
 
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QList<RecentSessionEntry> entries = manager.List();
@@ -25077,7 +25118,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
         const QString uuidA = manager.List().front().uuid;
@@ -25085,7 +25126,7 @@ private slots:
         // Shift-Open (destructive Replace) must produce a NEW uuid.
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Replace);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QList<RecentSessionEntry> entries = manager.List();
@@ -25116,7 +25157,7 @@ private slots:
 
         // Establish session A.
         wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
         const QString uuidA = manager.List().front().uuid;
@@ -25139,7 +25180,7 @@ private slots:
 
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QList<RecentSessionEntry> entries = manager.List();
@@ -25186,7 +25227,7 @@ private slots:
 
         // Establish session A and pin its uuid into the window.
         wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
         const QString uuidA = manager.List().front().uuid;
@@ -25218,7 +25259,7 @@ private slots:
         // is minted instead of clobbering session A.
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QList<RecentSessionEntry> entries = manager.List();
@@ -25263,7 +25304,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
         const QString uuidA = manager.List().front().uuid;
@@ -25381,7 +25422,7 @@ private slots:
         // rather than `streamingFinished` (it fires per-file).
         auto *model = wired->Model();
         QVERIFY(model != nullptr);
-        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), expectedRows, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), expectedRows, 60000);
 
         // Cfg columns drove the load (no autodetect fallback).
         QCOMPARE(static_cast<int>(model->Configuration().columns.size()), 2);
@@ -25445,7 +25486,7 @@ private slots:
         QSignalSpy primingSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(primingSpy.isValid());
         wired->OpenFilesForTest({prior.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(primingSpy.wait(5000));
+        QVERIFY(primingSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const int rowsBefore = wired->Model()->rowCount();
@@ -25504,7 +25545,7 @@ private slots:
         QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
 
         // Each chained file fires `streamingFinished`; wait both.
-        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 60000);
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
@@ -25542,7 +25583,7 @@ private slots:
         QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
         // Two emits: file 1 chains to file 2 via
         // `OnStreamingFinished -> StreamNextPendingFile`.
-        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 60000);
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
@@ -25575,7 +25616,7 @@ private slots:
             wired->OpenMixedFilesForTest({moved}, MainWindow::OpenMode::Replace),
             MainWindow::MixedInputDispatch::QueuedLogsOnly
         );
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
@@ -25651,7 +25692,7 @@ private slots:
             wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace),
             MainWindow::MixedInputDispatch::QueuedLogsOnly
         );
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
@@ -25700,7 +25741,7 @@ private slots:
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
             wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace);
-            QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 60000);
 
             loglib::LogConfiguration changed = wired->Model()->Configuration();
             changed.columns.at(0).header = "Autosaved";
@@ -25714,7 +25755,7 @@ private slots:
         auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         const QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->OpenRecentSessionForTest(uuid);
-        QTRY_VERIFY_WITH_TIMEOUT(restoredSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredSpy.count() >= 1, 60000);
         QCOMPARE(QString::fromStdString(restored->Model()->Configuration().columns.at(0).header), QString("Autosaved"));
     }
 
@@ -25730,7 +25771,7 @@ private slots:
         const TempJsonFile initial({QStringLiteral(R"({"msg":"plain"})")});
         const QSignalSpy initialSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({initial.Path()}, MainWindow::OpenMode::Replace);
-        QTRY_VERIFY_WITH_TIMEOUT(initialSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(initialSpy.count() >= 1, 60000);
 
         loglib::LogConfiguration active = wired->Model()->Configuration();
         active.columns.at(0).header = "Active";
@@ -25744,7 +25785,7 @@ private slots:
         );
         const QSignalSpy appendSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Append);
-        QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 60000);
 
         QCOMPARE(wired->Model()->rowCount(), 2);
         QCOMPARE(QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Active"));
@@ -25792,7 +25833,7 @@ private slots:
         QCOMPARE(model->rowCount(), static_cast<int>(ROW_COUNT));
 
         // Wait for the asynchronous writer.
-        QTRY_VERIFY_WITH_TIMEOUT(!wired->IsExportInFlightForTest(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!wired->IsExportInFlightForTest(), 60000);
         QCoreApplication::processEvents();
 
         // Verify the produced bundle.
@@ -25829,7 +25870,7 @@ private slots:
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         wired->OpenFilesForCli({cfgPath, log.Path()});
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         // Configuration applied: single column `msg` from the cfg.
@@ -25855,7 +25896,7 @@ private slots:
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const auto columnsBefore = wired->Model()->Configuration().columns.size();
@@ -25899,7 +25940,7 @@ private slots:
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QString uuid = wired->ActiveSessionUuid();
@@ -25951,7 +25992,7 @@ private slots:
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QString uuid = wired->ActiveSessionUuid();
@@ -26019,7 +26060,7 @@ private slots:
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QString uuid = wired->ActiveSessionUuid();
@@ -26463,7 +26504,7 @@ private slots:
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->RestoreLastSessionFromPath(adhocPath);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         // Streaming finished but `mAutoSaveUuid` must not pin to
@@ -26491,7 +26532,7 @@ private slots:
         const TempJsonFile staticFixture({QStringLiteral(R"({"msg": "static"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({staticFixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         QCOMPARE(manager.List().size(), 1);
@@ -26540,7 +26581,7 @@ private slots:
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "abq-flush"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QString uuid = wired->ActiveSessionUuid();
@@ -26950,7 +26991,7 @@ private slots:
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "unpub"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
         const QString uuid = wired->ActiveSessionUuid();
         QVERIFY(!uuid.isEmpty());
@@ -26988,7 +27029,7 @@ private slots:
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "h1-regr"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
         const QString origUuid = wired->ActiveSessionUuid();

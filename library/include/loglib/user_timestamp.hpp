@@ -37,6 +37,15 @@ struct UserTimestampParse
 [[nodiscard]] bool FormatHasZoneSpecifier(std::string_view format) noexcept;
 
 /**
+ * @brief Returns whether a parsed timestamp names no zone of its own.
+ *
+ * @param text Text that @p format parsed.
+ * @param format `date::parse` format string.
+ * @return `true` when neither @p format nor a trailing `Z` in @p text gives a zone.
+ */
+[[nodiscard]] bool IsNaiveTimestamp(std::string_view text, std::string_view format) noexcept;
+
+/**
  * @brief Parses absolute or relative timestamp input.
  *
  * Tries a relative shortcut `[+-]?N[hm]` (case-insensitive,

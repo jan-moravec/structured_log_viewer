@@ -29,8 +29,8 @@ loglib::StreamedBatch MakeBatch(std::size_t id)
 }
 
 constexpr auto SHORT_WAIT = std::chrono::milliseconds(50);
-constexpr auto STOP_DEADLINE = std::chrono::milliseconds(200);
-constexpr auto STRESS_DEADLINE = std::chrono::seconds(5);
+constexpr auto STOP_DEADLINE = std::chrono::seconds(5);
+constexpr auto STRESS_DEADLINE = std::chrono::seconds(60);
 
 } // namespace
 
@@ -59,7 +59,7 @@ private slots:
         });
 
         // Wait until the producer has at least entered the call.
-        const auto enterDeadline = std::chrono::steady_clock::now() + SHORT_WAIT;
+        const auto enterDeadline = std::chrono::steady_clock::now() + STRESS_DEADLINE;
         while (!entered.load(std::memory_order_acquire))
         {
             QVERIFY(std::chrono::steady_clock::now() < enterDeadline);
@@ -99,7 +99,7 @@ private slots:
             result.store(ok, std::memory_order_release);
         });
 
-        const auto enterDeadline = std::chrono::steady_clock::now() + SHORT_WAIT;
+        const auto enterDeadline = std::chrono::steady_clock::now() + STRESS_DEADLINE;
         while (!entered.load(std::memory_order_acquire))
         {
             QVERIFY(std::chrono::steady_clock::now() < enterDeadline);

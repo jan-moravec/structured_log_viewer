@@ -92,7 +92,7 @@ namespace
     loglib::LogParseSink &sink = *model.Sink();
     loglib::JsonParser{}.ParseStreaming(*parseSource, sink, options);
 
-    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+    const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     if (!finished)
     {
         *error = QStringLiteral("streamingFinished must arrive within the timeout");

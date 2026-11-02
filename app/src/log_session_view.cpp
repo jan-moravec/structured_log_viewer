@@ -505,11 +505,9 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
         emit statusMessageRequested(tr("Could not parse timestamp."));
         return;
     }
-    // Stored cell timestamps line up with the TZ-shifted display:
-    // zoned columns hold true UTC micros, naive columns hold the
-    // wall-clock digits which are then TZ-shifted for rendering.
-    // Naive user input represents a display-zone wall-clock
-    // instant, so it needs the same local -> UTC shift to match.
+    // Stored cell timestamps are UTC, and a log value with no zone was
+    // read in the display zone. Naive user input is a display-zone
+    // wall-clock instant, so it needs the same local -> UTC shift.
     // `LocalMicrosecondsSinceEpochToUtc` handles DST edge cases.
     const int64_t targetMicros =
         parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
