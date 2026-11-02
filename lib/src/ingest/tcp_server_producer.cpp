@@ -1,7 +1,7 @@
 #include "loglib/ingest/tcp_server_producer.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 
-#include "loglib/ingest/internal/line_bytes_queue.hpp"
+#include "loglib/ingest/internal/queued_producer_state.hpp"
 
 #include <asio.hpp>
 #ifdef LOGLIB_HAS_TLS
@@ -96,7 +96,7 @@ private:
     bool mFinalized = false;
 };
 
-class TcpServerProducerImpl
+class TcpServerProducerImpl : public QueuedProducerState
 {
 public:
     explicit TcpServerProducerImpl(TcpServerProducer::Options options);
@@ -107,12 +107,7 @@ public:
     TcpServerProducerImpl(TcpServerProducerImpl &&) = delete;
     TcpServerProducerImpl &operator=(TcpServerProducerImpl &&) = delete;
 
-    size_t Read(std::span<char> buffer);
-    void WaitForBytes(std::chrono::milliseconds timeout);
     void Stop() noexcept;
-    [[nodiscard]] bool IsClosed() const noexcept;
-    [[nodiscard]] std::string DisplayName() const;
-    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] uint16_t BoundPort() const noexcept;
     [[nodiscard]] size_t ActiveClientCount() const noexcept;
     [[nodiscard]] size_t TotalClientsAccepted() const noexcept;
@@ -132,9 +127,6 @@ public:
     /// so callers waiting in `WaitForBytes` wake up to observe a
     /// possibly-empty queue + closed state.
     void OnSessionEnded(size_t sessionId);
-
-    /// Advance status to `Running` once we've actually received bytes.
-    void MarkRunning();
 
     [[nodiscard]] size_t ReadChunkBytes() const noexcept
     {
@@ -160,7 +152,6 @@ private:
     bool AdmitOrReject(asio::ip::tcp::socket &socket);
 
     TcpServerProducer::Options mOptions;
-    std::string mDisplayName;
 
     asio::io_context mIoContext;
     asio::ip::tcp::acceptor mAcceptor;
@@ -171,32 +162,16 @@ private:
     std::optional<asio::ssl::context> mSslContext;
 #endif
 
-    mutable std::mutex mMutex;
-    std::condition_variable mCv;
-
-    /// Byte queue. Backed by `LineBytesQueue` (deque<char> with
-    /// line-aware back-pressure) so the per-batch front drop is
-    /// O(K-bytes-dropped) instead of O(remaining buffer). The parse
-    /// loop's `Read` / `WaitForBytes` pattern stays uniform across
-    /// all producers.
-    LineBytesQueue mReadyBuffer;
-
     /// Active sessions, keyed by id. Lives on the mutex so `Stop` can
     /// snapshot and close them without racing the accept handler.
     std::unordered_map<size_t, std::shared_ptr<SessionBase>> mActiveSessions;
     size_t mNextSessionId = 1;
 
-    std::atomic<bool> mStopRequested{false};
-    std::atomic<bool> mWorkerExited{false};
     std::atomic<size_t> mTotalAccepted{0};
     std::atomic<size_t> mTotalRejected{0};
     std::atomic<size_t> mDroppedByteCount{0};
 
     uint16_t mBoundPort = 0;
-
-    mutable std::mutex mCallbackMutex;
-    std::function<void(SourceStatus)> mStatusCallback;
-    SourceStatus mLastReportedStatus = SourceStatus::Waiting;
 
     std::thread mWorker;
 };
@@ -462,29 +437,6 @@ TcpServerProducerImpl::~TcpServerProducerImpl()
     }
 }
 
-size_t TcpServerProducerImpl::Read(std::span<char> buffer)
-{
-    if (buffer.empty())
-    {
-        return 0;
-    }
-    const std::scoped_lock lock(mMutex);
-    return mReadyBuffer.Read(buffer);
-}
-
-void TcpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
-{
-    if (timeout.count() <= 0)
-    {
-        return;
-    }
-    std::unique_lock<std::mutex> lock(mMutex);
-    mCv.wait_for(lock, timeout, [&] {
-        return !mReadyBuffer.Empty() || mStopRequested.load(std::memory_order_acquire) ||
-               mWorkerExited.load(std::memory_order_acquire);
-    });
-}
-
 // `asio::io_context::stop()` may throw in rare error paths; `noexcept` matches
 // producer contract; the catch block below is the safety net.
 // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -536,37 +488,6 @@ void TcpServerProducerImpl::Stop() noexcept
         mIoContext.stop();
     }
     mCv.notify_all();
-}
-
-bool TcpServerProducerImpl::IsClosed() const noexcept
-{
-    if (!mWorkerExited.load(std::memory_order_acquire))
-    {
-        return false;
-    }
-    const std::scoped_lock lock(mMutex);
-    return mReadyBuffer.Empty();
-}
-
-std::string TcpServerProducerImpl::DisplayName() const
-{
-    return mDisplayName;
-}
-
-void TcpServerProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
-{
-    std::function<void(SourceStatus)> snapshot;
-    SourceStatus current{};
-    {
-        const std::scoped_lock lock(mCallbackMutex);
-        mStatusCallback = callback;
-        snapshot = mStatusCallback;
-        current = mLastReportedStatus;
-    }
-    if (snapshot)
-    {
-        snapshot(current);
-    }
 }
 
 uint16_t TcpServerProducerImpl::BoundPort() const noexcept
@@ -621,24 +542,6 @@ void TcpServerProducerImpl::OnSessionEnded(size_t sessionId)
         mActiveSessions.erase(sessionId);
     }
     mCv.notify_all();
-}
-
-void TcpServerProducerImpl::MarkRunning()
-{
-    std::function<void(SourceStatus)> cb;
-    {
-        const std::scoped_lock lock(mCallbackMutex);
-        if (mLastReportedStatus == SourceStatus::Running)
-        {
-            return;
-        }
-        mLastReportedStatus = SourceStatus::Running;
-        cb = mStatusCallback;
-    }
-    if (cb)
-    {
-        cb(SourceStatus::Running);
-    }
 }
 
 void TcpServerProducerImpl::StartAccept()

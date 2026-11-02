@@ -1,6 +1,6 @@
 #include "loglib/ingest/udp_server_producer.hpp"
 
-#include "loglib/ingest/internal/line_bytes_queue.hpp"
+#include "loglib/ingest/internal/queued_producer_state.hpp"
 
 #include <asio.hpp>
 
@@ -21,7 +21,7 @@
 namespace loglib::internal
 {
 
-class UdpServerProducerImpl
+class UdpServerProducerImpl : public QueuedProducerState
 {
 public:
     explicit UdpServerProducerImpl(UdpServerProducer::Options options);
@@ -32,12 +32,7 @@ public:
     UdpServerProducerImpl(UdpServerProducerImpl &&) = delete;
     UdpServerProducerImpl &operator=(UdpServerProducerImpl &&) = delete;
 
-    size_t Read(std::span<char> buffer);
-    void WaitForBytes(std::chrono::milliseconds timeout);
     void Stop() noexcept;
-    [[nodiscard]] bool IsClosed() const noexcept;
-    [[nodiscard]] std::string DisplayName() const;
-    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] uint16_t BoundPort() const noexcept;
     [[nodiscard]] size_t DatagramCount() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
@@ -52,15 +47,7 @@ private:
     /// would exceed `mOptions.maxQueueBytes`.
     void AppendDatagramLocked(const char *data, size_t size);
 
-    /// Edge-triggered transition `Waiting -> Running` once a real
-    /// datagram has arrived. Mirrors `TcpServerProducer::MarkRunning`
-    /// so the GUI badge has the same semantics across protocols
-    /// (bound-but-no-traffic is `Waiting`, first byte flips to
-    /// `Running`, and the producer never falls back).
-    void MarkRunning();
-
     UdpServerProducer::Options mOptions;
-    std::string mDisplayName;
 
     asio::io_context mIoContext;
     asio::ip::udp::socket mSocket;
@@ -70,31 +57,10 @@ private:
     std::vector<char> mRecvBuffer;
     asio::ip::udp::endpoint mPeerEndpoint;
 
-    mutable std::mutex mMutex;
-    std::condition_variable mCv;
-
-    /// Byte queue (FIFO). Backed by a `std::deque<char>` ring so
-    /// back-pressure-induced front drops are O(K-bytes-dropped) and
-    /// never trigger a full-buffer shift. The wrapper handles the
-    /// line-aware drop policy so this file stays focused on Asio
-    /// plumbing.
-    LineBytesQueue mReadyBuffer;
-
-    std::atomic<bool> mStopRequested{false};
-    std::atomic<bool> mWorkerExited{false};
     std::atomic<size_t> mDatagramCount{0};
     std::atomic<size_t> mDroppedByteCount{0};
 
     uint16_t mBoundPort = 0;
-
-    /// Status callback bookkeeping. Edge-triggered. We start in
-    /// `Waiting` (socket bound but no datagrams seen yet) and flip to
-    /// `Running` exactly once on the first arrival, parity with
-    /// `TcpServerProducer`. UDP has no per-connection state to track
-    /// past that, so the status never falls back to `Waiting`.
-    mutable std::mutex mCallbackMutex;
-    std::function<void(SourceStatus)> mStatusCallback;
-    SourceStatus mLastReportedStatus = SourceStatus::Waiting;
 
     std::thread mWorker;
 };
@@ -161,29 +127,6 @@ UdpServerProducerImpl::~UdpServerProducerImpl()
     }
 }
 
-size_t UdpServerProducerImpl::Read(std::span<char> buffer)
-{
-    if (buffer.empty())
-    {
-        return 0;
-    }
-    const std::scoped_lock lock(mMutex);
-    return mReadyBuffer.Read(buffer);
-}
-
-void UdpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
-{
-    if (timeout.count() <= 0)
-    {
-        return; // non-blocking
-    }
-    std::unique_lock<std::mutex> lock(mMutex);
-    mCv.wait_for(lock, timeout, [&] {
-        return !mReadyBuffer.Empty() || mStopRequested.load(std::memory_order_acquire) ||
-               mWorkerExited.load(std::memory_order_acquire);
-    });
-}
-
 // `asio::io_context::stop()` may throw in rare error paths; `noexcept` matches
 // producer contract; the catch block below is the safety net.
 // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -218,42 +161,6 @@ void UdpServerProducerImpl::Stop() noexcept
     mCv.notify_all();
 }
 
-bool UdpServerProducerImpl::IsClosed() const noexcept
-{
-    if (!mWorkerExited.load(std::memory_order_acquire))
-    {
-        return false;
-    }
-    const std::scoped_lock lock(mMutex);
-    return mReadyBuffer.Empty();
-}
-
-std::string UdpServerProducerImpl::DisplayName() const
-{
-    return mDisplayName;
-}
-
-void UdpServerProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
-{
-    std::function<void(SourceStatus)> snapshot;
-    SourceStatus current{};
-    {
-        const std::scoped_lock lock(mCallbackMutex);
-        mStatusCallback = callback;
-        snapshot = mStatusCallback;
-        current = mLastReportedStatus;
-    }
-    // Fire once with the current state so the GUI gets a fresh
-    // edge-triggered baseline. UDP starts in `Waiting`; `MarkRunning`
-    // promotes to `Running` on the first datagram. Replaying the
-    // current state matches the TCP producer's behaviour so consumers
-    // installed late still see the live status.
-    if (snapshot)
-    {
-        snapshot(current);
-    }
-}
-
 uint16_t UdpServerProducerImpl::BoundPort() const noexcept
 {
     return mBoundPort;
@@ -267,24 +174,6 @@ size_t UdpServerProducerImpl::DatagramCount() const noexcept
 size_t UdpServerProducerImpl::DroppedByteCount() const noexcept
 {
     return mDroppedByteCount.load(std::memory_order_acquire);
-}
-
-void UdpServerProducerImpl::MarkRunning()
-{
-    std::function<void(SourceStatus)> cb;
-    {
-        const std::scoped_lock lock(mCallbackMutex);
-        if (mLastReportedStatus == SourceStatus::Running)
-        {
-            return;
-        }
-        mLastReportedStatus = SourceStatus::Running;
-        cb = mStatusCallback;
-    }
-    if (cb)
-    {
-        cb(SourceStatus::Running);
-    }
 }
 
 void UdpServerProducerImpl::StartReceive()
