@@ -66,6 +66,7 @@ add_executable(
     "src/test_tzdata_search.cpp"
     "src/test_user_paths.cpp"
     "src/test_user_timestamp.cpp"
+    "src/test_worker_threads.cpp"
 )
 
 # The TLS test programmatically generates a self-signed cert via

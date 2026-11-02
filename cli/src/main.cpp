@@ -9,6 +9,7 @@
 #include <loglib/exports/row_exporter.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/tzdata_search.hpp>
+#include <loglib/worker_threads.hpp>
 
 #include <cstdio>
 #include <exception>
@@ -120,14 +121,16 @@ public:
 
 int main(int argc, char **argv)
 {
+    int code = Exit(slp::ExitCode::Internal);
     try
     {
-        return RunSlp(argc, argv);
+        code = RunSlp(argc, argv);
     }
     catch (...)
     {
         // Last resort when even reporting the error threw; nothing here may allocate.
         (void)std::fputs("slp: internal error: an unexpected exception was thrown.\n", stderr);
-        return Exit(slp::ExitCode::Internal);
     }
+    (void)loglib::JoinWorkerThreads();
+    return code;
 }

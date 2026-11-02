@@ -68,6 +68,7 @@ add_library(
     src/stable_byte_arena.cpp
     src/tzdata_search.cpp
     src/user_paths.cpp
+    src/worker_threads.cpp
     src/version.cpp
     src/row_ordering.cpp
     src/session_bundle_writer.cpp
@@ -154,6 +155,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/udp_server_producer.hpp
     include/loglib/tzdata_search.hpp
     include/loglib/user_paths.hpp
+    include/loglib/worker_threads.hpp
     include/loglib/user_timestamp.hpp
     include/loglib/version.hpp
 )

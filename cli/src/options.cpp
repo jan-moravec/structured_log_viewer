@@ -273,8 +273,8 @@ void AddGlobalFlags(CLI::App &app, GlobalOptions &global)
         "--tz",
         global.timeZone,
         std::format(
-            "Time zone for human-readable times and for --since and --until values without a zone. An IANA name, "
-            "local, or UTC. Log timestamps without a zone are read as UTC. The default is {}.",
+            "Time zone for human-readable times and for log timestamps and --since and --until values without a zone. "
+            "An IANA name, local, or UTC. The default is {}.",
             global.timeZone
         )
     );
