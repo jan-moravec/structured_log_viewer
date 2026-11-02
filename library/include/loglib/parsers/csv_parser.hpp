@@ -68,20 +68,6 @@ public:
      * lines append as normal.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    /**
-     * @brief Render @p line as a single CSV record. Cells are emitted in
-     * `KeyId`-sorted order (matching `LogfmtParser::ToString`)
-     * and RFC-4180-quoted when they contain `,` / `"` / CR / LF.
-     * Header-order round-trip is a follow-up.
-     */
-    std::string ToString(const LogLine &line) const override;
-
-    /**
-     * @brief `LogMap` convenience overload (tests, debug dumps).
-     * Lexicographic by key, mirroring `LogfmtParser::ToString(LogMap)`.
-     */
-    static std::string ToString(const LogMap &values);
 };
 
 } // namespace loglib

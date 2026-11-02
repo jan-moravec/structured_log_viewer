@@ -183,9 +183,4 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
     resolved->ParseStreaming(source, sink, std::move(options));
 }
 
-std::string AutoDetectParser::ToString(const LogLine &line) const
-{
-    return JsonParser().ToString(line);
-}
-
 } // namespace loglib

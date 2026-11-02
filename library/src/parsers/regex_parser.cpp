@@ -133,14 +133,10 @@ std::string FormatPcre2Error(int errcode)
 /// `pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)`). The KeyId at
 /// `[i]` is `keys.GetOrInsert(groupNames[i])`; workers index into
 /// the ovector at `groupIndices[i] * 2`. Source order is
-/// consumer-visible in two places:
-///  - column order in `LogTable` follows KeyId allocation, so
-///    columns appear left-to-right as the user wrote them (e.g.
-///    CLF: `clientip ident auth timestamp verb ...`, not
-///    alphabetical `auth bytes clientip ...`).
-///  - `RegexParser::ToString` joins values in source order so a
-///    regenerated line has its fields in the same slots as the
-///    original.
+/// consumer-visible: column order in `LogTable` follows KeyId
+/// allocation, so columns appear left-to-right as the user wrote
+/// them (e.g. CLF: `clientip ident auth timestamp verb ...`, not
+/// alphabetical `auth bytes clientip ...`).
 struct PatternSchema
 {
     std::vector<std::string> groupNames;
@@ -304,8 +300,8 @@ private:
 
         // Re-sort into pattern-source order. PCRE2 gives us the
         // name table sorted alphabetically by name; sorting by
-        // group index here is what makes columns and `ToString`
-        // follow the order the user wrote (see `PatternSchema`
+        // group index here is what makes columns follow the
+        // order the user wrote (see `PatternSchema`
         // doc). `groupNames` and `groupIndices` are parallel
         // arrays, so we permute them together via an index vector
         // — cheap, once at compile time.
@@ -1308,59 +1304,6 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
     internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(
         source, sink, options, stageA, stageB, newKeyBaseline
     );
-}
-
-std::string RegexParser::ToString(const LogLine &line) const
-{
-    const auto values = line.IndexedValues();
-    if (values.empty())
-    {
-        return {};
-    }
-    // Best effort: regex isn't invertible. Concatenate values in
-    // KeyId order separated by a single space — same convention
-    // as `LogfmtParser::ToString` for monostate / unknown fields.
-    std::string out;
-    bool first = true;
-    for (const auto &kv : values)
-    {
-        if (std::holds_alternative<std::monostate>(kv.second))
-        {
-            continue;
-        }
-        if (!first)
-        {
-            out.push_back(' ');
-        }
-        first = false;
-        std::visit(
-            [&out](const auto &v) {
-                using T = std::decay_t<decltype(v)>;
-                if constexpr (std::is_same_v<T, std::monostate>)
-                {
-                    // Skipped above; here for exhaustiveness.
-                }
-                else if constexpr (std::is_same_v<T, TimeStamp>)
-                {
-                    out.append(TimeStampToDateTimeString(v));
-                }
-                else if constexpr (std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>)
-                {
-                    out.append(v);
-                }
-                else if constexpr (std::is_same_v<T, bool>)
-                {
-                    out.append(v ? "true" : "false");
-                }
-                else
-                {
-                    out.append(fmt::format("{}", v));
-                }
-            },
-            kv.second
-        );
-    }
-    return out;
 }
 
 std::optional<RegexTemplate> DetectRegexTemplateFromBytes(std::string_view sniffBuffer)

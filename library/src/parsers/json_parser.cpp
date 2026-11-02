@@ -473,43 +473,6 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
     return result;
 }
 
-void EncodeLogValue(glz::generic_sorted_u64 &json, const std::string &key, const LogValue &value)
-{
-    std::visit(
-        [&json, &key](const auto &val) {
-            using T = std::decay_t<decltype(val)>;
-            if constexpr (std::is_same_v<T, std::monostate>)
-            {
-                json[key] = nullptr;
-            }
-            else if constexpr (std::is_same_v<T, TimeStamp>)
-            {
-                json[key] = TimeStampToDateTimeString(val);
-            }
-            else if constexpr (std::is_same_v<T, std::string_view>)
-            {
-                json[key] = std::string(val);
-            }
-            else
-            {
-                json[key] = val;
-            }
-        },
-        value
-    );
-}
-
-std::string SerializeJson(const glz::generic_sorted_u64 &json)
-{
-    std::string result;
-    const auto error = glz::write_json(json, result);
-    if (error)
-    {
-        throw std::runtime_error(fmt::format("Failed to serialize JSON: {}", glz::format_error(error)));
-    }
-    return result;
-}
-
 /// JSON-specific per-worker scratch.
 struct JsonWorkerState
 {
@@ -693,41 +656,6 @@ bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
         return !doc.get_object().error();
     }
     return false;
-}
-
-std::string JsonParser::ToString(const LogLine &line) const
-{
-    const auto values = line.IndexedValues();
-    if (values.empty())
-    {
-        return "{}";
-    }
-
-    glz::generic_sorted_u64 json;
-
-    const auto &keys = line.Keys();
-    for (const auto &entry : values)
-    {
-        EncodeLogValue(json, std::string(keys.KeyOf(entry.first)), entry.second);
-    }
-
-    return SerializeJson(json);
-}
-
-std::string JsonParser::ToString(const LogMap &values)
-{
-    if (values.empty())
-    {
-        return "{}";
-    }
-
-    glz::generic_sorted_u64 json;
-    for (const auto &[key, value] : values)
-    {
-        EncodeLogValue(json, key, value);
-    }
-
-    return SerializeJson(json);
 }
 
 namespace

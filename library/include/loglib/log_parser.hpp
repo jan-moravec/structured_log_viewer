@@ -33,8 +33,8 @@ inline constexpr std::size_t PROBE_BYTES_BUDGET = 16 * 1024;
 
 /**
  * @brief Base class for log-format parsers. New formats implement the
- * byte-buffer `IsValidBytes(std::string_view)`, both `ParseStreaming`
- * overloads, and `ToString`. The file-based `IsValid` is a
+ * byte-buffer `IsValidBytes(std::string_view)` and both `ParseStreaming`
+ * overloads. The file-based `IsValid` is a
  * non-virtual shim that reads up to `PROBE_BYTES_BUDGET` bytes
  * and forwards to `IsValidBytes`.
  *
@@ -78,9 +78,6 @@ public:
      * and the 1-based monotonic id assigned by `AppendLine`.
      */
     virtual void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
-
-    /** @brief Renders a parsed line back to the parser's native text form. */
-    virtual std::string ToString(const LogLine &line) const = 0;
 };
 
 /**

@@ -74,7 +74,7 @@ TEST_CASE("RegexParser rejects JSON / logfmt files [regex]", "[regex_parser]")
 
 TEST_CASE("RegexParser default-constructed parse without pattern surfaces error [regex]", "[regex_parser]")
 {
-    // `LogFactory::Create(Regex)` returns a no-pattern instance.
+    // A default-constructed RegexParser has no pattern.
     // Parsing must not crash; it surfaces one error and ends cleanly.
     const RegexParser parser;
     const TestLogFile file("regex_no_pattern.log");
@@ -245,11 +245,8 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
     CHECK(AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
 }
 
-TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_parser]")
+TEST_CASE("RegexParser captures named groups as values [regex]", "[regex_parser]")
 {
-    // Best-effort round-trip: regex isn't invertible, so we accept
-    // any space-separated form that includes every captured value.
-    // Only used when the line's source bytes are gone.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
     const TestLogFile file("regex_tostring.log");
     file.Write("info hello world\n");
@@ -258,9 +255,9 @@ TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_pa
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const std::string out = parser.ToString(result.data.Lines()[0]);
-    CHECK(out.contains("info"));
-    CHECK(out.contains("hello world"));
+    const auto &line = result.data.Lines()[0];
+    CHECK(AsStringView(line.GetValue("level")) == std::string_view{"info"});
+    CHECK(AsStringView(line.GetValue("message")) == std::string_view{"hello world"});
 }
 
 TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [regex]", "[regex_parser]")
@@ -330,8 +327,7 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
     // `LogTable`'s column order follows `KeyIndex` allocation
     // order — so we deliberately intern named groups by their
     // pattern-source index. A pattern with `message` declared
-    // before `level` must produce a `ToString` reading
-    // `<message> <level>` (the original order), not the
+    // before `level` must intern `message` first, not the
     // alphabetical permutation.
     const RegexParser parser(R"(^(?<message>[^|]*)\|(?<level>\w+)$)");
     const TestLogFile file("regex_tostring_order.log");
@@ -341,12 +337,11 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const std::string out = parser.ToString(result.data.Lines()[0]);
-    const auto messagePos = out.find("hello world");
-    const auto levelPos = out.find("info");
-    REQUIRE(messagePos != std::string::npos);
-    REQUIRE(levelPos != std::string::npos);
-    CHECK(messagePos < levelPos);
+    const KeyId messageKey = result.data.Keys().Find("message");
+    const KeyId levelKey = result.data.Keys().Find("level");
+    REQUIRE(messageKey != INVALID_KEY_ID);
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    CHECK(messageKey < levelKey);
 }
 
 namespace
@@ -1184,11 +1179,10 @@ TEST_CASE("RegexParser::IsValid returns false for a missing file [regex]", "[reg
     CHECK_FALSE(DetectRegexTemplate(missing).has_value());
 }
 
-TEST_CASE("RegexParser ToString skips monostate columns [regex]", "[regex_parser]")
+TEST_CASE("RegexParser leaves optional groups that did not match empty [regex]", "[regex_parser]")
 {
     // Optional groups that didn't participate in the match land
-    // as monostate and must not surface in `ToString`'s space-
-    // joined output. The syslog-style optional `[pid]` group is
+    // as monostate. The syslog-style optional `[pid]` group is
     // the natural fixture: line 1 leaves `pid` absent, line 2
     // fills it.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
@@ -1202,17 +1196,15 @@ TEST_CASE("RegexParser ToString skips monostate columns [regex]", "[regex_parser
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
-    const std::string row0 = parser.ToString(result.data.Lines()[0]);
-    CHECK(row0.contains("systemd"));
-    CHECK(row0.contains("System starting"));
-    // No `[pid]`-shaped digits in the output; the only digits in
-    // the sample come from an optional group that didn't fire.
-    CHECK(row0.find_first_of("0123456789") == std::string::npos);
+    const auto &row0 = result.data.Lines()[0];
+    CHECK(AsStringView(row0.GetValue("program")) == std::string_view{"systemd"});
+    CHECK(AsStringView(row0.GetValue("message")) == std::string_view{"System starting"});
+    CHECK(std::holds_alternative<std::monostate>(row0.GetValue("pid")));
 
-    const std::string row1 = parser.ToString(result.data.Lines()[1]);
-    CHECK(row1.contains("configd"));
-    CHECK(row1.contains("17"));
-    CHECK(row1.contains("network changed"));
+    const auto &row1 = result.data.Lines()[1];
+    CHECK(AsStringView(row1.GetValue("program")) == std::string_view{"configd"});
+    CHECK(AsStringView(row1.GetValue("message")) == std::string_view{"network changed"});
+    CHECK_FALSE(std::holds_alternative<std::monostate>(row1.GetValue("pid")));
 }
 
 TEST_CASE("RegexParser static overload with explicit pattern overrides configuration [regex]", "[regex_parser]")

@@ -253,7 +253,7 @@ TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_p
     REQUIRE(result.data.Lines().size() == 2);
 }
 
-TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parser]")
+TEST_CASE("Parses bare and quoted values [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
     const TestLogFile file;
@@ -263,30 +263,11 @@ TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parse
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const std::string out = parser.ToString(result.data.Lines()[0]);
-    // IndexedValues are KeyId-ordered (insertion order via `KeyIndex`).
-    CHECK(out.contains("level=info"));
-    CHECK(out.contains("msg=\"hello world\""));
-    CHECK(out.contains("code=42"));
-    CHECK(out.contains("ratio=3.14"));
-}
-
-TEST_CASE("ToString quotes values with whitespace and special bytes [logfmt]", "[logfmt_parser]")
-{
-    using namespace loglib;
-    const std::string emitted = LogfmtParser::ToString(
-        LogMap{
-            {"safe", LogValue{std::string_view{"value"}}},
-            {"spaced", LogValue{std::string_view{"hello world"}}},
-            {"with_quote", LogValue{std::string_view{"a\"b"}}},
-            {"with_newline", LogValue{std::string_view{"line1\nline2"}}}
-        }
-    );
-
-    CHECK(emitted.contains("safe=value"));
-    CHECK(emitted.contains("spaced=\"hello world\""));
-    CHECK(emitted.contains("with_quote=\"a\\\"b\""));
-    CHECK(emitted.contains("with_newline=\"line1\\nline2\""));
+    const auto &line = result.data.Lines()[0];
+    CHECK(loglib::AsStringView(line.GetValue("level")) == std::string_view{"info"});
+    CHECK(loglib::AsStringView(line.GetValue("msg")) == std::string_view{"hello world"});
+    CHECK(std::get<uint64_t>(line.GetValue("code")) == 42);
+    CHECK(std::get<double>(line.GetValue("ratio")) == 3.14);
 }
 
 TEST_CASE("Parse file via FactoryParser auto-detect [logfmt]", "[logfmt_parser]")

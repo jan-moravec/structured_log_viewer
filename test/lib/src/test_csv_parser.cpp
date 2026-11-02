@@ -325,24 +325,6 @@ TEST_CASE("LineSource::RawLine alignment skips the header [csv]", "[csv_parser]"
     CHECK(line1.Source()->RawLine(line1.LineId()) == std::string{"40,50,60"});
 }
 
-TEST_CASE("ToString emits cells comma-separated, quoting where needed [csv]", "[csv_parser]")
-{
-    using namespace loglib;
-    const std::string emitted = CsvParser::ToString(
-        LogMap{
-            {"a_safe", LogValue{std::string_view{"value"}}},
-            {"b_with_comma", LogValue{std::string_view{"a,b"}}},
-            {"c_with_quote", LogValue{std::string_view{"a\"b"}}},
-            {"d_with_newline", LogValue{std::string_view{"line1\nline2"}}},
-            {"e_int", LogValue{static_cast<std::int64_t>(-42)}},
-            {"f_bool", LogValue{true}}
-        }
-    );
-
-    // Values only, lex-key-ordered (prefixes `a_` / `b_` / ... pin the order).
-    CHECK(emitted == "value,\"a,b\",\"a\"\"b\",\"line1\nline2\",-42,true");
-}
-
 TEST_CASE("Parse file via FactoryParser auto-detect [csv]", "[csv_parser]")
 {
     const TestLogFile file;
@@ -353,8 +335,7 @@ TEST_CASE("Parse file via FactoryParser auto-detect [csv]", "[csv_parser]")
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("message")) == std::string_view{"hello"});
 }
 
-// `test_common::Csv()` duplicates `loglib::BareCellIsSafe` /
-// `AppendQuotedCell`; this round-trip pins the two copies in sync.
+// Pins the CSV writer in `test_common` to what `CsvParser` reads back.
 TEST_CASE(
     "test_common::Csv() writes round-trip through CsvParser (all value families) [csv]", "[csv_parser][round_trip]"
 )

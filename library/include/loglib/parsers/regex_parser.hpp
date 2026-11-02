@@ -59,7 +59,7 @@ public:
     /**
      * @brief Build a parser that takes its pattern from
      * `ParserOptions::configuration->source->regexPattern` at parse
-     * time. Used by `LogFactory::Create(Parser::Regex)`.
+     * time.
      */
     RegexParser() = default;
 
@@ -99,16 +99,6 @@ public:
      * overload.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    /**
-     * @brief Best-effort. Regex isn't invertible, so this joins the
-     * named-group values (in pattern-source order, which is also
-     * `RegexParser`'s `KeyIndex` intern order) with a single
-     * space. `Edit -> Copy` uses `RawLine()` for accurate
-     * round-trips; this is a fallback for callers that already
-     * lost the source line.
-     */
-    std::string ToString(const LogLine &line) const override;
 
 private:
     /**

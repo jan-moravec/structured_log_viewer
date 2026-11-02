@@ -92,14 +92,6 @@ public:
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /**
-     * @brief Delegates to `JsonParser::ToString`, which just serialises
-     * a `KV` map. `Edit -> Copy` uses `LineSource::RawLine`
-     * anyway; this override matters only when the GUI has no
-     * resolved parser handy (test-only path).
-     */
-    std::string ToString(const LogLine &line) const override;
-
 private:
     std::size_t mPeekBytes;
     std::chrono::milliseconds mPeekTimeout;

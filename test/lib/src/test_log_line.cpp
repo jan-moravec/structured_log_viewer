@@ -152,8 +152,8 @@ TEST_CASE("Set and update values", "[log_line]")
 // `AsStringView` / `HoldsString` / `ToOwnedLogValue` / `LogValueEquivalent`
 // are the public seam consumers use to read string-typed values without
 // caring whether the parser landed on the view or owned alternative. Pin
-// the contract so downstream code (e.g. `LogModel::data`,
-// `JsonParser::ToString`) keeps working as the parser shifts more values
+// the contract so downstream code (e.g. `LogModel::data`)
+// keeps working as the parser shifts more values
 // onto the fast path.
 TEST_CASE("AsStringView returns bytes for both string alternatives, nullopt for non-strings", "[log_line][helpers]")
 {

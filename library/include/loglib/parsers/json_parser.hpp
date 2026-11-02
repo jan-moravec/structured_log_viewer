@@ -38,11 +38,6 @@ public:
      * as a `LogLine` carrying `&source` and the new 1-based id.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    std::string ToString(const LogLine &line) const override;
-
-    /** @brief Convenience for `LogMap` (tests, debug dumps). */
-    static std::string ToString(const LogMap &values);
 };
 
 } // namespace loglib
