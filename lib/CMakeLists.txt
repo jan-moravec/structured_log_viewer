@@ -25,7 +25,9 @@ add_library(
     src/core/compact_log_value.cpp
     src/ingest/decompressing_byte_source.cpp
     src/core/enum_dictionary.cpp
+    src/table/enum_encoding.cpp
     src/table/enum_inference.cpp
+    src/table/enum_levels.cpp
     src/output/exports/export_sink.cpp
     src/output/exports/row_exporter.cpp
     src/ingest/file_identity.cpp
