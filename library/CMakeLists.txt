@@ -49,7 +49,6 @@ add_library(
     src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
     src/log_compare.cpp
     src/log_data.cpp
-    src/log_factory.cpp
     src/log_file.cpp
     src/log_filter.cpp
     src/log_level.cpp
@@ -117,7 +116,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/log_compare.hpp
     include/loglib/log_configuration.hpp
     include/loglib/log_data.hpp
-    include/loglib/log_factory.hpp
     include/loglib/log_file.hpp
     include/loglib/log_filter.hpp
     include/loglib/log_level.hpp

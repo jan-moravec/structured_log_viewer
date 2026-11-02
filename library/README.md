@@ -34,7 +34,7 @@ On Windows, keep `tbb12.dll` from `<prefix>/bin` on `PATH` or next to the execut
 Typical composition:
 
 1. Construct a `TimeZoneContext` (default UTC, or `Load(tzdataPath[, zone])`).
-1. Ingest with `LogFactory::Create` / `ParseFile`.
+1. Ingest with `ParseFile` / `MakeParserForFormat`.
 1. Hold rows in `LogTable`.
 
 `SetProcessDefaultTimeZone` is a documented process-wide convenience for formatting helpers such as `TimeStampToDateTimeString`. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.

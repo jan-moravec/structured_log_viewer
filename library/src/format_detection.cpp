@@ -1,6 +1,5 @@
 #include "loglib/format_detection.hpp"
 
-#include "loglib/log_factory.hpp"
 #include "loglib/log_parser.hpp"
 #include "loglib/parsers/csv_parser.hpp"
 #include "loglib/parsers/json_parser.hpp"
@@ -25,29 +24,18 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
 
     // Probe specific formats before generic CSV: JSON, logfmt,
     // regex templates, then CSV.
-    struct Probe
+    for (const Source::Format format : {Source::Format::Json, Source::Format::Logfmt})
     {
-        LogFactory::Parser parser;
-        Source::Format format;
-    };
-    static constexpr Probe HEAD_PROBES[] = {
-        {.parser = LogFactory::Parser::Json, .format = Source::Format::Json},
-        {.parser = LogFactory::Parser::Logfmt, .format = Source::Format::Logfmt},
-    };
-    for (const Probe &probe : HEAD_PROBES)
-    {
-        const std::unique_ptr<LogParser> instance = LogFactory::Create(probe.parser);
-        if (instance->IsValidBytes(sniffBuffer))
+        if (MakeParserForFormat(format)->IsValidBytes(sniffBuffer))
         {
-            return DetectedFormat{.format = probe.format, .regexPattern = {}};
+            return DetectedFormat{.format = format, .regexPattern = {}};
         }
     }
     if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
     {
         return DetectedFormat{.format = Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
     }
-    if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv);
-        csv->IsValidBytes(sniffBuffer))
+    if (MakeParserForFormat(Source::Format::Csv)->IsValidBytes(sniffBuffer))
     {
         return DetectedFormat{.format = Source::Format::Csv, .regexPattern = {}};
     }

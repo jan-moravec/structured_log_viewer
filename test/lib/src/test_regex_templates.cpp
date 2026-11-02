@@ -35,7 +35,7 @@ std::string SlugifyName(std::string_view name)
 
 /// Drive @p pattern through `RegexParser` over a synthetic file
 /// of @p lines. Wraps the static pipeline plus the
-/// `LogFactory`/`ParseFile`-style sink so we can assert on row /
+/// `ParseFile`-style sink so we can assert on row /
 /// error counts directly. Returns the `ParseResult`.
 ParseResult ParseLinesWith(std::string_view pattern, std::span<const std::string> lines, std::string_view filePath)
 {

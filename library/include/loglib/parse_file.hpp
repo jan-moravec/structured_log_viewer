@@ -19,8 +19,8 @@ namespace loglib
 [[nodiscard]] ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file);
 
 /**
- * @brief Auto-detecting variant: probes parsers registered with
- * `LogFactory::Create` via `IsValid` and runs the first match.
+ * @brief Auto-detecting variant: probes the formats listed in
+ * `DetectFormatForPath` and runs the first match.
  * Throws `std::runtime_error` if no parser claims the file.
  */
 [[nodiscard]] ParseResult ParseFile(const std::filesystem::path &file);

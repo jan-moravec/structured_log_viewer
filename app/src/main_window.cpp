@@ -39,7 +39,6 @@
 #include <loglib/format_detection.hpp>
 #include <loglib/leaf_rule_compile.hpp>
 #include <loglib/log_configuration.hpp>
-#include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>

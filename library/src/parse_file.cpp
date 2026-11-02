@@ -5,7 +5,6 @@
 #include "loglib/format_detection.hpp"
 #include "loglib/internal/buffering_sink.hpp"
 #include "loglib/log_configuration.hpp"
-#include "loglib/log_factory.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_parser.hpp"
 #include "loglib/parser_options.hpp"
