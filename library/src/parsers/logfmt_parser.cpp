@@ -2,7 +2,6 @@
 
 #include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
-#include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"
@@ -885,16 +884,8 @@ void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, 
 
 void LogfmtParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    ParseStreaming(source, sink, options, internal::FromParserOptions(options));
-}
-
-void LogfmtParser::ParseStreaming(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
-)
-{
     const LogFile &file = source.File();
-    const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
-                                                          : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
+    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
     const char *fileBegin = file.Data();
     const size_t fileSize = file.Size();
@@ -939,9 +930,7 @@ void LogfmtParser::ParseStreaming(
                       internal::ParsedPipelineBatch &parsed
                   ) { DecodeLogfmtBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, multiline); };
 
-    internal::RunStaticParserPipeline<LogfmtByteRange, LogfmtWorkerState>(
-        source, sink, options, advanced, stageA, stageB
-    );
+    internal::RunStaticParserPipeline<LogfmtByteRange, LogfmtWorkerState>(source, sink, options, stageA, stageB);
 }
 
 } // namespace loglib

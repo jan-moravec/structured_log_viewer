@@ -2,7 +2,6 @@
 
 #include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
-#include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"
@@ -1066,7 +1065,7 @@ static_assert(
 // ---------------------------------------------------------------------
 
 /// Resolve the pattern for this parse. `explicitPattern` (from
-/// the pinned-pattern ctor or advanced overload) wins; otherwise
+/// the pinned-pattern ctor) wins; otherwise
 /// fall back to the configuration snapshot's `Source::regexPattern`.
 std::string ResolvePattern(const std::optional<std::string> &explicitPattern, const ParserOptions &options)
 {
@@ -1187,31 +1186,10 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
 void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // Forward `mExplicitPattern` as `optional<string_view>` (not
-    // `string_view`) so the advanced overload can distinguish
-    // "no pattern pinned" (fall back to options) from "pinned to
-    // empty" (fail closed). Collapsing both to an empty
-    // `string_view` would let a parser explicitly built with `""`
-    // silently pick up the configuration's `regexPattern`,
-    // diverging from the streaming overload's behaviour.
-    std::optional<std::string_view> explicitView;
-    if (mExplicitPattern.has_value())
-    {
-        explicitView = std::string_view(*mExplicitPattern);
-    }
-    ParseStreaming(source, sink, options, internal::FromParserOptions(options), explicitView);
-}
-
-void RegexParser::ParseStreaming(
-    FileLineSource &source,
-    LogParseSink &sink,
-    const ParserOptions &options,
-    internal::AdvancedParserOptions advanced,
-    std::optional<std::string_view> explicitPattern
-)
-{
-    const std::string pattern = explicitPattern.has_value() ? std::string(*explicitPattern)
-                                                            : ResolvePattern(/*explicitPattern=*/std::nullopt, options);
+    // A parser built with an explicit pattern, even an empty one, ignores the configuration's regexPattern. An empty
+    // pattern then fails with the same error as the streaming overload.
+    const std::string pattern =
+        mExplicitPattern.has_value() ? *mExplicitPattern : ResolvePattern(/*explicitPattern=*/std::nullopt, options);
 
     const LogFile &file = source.File();
     const char *fileBegin = file.Data();
@@ -1275,8 +1253,7 @@ void RegexParser::ParseStreaming(
         anchorPtr = &headerAnchor;
     }
 
-    const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
-                                                          : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
+    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
     const char *cursor = fileBegin;
     uint64_t batchIndex = 0;
@@ -1329,7 +1306,7 @@ void RegexParser::ParseStreaming(
     };
 
     internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(
-        source, sink, options, advanced, stageA, stageB, newKeyBaseline
+        source, sink, options, stageA, stageB, newKeyBaseline
     );
 }
 

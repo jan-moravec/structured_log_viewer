@@ -2,7 +2,6 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
@@ -268,12 +267,10 @@ TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [
 {
     // Regression: `RegexParser("")` must NOT silently fall back
     // to `options.configuration->source->regexPattern`. The bug
-    // was that the advanced overload treated an empty
-    // `string_view` as "no explicit pattern" and read the config,
-    // contradicting the streaming overload's fail-closed behaviour
-    // for the same parser. The fix took the advanced overload to
-    // `optional<string_view>` so "pinned to empty" stays distinct
-    // from "no pattern pinned".
+    // was that the static-file path treated an empty pattern as
+    // "no explicit pattern" and read the config, contradicting the
+    // live-stream path's fail-closed behaviour for the same parser.
+    // "Pinned to empty" must stay distinct from "no pattern pinned".
     const RegexParser parser{std::string{}};
     const TestLogFile file("regex_pinned_empty.log");
     file.Write("info hello\nwarn world\n");
@@ -921,8 +918,8 @@ TEST_CASE(
     const RegexTemplate extras[] = {extra};
     const ScopedExtraTemplates registration(extras);
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 32; // Force a cross-batch continuation.
+    ParserOptions options;
+    options.batchSizeBytes = 32; // Force a cross-batch continuation.
 
     const TestLogFile file("regex_static_crossbatch.log");
     file.Write(
@@ -938,7 +935,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser{std::string(pattern)}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -998,8 +995,8 @@ TEST_CASE(
     const RegexTemplate extras[] = {extra};
     const ScopedExtraTemplates registration(extras);
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 16;
+    ParserOptions options;
+    options.batchSizeBytes = 16;
 
     const TestLogFile file("regex_static_crossbatch_blank.log");
     file.Write(
@@ -1014,7 +1011,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser{std::string(pattern)}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -1067,8 +1064,8 @@ TEST_CASE(
     const RegexTemplate extras[] = {extra};
     const ScopedExtraTemplates registration(extras);
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 16;
+    ParserOptions options;
+    options.batchSizeBytes = 16;
 
     const TestLogFile file("regex_static_crossbatch_blank_no_cont.log");
     file.Write(
@@ -1082,7 +1079,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser{std::string(pattern)}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -1220,12 +1217,10 @@ TEST_CASE("RegexParser ToString skips monostate columns [regex]", "[regex_parser
 
 TEST_CASE("RegexParser static overload with explicit pattern overrides configuration [regex]", "[regex_parser]")
 {
-    // The advanced-tuning overload (`RegexParser::ParseStreaming`
-    // static) takes an `optional<string_view>` explicit pattern.
-    // A present value must override any `regexPattern` on the
-    // configuration snapshot — this is what a benchmark driver
-    // needs to bypass the pinned-pattern parser without touching
-    // the caller's config. Also asserts a non-empty override
+    // A parser built with an explicit pattern must override any
+    // `regexPattern` on the configuration snapshot — this is what a
+    // benchmark driver needs to bypass the pinned-pattern parser
+    // without touching the caller's config. Also asserts a non-empty override
     // succeeds where the configuration would have failed
     // (mismatched pattern), so a bug that quietly consulted the
     // configuration would flip the test to red.
@@ -1250,7 +1245,7 @@ TEST_CASE("RegexParser static overload with explicit pattern overrides configura
 
     ParserOptions options;
     options.configuration = std::shared_ptr<const LogConfiguration>(config);
-    RegexParser::ParseStreaming(*sourcePtr, sink, options, internal::AdvancedParserOptions{}, explicitPattern);
+    RegexParser{std::string(explicitPattern)}.ParseStreaming(*sourcePtr, sink, options);
 
     LogData data = sink.TakeData();
     const std::vector<std::string> errors = sink.TakeErrors();
@@ -1344,8 +1339,8 @@ TEST_CASE(
     const RegexTemplate extras[] = {anchored};
     const ScopedExtraTemplates registration(extras);
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 24;
+    ParserOptions options;
+    options.batchSizeBytes = 24;
 
     const TestLogFile file("regex_header_anchor_crossbatch.log");
     file.Write(
@@ -1362,7 +1357,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser{std::string(pattern)}.ParseStreaming(*sourcePtr, sink, options);
 
     LogData data = sink.TakeData();
     const std::vector<std::string> errors = sink.TakeErrors();
@@ -1456,9 +1451,7 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser::ParseStreaming(
-        *sourcePtr, sink, ParserOptions{}, internal::AdvancedParserOptions{}, std::optional<std::string_view>{pattern}
-    );
+    RegexParser{std::string(pattern)}.ParseStreaming(*sourcePtr, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
     const std::vector<std::string> errors = sink.TakeErrors();

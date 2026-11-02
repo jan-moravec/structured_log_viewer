@@ -2,7 +2,6 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_file.hpp>
@@ -753,8 +752,8 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 24; // Force a cross-batch continuation.
+    ParserOptions options;
+    options.batchSizeBytes = 24; // Force a cross-batch continuation.
 
     const TestLogFile file{"logfmt_static_crossbatch.log"};
     file.Write(
@@ -770,7 +769,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
+    LogfmtParser{}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -815,8 +814,8 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 24;
+    ParserOptions options;
+    options.batchSizeBytes = 24;
 
     const TestLogFile file{"logfmt_static_crossbatch_blank.log"};
     file.Write(
@@ -831,7 +830,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
+    LogfmtParser{}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();

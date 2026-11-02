@@ -14,11 +14,6 @@ namespace loglib
 class FileLineSource;
 class StreamLineSource;
 
-namespace internal
-{
-struct AdvancedParserOptions;
-}
-
 /**
  * @brief CSV parser, RFC 4180 strict (comma-only, `""` quote escape, CRLF
  * or LF, UTF-8 BOM stripped on the header).
@@ -73,14 +68,6 @@ public:
      * lines append as normal.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    /** @brief Static overload exposing internal tuning knobs (benchmarks / bisects). */
-    static void ParseStreaming(
-        FileLineSource &source,
-        LogParseSink &sink,
-        const ParserOptions &options,
-        internal::AdvancedParserOptions advanced
-    );
 
     /**
      * @brief Render @p line as a single CSV record. Cells are emitted in

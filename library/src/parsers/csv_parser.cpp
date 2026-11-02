@@ -2,7 +2,6 @@
 
 #include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
-#include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/csv_tokenize.hpp"
 #include "loglib/internal/line_decoder.hpp"
@@ -649,16 +648,8 @@ void CsvParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, Par
 
 void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    ParseStreaming(source, sink, options, internal::FromParserOptions(options));
-}
-
-void CsvParser::ParseStreaming(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
-)
-{
     const LogFile &file = source.File();
-    const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
-                                                          : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
+    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
     const char *fileBegin = file.Data();
     const size_t fileSize = file.Size();
@@ -771,7 +762,7 @@ void CsvParser::ParseStreaming(
     };
 
     internal::RunStaticParserPipeline<CsvByteRange, CsvWorkerState>(
-        source, sink, options, advanced, stageA, stageB, newKeyBaseline
+        source, sink, options, stageA, stageB, newKeyBaseline
     );
 }
 

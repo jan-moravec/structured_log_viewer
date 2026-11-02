@@ -7,7 +7,6 @@
 #include "common.hpp"
 
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/csv_parser.hpp>
@@ -32,11 +31,9 @@ namespace
 
 // Free-function adapter (a `bench::ParserStreamFn` global would trip
 // `bugprone-throwing-static-initialization` from `std::function`'s ctor).
-void CsvStream(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
-)
+void CsvStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    CsvParser::ParseStreaming(source, sink, options, advanced);
+    CsvParser{}.ParseStreaming(source, sink, options);
 }
 
 // Derive the CSV schema by peeking one streamed record on a throwaway

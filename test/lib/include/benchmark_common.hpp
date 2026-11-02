@@ -7,7 +7,6 @@
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -318,12 +317,8 @@ inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguratio
 /// Parser-agnostic streaming entry point: matches the static
 /// `ParseStreaming` overload shared by every parser, so benchmarks can plug
 /// in `JsonParser::ParseStreaming`, `LogfmtParser::ParseStreaming`, etc.
-using ParserStreamFn = std::function<void(
-    loglib::FileLineSource &,
-    loglib::LogParseSink &,
-    const loglib::ParserOptions &,
-    loglib::internal::AdvancedParserOptions
-)>;
+using ParserStreamFn =
+    std::function<void(loglib::FileLineSource &, loglib::LogParseSink &, const loglib::ParserOptions &)>;
 
 /// Results of one end-to-end streaming run. The timed window covers
 /// configuration load + `LogTable` construction + mmap + `ParseStreaming`
@@ -353,7 +348,6 @@ inline StreamingRunResult RunStreamingFlow(
 )
 {
     StreamingRunResult result;
-    const loglib::internal::AdvancedParserOptions advanced;
 
     const std::size_t peakBefore = captureMemory ? SamplePeakWorkingSetBytes() : 0;
 
@@ -378,7 +372,7 @@ inline StreamingRunResult RunStreamingFlow(
         loglib::ParserOptions opts;
         opts.configuration = std::move(configuration);
 
-        parserStream(*parseSource, sink, opts, advanced);
+        parserStream(*parseSource, sink, opts);
 
         result.appendTotal = sink.appendTotal;
         result.appendBatches = sink.appendBatches;

@@ -1,7 +1,6 @@
 #include "common.hpp"
 
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
@@ -135,9 +134,7 @@ TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[cs
 
     TableSink sink;
     sink.table = &table;
-    loglib::CsvParser::ParseStreaming(
-        *sourceRaw, sink, loglib::ParserOptions{}, loglib::internal::AdvancedParserOptions{}
-    );
+    loglib::CsvParser{}.ParseStreaming(*sourceRaw, sink, loglib::ParserOptions{});
 
     CHECK(table.RowCount() == 2);
     CHECK(table.ColumnCount() == 2);
@@ -484,10 +481,10 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     TableSink sink;
     sink.table = &table;
 
-    internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = 16; // forces the header into a later batch
-    CsvParser::ParseStreaming(*sourceRaw, sink, ParserOptions{}, advanced);
+    ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = 16; // forces the header into a later batch
+    CsvParser{}.ParseStreaming(*sourceRaw, sink, options);
 
     CHECK(table.RowCount() == 2);
     CHECK(table.ColumnCount() == 2);

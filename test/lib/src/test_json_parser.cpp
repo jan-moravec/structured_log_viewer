@@ -2,7 +2,6 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/line_source.hpp>
@@ -39,28 +38,21 @@ namespace
 constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
 
 // Drives a synchronous parse against the streaming pipeline for tests that
-// need to dial advanced tuning knobs but still consume a `ParseResult`.
-loglib::ParseResult ParseWithSink(
-    const std::filesystem::path &path,
-    const loglib::ParserOptions &options = {},
-    const loglib::internal::AdvancedParserOptions &advanced = {}
-)
+// need to dial tuning knobs but still consume a `ParseResult`.
+loglib::ParseResult ParseWithSink(const std::filesystem::path &path, const loglib::ParserOptions &options = {})
 {
     auto logFile = std::make_unique<loglib::LogFile>(path);
     auto source = std::make_unique<loglib::FileLineSource>(std::move(logFile));
     loglib::FileLineSource *sourcePtr = source.get();
     loglib::internal::BufferingSink sink(std::move(source));
-    loglib::JsonParser::ParseStreaming(*sourcePtr, sink, options, advanced);
+    loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
     loglib::LogData data = sink.TakeData();
     std::vector<std::string> errors = sink.TakeErrors();
     return loglib::ParseResult{.data = std::move(data), .errors = std::move(errors)};
 }
 } // namespace
 
-TEST_CASE(
-    "ParserOptions{} + AdvancedParserOptions{} reproduces the legacy default-options behaviour",
-    "[json_parser][parser_options][defaults]"
-)
+TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[json_parser][parser_options][defaults]")
 {
     using namespace loglib;
 
@@ -68,11 +60,10 @@ TEST_CASE(
     CHECK_FALSE(defaults.stopToken.stop_possible());
     CHECK(defaults.configuration == nullptr);
 
-    const internal::AdvancedParserOptions advanced;
-    CHECK(advanced.threads == 0u);
-    CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES);
-    CHECK(internal::AdvancedParserOptions::DEFAULT_MAX_THREADS == 8u);
-    CHECK(internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES == 1024u * 1024u);
+    CHECK(defaults.threads == 0u);
+    CHECK(defaults.batchSizeBytes == 0u);
+    CHECK(DEFAULT_MAX_PARSE_THREADS == 8u);
+    CHECK(DEFAULT_PARSE_BATCH_BYTES == 1024u * 1024u);
 }
 
 TEST_CASE("Validate non-existent file", "[json_parser]")
@@ -244,12 +235,11 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
 
     // Force several Stage A batches by capping `batchSizeBytes` well below
     // the file size; the INVALID_LINE_NUMBER_A line therefore lands in batch 2+.
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 8 * 1024;
-    advanced.threads = 1;
+    loglib::ParserOptions options;
+    options.batchSizeBytes = 8 * 1024;
+    options.threads = 1;
 
-    auto result = ParseWithSink(testFile.GetFilePath(), options, advanced);
+    auto result = ParseWithSink(testFile.GetFilePath(), options);
 
     REQUIRE(result.errors.size() == 2);
     const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
@@ -715,15 +705,14 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     }
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
-    const ParserOptions opts;
-    internal::AdvancedParserOptions singleThread;
+    ParserOptions singleThread;
     singleThread.threads = 1;
 
-    internal::AdvancedParserOptions multiThread;
+    ParserOptions multiThread;
     multiThread.threads = std::max(2u, std::thread::hardware_concurrency());
 
-    auto singleResult = ParseWithSink(testFile.GetFilePath(), opts, singleThread);
-    auto multiResult = ParseWithSink(testFile.GetFilePath(), opts, multiThread);
+    auto singleResult = ParseWithSink(testFile.GetFilePath(), singleThread);
+    auto multiResult = ParseWithSink(testFile.GetFilePath(), multiThread);
 
     REQUIRE(singleResult.errors.empty());
     REQUIRE(multiResult.errors.empty());
@@ -784,12 +773,11 @@ TEST_CASE(
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     const JsonParser parser;
-    const ParserOptions opts;
-    internal::AdvancedParserOptions advanced;
-    advanced.threads = THREADS;
+    ParserOptions opts;
+    opts.threads = THREADS;
 
     KeyIndex::ResetInstrumentationCounters();
-    const auto cachedResult = ParseWithSink(testFile.GetFilePath(), opts, advanced);
+    const auto cachedResult = ParseWithSink(testFile.GetFilePath(), opts);
     const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
 
     REQUIRE(cachedResult.errors.empty());

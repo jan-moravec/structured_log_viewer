@@ -14,6 +14,12 @@ struct LogConfiguration;
 /** @brief Default for `ParserOptions::maxLineBytes` and the producers' line limits. */
 inline constexpr std::size_t DEFAULT_MAX_LINE_BYTES = std::size_t{64} * 1024 * 1024;
 
+/** @brief Thread cap used when ParserOptions::threads is 0, applied on top of the hardware concurrency. */
+inline constexpr unsigned int DEFAULT_MAX_PARSE_THREADS = 8;
+
+/** @brief Stage A batch size used when ParserOptions::batchSizeBytes is 0. */
+inline constexpr std::size_t DEFAULT_PARSE_BATCH_BYTES = std::size_t{1024} * 1024;
+
 /**
  * @brief Public options for `LogParser::ParseStreaming`.
  *

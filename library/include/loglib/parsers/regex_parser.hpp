@@ -17,11 +17,6 @@ namespace loglib
 class FileLineSource;
 class StreamLineSource;
 
-namespace internal
-{
-struct AdvancedParserOptions;
-}
-
 /**
  * @brief Regex-template log parser, PCRE2-backed.
  *
@@ -104,27 +99,6 @@ public:
      * overload.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    /**
-     * @brief Static overload exposing internal tuning knobs (benchmarks
-     * / bisects). Mirrors the equivalents on the other parsers.
-     *
-     * @p explicitPattern: `std::nullopt` means "fall back to
-     * `options.configuration->source->regexPattern`". Any present
-     * value (even an empty `string_view`) overrides the
-     * configuration; an empty override fails closed with the same
-     * "non-empty pattern required" error the streaming overload
-     * emits. This distinguishes "no pattern pinned" from "pinned
-     * to empty", so an explicit `""` cannot silently pick up a
-     * value from the configuration.
-     */
-    static void ParseStreaming(
-        FileLineSource &source,
-        LogParseSink &sink,
-        const ParserOptions &options,
-        internal::AdvancedParserOptions advanced,
-        std::optional<std::string_view> explicitPattern = std::nullopt
-    );
 
     /**
      * @brief Best-effort. Regex isn't invertible, so this joins the

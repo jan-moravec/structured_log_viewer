@@ -14,11 +14,6 @@ namespace loglib
 class FileLineSource;
 class StreamLineSource;
 
-namespace internal
-{
-struct AdvancedParserOptions;
-}
-
 /**
  * @brief Newline-delimited logfmt parser (Heroku / `kr/logfmt` flavour).
  *
@@ -57,14 +52,6 @@ public:
      * carrying `&source` and the new 1-based id.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    /** @brief Static overload exposing internal tuning knobs (benchmarks / bisects). */
-    static void ParseStreaming(
-        FileLineSource &source,
-        LogParseSink &sink,
-        const ParserOptions &options,
-        internal::AdvancedParserOptions advanced
-    );
 
     std::string ToString(const LogLine &line) const override;
 

@@ -2,7 +2,6 @@
 
 #include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
-#include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/batch_coalescer.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/parse_runtime.hpp"
@@ -98,7 +97,7 @@ struct ResolvedPipelineSettings
     size_t ntokens = 0;
 };
 
-ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &advanced);
+ResolvedPipelineSettings ResolvePipelineSettings(const ParserOptions &options);
 
 /// Append @p leadingContinuationBytes to @p heldLine's `targetKey`.
 /// Arena-tail values extend in place to keep records spanning many
@@ -188,7 +187,6 @@ void RunStaticParserPipeline(
     FileLineSource &source,
     LogParseSink &sink,
     const ParserOptions &options,
-    const AdvancedParserOptions &advanced,
     // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     StageADriver &&stageADriver,
     // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
@@ -225,7 +223,7 @@ void RunStaticParserPipeline(
         return;
     }
 
-    const ResolvedPipelineSettings settings = ResolvePipelineSettings(advanced);
+    const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
     file.ReserveLineOffsets(file.Size() / 100);
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(keys, options.configuration.get());

@@ -8,7 +8,6 @@
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
@@ -46,11 +45,9 @@ namespace
 // A free function rather than a `bench::ParserStreamFn` global to avoid
 // `bugprone-throwing-static-initialization` (the `std::function` ctor is
 // not `noexcept`).
-void JsonStream(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
-)
+void JsonStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    JsonParser::ParseStreaming(source, sink, options, advanced);
+    JsonParser{}.ParseStreaming(source, sink, options);
 }
 
 } // namespace
@@ -377,7 +374,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     ParserOptions opts;
     opts.configuration = std::move(configuration);
 
-    JsonParser::ParseStreaming(*parseSource, sink, opts, internal::AdvancedParserOptions{});
+    JsonParser{}.ParseStreaming(*parseSource, sink, opts);
 
     REQUIRE(table.RowCount() == testFile.RecordCount());
 

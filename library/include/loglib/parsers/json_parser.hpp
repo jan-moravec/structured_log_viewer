@@ -14,11 +14,6 @@ namespace loglib
 class FileLineSource;
 class StreamLineSource;
 
-namespace internal
-{
-struct AdvancedParserOptions;
-}
-
 /** @brief Newline-delimited JSON parser, built on the shared TBB pipeline + simdjson. */
 class JsonParser : public LogParser
 {
@@ -43,17 +38,6 @@ public:
      * as a `LogLine` carrying `&source` and the new 1-based id.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
-
-    /**
-     * @brief Static-file overload exposing internal tuning knobs (used by
-     * benchmarks / bisects).
-     */
-    static void ParseStreaming(
-        FileLineSource &source,
-        LogParseSink &sink,
-        const ParserOptions &options,
-        internal::AdvancedParserOptions advanced
-    );
 
     std::string ToString(const LogLine &line) const override;
 
