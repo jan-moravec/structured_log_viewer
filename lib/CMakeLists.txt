@@ -81,6 +81,7 @@ add_library(
     src/parse/parsers/json_parser.cpp
     src/parse/parsers/logfmt_parser.cpp
     src/parse/parsers/regex_parser.cpp
+    src/parse/regex_template_probe.cpp
     src/parse/regex_templates.cpp
     src/ingest/stdin_bytes_producer.cpp
     src/ingest/stdin_peek.cpp
