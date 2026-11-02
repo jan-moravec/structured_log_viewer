@@ -41,12 +41,12 @@ struct SessionBundleWriteOptions
 
     /**
      * @brief Cooperative cancellation. The writer removes its staging file
-     * before throwing SessionBundleCancelled.
+     * before throwing OperationCancelled.
      */
     StopToken stopToken;
 
     /** @brief Progress in source-model rows. Called on the writer thread. */
-    std::function<void(std::uint64_t rowsWritten, std::uint64_t rowsTotal)> progress;
+    RowProgressCallback progress;
 
     /**
      * @brief Convert source paths to the same form as AnchorEntry::locator
@@ -61,16 +61,6 @@ struct SessionBundleMetadata
     std::uint32_t formatVersion = 0;
     std::uint64_t rowCount = 0;
     LogConfiguration configuration;
-};
-
-/** @brief Thrown when bundle writing is cancelled. */
-class SessionBundleCancelled : public std::exception
-{
-public:
-    [[nodiscard]] const char *what() const noexcept override
-    {
-        return "Session bundle operation cancelled";
-    }
 };
 
 /** @brief Thrown when the bundle version is unsupported. */

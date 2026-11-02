@@ -1636,7 +1636,7 @@ private slots:
      * slice in one of the four supported formats (`JSON Lines`,
      * `CSV`, `Source snapshot`, `Markdown table`). Progress and
      * cancel run through a non-modal per-window `QProgressDialog`;
-     * user cancel unwinds via `loglib::exports::ExportCancelled`.
+     * user cancel unwinds via `loglib::OperationCancelled`.
      */
     void ExportFilteredRows();
 

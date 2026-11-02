@@ -355,7 +355,7 @@ private:
             Attach(std::move(lineSource));
             Parse(*format, source, MakeParserOptions(*mGlobal, *mInput, mRuntime->stop));
         }
-        catch (const loglib::DecompressionCancelled &)
+        catch (const loglib::OperationCancelled &)
         {
             return CancelledFailure();
         }

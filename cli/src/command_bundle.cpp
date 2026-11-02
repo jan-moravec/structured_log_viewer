@@ -161,7 +161,7 @@ ExitCode RunBundle(
     {
         loglib::WriteSessionBundle(loaded->table, configuration, destination, writeOptions);
     }
-    catch (const loglib::SessionBundleCancelled &)
+    catch (const loglib::OperationCancelled &)
     {
         progress.Finish();
         return ExitCode::Cancelled;

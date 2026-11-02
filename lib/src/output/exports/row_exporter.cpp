@@ -26,13 +26,13 @@ constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 /// Initial per-row output capacity.
 constexpr size_t ROW_SCRATCH_RESERVE = 512;
 
-/// Throw `ExportCancelled` when the user hit Cancel. Called
+/// Throw `OperationCancelled` when the user hit Cancel. Called
 /// between row batches.
 void PollStop(const loglib::StopToken &token)
 {
     if (token.stop_requested())
     {
-        throw ExportCancelled{};
+        throw OperationCancelled{"Export cancelled by user"};
     }
 }
 
@@ -47,17 +47,12 @@ public:
         const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
-        ProgressCallback progress,
-        void *progressUserData
+        const RowProgressCallback &progress
     ) override;
 };
 
 void JsonLinesExporter::Run(
-    const RowSource &source,
-    ExportSink &sink,
-    const loglib::StopToken &stopToken,
-    ProgressCallback progress,
-    void *progressUserData
+    const RowSource &source, ExportSink &sink, const loglib::StopToken &stopToken, const RowProgressCallback &progress
 )
 {
     assert(source.table != nullptr);
@@ -87,14 +82,14 @@ void JsonLinesExporter::Run(
         scratch.push_back('\n');
         sink.Write(scratch);
 
-        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, slot + 1, total);
+            progress(slot + 1, total);
         }
     }
-    if (progress != nullptr)
+    if (progress)
     {
-        progress(progressUserData, total, total);
+        progress(total, total);
     }
 }
 
@@ -109,8 +104,7 @@ public:
         const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
-        ProgressCallback progress,
-        void *progressUserData
+        const RowProgressCallback &progress
     ) override;
 };
 
@@ -156,11 +150,7 @@ namespace
 {
 
 void CsvExporter::Run(
-    const RowSource &source,
-    ExportSink &sink,
-    const loglib::StopToken &stopToken,
-    ProgressCallback progress,
-    void *progressUserData
+    const RowSource &source, ExportSink &sink, const loglib::StopToken &stopToken, const RowProgressCallback &progress
 )
 {
     assert(source.table != nullptr);
@@ -224,14 +214,14 @@ void CsvExporter::Run(
         scratch.push_back('\n');
         sink.Write(scratch);
 
-        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, slot + 1, total);
+            progress(slot + 1, total);
         }
     }
-    if (progress != nullptr)
+    if (progress)
     {
-        progress(progressUserData, total, total);
+        progress(total, total);
     }
 }
 
@@ -246,17 +236,12 @@ public:
         const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
-        ProgressCallback progress,
-        void *progressUserData
+        const RowProgressCallback &progress
     ) override;
 };
 
 void SnapshotExporter::Run(
-    const RowSource &source,
-    ExportSink &sink,
-    const loglib::StopToken &stopToken,
-    ProgressCallback progress,
-    void *progressUserData
+    const RowSource &source, ExportSink &sink, const loglib::StopToken &stopToken, const RowProgressCallback &progress
 )
 {
     assert(source.table != nullptr);
@@ -293,14 +278,14 @@ void SnapshotExporter::Run(
         sink.Write(raw);
         sink.WriteChar('\n');
 
-        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, slot + 1, total);
+            progress(slot + 1, total);
         }
     }
-    if (progress != nullptr)
+    if (progress)
     {
-        progress(progressUserData, total, total);
+        progress(total, total);
     }
 }
 
@@ -315,8 +300,7 @@ public:
         const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
-        ProgressCallback progress,
-        void *progressUserData
+        const RowProgressCallback &progress
     ) override;
 
 private:
@@ -350,11 +334,7 @@ void MarkdownExporter::AppendMarkdownCell(std::string &out, std::string_view cel
 }
 
 void MarkdownExporter::Run(
-    const RowSource &source,
-    ExportSink &sink,
-    const loglib::StopToken &stopToken,
-    ProgressCallback progress,
-    void *progressUserData
+    const RowSource &source, ExportSink &sink, const loglib::StopToken &stopToken, const RowProgressCallback &progress
 )
 {
     assert(source.table != nullptr);
@@ -420,14 +400,14 @@ void MarkdownExporter::Run(
         scratch.push_back('\n');
         sink.Write(scratch);
 
-        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, slot + 1, total);
+            progress(slot + 1, total);
         }
     }
-    if (progress != nullptr)
+    if (progress)
     {
-        progress(progressUserData, total, total);
+        progress(total, total);
     }
 }
 

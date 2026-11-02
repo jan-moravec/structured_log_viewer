@@ -35,7 +35,7 @@
 #include <vector>
 
 using loglib::DecompressingByteSource;
-using loglib::DecompressionCancelled;
+using loglib::OperationCancelled;
 using loglib::StopSource;
 
 namespace
@@ -565,7 +565,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
     // mid-decompress, however fast the decompression runs.
     const auto callback = [&stopSource](const DecompressingByteSource::Progress &) { stopSource.request_stop(); };
 
-    CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), callback, stopSource.get_token()), DecompressionCancelled);
+    CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), callback, stopSource.get_token()), OperationCancelled);
 
     // Cleanup: any temp file created by the worker must be gone;
     // source file intact.
@@ -573,16 +573,16 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
     CHECK(std::filesystem::is_empty(std::filesystem::temp_directory_path()));
 }
 
-TEST_CASE("DecompressingByteSource: DecompressionCancelled is not a std::runtime_error", "[DecompressingByteSource]")
+TEST_CASE("DecompressingByteSource: OperationCancelled is not a std::runtime_error", "[DecompressingByteSource]")
 {
     // Regression guard. `MainWindow::OnDecompressionFinished` relies
-    // on `catch (DecompressionCancelled)` matching before
+    // on `catch (OperationCancelled)` matching before
     // `catch (std::exception)` so cancels toast and codec errors
     // surface as a modal batch. If the class ever re-parents under
     // `runtime_error`, this static_assert trips before any
     // downstream catch site misclassifies.
-    static_assert(!std::is_base_of_v<std::runtime_error, DecompressionCancelled>);
-    static_assert(std::is_base_of_v<std::exception, DecompressionCancelled>);
+    static_assert(!std::is_base_of_v<std::runtime_error, OperationCancelled>);
+    static_assert(std::is_base_of_v<std::exception, OperationCancelled>);
     SUCCEED();
 }
 

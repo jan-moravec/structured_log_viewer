@@ -5139,7 +5139,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     {
         dbs = watcher->result();
     }
-    catch (const loglib::DecompressionCancelled &)
+    catch (const loglib::OperationCancelled &)
     {
         cancelled = true;
     }
@@ -5594,13 +5594,10 @@ void MainWindow::BeginAsyncExport(
         {
             throw std::runtime_error("Unsupported export format");
         }
-        // Free-function callback: keeps the capture list empty
-        // and matches the C-style ProgressCallback signature.
-        auto progressCb = +[](void *userData, size_t rowsWritten, size_t /*total*/) {
-            auto *dst = static_cast<QAtomicInteger<qint64> *>(userData);
-            dst->storeRelaxed(static_cast<qint64>(rowsWritten));
+        const auto progressCb = [rowsWrittenAtomic](std::uint64_t rowsWritten, std::uint64_t /*total*/) {
+            rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(rowsWritten));
         };
-        exporter->Run(sharedPlan->View(), *sink, stopToken, progressCb, rowsWrittenAtomic);
+        exporter->Run(sharedPlan->View(), *sink, stopToken, progressCb);
         // `RowExporter::Run` never calls `Finish`, so a mid-run
         // throw unwinds through `~FileSink` and unlinks the temp
         // file. Success path is exactly one `Finish` after `Run`
@@ -6058,11 +6055,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
         // is the documented idiom.
         watcher->waitForFinished();
     }
-    catch (const loglib::exports::ExportCancelled &)
-    {
-        cancelled = true;
-    }
-    catch (const loglib::SessionBundleCancelled &)
+    catch (const loglib::OperationCancelled &)
     {
         cancelled = true;
     }

@@ -1187,7 +1187,7 @@ public:
     /**
      * @brief Waits for the decompression worker and consumes its stored result.
      *
-     * Cancellation stores `DecompressionCancelled` in the future. Retrieving
+     * Cancellation stores `OperationCancelled` in the future. Retrieving
      * that result prevents `std::terminate` when the watcher is reset or
      * destroyed.
      */

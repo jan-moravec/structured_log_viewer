@@ -22,25 +22,6 @@
 namespace loglib
 {
 
-/** @brief Thrown when decompression is cancelled. */
-class DecompressionCancelled : public std::exception
-{
-public:
-    // Not noexcept: by-value copy of an lvalue would allocate.
-    explicit DecompressionCancelled(std::string what)
-        : mWhat(std::move(what))
-    {
-    }
-
-    [[nodiscard]] const char *what() const noexcept override
-    {
-        return mWhat.c_str();
-    }
-
-private:
-    std::string mWhat;
-};
-
 /** @brief Thrown when decompressed output exceeds the configured cap. */
 class DecompressionSizeCapExceeded : public std::exception
 {

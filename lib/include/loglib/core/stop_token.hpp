@@ -3,14 +3,19 @@
  *
  * Long operations such as parsing, filtering and exporting check a StopToken and stop early when it is triggered. The
  * API follows std::stop_token but is implemented here, because some standard libraries restrict the standard type by
- * platform version.
+ * platform version. The header also defines the exception a cancelled operation throws and the row progress callback
+ * shared by exporting and bundle writing.
  *
  * This is part of the core module.
  */
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 
 namespace loglib
@@ -103,5 +108,36 @@ public:
 private:
     std::shared_ptr<std::atomic<bool>> mState;
 };
+
+/**
+ * @brief Thrown by a long operation that stopped because its StopToken fired.
+ *
+ * Deliberately not a std::runtime_error, so plain error handlers do not swallow a cancellation. Decompression,
+ * exporting and bundle writing all throw it.
+ */
+class OperationCancelled : public std::exception
+{
+public:
+    explicit OperationCancelled(std::string message = "Operation cancelled")
+        : mMessage(std::move(message))
+    {
+    }
+
+    [[nodiscard]] const char *what() const noexcept override
+    {
+        return mMessage.c_str();
+    }
+
+private:
+    std::string mMessage;
+};
+
+/**
+ * @brief Reports how many rows an operation has handled out of a total.
+ *
+ * Used by exporting and bundle writing. The counts only grow. Cancellation goes through the StopToken, not through the
+ * return value.
+ */
+using RowProgressCallback = std::function<void(std::uint64_t rowsDone, std::uint64_t rowsTotal)>;
 
 } // namespace loglib

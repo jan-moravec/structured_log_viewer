@@ -111,20 +111,11 @@ struct RowSource
 };
 
 /**
- * @brief Progress callback for a running export.
- *
- * rowsWritten is monotonically increasing; totalRows is the
- * size of RowSource::sourceRows. Cancellation flows through the
- * stop token, not the return value.
- */
-using ProgressCallback = void (*)(void *userData, std::size_t rowsWritten, std::size_t totalRows);
-
-/**
  * @brief Abstract row-oriented exporter. One instance per export run.
  *
  * Run walks RowSource::sourceRows in order and streams bytes to
  * the sink. It polls @p stopToken on a row batch cadence and throws
- * ExportCancelled on stop. Run does not call sink.Finish();
+ * OperationCancelled on stop. Run does not call sink.Finish();
  * the caller must call it on the success path so a mid-run throw
  * unlinks the temp file via ~FileSink.
  */
@@ -145,31 +136,14 @@ public:
      * @param source Snapshot of rows and columns to write.
      * @param sink Destination bytes.
      * @param stopToken Cancellation token polled between row batches.
-     * @param progress Optional progress callback; may be null.
-     * @param progressUserData Passed through to @p progress.
+     * @param progress Optional progress callback; may be empty.
      */
     virtual void Run(
         const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
-        ProgressCallback progress = nullptr,
-        void *progressUserData = nullptr
+        const RowProgressCallback &progress = {}
     ) = 0;
-};
-
-/**
- * @brief Sentinel exception for user cancel.
- *
- * Deliberately not a std::runtime_error so plain error handlers
- * do not silently swallow it. Mirrors DecompressionCancelled.
- */
-class ExportCancelled : public std::exception
-{
-public:
-    [[nodiscard]] const char *what() const noexcept override
-    {
-        return "Export cancelled by user";
-    }
 };
 
 /**

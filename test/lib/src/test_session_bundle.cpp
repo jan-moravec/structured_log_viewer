@@ -629,7 +629,7 @@ TEST_CASE("session bundle cancellation before write preserves destination and le
     options.stopToken = stop.get_token();
     CHECK_THROWS_AS(
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
-        loglib::SessionBundleCancelled
+        loglib::OperationCancelled
     );
     CHECK(Read(bundle.Path()) == "existing destination");
     CHECK_FALSE(bundle.HasStagingFiles());
@@ -660,7 +660,7 @@ TEST_CASE("session bundle cancellation from progress preserves destination and r
     };
     CHECK_THROWS_AS(
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
-        loglib::SessionBundleCancelled
+        loglib::OperationCancelled
     );
     CHECK(Read(bundle.Path()) == "existing destination");
     CHECK_FALSE(bundle.HasStagingFiles());

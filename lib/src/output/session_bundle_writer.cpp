@@ -55,7 +55,7 @@ void PollStop(const StopToken &token)
 {
     if (token.stop_requested())
     {
-        throw SessionBundleCancelled{};
+        throw OperationCancelled{"Session bundle writing cancelled"};
     }
 }
 

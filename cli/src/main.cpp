@@ -91,15 +91,7 @@ public:
     {
         return Exit(slp::ExitCode::Success);
     }
-    catch (const loglib::DecompressionCancelled &)
-    {
-        return Exit(slp::ExitCode::Cancelled);
-    }
-    catch (const loglib::exports::ExportCancelled &)
-    {
-        return Exit(slp::ExitCode::Cancelled);
-    }
-    catch (const loglib::SessionBundleCancelled &)
+    catch (const loglib::OperationCancelled &)
     {
         return Exit(slp::ExitCode::Cancelled);
     }

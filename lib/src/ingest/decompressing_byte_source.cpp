@@ -350,7 +350,7 @@ inline void ObservePoll(
     }
     if (stopToken.stop_requested())
     {
-        throw DecompressionCancelled("decompression cancelled by StopToken");
+        throw OperationCancelled("decompression cancelled by StopToken");
     }
 }
 

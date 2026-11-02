@@ -683,9 +683,9 @@ TEST_CASE("exports: sink write failures propagate from every format", "[exports]
         {
             exporter->Run(src, sink, loglib::StopToken{});
         }
-        catch (const loglib::exports::ExportCancelled &)
+        catch (const loglib::OperationCancelled &)
         {
-            FAIL("format " << loglib::exports::LabelFor(format) << " wrongly surfaced ExportCancelled");
+            FAIL("format " << loglib::exports::LabelFor(format) << " wrongly surfaced OperationCancelled");
         }
         catch (const std::runtime_error &)
         {
@@ -733,7 +733,7 @@ TEST_CASE("exports: cancel mid-export leaves no partial file", "[exports][row_ex
         {
             exporter->Run(src, sink, stopSource.get_token());
         }
-        catch (const loglib::exports::ExportCancelled &)
+        catch (const loglib::OperationCancelled &)
         {
             threw = true;
         }
