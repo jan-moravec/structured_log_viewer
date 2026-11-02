@@ -327,11 +327,6 @@ std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern)
     return std::nullopt;
 }
 
-std::optional<RegexTemplate> FindBuiltinByPattern(std::string_view pattern)
-{
-    return FindTemplateByPattern(pattern);
-}
-
 namespace internal
 {
 

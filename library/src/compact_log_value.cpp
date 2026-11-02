@@ -153,66 +153,6 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, K
     return LogValue{std::monostate{}};
 }
 
-CompactLogValue ToCompactLogValue(
-    const LogValue &value, std::string &ownedStringArena, const char *fileBegin, size_t fileSize
-)
-{
-    return std::visit(
-        [&](const auto &alt) -> CompactLogValue {
-            using T = std::decay_t<decltype(alt)>;
-            if constexpr (std::is_same_v<T, std::monostate>)
-            {
-                return CompactLogValue::MakeMonostate();
-            }
-            else if constexpr (std::is_same_v<T, std::string_view>)
-            {
-                // MmapSlice when the view aliases the file; otherwise copy
-                // into the arena to avoid dangling.
-                if (fileBegin != nullptr && alt.data() >= fileBegin && alt.data() + alt.size() <= fileBegin + fileSize)
-                {
-                    const auto offset = static_cast<uint64_t>(alt.data() - fileBegin);
-                    return CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
-                }
-                const uint64_t offset = ownedStringArena.size();
-                ownedStringArena.append(alt.data(), alt.size());
-                return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(alt.size()));
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                const uint64_t offset = ownedStringArena.size();
-                ownedStringArena.append(alt.data(), alt.size());
-                return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(alt.size()));
-            }
-            else if constexpr (std::is_same_v<T, int64_t>)
-            {
-                return CompactLogValue::MakeInt64(alt);
-            }
-            else if constexpr (std::is_same_v<T, uint64_t>)
-            {
-                return CompactLogValue::MakeUint64(alt);
-            }
-            else if constexpr (std::is_same_v<T, double>)
-            {
-                return CompactLogValue::MakeDouble(alt);
-            }
-            else if constexpr (std::is_same_v<T, bool>)
-            {
-                return CompactLogValue::MakeBool(alt);
-            }
-            else if constexpr (std::is_same_v<T, TimeStamp>)
-            {
-                return CompactLogValue::MakeTimestamp(alt);
-            }
-            else
-            {
-                static_assert(std::is_same_v<T, void>, "non-exhaustive visitor");
-                return CompactLogValue::MakeMonostate();
-            }
-        },
-        value
-    );
-}
-
 void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept
 {
     if (delta == 0)
@@ -398,26 +338,6 @@ void CompactLineFields::Set(uint32_t position, CompactLogValue value) noexcept
 size_t CompactLineFields::OwnedMemoryBytes() const noexcept
 {
     return static_cast<size_t>(mCapacity) * PAIR_BYTES;
-}
-
-void CompactLineFields::ShrinkToFit()
-{
-    if (mCapacity == mSize)
-    {
-        return;
-    }
-    if (mSize == 0)
-    {
-        DeallocatePairs(mData);
-        mData = nullptr;
-        mCapacity = 0;
-        return;
-    }
-    auto *fresh = AllocatePairs(mSize);
-    std::uninitialized_copy_n(mData, mSize, fresh);
-    DeallocatePairs(mData);
-    mData = fresh;
-    mCapacity = mSize;
 }
 
 } // namespace loglib

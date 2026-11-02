@@ -341,7 +341,8 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
 
     const KeyId messageKey = keys.GetOrInsert("message");
     LogLine line({}, keys, *source, 1);
-    line.SetOrReplaceEnumDictRef(levelKey, warnId);
+    line.SetValue(levelKey, LogValue{std::string("placeholder")});
+    *line.FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(warnId);
     line.SetValue(messageKey, LogValue{std::string("hello")});
 
     REQUIRE(line.IsDictRef(levelKey));
@@ -374,11 +375,12 @@ TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / Owned
     source->SetEnumDictionaries(&registry);
 
     LogLine line({}, keys, *source, 1);
-    line.SetOrReplaceEnumDictRef(enumKey, vid);
+    line.SetValue(enumKey, LogValue{std::string("placeholder")});
+    *line.FindCompactMutable(enumKey) = CompactLogValue::MakeDictRef(vid);
     line.SetValue(stringKey, LogValue{std::string("hello")});
 
     CHECK(line.IsDictRef(enumKey));
     CHECK_FALSE(line.IsDictRef(stringKey));
-    CHECK_FALSE(line.IsOwnedString(enumKey));
-    CHECK(line.IsOwnedString(stringKey));
+    CHECK(line.FindCompact(enumKey)->tag == CompactTag::DictRef);
+    CHECK(line.FindCompact(stringKey)->tag == CompactTag::OwnedString);
 }

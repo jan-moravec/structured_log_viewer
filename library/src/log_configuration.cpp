@@ -424,14 +424,6 @@ bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex)
     return true;
 }
 
-void BubbleLevelColumnToCanonicalPosition(LogConfigurationManager &mgr, size_t columnIndex)
-{
-    if (ShouldBubbleLevelColumn(mgr.Configuration(), columnIndex))
-    {
-        mgr.MoveColumn(columnIndex, CANONICAL_LEVEL_COLUMN_INDEX);
-    }
-}
-
 void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
 {
     if (srcIndex == destIndex || srcIndex >= mConfiguration.columns.size() ||

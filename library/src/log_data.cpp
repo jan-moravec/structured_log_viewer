@@ -113,24 +113,6 @@ const FileLineSource *LogData::BackFileSource() const noexcept
     return nullptr;
 }
 
-StreamLineSource *LogData::FrontStreamSource() noexcept
-{
-    if (mSources.empty())
-    {
-        return nullptr;
-    }
-    return dynamic_cast<StreamLineSource *>(mSources.front().get());
-}
-
-const StreamLineSource *LogData::FrontStreamSource() const noexcept
-{
-    if (mSources.empty())
-    {
-        return nullptr;
-    }
-    return dynamic_cast<const StreamLineSource *>(mSources.front().get());
-}
-
 StreamLineSource *LogData::BackStreamSource() noexcept
 {
     for (auto &source : std::views::reverse(mSources))

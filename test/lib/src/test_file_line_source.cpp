@@ -143,27 +143,3 @@ TEST_CASE("FileLineSource: File() returns the underlying LogFile", "[FileLineSou
     const auto &constSource = source;
     CHECK(&constSource.File() == raw);
 }
-
-TEST_CASE("FileLineSource: ReleaseFile transfers ownership but keeps the source resolvable", "[FileLineSource]")
-{
-    const TestLogFile testLogFile;
-    testLogFile.Write("hello\n");
-    auto logFile = testLogFile.CreateLogFile();
-    LogFile *raw = logFile.get();
-
-    FileLineSource source(std::move(logFile));
-
-    auto released = source.ReleaseFile();
-    REQUIRE(released != nullptr);
-    CHECK(released.get() == raw);
-
-    // The source still resolves against the released file (caller must
-    // keep it alive, which we do via `released`).
-    CHECK(&source.File() == raw);
-    CHECK(source.RawLine(0) == "hello");
-
-    // Releasing twice yields nullptr; the source still functions.
-    auto secondRelease = source.ReleaseFile();
-    CHECK(secondRelease == nullptr);
-    CHECK(&source.File() == raw);
-}

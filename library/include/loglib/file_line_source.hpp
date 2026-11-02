@@ -20,7 +20,7 @@ class LogFile;
  * the mmap, and emitted `LogLine`s use this source for `MmapSlice` /
  * `OwnedString` resolution.
  *
- * Owns the `LogFile`; transferable downstream via `ReleaseFile`.
+ * Owns the `LogFile`.
  * LineIds are 0-based file-line indices.
  */
 class FileLineSource final : public LineSource
@@ -28,9 +28,7 @@ class FileLineSource final : public LineSource
 public:
     /**
      * @brief Takes ownership of @p file. Throws `std::invalid_argument` if
-     * @p file is null. After `ReleaseFile`, this source keeps
-     * resolving bytes against the released file as long as the new
-     * owner keeps it alive.
+     * @p file is null.
      */
     explicit FileLineSource(std::unique_ptr<LogFile> file);
 
@@ -69,17 +67,8 @@ public:
     [[nodiscard]] LogFile &File() noexcept;
     [[nodiscard]] const LogFile &File() const noexcept;
 
-    /**
-     * @brief Transfer ownership of the underlying `LogFile` to the caller.
-     * `File()` continues to return a non-null reference; the caller
-     * must keep the file alive at least as long as any `LogLine`
-     * referring back through this source.
-     */
-    [[nodiscard]] std::unique_ptr<LogFile> ReleaseFile() noexcept;
-
 private:
-    std::unique_ptr<LogFile> mOwnedFile;
-    LogFile *mFile = nullptr;
+    std::unique_ptr<LogFile> mFile;
 };
 
 } // namespace loglib

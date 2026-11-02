@@ -250,7 +250,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         std::vector<LogLine> &mutLines = mutableData.Lines();
         for (auto &[rowIdx, vid] : rowDictRefs)
         {
-            mutLines[rowIdx].SetOrReplaceEnumDictRef(levelKey, vid);
+            *mutLines[rowIdx].FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(vid);
         }
 
         RunTimedSamples("LogLine::GetValue(KeyId) — DictRef path", 11, [&]() {
@@ -289,8 +289,8 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
 
     // Phase 1 changed the per-field representation from a 48 B
     // `std::variant` to a 16 B `CompactLogValue` whose tags are the new
-    // ground truth for "fast path vs slow path". `IsMmapSlice` /
-    // `IsOwnedString` inspect the tag without materialising a `LogValue`
+    // ground truth for "fast path vs slow path". the compact slot's
+    // tag is inspected without materialising a `LogValue`
     // (which would always allocate a `std::string` for the slow path),
     // so the per-value cost of this benchmark stays representative of
     // the parse hot path.
@@ -304,8 +304,9 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
         for (size_t i = 0; i < result.data.Keys().Size(); ++i)
         {
             const auto id = static_cast<KeyId>(i);
-            const bool mmap = line.IsMmapSlice(id);
-            const bool owned = line.IsOwnedString(id);
+            const CompactLogValue *compact = line.FindCompact(id);
+            const bool mmap = compact != nullptr && compact->tag == CompactTag::MmapSlice;
+            const bool owned = compact != nullptr && compact->tag == CompactTag::OwnedString;
             const bool dict = line.IsDictRef(id);
             if (mmap)
             {

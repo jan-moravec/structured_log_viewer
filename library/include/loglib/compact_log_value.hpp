@@ -85,22 +85,6 @@ inline constexpr size_t COMPACT_LOG_VALUE_EXPECTED_BYTES = 16;
 static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "CompactLogValue must stay 16 bytes");
 
 /**
- * @brief Converts a `LogValue` to a `CompactLogValue`.
- *
- * Strings inside `[fileBegin, fileBegin + fileSize)` become
- * `MmapSlice`; others are copied into @p ownedStringArena.
- *
- * @param value Value to compact.
- * @param ownedStringArena Arena that receives owned string bytes.
- * @param fileBegin Start of the mmap window, or `nullptr`.
- * @param fileSize Size of the mmap window in bytes.
- * @return The compact representation.
- */
-CompactLogValue ToCompactLogValue(
-    const LogValue &value, std::string &ownedStringArena, const char *fileBegin = nullptr, size_t fileSize = 0
-);
-
-/**
  * @brief Adds @p delta to every `OwnedString` payload in @p values.
  * @param values Compact field pairs to rebase.
  * @param valueCount Number of pairs in @p values.
@@ -230,9 +214,6 @@ public:
 
     /** @brief Returns heap bytes owned by this array. */
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
-
-    /** @brief Shrinks capacity to match `Size()`. */
-    void ShrinkToFit();
 
 private:
     value_type *mData = nullptr;

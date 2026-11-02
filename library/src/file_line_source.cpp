@@ -9,13 +9,12 @@ namespace loglib
 {
 
 FileLineSource::FileLineSource(std::unique_ptr<LogFile> file)
-    : mOwnedFile(std::move(file))
+    : mFile(std::move(file))
 {
-    if (mOwnedFile == nullptr)
+    if (mFile == nullptr)
     {
         throw std::invalid_argument("FileLineSource: file must not be null");
     }
-    mFile = mOwnedFile.get();
 }
 
 FileLineSource::~FileLineSource() = default;
@@ -86,13 +85,6 @@ LogFile &FileLineSource::File() noexcept
 const LogFile &FileLineSource::File() const noexcept
 {
     return *mFile;
-}
-
-std::unique_ptr<LogFile> FileLineSource::ReleaseFile() noexcept
-{
-    // `mFile` still points at the released file so resolution remains
-    // valid; the caller must keep the file alive for our lifetime.
-    return std::move(mOwnedFile);
 }
 
 } // namespace loglib

@@ -209,13 +209,4 @@ void SetExtraRegexTemplates(std::span<const RegexTemplate> extras);
  */
 [[nodiscard]] std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern);
 
-/**
- * @brief Back-compat alias for `FindTemplateByPattern`. New code should
- * prefer the new name; kept for one release so downstream code
- * pinned on `FindBuiltinByPattern` still compiles. Behaves
- * identically — the merged registry has always been the right
- * answer.
- */
-[[nodiscard]] std::optional<RegexTemplate> FindBuiltinByPattern(std::string_view pattern);
-
 } // namespace loglib

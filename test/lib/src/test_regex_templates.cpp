@@ -183,7 +183,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_templates]", "[regex_templates]")
+TEST_CASE("FindTemplateByPattern round-trips every registry entry [regex_templates]", "[regex_templates]")
 {
     // GUI / config persistence uses this lookup to recover the
     // display name from a saved pattern. Regression guard against
@@ -191,13 +191,13 @@ TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_template
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("template: " << t.name);
-        const auto found = FindBuiltinByPattern(t.pattern);
+        const auto found = FindTemplateByPattern(t.pattern);
         REQUIRE(found.has_value());
         CHECK(found->name == t.name);
     }
 
     // Unknown pattern (user-supplied custom) returns nullopt.
-    CHECK_FALSE(FindBuiltinByPattern("definitely not a built-in pattern").has_value());
+    CHECK_FALSE(FindTemplateByPattern("definitely not a built-in pattern").has_value());
 }
 
 TEST_CASE(

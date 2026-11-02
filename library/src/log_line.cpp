@@ -314,11 +314,6 @@ void LogLine::SetValue(const std::string &key, const LogValue &value)
     SetValue(id, value);
 }
 
-void LogLine::SetOrReplaceEnumDictRef(KeyId id, EnumValueId vid)
-{
-    SetCompact(id, loglib::CompactLogValue::MakeDictRef(vid));
-}
-
 void LogLine::SetCompact(KeyId id, loglib::CompactLogValue compact)
 {
     auto *data = mValues.Data();
@@ -420,11 +415,6 @@ void LogLine::ShiftLineId(size_t delta) noexcept
     mLineId += delta;
 }
 
-void LogLine::SetLineId(size_t lineId) noexcept
-{
-    mLineId = lineId;
-}
-
 size_t LogLine::OwnedMemoryBytes() const
 {
     return mValues.OwnedMemoryBytes();
@@ -442,18 +432,6 @@ void LogLine::RebaseOwnedStringOffsets(uint64_t delta) noexcept
         return;
     }
     loglib::RebaseOwnedStringOffsets(mValues.Data(), mValues.Size(), delta);
-}
-
-bool LogLine::IsMmapSlice(KeyId id) const noexcept
-{
-    const loglib::CompactLogValue *compact = FindCompact(id);
-    return compact != nullptr && compact->tag == loglib::CompactTag::MmapSlice;
-}
-
-bool LogLine::IsOwnedString(KeyId id) const noexcept
-{
-    const loglib::CompactLogValue *compact = FindCompact(id);
-    return compact != nullptr && compact->tag == loglib::CompactTag::OwnedString;
 }
 
 bool LogLine::IsDictRef(KeyId id) const noexcept

@@ -230,18 +230,20 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
     // `fileSize + 1` as the virtual terminator (see LogFile::GetLine).
     char ch = '\0';
     std::size_t pos = 0;
+    std::vector<uint64_t> lineEnds;
     while (file.get(ch))
     {
         ++pos;
         if (ch == '\n')
         {
-            logFile->RegisterLineEnd(pos);
+            lineEnds.push_back(pos);
         }
     }
     if (pos > 0 && ch != '\n')
     {
-        logFile->RegisterLineEnd(pos + 1);
+        lineEnds.push_back(pos + 1);
     }
+    logFile->AppendLineOffsets(lineEnds);
 
     return logFile;
 }

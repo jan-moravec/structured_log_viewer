@@ -62,13 +62,6 @@ public:
     void ReserveLineOffsets(size_t count);
 
     /**
-     * @brief Append a single line-boundary offset; @p position must be
-     * strictly greater than the previously registered one. Used by
-     * tests; the parser uses `AppendLineOffsets` for batched updates.
-     */
-    void RegisterLineEnd(size_t position);
-
-    /**
      * @brief Caller must ensure offsets are strictly increasing and start past the
      * current last offset.
      */

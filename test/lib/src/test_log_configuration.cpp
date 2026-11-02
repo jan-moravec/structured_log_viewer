@@ -1348,7 +1348,18 @@ TEST_CASE(
     CHECK(LegacyColumnKeysToRow({"regular_b"}, manager.Configuration().columns) == 2);
 }
 
-TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
+namespace
+{
+void BubbleLevelColumnToCanonicalPosition(LogConfigurationManager &manager, size_t columnIndex)
+{
+    if (ShouldBubbleLevelColumn(manager.Configuration(), columnIndex))
+    {
+        manager.MoveColumn(columnIndex, CANONICAL_LEVEL_COLUMN_INDEX);
+    }
+}
+} // namespace
+
+TEST_CASE("Bubbling the Level column mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
 {
     // Manager-level coverage of the free helper. Catches rotation
     // regressions independent of `LogTable::MaybePromoteToLevel`

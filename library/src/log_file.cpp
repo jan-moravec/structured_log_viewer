@@ -177,15 +177,6 @@ void LogFile::ReserveLineOffsets(size_t count)
     mLineOffsets.reserve(count);
 }
 
-void LogFile::RegisterLineEnd(size_t position)
-{
-    if (position <= mLineOffsets.back())
-    {
-        throw std::runtime_error("Invalid position to register line end: " + std::to_string(position));
-    }
-    mLineOffsets.push_back(position);
-}
-
 size_t LogFile::LineOffsetsMemoryBytes() const noexcept
 {
     return mLineOffsets.capacity() * sizeof(uint64_t);

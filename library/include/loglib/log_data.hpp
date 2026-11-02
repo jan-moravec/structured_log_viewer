@@ -21,9 +21,8 @@ namespace loglib
  *
  * The source list is heterogeneous: `FileLineSource`s for static
  * opens, `StreamLineSource`s for live-tail. Polymorphic access via
- * `Sources()`, typed access via `FrontFileSource()` /
- * `FrontStreamSource()` for code that still needs direct `LogFile`
- * or producer-level control.
+ * `Sources()`, typed access via `FrontFileSource()` for code that
+ * still needs direct `LogFile` control.
  */
 class LogData
 {
@@ -66,13 +65,6 @@ public:
      */
     [[nodiscard]] FileLineSource *BackFileSource() noexcept;
     [[nodiscard]] const FileLineSource *BackFileSource() const noexcept;
-
-    /**
-     * @brief First `StreamLineSource` (live-tail mirror of `FrontFileSource`),
-     * or nullptr. Used by `LogModel` to reach the byte producer.
-     */
-    [[nodiscard]] StreamLineSource *FrontStreamSource() noexcept;
-    [[nodiscard]] const StreamLineSource *FrontStreamSource() const noexcept;
 
     /**
      * @brief Last `StreamLineSource` in `Sources()`, or nullptr. This may

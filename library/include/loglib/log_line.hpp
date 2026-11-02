@@ -69,12 +69,6 @@ public:
     /** @brief Throws if @p key is unknown. */
     void SetValue(const std::string &key, const LogValue &value);
 
-    /**
-     * @brief Replace/insert the slot for @p id with `DictRef(vid)`. Cold-path
-     * helper; the encode hot path uses `FindCompactMutable`.
-     */
-    void SetOrReplaceEnumDictRef(KeyId id, EnumValueId vid);
-
     std::vector<std::string> GetKeys() const;
 
     /** @brief (KeyId, LogValue) pairs in ascending KeyId order. Cold path. */
@@ -99,9 +93,6 @@ public:
     /** @brief Stage C shifts per-batch relative ids to absolute. */
     void ShiftLineId(size_t delta) noexcept;
 
-    /** @brief Cold-path mutator (e.g. overwrite a placeholder id). */
-    void SetLineId(size_t lineId) noexcept;
-
     /** @brief Heap bytes owned directly by this line (benchmark-only). */
     size_t OwnedMemoryBytes() const;
 
@@ -113,8 +104,6 @@ public:
      */
     void RebaseOwnedStringOffsets(uint64_t delta) noexcept;
 
-    bool IsMmapSlice(KeyId id) const noexcept;
-    bool IsOwnedString(KeyId id) const noexcept;
     bool IsDictRef(KeyId id) const noexcept;
 
     /** @brief `EnumValueId` payload for a `DictRef` slot, else nullopt. */

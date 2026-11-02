@@ -280,16 +280,4 @@ inline constexpr size_t CANONICAL_LEVEL_COLUMN_INDEX = 1;
  */
 [[nodiscard]] bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept;
 
-/**
- * @brief Move @p columnIndex to `CANONICAL_LEVEL_COLUMN_INDEX` via
- * `mgr.MoveColumn` (so persisted `filters[*].row` is remapped).
- * No-op when `ShouldBubbleLevelColumn` returns false.
- *
- * Used by callers that only need to move the configuration
- * (notably unit tests). `LogTable::MaybePromoteToLevel` does its
- * own move via `LogTable::MoveColumn` to keep its parallel
- * `mColumnKeyIds` vector in sync.
- */
-void BubbleLevelColumnToCanonicalPosition(LogConfigurationManager &mgr, size_t columnIndex);
-
 } // namespace loglib
