@@ -25,6 +25,46 @@ namespace loglib
 namespace
 {
 
+/// Feeds the value a row holds under the first present key in @p keys into @p tracker.
+void ObserveRow(EnumCandidateTracker &tracker, const LogLine &line, const std::vector<KeyId> &keys)
+{
+    const CompactLogValue *slot = nullptr;
+    for (const KeyId id : keys)
+    {
+        slot = line.FindCompact(id);
+        if (slot != nullptr)
+        {
+            break;
+        }
+    }
+    ++tracker.rowsObserved;
+    if (slot == nullptr)
+    {
+        return;
+    }
+    ++tracker.presenceCount;
+    if (const std::optional<std::string_view> bytes = line.PeekStringView(*slot); bytes.has_value())
+    {
+        tracker.Observe(*bytes);
+    }
+    else if (slot->tag == CompactTag::Int64)
+    {
+        ++tracker.intObservations;
+    }
+    else if (slot->tag == CompactTag::Uint64)
+    {
+        ++tracker.uintObservations;
+    }
+    else if (slot->tag == CompactTag::Double)
+    {
+        ++tracker.doubleObservations;
+    }
+    else if (slot->tag == CompactTag::Bool)
+    {
+        ++tracker.boolObservations;
+    }
+}
+
 /// Whether a finished column's values repeat enough to be an enumeration.
 /// Log levels qualify however few rows the file has.
 bool ValuesRepeatOrAreLevels(const EnumCandidateTracker &tracker, const Column &column)
@@ -376,42 +416,7 @@ void EnumInference::RunPassForAppendBatch(
         const size_t scanCap = 2 * promotionMinRows;
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
-            const LogLine &line = data.Lines()[row];
-            const CompactLogValue *slot = nullptr;
-            for (const KeyId id : resolvedKeys)
-            {
-                slot = line.FindCompact(id);
-                if (slot != nullptr)
-                {
-                    break;
-                }
-            }
-            ++tracker.rowsObserved;
-            if (slot != nullptr)
-            {
-                ++tracker.presenceCount;
-                std::optional<std::string_view> bytes = line.PeekStringView(*slot);
-                if (bytes.has_value())
-                {
-                    tracker.Observe(*bytes);
-                }
-                else if (slot->tag == CompactTag::Int64)
-                {
-                    ++tracker.intObservations;
-                }
-                else if (slot->tag == CompactTag::Uint64)
-                {
-                    ++tracker.uintObservations;
-                }
-                else if (slot->tag == CompactTag::Double)
-                {
-                    ++tracker.doubleObservations;
-                }
-                else if (slot->tag == CompactTag::Bool)
-                {
-                    ++tracker.boolObservations;
-                }
-            }
+            ObserveRow(tracker, data.Lines()[row], resolvedKeys);
             if (tracker.killed)
             {
                 break;
@@ -519,42 +524,7 @@ ColumnType EnumInference::RescanColumn(
     EnumCandidateTracker tracker{mValueCap, mValueMaxLen};
     for (size_t row = 0; row < totalRows; ++row)
     {
-        const LogLine &line = data.Lines()[row];
-        const CompactLogValue *slot = nullptr;
-        for (const KeyId id : resolvedKeys)
-        {
-            slot = line.FindCompact(id);
-            if (slot != nullptr)
-            {
-                break;
-            }
-        }
-        ++tracker.rowsObserved;
-        if (slot != nullptr)
-        {
-            ++tracker.presenceCount;
-            std::optional<std::string_view> bytes = line.PeekStringView(*slot);
-            if (bytes.has_value())
-            {
-                tracker.Observe(*bytes);
-            }
-            else if (slot->tag == CompactTag::Int64)
-            {
-                ++tracker.intObservations;
-            }
-            else if (slot->tag == CompactTag::Uint64)
-            {
-                ++tracker.uintObservations;
-            }
-            else if (slot->tag == CompactTag::Double)
-            {
-                ++tracker.doubleObservations;
-            }
-            else if (slot->tag == CompactTag::Bool)
-            {
-                ++tracker.boolObservations;
-            }
-        }
+        ObserveRow(tracker, data.Lines()[row], resolvedKeys);
         if (tracker.killed)
         {
             break;
