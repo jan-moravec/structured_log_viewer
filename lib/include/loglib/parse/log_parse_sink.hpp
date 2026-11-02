@@ -83,16 +83,6 @@ public:
     virtual void OnBatch(StreamedBatch batch) = 0;
 
     virtual void OnFinished(bool cancelled) = 0;
-
-    /**
-     * @brief When true, the parser forwards each pipeline batch straight to
-     * OnBatch without GUI-style coalescing. Sinks that already buffer
-     * internally (e.g. BufferingSink) opt in.
-     */
-    [[nodiscard]] virtual bool PrefersUncoalesced() const noexcept
-    {
-        return false;
-    }
 };
 
 } // namespace loglib

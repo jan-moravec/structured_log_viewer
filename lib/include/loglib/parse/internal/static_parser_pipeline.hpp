@@ -259,7 +259,6 @@ void RunStaticParserPipeline(
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 
-    const bool prefersUncoalesced = sink.PrefersUncoalesced();
     size_t nextLineNumber = 1;
 
     // Stage C holds a batch's open final record until the next batch
@@ -431,40 +430,6 @@ void RunStaticParserPipeline(
             };
         }
 
-        if (prefersUncoalesced)
-        {
-            StreamedBatch out;
-            // A held record precedes this batch's fresh records.
-            if (heldLineToEmit.has_value())
-            {
-                out.lines.reserve(1 + parsed.lines.size());
-                out.lines.push_back(std::move(*heldLineToEmit));
-            }
-            std::ranges::move(parsed.lines, std::back_inserter(out.lines));
-            std::ranges::move(parsed.localLineOffsets, std::back_inserter(out.localLineOffsets));
-            if (heldSpanToEmit.has_value())
-            {
-                spansThisBatch.insert(spansThisBatch.begin(), *heldSpanToEmit);
-            }
-            out.multiLineSpans = std::move(spansThisBatch);
-            formatErrorsInto(out.errors);
-            out.firstLineNumber = heldLineToEmit.has_value() ? heldAbsoluteLineNumber : nextLineNumber;
-            coalescer.DrainNewKeysInto(out);
-
-            nextLineNumber += parsed.totalLineCount;
-
-            if (!out.lines.empty() || !out.errors.empty() || !out.localLineOffsets.empty() ||
-                !out.multiLineSpans.empty())
-            {
-                sink.OnBatch(std::move(out));
-            }
-            if (batchHasNewRecords)
-            {
-                held = std::move(newHeld);
-            }
-            return;
-        }
-
         StreamedBatch &pending = coalescer.Pending();
 
         // Prime with the earliest record represented in this output.
@@ -534,27 +499,12 @@ void RunStaticParserPipeline(
         const MultiLineRecordSpan span{held->headerLineIdx, held->lastLineIdx};
         const bool isMultiLine = span.lastLineId > span.headerLineId;
 
-        if (prefersUncoalesced)
+        StreamedBatch &pending = coalescer.Pending();
+        coalescer.Prime(held->absoluteLineNumber);
+        pending.lines.push_back(std::move(held->line));
+        if (isMultiLine)
         {
-            StreamedBatch out;
-            out.lines.push_back(std::move(held->line));
-            if (isMultiLine)
-            {
-                out.multiLineSpans.push_back(span);
-            }
-            out.firstLineNumber = held->absoluteLineNumber;
-            coalescer.DrainNewKeysInto(out);
-            sink.OnBatch(std::move(out));
-        }
-        else
-        {
-            StreamedBatch &pending = coalescer.Pending();
-            coalescer.Prime(held->absoluteLineNumber);
-            pending.lines.push_back(std::move(held->line));
-            if (isMultiLine)
-            {
-                pending.multiLineSpans.push_back(span);
-            }
+            pending.multiLineSpans.push_back(span);
         }
         held.reset();
     }

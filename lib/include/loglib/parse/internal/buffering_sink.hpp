@@ -40,12 +40,6 @@ public:
     void OnBatch(StreamedBatch batch) override;
     void OnFinished(bool cancelled) override;
 
-    /** We re-buffer batches anyway, so opt out of the harness's coalescing. */
-    [[nodiscard]] bool PrefersUncoalesced() const noexcept override
-    {
-        return true;
-    }
-
     /** Call exactly once after OnFinished. */
     LogData TakeData();
     std::vector<std::string> TakeErrors();

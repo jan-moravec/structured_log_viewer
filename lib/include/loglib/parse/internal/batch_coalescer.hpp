@@ -77,8 +77,7 @@ public:
 
     /**
      * Append the keys added since the last drain into @p out and
-     * advance the cursor. Public so the static prefersUncoalesced
-     * branch can drain into a per-batch scratch batch.
+     * advance the cursor.
      */
     void DrainNewKeysInto(StreamedBatch &out);
 
