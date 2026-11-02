@@ -117,20 +117,26 @@ public:
     }
 }
 
-} // namespace
-
-int main(int argc, char **argv)
+/** @brief Runs `slp` and reports a failure of the error reporting itself. */
+[[nodiscard]] int RunSlpGuarded(int argc, char **argv) noexcept
 {
-    int code = Exit(slp::ExitCode::Internal);
     try
     {
-        code = RunSlp(argc, argv);
+        return RunSlp(argc, argv);
     }
     catch (...)
     {
         // Last resort when even reporting the error threw; nothing here may allocate.
         (void)std::fputs("slp: internal error: an unexpected exception was thrown.\n", stderr);
+        return Exit(slp::ExitCode::Internal);
     }
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    const int code = RunSlpGuarded(argc, argv);
     (void)loglib::JoinWorkerThreads();
     return code;
 }
