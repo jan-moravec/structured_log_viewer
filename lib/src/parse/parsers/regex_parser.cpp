@@ -2,6 +2,7 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
+#include "loglib/core/internal/pcre2_support.hpp"
 #include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
@@ -14,9 +15,6 @@
 #include "loglib/parse/log_parser.hpp"
 #include "loglib/parse/regex_templates.hpp"
 #include "loglib/schema/log_configuration.hpp"
-
-#define PCRE2_CODE_UNIT_WIDTH 8
-#include <pcre2.h>
 
 #include <fmt/format.h>
 
@@ -58,69 +56,16 @@ constexpr size_t IS_VALID_MIN_MATCHES = 2;
 constexpr uint32_t PCRE2_MATCH_LIMIT = 100'000;
 constexpr uint32_t PCRE2_DEPTH_LIMIT = 1'000;
 
-/// Buffer size for `pcre2_get_error_message`. Sized per upstream
-/// advice (`pcre2demo.c`); all built-in PCRE2 error strings fit
-/// comfortably.
-constexpr size_t PCRE2_ERROR_BUFFER_SIZE = 256;
-
 /// Maximum number of non-blank probe lines collected before
 /// running the auto-detect template loop. Bounded so a huge
 /// mmap-friendly file doesn't blow up scratch memory for a
 /// yes/no decision.
 constexpr size_t IS_VALID_PROBE_MAX_LINES = 8;
 
-// ---------------------------------------------------------------------
-// RAII wrappers around the PCRE2 C handles.
-// ---------------------------------------------------------------------
-
-struct Pcre2CodeDeleter
-{
-    void operator()(pcre2_code *code) const noexcept
-    {
-        if (code != nullptr)
-        {
-            pcre2_code_free(code);
-        }
-    }
-};
-using Pcre2CodePtr = std::unique_ptr<pcre2_code, Pcre2CodeDeleter>;
-
-struct Pcre2MatchDataDeleter
-{
-    void operator()(pcre2_match_data *md) const noexcept
-    {
-        if (md != nullptr)
-        {
-            pcre2_match_data_free(md);
-        }
-    }
-};
-using Pcre2MatchDataPtr = std::unique_ptr<pcre2_match_data, Pcre2MatchDataDeleter>;
-
-struct Pcre2MatchContextDeleter
-{
-    void operator()(pcre2_match_context *ctx) const noexcept
-    {
-        if (ctx != nullptr)
-        {
-            pcre2_match_context_free(ctx);
-        }
-    }
-};
-using Pcre2MatchContextPtr = std::unique_ptr<pcre2_match_context, Pcre2MatchContextDeleter>;
-
-/// Decode a PCRE2 errcode to a short message for parse-error
-/// reporting.
-std::string FormatPcre2Error(int errcode)
-{
-    PCRE2_UCHAR8 buffer[PCRE2_ERROR_BUFFER_SIZE] = {};
-    const int len = pcre2_get_error_message(errcode, buffer, sizeof(buffer));
-    if (len <= 0)
-    {
-        return fmt::format("PCRE2 error {}", errcode);
-    }
-    return {reinterpret_cast<const char *>(buffer), static_cast<size_t>(len)};
-}
+using internal::FormatPcre2Error;
+using internal::Pcre2CodePtr;
+using internal::Pcre2MatchContextPtr;
+using internal::Pcre2MatchDataPtr;
 
 // ---------------------------------------------------------------------
 // CompiledPattern: shared compiled state for one PCRE2 pattern.
@@ -159,20 +104,12 @@ public:
 
         int errcode = 0;
         PCRE2_SIZE erroffset = 0;
-        pcre2_code *raw = pcre2_compile(
-            reinterpret_cast<PCRE2_SPTR>(pattern.data()),
-            pattern.size(),
-            /*options*/ 0,
-            &errcode,
-            &erroffset,
-            /*ccontext*/ nullptr
-        );
-        if (raw == nullptr)
+        mCode = internal::CompilePcre2(pattern, /*options*/ 0, errcode, erroffset);
+        if (mCode == nullptr)
         {
             errorOut = fmt::format("Pattern compile failed at offset {}: {}", erroffset, FormatPcre2Error(errcode));
             return false;
         }
-        mCode.reset(raw);
 
         // JIT is a hot-path optimisation; failure here is
         // non-fatal — matching falls back to the interpreted engine

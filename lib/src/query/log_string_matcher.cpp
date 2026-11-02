@@ -1,7 +1,7 @@
 #include "loglib/query/log_string_matcher.hpp"
 
-#define PCRE2_CODE_UNIT_WIDTH 8
-#include <pcre2.h>
+#include "loglib/core/internal/pcre2_support.hpp"
+
 #include <utf8proc.h>
 
 #include <array>
@@ -185,17 +185,6 @@ std::string Simplify(std::string_view bytes, bool keepEdges = false)
     return out;
 }
 
-struct CodeDeleter
-{
-    void operator()(pcre2_code *code) const noexcept
-    {
-        if (code != nullptr)
-        {
-            pcre2_code_free(code);
-        }
-    }
-};
-
 struct CompiledRegex
 {
     std::shared_ptr<pcre2_code> code;
@@ -206,21 +195,15 @@ CompiledRegex CompilePattern(std::string_view pattern)
 {
     int errcode = 0;
     PCRE2_SIZE erroffset = 0;
-    pcre2_code *raw = pcre2_compile(
-        reinterpret_cast<PCRE2_SPTR>(pattern.data()),
-        static_cast<PCRE2_SIZE>(pattern.size()),
-        PCRE2_UTF,
-        &errcode,
-        &erroffset,
-        nullptr
-    );
-    if (raw == nullptr)
+    internal::Pcre2CodePtr code = internal::CompilePcre2(pattern, PCRE2_UTF, errcode, erroffset);
+    if (code == nullptr)
     {
         return {};
     }
 
+    pcre2_code *raw = code.get();
     CompiledRegex compiled;
-    compiled.code.reset(raw, CodeDeleter{});
+    compiled.code = std::move(code);
     compiled.jit = pcre2_jit_compile(raw, PCRE2_JIT_COMPLETE) == 0;
 
     // Prime the JIT so the first caller does not pay the stub setup.
@@ -407,31 +390,13 @@ CallbackStringRowPredicate::MatchFn MakeContains(std::string_view pattern)
 /// The compile error for @p pattern, or `nullopt` when it compiles.
 std::optional<std::string> CompileProblem(std::string_view pattern)
 {
-    constexpr std::size_t MESSAGE_BYTES = 256;
     int errcode = 0;
     PCRE2_SIZE erroffset = 0;
-    pcre2_code *raw = pcre2_compile(
-        reinterpret_cast<PCRE2_SPTR>(pattern.data()),
-        static_cast<PCRE2_SIZE>(pattern.size()),
-        PCRE2_UTF,
-        &errcode,
-        &erroffset,
-        nullptr
-    );
-    if (raw != nullptr)
+    if (internal::CompilePcre2(pattern, PCRE2_UTF, errcode, erroffset) != nullptr)
     {
-        pcre2_code_free(raw);
         return std::nullopt;
     }
-    std::array<PCRE2_UCHAR8, MESSAGE_BYTES> message{};
-    const int length = pcre2_get_error_message(errcode, message.data(), message.size());
-    std::string text = "invalid pattern '" + std::string(pattern) + "'";
-    if (length > 0)
-    {
-        text += ": ";
-        text.append(reinterpret_cast<const char *>(message.data()), static_cast<std::size_t>(length));
-    }
-    return text;
+    return "invalid pattern '" + std::string(pattern) + "': " + internal::FormatPcre2Error(errcode);
 }
 
 } // namespace
