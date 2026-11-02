@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bytes_producer.hpp"
 #include "stop_token.hpp"
 
 #include <cstddef>
@@ -10,9 +11,6 @@ namespace loglib
 {
 
 struct LogConfiguration;
-
-/** @brief Default for `ParserOptions::maxLineBytes` and the producers' line limits. */
-inline constexpr std::size_t DEFAULT_MAX_LINE_BYTES = std::size_t{64} * 1024 * 1024;
 
 /** @brief Thread cap used when ParserOptions::threads is 0, applied on top of the hardware concurrency. */
 inline constexpr unsigned int DEFAULT_MAX_PARSE_THREADS = 8;

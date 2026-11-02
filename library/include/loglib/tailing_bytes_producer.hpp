@@ -1,7 +1,6 @@
 #pragma once
 
 #include "bytes_producer.hpp"
-#include "parser_options.hpp"
 
 #include <chrono>
 #include <cstddef>

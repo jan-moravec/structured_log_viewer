@@ -9,6 +9,9 @@
 namespace loglib
 {
 
+/** @brief Default for `ParserOptions::maxLineBytes` and the producers' line limits. */
+inline constexpr std::size_t DEFAULT_MAX_LINE_BYTES = std::size_t{64} * 1024 * 1024;
+
 /**
  * @brief Coarse state reported by a `BytesProducer` via `SetStatusCallback`,
  * surfaced to the GUI for the status-bar label.
