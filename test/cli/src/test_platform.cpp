@@ -11,7 +11,7 @@ TEST_CASE("the first cancel signal stops and the second terminates", "[cli][plat
     loglib::StopSource source;
     std::atomic<int> signals{0};
     CHECK(slp::AdvanceCancel(source, signals) == slp::CancelStep::Stop);
-    CHECK(source.stop_requested());
+    CHECK(source.StopRequested());
     CHECK(slp::AdvanceCancel(source, signals) == slp::CancelStep::Terminate);
 }
 

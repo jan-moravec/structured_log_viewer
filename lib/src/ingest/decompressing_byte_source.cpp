@@ -348,7 +348,7 @@ inline void ObservePoll(
     {
         progress({.bytesIn = bytesInSoFar, .totalBytesIn = totalBytesIn});
     }
-    if (stopToken.stop_requested())
+    if (stopToken.StopRequested())
     {
         throw OperationCancelled("decompression cancelled by StopToken");
     }

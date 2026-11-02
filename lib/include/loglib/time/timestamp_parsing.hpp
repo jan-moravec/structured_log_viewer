@@ -28,8 +28,8 @@ namespace loglib
 enum class TimestampFormatKind : std::uint8_t
 {
     Generic,
-    Iso8601_T,
-    Iso8601_Space,
+    Iso8601T,
+    Iso8601Space,
     /**
      * @brief RFC 3164 header: Mmm  D HH:MM:SS (space- or zero-padded day,
      * English month abbreviation, no year, no timezone). The RFC pins the
@@ -41,9 +41,9 @@ enum class TimestampFormatKind : std::uint8_t
      * heuristic since RFC 3164 doesn't carry a year field.
      */
     SyslogRfc3164NoYear,
-    /** @brief Iso8601_T followed by a required numeric offset. */
+    /** @brief Iso8601T followed by a required numeric offset. */
     Iso8601TOffset,
-    /** @brief Iso8601_Space followed by a required numeric offset. */
+    /** @brief Iso8601Space followed by a required numeric offset. */
     Iso8601SpaceOffset,
 };
 

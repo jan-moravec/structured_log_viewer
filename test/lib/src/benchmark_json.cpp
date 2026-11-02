@@ -416,7 +416,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
 }
 
 // Cancellation-latency benchmark. Asks for a stop after the first batch
-// arrives and times the gap between `request_stop()` and
+// arrives and times the gap between `RequestStop()` and
 // `OnFinished(cancelled=true)`. Validates the
 // `ntokens * batchSizeBytes` upper bound on cancellation latency.
 TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
@@ -452,10 +452,10 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         void OnBatch(StreamedBatch /*batch*/) override
         {
             ++batches;
-            if (batches == 1 && !stop.stop_requested())
+            if (batches == 1 && !stop.StopRequested())
             {
                 requestedAt = std::chrono::steady_clock::now();
-                stop.request_stop();
+                stop.RequestStop();
             }
         }
         void OnFinished(bool wasCancelled) override
@@ -474,7 +474,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         FileLineSource source(std::make_unique<LogFile>(testFile.GetFilePath()));
         LatencySink sink;
         ParserOptions opts;
-        opts.stopToken = sink.stop.get_token();
+        opts.stopToken = sink.stop.GetToken();
         parser.ParseStreaming(source, sink, opts);
         REQUIRE(sink.cancelled);
         REQUIRE(sink.requestedAt.time_since_epoch().count() != 0);

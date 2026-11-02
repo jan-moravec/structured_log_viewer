@@ -723,7 +723,7 @@ TEST_CASE("exports: cancel mid-export leaves no partial file", "[exports][row_ex
     const std::filesystem::path tempPath = destination.string() + ".tmp";
 
     loglib::StopSource stopSource;
-    stopSource.request_stop();
+    stopSource.RequestStop();
 
     {
         loglib::exports::FileSink sink(destination);
@@ -731,7 +731,7 @@ TEST_CASE("exports: cancel mid-export leaves no partial file", "[exports][row_ex
         bool threw = false;
         try
         {
-            exporter->Run(src, sink, stopSource.get_token());
+            exporter->Run(src, sink, stopSource.GetToken());
         }
         catch (const loglib::OperationCancelled &)
         {

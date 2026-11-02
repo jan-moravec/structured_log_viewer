@@ -1725,14 +1725,14 @@ private slots:
         }
 
         // Precondition: neither stop source has been requested.
-        QVERIFY(!sessionA->DecompressionStopSource().stop_requested());
-        QVERIFY(!sessionB->DecompressionStopSource().stop_requested());
+        QVERIFY(!sessionA->DecompressionStopSource().StopRequested());
+        QVERIFY(!sessionB->DecompressionStopSource().StopRequested());
 
-        sessionA->MutableDecompressionStopSource().request_stop();
+        sessionA->MutableDecompressionStopSource().RequestStop();
 
-        QVERIFY(sessionA->DecompressionStopSource().stop_requested());
+        QVERIFY(sessionA->DecompressionStopSource().StopRequested());
         QVERIFY2(
-            !sessionB->DecompressionStopSource().stop_requested(),
+            !sessionB->DecompressionStopSource().StopRequested(),
             "Requesting stop on tab A's decompression source leaked into tab B."
         );
     }

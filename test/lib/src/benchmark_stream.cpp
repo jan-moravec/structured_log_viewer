@@ -222,7 +222,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     LatencyMeasuringSink sink;
     StopSource stopSource;
     ParserOptions options;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
 
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
@@ -277,7 +277,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     }
 
     producerPtr->Stop();
-    stopSource.request_stop();
+    stopSource.RequestStop();
     worker.join();
 
     REQUIRE(sink.finished.load(std::memory_order_acquire));

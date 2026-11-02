@@ -449,7 +449,7 @@ private:
 
     [[nodiscard]] std::optional<Failure> StopCheck() const
     {
-        if (mRuntime->stop.stop_requested())
+        if (mRuntime->stop.StopRequested())
         {
             return CancelledFailure();
         }

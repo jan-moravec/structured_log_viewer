@@ -734,7 +734,7 @@ private:
         return std::nullopt;
     }
 
-    auto readInt = [](std::string_view sv, std::size_t start, std::size_t width) -> std::optional<int> {
+    const auto readInt = [](std::string_view sv, std::size_t start, std::size_t width) -> std::optional<int> {
         if (start + width > sv.size())
         {
             return std::nullopt;

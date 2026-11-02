@@ -228,7 +228,7 @@ enum class Precedence : std::uint8_t
     Or,
     And,
     Not,
-    Atom
+    Atom,
 };
 
 void AppendExpression(const FilterExpression &expr, Precedence parent, std::string &out);

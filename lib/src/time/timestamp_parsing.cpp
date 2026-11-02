@@ -71,11 +71,11 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
     constexpr std::string_view SYSLOG_D{"%b %d %H:%M:%S"};
     if (format == ISO_T)
     {
-        return TimestampFormatKind::Iso8601_T;
+        return TimestampFormatKind::Iso8601T;
     }
     if (format == ISO_SPACE)
     {
-        return TimestampFormatKind::Iso8601_Space;
+        return TimestampFormatKind::Iso8601Space;
     }
     if (format == ISO_T_OFFSET)
     {
@@ -489,9 +489,9 @@ bool TryParseTimestamp(
 {
     switch (kind)
     {
-    case TimestampFormatKind::Iso8601_T:
+    case TimestampFormatKind::Iso8601T:
         return TryParseIsoTimestamp(sv, 'T', out);
-    case TimestampFormatKind::Iso8601_Space:
+    case TimestampFormatKind::Iso8601Space:
         return TryParseIsoTimestamp(sv, ' ', out);
     case TimestampFormatKind::Iso8601TOffset:
         return TryParseIsoOffsetTimestamp(sv, 'T', out);

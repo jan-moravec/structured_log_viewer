@@ -54,6 +54,7 @@ public:
     BatchCoalescer &operator=(const BatchCoalescer &) = delete;
     BatchCoalescer(BatchCoalescer &&) = delete;
     BatchCoalescer &operator=(BatchCoalescer &&) = delete;
+    ~BatchCoalescer() = default;
 
     /**
      * In-flight batch. Callers append lines, errors, and

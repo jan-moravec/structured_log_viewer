@@ -57,7 +57,7 @@ TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[jso
     using namespace loglib;
 
     const ParserOptions defaults;
-    CHECK_FALSE(defaults.stopToken.stop_possible());
+    CHECK_FALSE(defaults.stopToken.StopPossible());
     CHECK(defaults.configuration == nullptr);
 
     CHECK(defaults.threads == 0u);

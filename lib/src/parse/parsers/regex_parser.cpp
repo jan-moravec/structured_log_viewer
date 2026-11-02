@@ -210,7 +210,7 @@ std::string_view StripBom(std::string_view sv) noexcept
 void DecodeRegexBatch(
     const internal::ByteRange &batch,
     internal::WorkerScratch<RegexWorkerState> &worker,
-    KeyIndex &keys,
+    const KeyIndex &keys,
     FileLineSource &source,
     std::span<const internal::TimeColumnSpec> timeColumns,
     internal::ParsedPipelineBatch &parsed,
@@ -325,7 +325,7 @@ void DecodeRegexBatch(
                 continuation.push_back('\n');
                 continuation.append(line.data(), line.size());
 
-                auto compactSpan = parsed.lines.back().CompactValues();
+                const auto compactSpan = parsed.lines.back().CompactValues();
                 std::vector<std::pair<KeyId, loglib::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
@@ -383,7 +383,8 @@ void DecodeRegexBatch(
         {
             parsed.completedMultiLineSpans.push_back(
                 internal::ParsedPipelineBatch::MultiLineSpan{
-                    .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                    .headerPhysicalLine = tailHeaderPhysical,
+                    .lastPhysicalLine = tailLastPhysical,
                 }
             );
         }
@@ -499,12 +500,12 @@ public:
                 return internal::LineDecodeResult::Continue;
             }
         }
-        else if (mMode == ContinuationMode::UntilNextHeader)
+        else if (
+            mMode == ContinuationMode::UntilNextHeader &&
+            !RegexLooksLikeHeader(*mHeaderProbe, mHeaderMatchData.get(), line)
+        )
         {
-            if (!RegexLooksLikeHeader(*mHeaderProbe, mHeaderMatchData.get(), line))
-            {
-                return internal::LineDecodeResult::Continue;
-            }
+            return internal::LineDecodeResult::Continue;
         }
 
         if (!MatchLineAndEmit(

@@ -128,8 +128,8 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
         }
     }
 
-    auto source = internal::MergedRegexTemplates();
-    auto fresh = std::make_shared<CompiledProbeSnapshot>();
+    const auto source = internal::MergedRegexTemplates();
+    const auto fresh = std::make_shared<CompiledProbeSnapshot>();
     fresh->source = source;
     fresh->generation = generation;
     if (source)

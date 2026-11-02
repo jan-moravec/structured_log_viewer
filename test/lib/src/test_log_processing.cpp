@@ -108,8 +108,8 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 
 TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")
 {
-    CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601_T);
-    CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601_Space);
+    CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601T);
+    CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601Space);
     CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Iso8601TOffset);
     CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Iso8601SpaceOffset);
     CHECK(ClassifyTimestampFormat("") == TimestampFormatKind::Generic);
@@ -541,15 +541,15 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     TimestampParseScratch scratch;
     TimeStamp out{};
 
-    SECTION("Iso8601_T routes to fast path")
+    SECTION("Iso8601T routes to fast path")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601_T, scratch, out));
+        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, out));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 
-    SECTION("Iso8601_Space routes to fast path")
+    SECTION("Iso8601Space routes to fast path")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601_Space, scratch, out));
+        REQUIRE(TryParseTimestamp("2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, out));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 

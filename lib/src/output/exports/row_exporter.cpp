@@ -30,7 +30,7 @@ constexpr size_t ROW_SCRATCH_RESERVE = 512;
 /// between row batches.
 void PollStop(const loglib::StopToken &token)
 {
-    if (token.stop_requested())
+    if (token.StopRequested())
     {
         throw OperationCancelled{"Export cancelled by user"};
     }

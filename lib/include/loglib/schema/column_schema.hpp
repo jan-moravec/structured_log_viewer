@@ -46,7 +46,7 @@ enum class ColumnType
     Number,
     Time,
     Enumeration,
-    Level
+    Level,
 };
 
 /**
@@ -99,7 +99,7 @@ struct Column
  * Order matters: the promotion loop tries formats in list order and
  * stops on the first match. ISO 8601 variants come first because
  * they cover the JSON / logfmt / RFC 5424 lion's share (fast path
- * via Iso8601_T / Iso8601_Space -- see
+ * via Iso8601T / Iso8601Space -- see
  * ClassifyTimestampFormat). Non-ISO tail formats target the
  * shipped regex-template shapes so their timestamps promote to
  * Type::Timestamp without the user editing the column:

@@ -26,7 +26,7 @@ class LogModel;
 /// `kPendingCapacity` items (default 32). The block propagates back
 /// through `BatchCoalescer` -> TBB Stage C -> Stage A, so the parser
 /// runs at the GUI's pace instead of producing unboundedly. `RequestStop`
-/// pairs `mStopSource->request_stop()` with `mPending.NotifyStop()` so a
+/// pairs `mStopSource->RequestStop()` with `mPending.NotifyStop()` so a
 /// blocked worker wakes immediately.
 ///
 /// Live-tail Pause/Resume: while paused the worker buffers parsed batches

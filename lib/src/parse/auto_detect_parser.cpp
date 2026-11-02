@@ -51,7 +51,7 @@ std::string DrainPeek(
     // senders connect, and an idle listener carries no format
     // evidence. Until data arrives, wait for stop or close only.
     std::optional<std::chrono::steady_clock::time_point> deadline;
-    while (peek.size() < peekBudget && !stopToken.stop_requested())
+    while (peek.size() < peekBudget && !stopToken.StopRequested())
     {
         const std::size_t want = std::min(chunk.size(), peekBudget - peek.size());
         const std::size_t got = producer.Read(std::span<char>(chunk.data(), want));

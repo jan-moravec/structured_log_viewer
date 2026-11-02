@@ -696,7 +696,7 @@ private:
         std::optional<std::int64_t> tsMax;
         std::optional<double> numMin;
         std::optional<double> numMax;
-        auto classify = [&](const Token &tok, std::optional<std::int64_t> &ts, std::optional<double> &num) {
+        const auto classify = [&](const Token &tok, std::optional<std::int64_t> &ts, std::optional<double> &num) {
             const auto asTs = ParseIsoTimestamp(tok.text);
             if (asTs.has_value())
             {

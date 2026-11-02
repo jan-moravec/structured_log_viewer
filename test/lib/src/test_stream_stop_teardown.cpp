@@ -130,7 +130,7 @@ TailingBytesProducer::Options TestOptions()
 
 // A worker parked in `WaitForBytes` on an idle producer must observe
 // `BytesProducer::Stop()` and unwind within 500 ms. The timed window
-// covers Stop() -> request_stop() -> thread join -> OnFinished.
+// covers Stop() -> RequestStop() -> thread join -> OnFinished.
 TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown]")
 {
     const TempDir dir;
@@ -146,7 +146,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     CountingSink sink;
     StopSource stopSource;
     ParserOptions options;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
 
     // Drive the parser worker on a dedicated thread (mirrors
     // `LogModel::BeginStreaming`'s `QtConcurrent::run` without Qt).
@@ -159,7 +159,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();
-    stopSource.request_stop();
+    stopSource.RequestStop();
     worker.join();
     const auto elapsed = std::chrono::steady_clock::now() - stopStart;
 
@@ -200,7 +200,7 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     CountingSink sink;
     StopSource stopSource;
     ParserOptions options;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
 
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
@@ -211,7 +211,7 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();
-    stopSource.request_stop();
+    stopSource.RequestStop();
     worker.join();
     const auto elapsed = std::chrono::steady_clock::now() - stopStart;
 

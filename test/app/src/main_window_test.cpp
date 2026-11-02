@@ -1414,7 +1414,7 @@ private slots:
         const loglib::StopToken stop = model.BeginStreaming(
             std::move(fileSource),
             [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](const loglib::StopToken &stopToken) {
-                while (!stopToken.stop_requested())
+                while (!stopToken.StopRequested())
                 {
                     std::this_thread::yield();
                 }
@@ -1496,7 +1496,7 @@ private slots:
         const loglib::StopToken stop = model.BeginStreaming(
             std::move(fileSource),
             [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](const loglib::StopToken &stopToken) {
-                while (!stopToken.stop_requested())
+                while (!stopToken.StopRequested())
                 {
                     std::this_thread::yield();
                 }

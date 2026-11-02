@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -56,7 +56,7 @@ struct FileIdentity
  */
 [[nodiscard]] FileIdentity FromPath(const std::filesystem::path &path) noexcept;
 
-#if defined(_WIN32)
+#ifdef _WIN32
 using NativeFileHandle = HANDLE;
 #else
 using NativeFileHandle = int; // POSIX fd

@@ -178,13 +178,13 @@ private:
                     mTimedOut.store(true);
                     stopping = true;
                 }
-                else if (mExternal.stop_requested() || mLocal.stop_requested())
+                else if (mExternal.StopRequested() || mLocal.StopRequested())
                 {
                     stopping = true;
                 }
                 if (stopping)
                 {
-                    mLocal.request_stop();
+                    mLocal.RequestStop();
                 }
             }
             if (stopping)
@@ -522,7 +522,7 @@ private:
     void Fail(slp::Failure failure)
     {
         mFailure = std::move(failure);
-        mStop->request_stop();
+        mStop->RequestStop();
     }
 
     void Process(bool final)
@@ -582,7 +582,7 @@ private:
         if (mOptions->maxRows && mEmitted >= *mOptions->maxRows)
         {
             mDone = true;
-            mStop->request_stop();
+            mStop->RequestStop();
         }
     }
 
@@ -874,7 +874,7 @@ ExitCode RunTail(
     StopWatcher watcher(runtime.stop, stop, options.duration);
     watcher.Attach(producer);
 
-    parser.value()->ParseStreaming(*rawSource, sink, MakeParserOptions(global, options.input, stop.get_token()));
+    parser.value()->ParseStreaming(*rawSource, sink, MakeParserOptions(global, options.input, stop.GetToken()));
     sink.Finish();
 
     if (sink.Failed())

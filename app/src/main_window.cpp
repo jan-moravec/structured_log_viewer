@@ -2038,11 +2038,11 @@ void MainWindow::InstallPerTabPersistentConnections(LogSession *session)
             }
             if (hosted->IsDecompressionInFlight())
             {
-                hosted->MutableDecompressionStopSource().request_stop();
+                hosted->MutableDecompressionStopSource().RequestStop();
             }
             if (hosted->IsExportInFlight())
             {
-                hosted->MutableExportStopSource().request_stop();
+                hosted->MutableExportStopSource().RequestStop();
             }
         });
     }
@@ -4828,7 +4828,7 @@ void MainWindow::BeginAsyncDecompression(
     // so both the future and any downstream `parseCallable` that pins
     // the temp file can share ownership. All captures are owned by
     // value: no MainWindow reference escapes.
-    const auto stopToken = origin->DecompressionStopSource().get_token();
+    const auto stopToken = origin->DecompressionStopSource().GetToken();
     auto *sharedBytesIn = &origin->MutableDecompressionBytesIn();
     auto *sharedTotal = &origin->MutableDecompressionTotalBytesIn();
 
@@ -4894,7 +4894,7 @@ void MainWindow::ShowDecompressionProgress()
             connect(mDecompressionProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
                 if (mSession != nullptr && mSession->IsDecompressionInFlight())
                 {
-                    mSession->MutableDecompressionStopSource().request_stop();
+                    mSession->MutableDecompressionStopSource().RequestStop();
                 }
             });
         }
@@ -5058,7 +5058,7 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
         return;
     }
 
-    origin->MutableDecompressionStopSource().request_stop();
+    origin->MutableDecompressionStopSource().RequestStop();
     origin->DrainDecompressionWatcher();
     origin->ClearDecompressionScratchPaths();
     origin->MutablePendingDecompressionErrors().clear();
@@ -5579,7 +5579,7 @@ void MainWindow::BeginAsyncExport(
         return;
     }
 
-    const auto stopToken = mSession->ExportStopSource().get_token();
+    const auto stopToken = mSession->ExportStopSource().GetToken();
     auto *rowsWrittenAtomic = &mSession->MutableExportRowsWritten();
 
     // Worker: drive the exporter into the sink synchronously.
@@ -5772,7 +5772,7 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
     }
     const loglib::LogTable *const tablePtr = &mModel->Table();
 
-    const auto stopToken = mSession->ExportStopSource().get_token();
+    const auto stopToken = mSession->ExportStopSource().GetToken();
     auto *rowsWrittenAtomic = &mSession->MutableExportRowsWritten();
 
     // Let worker exceptions propagate through the future.
@@ -5822,7 +5822,7 @@ void MainWindow::ShowExportProgress()
             connect(mExportProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
                 if (mSession != nullptr && mSession->IsExportInFlight())
                 {
-                    mSession->MutableExportStopSource().request_stop();
+                    mSession->MutableExportStopSource().RequestStop();
                 }
             });
         }
@@ -5965,7 +5965,7 @@ void MainWindow::CancelInFlightExportFor(LogSession *origin)
         UpdateExportProgressUi();
         return;
     }
-    origin->MutableExportStopSource().request_stop();
+    origin->MutableExportStopSource().RequestStop();
     try
     {
         watcher->waitForFinished();
@@ -9170,8 +9170,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
         {
             continue;
         }
-        session->MutableDecompressionStopSource().request_stop();
-        session->MutableExportStopSource().request_stop();
+        session->MutableDecompressionStopSource().RequestStop();
+        session->MutableExportStopSource().RequestStop();
     }
 
     // Flush restorable static sessions into Recent Sessions, then

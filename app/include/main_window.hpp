@@ -1428,7 +1428,7 @@ public:
     {
         if (mSession->IsDecompressionInFlight())
         {
-            mSession->MutableDecompressionStopSource().request_stop();
+            mSession->MutableDecompressionStopSource().RequestStop();
         }
     }
 

@@ -25,7 +25,7 @@ class StopSource;
 
 /**
  * @brief Cooperative cancellation token. API mirrors std::stop_token (the only
- * surface we use is stop_requested() / stop_possible()), so call sites
+ * surface we use is StopRequested() / StopPossible()), so call sites
  * read identically to the standard.
  *
  * We ship our own type rather than depending on std::stop_token because
@@ -41,12 +41,12 @@ class StopToken
 public:
     StopToken() noexcept = default;
 
-    [[nodiscard]] bool stop_requested() const noexcept
+    [[nodiscard]] bool StopRequested() const noexcept
     {
         return mState != nullptr && mState->load(std::memory_order_acquire);
     }
 
-    [[nodiscard]] bool stop_possible() const noexcept
+    [[nodiscard]] bool StopPossible() const noexcept
     {
         return mState != nullptr;
     }
@@ -64,8 +64,8 @@ private:
 
 /**
  * @brief Cooperative cancellation source paired with loglib::StopToken. API
- * mirrors std::stop_source for the methods we use (get_token(),
- * request_stop(), stop_requested()). Default construction creates an
+ * mirrors std::stop_source for the methods we use (GetToken(),
+ * RequestStop(), StopRequested()). Default construction creates an
  * active source with shared state, matching std::stop_source (rather than
  * the std::nostopstate overload).
  */
@@ -77,7 +77,7 @@ public:
     {
     }
 
-    [[nodiscard]] StopToken get_token() const noexcept
+    [[nodiscard]] StopToken GetToken() const noexcept
     {
         return StopToken{mState};
     }
@@ -86,7 +86,7 @@ public:
      * @brief Returns true if this call flipped the state from "no stop requested"
      * to "stop requested" (matches std::stop_source::request_stop).
      */
-    bool request_stop() noexcept
+    bool RequestStop() noexcept
     {
         if (mState == nullptr)
         {
@@ -95,12 +95,12 @@ public:
         return !mState->exchange(true, std::memory_order_acq_rel);
     }
 
-    [[nodiscard]] bool stop_requested() const noexcept
+    [[nodiscard]] bool StopRequested() const noexcept
     {
         return mState != nullptr && mState->load(std::memory_order_acquire);
     }
 
-    [[nodiscard]] bool stop_possible() const noexcept
+    [[nodiscard]] bool StopPossible() const noexcept
     {
         return mState != nullptr;
     }

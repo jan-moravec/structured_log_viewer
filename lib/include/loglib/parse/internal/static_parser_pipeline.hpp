@@ -283,7 +283,7 @@ void RunStaticParserPipeline(
 
     // Sink contract: at least one OnBatch before OnFinished on
     // every early-exit path.
-    if (options.stopToken.stop_requested())
+    if (options.stopToken.StopRequested())
     {
         coalescer.Finish(1, true);
         return;
@@ -321,7 +321,7 @@ void RunStaticParserPipeline(
     std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
     auto stageA = [&](oneapi::tbb::flow_control &fc) -> Token {
-        if (stopToken.stop_requested())
+        if (stopToken.StopRequested())
         {
             fc.stop();
             return Token{};
@@ -552,7 +552,7 @@ void RunStaticParserPipeline(
         held.reset();
     }
 
-    coalescer.Finish(nextLineNumber, stopToken.stop_requested());
+    coalescer.Finish(nextLineNumber, stopToken.StopRequested());
 }
 
 } // namespace loglib::internal

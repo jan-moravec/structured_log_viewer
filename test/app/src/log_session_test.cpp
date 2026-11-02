@@ -1497,37 +1497,37 @@ private slots:
     {
         // Each asynchronous operation
         // reassigns a fresh `StopSource{}` at the top; each cancel
-        // path calls `request_stop()`. Verify that the mutable
+        // path calls `RequestStop()`. Verify that the mutable
         // accessor lets us do both and that a token grabbed before
         // reassignment continues to observe the *old* source's
         // (never-requested) state -- matching the invariant that
         // stale worker callbacks may not leak a cancel into a new
         // open.
         LogSession session;
-        QVERIFY(!session.DecompressionStopSource().stop_requested());
-        QVERIFY(!session.ExportStopSource().stop_requested());
+        QVERIFY(!session.DecompressionStopSource().StopRequested());
+        QVERIFY(!session.ExportStopSource().StopRequested());
 
-        const auto decompStaleToken = session.DecompressionStopSource().get_token();
-        const auto exportStaleToken = session.ExportStopSource().get_token();
+        const auto decompStaleToken = session.DecompressionStopSource().GetToken();
+        const auto exportStaleToken = session.ExportStopSource().GetToken();
 
-        session.MutableDecompressionStopSource().request_stop();
-        session.MutableExportStopSource().request_stop();
-        QVERIFY(session.DecompressionStopSource().stop_requested());
-        QVERIFY(session.ExportStopSource().stop_requested());
-        QVERIFY(decompStaleToken.stop_requested());
-        QVERIFY(exportStaleToken.stop_requested());
+        session.MutableDecompressionStopSource().RequestStop();
+        session.MutableExportStopSource().RequestStop();
+        QVERIFY(session.DecompressionStopSource().StopRequested());
+        QVERIFY(session.ExportStopSource().StopRequested());
+        QVERIFY(decompStaleToken.StopRequested());
+        QVERIFY(exportStaleToken.StopRequested());
 
         session.MutableDecompressionStopSource() = loglib::StopSource{};
         session.MutableExportStopSource() = loglib::StopSource{};
-        QVERIFY(!session.DecompressionStopSource().stop_requested());
-        QVERIFY(!session.ExportStopSource().stop_requested());
-        QVERIFY(decompStaleToken.stop_requested());
-        QVERIFY(exportStaleToken.stop_requested());
+        QVERIFY(!session.DecompressionStopSource().StopRequested());
+        QVERIFY(!session.ExportStopSource().StopRequested());
+        QVERIFY(decompStaleToken.StopRequested());
+        QVERIFY(exportStaleToken.StopRequested());
 
-        const auto decompFreshToken = session.DecompressionStopSource().get_token();
-        const auto exportFreshToken = session.ExportStopSource().get_token();
-        QVERIFY(!decompFreshToken.stop_requested());
-        QVERIFY(!exportFreshToken.stop_requested());
+        const auto decompFreshToken = session.DecompressionStopSource().GetToken();
+        const auto exportFreshToken = session.ExportStopSource().GetToken();
+        QVERIFY(!decompFreshToken.StopRequested());
+        QVERIFY(!exportFreshToken.StopRequested());
     }
 
     static void TestExportScalarStateRoundTrips()

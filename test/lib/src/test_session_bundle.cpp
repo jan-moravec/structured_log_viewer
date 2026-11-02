@@ -624,9 +624,9 @@ TEST_CASE("session bundle cancellation before write preserves destination and le
     loglib::LogTable table = ParseTable(source.Path());
 
     loglib::StopSource stop;
-    stop.request_stop();
+    stop.RequestStop();
     loglib::SessionBundleWriteOptions options;
-    options.stopToken = stop.get_token();
+    options.stopToken = stop.GetToken();
     CHECK_THROWS_AS(
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
         loglib::OperationCancelled
@@ -651,11 +651,11 @@ TEST_CASE("session bundle cancellation from progress preserves destination and r
 
     loglib::StopSource stop;
     loglib::SessionBundleWriteOptions options;
-    options.stopToken = stop.get_token();
+    options.stopToken = stop.GetToken();
     options.progress = [&stop](std::uint64_t written, std::uint64_t) {
         if (written == 4096)
         {
-            stop.request_stop();
+            stop.RequestStop();
         }
     };
     CHECK_THROWS_AS(

@@ -237,7 +237,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     CHECK(manager.Configuration().columns[0].printFormat == "%F %H:%M:%S");
     // Default seed keeps ISO 8601 first (fast path via
-    // `Iso8601_T` / `Iso8601_Space`) and appends non-ISO shapes
+    // `Iso8601T` / `Iso8601Space`) and appends non-ISO shapes
     // (Apache CLF at present) so shipped regex-template
     // timestamps promote without an editor round-trip. See
     // `DefaultTimeParseFormats` for the authoritative list.

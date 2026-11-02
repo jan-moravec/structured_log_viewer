@@ -569,7 +569,7 @@ TEST_CASE("Mock parser: single sub-batchSize file does not overshoot fileEnd", "
 
 // Regression for #5: the sink contract states the harness always emits at
 // least one `OnBatch` (possibly empty) before `OnFinished`. The early-exit
-// paths (empty file / `stop_requested` before Stage A starts) used to skip
+// paths (empty file / `StopRequested` before Stage A starts) used to skip
 // `OnBatch` entirely. The two sub-cases below exercise both paths.
 TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", "[mock_parser]")
 {
@@ -595,9 +595,9 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
     {
         const TempTextFile fixture("level=info msg=hi\n", "test_kv_stop_before.log");
         loglib::StopSource stopSource;
-        stopSource.request_stop();
+        stopSource.RequestStop();
         loglib::ParserOptions options;
-        options.stopToken = stopSource.get_token();
+        options.stopToken = stopSource.GetToken();
         options.threads = 1;
 
         CollectingSink sink;
@@ -805,10 +805,10 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
         {
             CollectingSink::OnBatch(std::move(batch));
             ++batchCount;
-            if (batchCount == 1 && !stop.stop_requested())
+            if (batchCount == 1 && !stop.StopRequested())
             {
                 requestedAt = std::chrono::steady_clock::now();
-                stop.request_stop();
+                stop.RequestStop();
             }
         }
         void OnFinished(bool wasCancelled) override
@@ -819,7 +819,7 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     };
 
     CancellingSink sink;
-    options.stopToken = sink.stop.get_token();
+    options.stopToken = sink.stop.GetToken();
 
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
     KeyValueLineParser::ParseStreaming(source, sink, options);

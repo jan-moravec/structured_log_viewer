@@ -32,7 +32,7 @@ struct LastTimestampBytesHit
 {
     KeyId keyId = INVALID_KEY_ID;
     std::string bytes;
-    TimeStamp parsed{};
+    TimeStamp parsed;
     bool valid = false;
     /** Last zone offset used for a value with no zone of its own. */
     LocalOffsetWindow offsetWindow;

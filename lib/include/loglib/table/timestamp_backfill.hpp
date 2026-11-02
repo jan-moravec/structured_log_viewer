@@ -39,7 +39,7 @@ std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span
  */
 enum class BackfillErrors : uint8_t
 {
-    Discard
+    Discard,
 };
 
 /** @brief void overload of BackfillTimestampColumn that drops error messages. */

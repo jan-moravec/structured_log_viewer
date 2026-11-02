@@ -503,7 +503,7 @@ void RunStreamingParseLoop(
             scanStart = newlineRel + 1;
             carrySearched = 0;
 
-            if (stopToken.stop_requested())
+            if (stopToken.StopRequested())
             {
                 break;
             }
@@ -526,7 +526,7 @@ void RunStreamingParseLoop(
         }
     };
 
-    if (!carry.empty() && !stopToken.stop_requested())
+    if (!carry.empty() && !stopToken.StopRequested())
     {
         scanCarry();
         coalescer.TryFlush(false);
@@ -535,7 +535,7 @@ void RunStreamingParseLoop(
     bool reachedEof = false;
     while (!reachedEof)
     {
-        if (stopToken.stop_requested())
+        if (stopToken.StopRequested())
         {
             break;
         }
@@ -573,7 +573,7 @@ void RunStreamingParseLoop(
         coalescer.TryFlush(false);
     }
 
-    if (!carry.empty() && !stopToken.stop_requested())
+    if (!carry.empty() && !stopToken.StopRequested())
     {
         std::string_view line(carry);
         processLine(line);
@@ -584,7 +584,7 @@ void RunStreamingParseLoop(
     flushOrphanRun();
     commitPending();
 
-    coalescer.Finish(nextLineNumber, stopToken.stop_requested());
+    coalescer.Finish(nextLineNumber, stopToken.StopRequested());
 }
 
 } // namespace loglib::internal

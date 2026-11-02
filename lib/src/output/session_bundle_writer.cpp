@@ -53,7 +53,7 @@ constexpr std::size_t PROGRESS_INTERVAL_ROWS = 4096;
 
 void PollStop(const StopToken &token)
 {
-    if (token.stop_requested())
+    if (token.StopRequested())
     {
         throw OperationCancelled{"Session bundle writing cancelled"};
     }
