@@ -63,6 +63,7 @@ add_library(
     src/table/log_table.cpp
     src/output/normalized_json_row.cpp
     src/query/query_parser.cpp
+    src/query/query_printer.cpp
     src/ingest/rotation_siblings.cpp
     src/ingest/source_plan.cpp
     src/core/stable_byte_arena.cpp
