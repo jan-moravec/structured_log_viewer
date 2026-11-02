@@ -115,6 +115,9 @@ protected:
         }
     }
 
+    // The derived producers lock, wait on and fill this state directly from their network threads, so the members
+    // are protected rather than private.
+    // NOLINTBEGIN(cppcoreguidelines-non-private-member-variables-in-classes)
     std::string mDisplayName;
 
     mutable std::mutex mMutex;
@@ -127,6 +130,7 @@ protected:
     mutable std::mutex mCallbackMutex;
     std::function<void(SourceStatus)> mStatusCallback;
     SourceStatus mLastReportedStatus = SourceStatus::Waiting;
+    // NOLINTEND(cppcoreguidelines-non-private-member-variables-in-classes)
 };
 
 } // namespace loglib::internal

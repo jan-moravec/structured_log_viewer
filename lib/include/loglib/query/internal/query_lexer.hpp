@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include "loglib/query/query_parser.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <limits>
 #include <optional>
 #include <ratio>
