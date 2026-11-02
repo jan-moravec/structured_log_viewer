@@ -1,3 +1,11 @@
+/**
+ * @brief JSON field names for the theme types.
+ *
+ * This header tells the JSON library how to read and write each theme type. It is only included where themes are
+ * serialized.
+ *
+ * This is part of the support module.
+ */
 #pragma once
 
 #include "loglib/support/theme.hpp"
@@ -6,10 +14,10 @@
 
 #include <array>
 
-// Glaze meta-specialisations for `loglib::Theme`. Kept out of the
-// public header so it doesn't pull in `<glaze/glaze.hpp>`.
+// Glaze meta-specialisations for loglib::Theme. Kept out of the
+// public header so it doesn't pull in <glaze/glaze.hpp>.
 //
-// `keys` and `value` are slot names required by Glaze reflection,
+// keys and value are slot names required by Glaze reflection,
 // so they keep their lowercase names.
 // NOLINTBEGIN(readability-identifier-naming)
 

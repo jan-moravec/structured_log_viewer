@@ -1,3 +1,13 @@
+/**
+ * @brief Common interface to the bytes behind parsed log rows.
+ *
+ * A LogLine stores offsets and lengths rather than text, so it needs something that can turn them back into bytes.
+ * LineSource is that link. FileLineSource serves bytes from a memory-mapped file and StreamLineSource serves them from
+ * lines held in memory, which lets the rest of the library treat a static file and a live stream the same way. The
+ * header also holds the retention limits for streamed lines.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -12,7 +22,7 @@ namespace loglib
 
 class EnumDictionaryRegistry;
 
-/** @brief Default number of streamed lines kept before `EvictBefore` drops older lines. */
+/** @brief Default number of streamed lines kept before EvictBefore drops older lines. */
 inline constexpr size_t DEFAULT_RETENTION_LINES = 10'000;
 
 /** @brief Minimum number of streamed lines a retention cap may keep. */
@@ -23,9 +33,9 @@ inline constexpr size_t MAX_RETENTION_LINES = 1'000'000;
 
 /**
  * @brief Abstract source of log lines. Owns the bytes and resolves byte ranges
- * by offset/length so `LogLine` is storage-agnostic (mmap file or
- * per-line owned buffers). `lineId` semantics are source-defined; the
- * `LogLine::mSource` pointer disambiguates id spaces. Resolved views
+ * by offset/length so LogLine is storage-agnostic (mmap file or
+ * per-line owned buffers). lineId semantics are source-defined; the
+ * LogLine::mSource pointer disambiguates id spaces. Resolved views
  * stay valid until the line is evicted.
  */
 class LineSource
@@ -45,27 +55,27 @@ public:
 
     /**
      * @brief Raw line text for @p lineId, trailing CR/LF stripped. Throws
-     * `std::out_of_range` if @p lineId is evicted or not yet produced.
+     * std::out_of_range if @p lineId is evicted or not yet produced.
      */
     [[nodiscard]] virtual std::string RawLine(size_t lineId) const = 0;
 
-    /** @brief Resolve a `CompactTag::MmapSlice` payload; empty if unstable. */
+    /** @brief Resolve a CompactTag::MmapSlice payload; empty if unstable. */
     [[nodiscard]] virtual std::string_view ResolveMmapBytes(
         uint64_t offset, uint32_t length, size_t lineId
     ) const noexcept = 0;
 
-    /** @brief Resolve a `CompactTag::OwnedString` payload; empty if out of range. */
+    /** @brief Resolve a CompactTag::OwnedString payload; empty if out of range. */
     [[nodiscard]] virtual std::string_view ResolveOwnedBytes(
         uint64_t offset, uint32_t length, size_t lineId
     ) const noexcept = 0;
 
     /**
-     * @brief Bytes a parser may emit `MmapSlice` payloads against.
+     * @brief Bytes a parser may emit MmapSlice payloads against.
      * File sources return the mmap; stream sources return empty.
      */
     [[nodiscard]] virtual std::span<const char> StableBytes() const noexcept = 0;
 
-    /** @brief True iff this source can serve `MmapSlice` resolutions. */
+    /** @brief True iff this source can serve MmapSlice resolutions. */
     [[nodiscard]] bool BytesAreStable() const noexcept
     {
         return !StableBytes().empty();
@@ -73,16 +83,16 @@ public:
 
     /**
      * @brief Append @p bytes for @p lineId; returns the offset for an
-     * `OwnedString` payload.
+     * OwnedString payload.
      */
     virtual uint64_t AppendOwnedBytes(size_t lineId, std::string_view bytes) = 0;
 
-    /** @brief True iff `EvictBefore` actually evicts. */
+    /** @brief True iff EvictBefore actually evicts. */
     [[nodiscard]] virtual bool SupportsEviction() const noexcept = 0;
 
     /**
      * @brief Drop every line with id < @p firstSurvivingLineId. Caller ensures
-     * no live `LogLine` references the evicted ids.
+     * no live LogLine references the evicted ids.
      */
     virtual void EvictBefore(size_t firstSurvivingLineId) = 0;
 
@@ -90,8 +100,8 @@ public:
     [[nodiscard]] virtual size_t FirstAvailableLineId() const noexcept = 0;
 
     /**
-     * @brief Session-wide enum dictionary registry. Set by `LogTable`; must
-     * outlive any referencing `LogLine`. Single-writer: not internally
+     * @brief Session-wide enum dictionary registry. Set by LogTable; must
+     * outlive any referencing LogLine. Single-writer: not internally
      * synchronised.
      */
     [[nodiscard]] const EnumDictionaryRegistry *EnumDictionaries() const noexcept

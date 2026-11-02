@@ -1,3 +1,13 @@
+/**
+ * @brief Decides whether an unquoted text value is a number, a boolean or a string.
+ *
+ * Logfmt values and CSV cells have no type markers. These helpers type an unquoted scalar: empty text is nothing, true
+ * and false are booleans, numbers become integers or doubles, and anything else stays a string. Both parsers share them
+ * so a value gets the same type in either format. The header also builds the compact value that points at the file or
+ * copies the text into an arena.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/compact_log_value.hpp"
@@ -12,8 +22,8 @@
 #include <string_view>
 #include <system_error>
 
-// libc++ (LLVM 18 / Xcode 16) lacks `std::from_chars` for floating
-// point; fall back to a locale-safe `strtod` on that branch only.
+// libc++ (LLVM 18 / Xcode 16) lacks std::from_chars for floating
+// point; fall back to a locale-safe strtod on that branch only.
 #if !defined(__cpp_lib_to_chars) || __cpp_lib_to_chars < 201611L || defined(_LIBCPP_VERSION)
 #include <array>
 #include <cerrno>
@@ -23,11 +33,13 @@
 namespace loglib::internal
 {
 
-/// Parse @p raw as a finite double. Uses `std::from_chars` where
-/// available; the libc++ fallback validates a strict C float literal
-/// first so the locale-driven decimal separator in `strtod` cannot
-/// reinterpret the bytes. Inline to keep within-TU inlining in the
-/// logfmt / CSV hot paths.
+/**
+ * Parse @p raw as a finite double. Uses std::from_chars where
+ * available; the libc++ fallback validates a strict C float literal
+ * first so the locale-driven decimal separator in strtod cannot
+ * reinterpret the bytes. Inline to keep within-TU inlining in the
+ * logfmt / CSV hot paths.
+ */
 inline bool TryParseFiniteDouble(std::string_view raw, double &outValue)
 {
 #if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L && !defined(_LIBCPP_VERSION)
@@ -112,12 +124,14 @@ inline bool TryParseFiniteDouble(std::string_view raw, double &outValue)
 #endif
 }
 
-/// Promote @p sv to a compact value: `MmapSlice` (zero copy) when it
-/// lies inside `[fileBegin, fileBegin + fileSize)`, otherwise copy
-/// into @p ownedArena as `OwnedString`. Streaming callers pass
-/// `fileBegin == nullptr` to disable the range check (comparing
-/// pointers across unrelated objects is UB). Inline for hot-path
-/// inlining.
+/**
+ * Promote @p sv to a compact value: MmapSlice (zero copy) when it
+ * lies inside [fileBegin, fileBegin + fileSize), otherwise copy
+ * into @p ownedArena as OwnedString. Streaming callers pass
+ * fileBegin == nullptr to disable the range check (comparing
+ * pointers across unrelated objects is UB). Inline for hot-path
+ * inlining.
+ */
 inline CompactLogValue MakeStringCompact(
     std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
@@ -132,14 +146,16 @@ inline CompactLogValue MakeStringCompact(
     return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
 }
 
-/// Type an unquoted scalar (used by logfmt bare values and CSV bare
-/// cells; quoted values bypass this and stay strings). Returns:
-/// monostate for empty, bool for `true`/`false`, `uint64` then
-/// `int64` for decimals, finite `double` for sign/dot/exponent forms,
-/// else string. Trailing junk (`42abc`) falls through to string. Values
-/// that a number cannot represent stay strings: a leading zero (`007`)
-/// and an integer past 64 bits are identifiers, not quantities.
-/// Inline for hot-path inlining.
+/**
+ * Type an unquoted scalar (used by logfmt bare values and CSV bare
+ * cells; quoted values bypass this and stay strings). Returns:
+ * monostate for empty, bool for true/false, uint64 then
+ * int64 for decimals, finite double for sign/dot/exponent forms,
+ * else string. Trailing junk (42abc) falls through to string. Values
+ * that a number cannot represent stay strings: a leading zero (007)
+ * and an integer past 64 bits are identifiers, not quantities.
+ * Inline for hot-path inlining.
+ */
 inline CompactLogValue ClassifyBareScalar(
     std::string_view raw, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )

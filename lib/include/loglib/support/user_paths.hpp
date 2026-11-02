@@ -1,3 +1,12 @@
+/**
+ * @brief Per-user folders for application data.
+ *
+ * Returns the folder where the application keeps user data, such as regex templates, using the platform's standard
+ * location. The folder names match the desktop application so both programs share one location. Nothing here creates
+ * folders.
+ *
+ * This is part of the support module.
+ */
 #pragma once
 
 #include <filesystem>
@@ -9,10 +18,10 @@
 namespace loglib
 {
 
-/** @brief Organization directory used by `UserDataDirectory`. Matches the GUI application identity. */
+/** @brief Organization directory used by UserDataDirectory. Matches the GUI application identity. */
 inline constexpr std::string_view USER_DATA_ORGANIZATION_NAME = "jan-moravec";
 
-/** @brief Application directory used by `UserDataDirectory`. Matches the GUI application identity. */
+/** @brief Application directory used by UserDataDirectory. Matches the GUI application identity. */
 inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogViewer";
 
 /**
@@ -23,7 +32,7 @@ inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogVie
  * change the environment.
  *
  * @param name ASCII variable name.
- * @return The value, or `std::nullopt` when the variable is unset or empty.
+ * @return The value, or std::nullopt when the variable is unset or empty.
  */
 [[nodiscard]] std::optional<std::filesystem::path> EnvironmentPath(std::string_view name);
 
@@ -35,22 +44,22 @@ inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogVie
 [[nodiscard]] bool EnvironmentIsSet(std::string_view name);
 
 /**
- * @brief Writable application-data directory, matching `QStandardPaths::AppDataLocation`.
+ * @brief Writable application-data directory, matching QStandardPaths::AppDataLocation.
  *
- * Windows uses `%APPDATA%/<organization>/<application>` and returns an
- * empty path when `%APPDATA%` is unset. Linux uses
- * `$XDG_DATA_HOME/<organization>/<application>` when that variable is
- * absolute, and `~/.local/share/<organization>/<application>` otherwise.
- * A relative `XDG_DATA_HOME` is ignored. macOS uses
- * `~/Library/Application Support/<organization>/<application>`.
+ * Windows uses %APPDATA%/<organization>/<application> and returns an
+ * empty path when %APPDATA% is unset. Linux uses
+ * $XDG_DATA_HOME/<organization>/<application> when that variable is
+ * absolute, and ~/.local/share/<organization>/<application> otherwise.
+ * A relative XDG_DATA_HOME is ignored. macOS uses
+ * ~/Library/Application Support/<organization>/<application>.
  * The organization and application segments are
- * `USER_DATA_ORGANIZATION_NAME` and `USER_DATA_APPLICATION_NAME`.
+ * USER_DATA_ORGANIZATION_NAME and USER_DATA_APPLICATION_NAME.
  */
 [[nodiscard]] std::filesystem::path UserDataDirectory();
 
 /**
- * @brief `UserDataDirectory() / "regex_templates"`.
- * Empty when `UserDataDirectory()` is empty. Does not create the directory.
+ * @brief UserDataDirectory() / "regex_templates".
+ * Empty when UserDataDirectory() is empty. Does not create the directory.
  */
 [[nodiscard]] std::filesystem::path UserRegexTemplateDirectory();
 

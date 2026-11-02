@@ -1,3 +1,12 @@
+/**
+ * @brief Parser for CSV files.
+ *
+ * The first non-blank line is the header and names the columns. The parser follows RFC 4180: comma separators, doubled
+ * quotes and CRLF or LF line ends. Detection also needs a second line with the same number of cells, so headerless
+ * files fall through to other formats. It supports both the parallel file pipeline and the live-stream path.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/log_line.hpp"
@@ -15,48 +24,48 @@ class FileLineSource;
 class StreamLineSource;
 
 /**
- * @brief CSV parser, RFC 4180 strict (comma-only, `""` quote escape, CRLF
+ * @brief CSV parser, RFC 4180 strict (comma-only, "" quote escape, CRLF
  * or LF, UTF-8 BOM stripped on the header).
  *
  * The first non-blank line is the header and names the columns;
- * `IsValid` also requires a second non-blank line with the same
+ * IsValid also requires a second non-blank line with the same
  * cell count, so headerless files fall through to the next parser.
  *
- * Cell typing (bare cells only) is shared with `LogfmtParser` via
- * `internal::ClassifyBareScalar`: `true`/`false` -> bool, decimal
- * -> `int64`/`uint64`, with `.` or exponent -> double, else string.
+ * Cell typing (bare cells only) is shared with LogfmtParser via
+ * internal::ClassifyBareScalar: true/false -> bool, decimal
+ * -> int64/uint64, with . or exponent -> double, else string.
  * Quoted cells always stay strings. Empty cells are omitted from
  * the row (lookup yields monostate anyway, and skipping saves 16 B
  * per empty cell on wide rows).
  *
  * Known limits:
- * - Duplicate header columns are renamed `<name>_2`, `<name>_3`, ...
+ * - Duplicate header columns are renamed <name>_2, <name>_3, ...
  *   so both slots remain addressable.
  * - Multi-line quoted cells (RFC 4180 quotes spanning newlines) are
- *   rejected as `Unterminated quoted value.`.
- * - Stream Mode latches the schema once; on `logrotate` the new
+ *   rejected as Unterminated quoted value..
+ * - Stream Mode latches the schema once; on logrotate the new
  *   file's header is parsed as data (Stop + reopen to recover).
  * - Network Stream with multiple TCP clients: the first arriving
  *   line sets the schema for everyone (coordinate or restrict to a
  *   single producer).
  *
- * Shares the static TBB pipeline (`DecodeCsvBatch`) and streaming
- * loop (`CsvLineDecoder`) with the other parsers.
+ * Shares the static TBB pipeline (DecodeCsvBatch) and streaming
+ * loop (CsvLineDecoder) with the other parsers.
  */
 class CsvParser : public LogParser
 {
 public:
     /**
      * @brief Probe: @p sniffBuffer must contain a header line that looks
-     * like a CSV header (`HeaderLineLooksLikeCsv`) plus a second
+     * like a CSV header (HeaderLineLooksLikeCsv) plus a second
      * non-blank line with the same cell count. Bounded by
-     * `PROBE_BYTES_BUDGET` when called via the file shim.
+     * PROBE_BYTES_BUDGET when called via the file shim.
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /**
      * @brief Static parse: eagerly parses the header to build the
-     * `column -> KeyId` map, then runs the TBB pipeline; Stage B
+     * column -> KeyId map, then runs the TBB pipeline; Stage B
      * records the header line's offset and skips emitting a row
      * for it.
      */
@@ -64,7 +73,7 @@ public:
 
     /**
      * @brief Live-tail parse. The first non-blank inbound line latches
-     * the header (returned as `Skip`, no row emitted); subsequent
+     * the header (returned as Skip, no row emitted); subsequent
      * lines append as normal.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;

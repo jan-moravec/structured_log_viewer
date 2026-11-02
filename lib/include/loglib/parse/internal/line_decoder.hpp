@@ -1,3 +1,11 @@
+/**
+ * @brief Concept for turning one line into a row.
+ *
+ * Each format provides a decoder that reads a line and fills a row. The file pipeline and the live-stream loop both
+ * call decoders, which keeps the two paths consistent. This header also defines the result codes a decoder returns.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/compact_log_value.hpp"
@@ -13,16 +21,18 @@
 namespace loglib::internal
 {
 
-/// Outcome of a single-line decode:
-///  - `Emit`: append a `LogLine` from @p outValues (may be empty).
-///  - `Skip`: swallow the line silently (no row, no error). Used by
-///    parsers with a header prelude (CSV) to consume the schema row.
-///    The loop still advances the line-number cursor.
-///  - `Error`: emit no row; the loop wraps @p errorOut as
-///    "Error on line N: ...".
-///  - `Continue`: defer emission and let the parse loop append this
-///    line to the preceding record. Without a preceding `Emit`, the
-///    line is reported as an orphaned continuation.
+/**
+ * Outcome of a single-line decode:
+ *  - Emit: append a LogLine from @p outValues (may be empty).
+ *  - Skip: swallow the line silently (no row, no error). Used by
+ *    parsers with a header prelude (CSV) to consume the schema row.
+ *    The loop still advances the line-number cursor.
+ *  - Error: emit no row; the loop wraps @p errorOut as
+ *    "Error on line N: ...".
+ *  - Continue: defer emission and let the parse loop append this
+ *    line to the preceding record. Without a preceding Emit, the
+ *    line is reported as an orphaned continuation.
+ */
 enum class LineDecodeResult : uint8_t
 {
     Emit,
@@ -31,9 +41,11 @@ enum class LineDecodeResult : uint8_t
     Continue,
 };
 
-/// Outcome of extending a record's continuation target.
-/// `MissingTarget` includes absent optional captures;
-/// `NonStringTarget` includes unavailable mmap-backed strings.
+/**
+ * Outcome of extending a record's continuation target.
+ * MissingTarget includes absent optional captures;
+ * NonStringTarget includes unavailable mmap-backed strings.
+ */
 enum class ContinuationSpliceOutcome : uint8_t
 {
     Ok,
@@ -41,23 +53,25 @@ enum class ContinuationSpliceOutcome : uint8_t
     NonStringTarget,
 };
 
-/// Format-specific record decoder for the streaming pipeline.
-/// `RunStreamingParseLoop` feeds one physical line at a time and stays
-/// format-agnostic; per-format code implements this concept.
-///
-/// The pipeline pre-filters empty/blank lines, so @p line is non-empty.
-/// `DecodeCompact` fills @p outValues with `(KeyId, CompactLogValue)`,
-/// where `OwnedString` payloads index into @p outOwnedArena. The
-/// arena is transferred into `StreamLineSource` in a single
-/// `AppendLine` call.
-///
-/// On `Error`: put a human message in @p errorOut; the pipeline
-/// wraps it with "Error on line N: ...".
-///
-/// Implementations may carry per-run scratch state (simdjson parser,
-/// padded buffers, CSV header latch, etc.) as member fields.
-/// Decoders returning `Continue` must also expose
-/// `LastContinuationTarget()` with the field to extend.
+/**
+ * Format-specific record decoder for the streaming pipeline.
+ * RunStreamingParseLoop feeds one physical line at a time and stays
+ * format-agnostic; per-format code implements this concept.
+ *
+ * The pipeline pre-filters empty/blank lines, so @p line is non-empty.
+ * DecodeCompact fills @p outValues with (KeyId, CompactLogValue),
+ * where OwnedString payloads index into @p outOwnedArena. The
+ * arena is transferred into StreamLineSource in a single
+ * AppendLine call.
+ *
+ * On Error: put a human message in @p errorOut; the pipeline
+ * wraps it with "Error on line N: ...".
+ *
+ * Implementations may carry per-run scratch state (simdjson parser,
+ * padded buffers, CSV header latch, etc.) as member fields.
+ * Decoders returning Continue must also expose
+ * LastContinuationTarget() with the field to extend.
+ */
 template <class T>
 concept CompactLineDecoder = requires(
     T &decoder,

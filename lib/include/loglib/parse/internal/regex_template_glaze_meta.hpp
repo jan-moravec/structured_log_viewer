@@ -1,3 +1,11 @@
+/**
+ * @brief JSON field names for regex templates.
+ *
+ * This header tells the JSON library how to read and write RegexTemplate. It is only included where templates are
+ * serialized.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/parse/regex_templates.hpp"
@@ -5,11 +13,11 @@
 #include <glaze/glaze.hpp>
 #include <array>
 
-// Glaze meta-specialisation for `loglib::RegexTemplate`. Kept out
+// Glaze meta-specialisation for loglib::RegexTemplate. Kept out
 // of the public header so consumers don't pull in
-// `<glaze/glaze.hpp>`. Mirrors `theme_glaze_meta.hpp`.
+// <glaze/glaze.hpp>. Mirrors theme_glaze_meta.hpp.
 //
-// `value` is a slot name required by Glaze reflection, so keeps
+// value is a slot name required by Glaze reflection, so keeps
 // its lowercase name.
 // NOLINTBEGIN(readability-identifier-naming)
 
@@ -25,7 +33,7 @@ template <> struct glz::meta<loglib::ContinuationMode>
 template <> struct glz::meta<loglib::RegexTemplate>
 {
     using T = loglib::RegexTemplate;
-    // Missing fields retain the defaults declared on `RegexTemplate`.
+    // Missing fields retain the defaults declared on RegexTemplate.
     static constexpr auto value = object(
         "name",
         &T::name,

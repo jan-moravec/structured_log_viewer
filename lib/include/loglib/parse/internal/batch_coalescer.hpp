@@ -1,3 +1,12 @@
+/**
+ * @brief Groups parsed lines into batches for the sink.
+ *
+ * Sending one batch per line would swamp the sink, so the coalescer collects lines and flushes them when enough have
+ * built up or enough time has passed. It also records which keys are new in each batch and always sends a final batch
+ * before finishing. Both the static pipeline and the live-stream loop use it.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/parse/log_parse_sink.hpp"
@@ -14,21 +23,25 @@ class KeyIndex;
 namespace loglib::internal
 {
 
-/// Shared GUI-batch coalescer for both the static TBB pipeline and the
-/// live-tail streaming loop. Holds the in-flight `StreamedBatch`, the
-/// `KeyIndex` cursor for per-batch new-key diffs, and the
-/// (flushLines, flushInterval) throttle. Pipelines push content into
-/// `Pending()` and call `TryFlush(false)` to flush on threshold.
-/// `Finish` always emits a final batch — possibly empty — and forwards
-/// `OnFinished`, so the sink contract holds even on early-exit paths.
+/**
+ * Shared GUI-batch coalescer for both the static TBB pipeline and the
+ * live-tail streaming loop. Holds the in-flight StreamedBatch, the
+ * KeyIndex cursor for per-batch new-key diffs, and the
+ * (flushLines, flushInterval) throttle. Pipelines push content into
+ * Pending() and call TryFlush(false) to flush on threshold.
+ * Finish always emits a final batch — possibly empty — and forwards
+ * OnFinished, so the sink contract holds even on early-exit paths.
+ */
 class BatchCoalescer
 {
 public:
-    /// @p newKeyBaseline overrides the starting `KeyIndex` cursor for
-    /// the per-batch new-key diff. Defaults to the index's current
-    /// size. Parsers that intern keys before the pipeline starts
-    /// (e.g. `CsvParser`, which parses its header up front) pass the
-    /// pre-intern count so those columns still surface as `newKeys`.
+    /**
+     * @p newKeyBaseline overrides the starting KeyIndex cursor for
+     * the per-batch new-key diff. Defaults to the index's current
+     * size. Parsers that intern keys before the pipeline starts
+     * (e.g. CsvParser, which parses its header up front) pass the
+     * pre-intern count so those columns still surface as newKeys.
+     */
     BatchCoalescer(
         LogParseSink &sink,
         KeyIndex &keys,
@@ -42,15 +55,19 @@ public:
     BatchCoalescer(BatchCoalescer &&) = delete;
     BatchCoalescer &operator=(BatchCoalescer &&) = delete;
 
-    /// In-flight batch. Callers append `lines`, `errors`, and
-    /// (static path only) `localLineOffsets` directly.
+    /**
+     * In-flight batch. Callers append lines, errors, and
+     * (static path only) localLineOffsets directly.
+     */
     [[nodiscard]] StreamedBatch &Pending() noexcept
     {
         return mPending;
     }
 
-    /// Sets `Pending().firstLineNumber` once; subsequent calls are
-    /// no-ops so the line number stays anchored to the first line.
+    /**
+     * Sets Pending().firstLineNumber once; subsequent calls are
+     * no-ops so the line number stays anchored to the first line.
+     */
     void Prime(size_t firstLineNumber) noexcept;
 
     [[nodiscard]] bool IsPrimed() const noexcept
@@ -58,18 +75,24 @@ public:
         return mPrimed;
     }
 
-    /// Append the keys added since the last drain into @p out and
-    /// advance the cursor. Public so the static `prefersUncoalesced`
-    /// branch can drain into a per-batch scratch batch.
+    /**
+     * Append the keys added since the last drain into @p out and
+     * advance the cursor. Public so the static prefersUncoalesced
+     * branch can drain into a per-batch scratch batch.
+     */
     void DrainNewKeysInto(StreamedBatch &out);
 
-    /// Flush if either threshold is met, or unconditionally if
-    /// @p force. Returns true if a batch was emitted. Empty
-    /// threshold-triggered flushes are skipped (but `lastFlush` ticks).
+    /**
+     * Flush if either threshold is met, or unconditionally if
+     * @p force. Returns true if a batch was emitted. Empty
+     * threshold-triggered flushes are skipped (but lastFlush ticks).
+     */
     bool TryFlush(bool force);
 
-    /// Emit a final batch (empty if nothing buffered, primed at
-    /// @p fallbackLineNumber) and forward `OnFinished(@p wasCancelled)`.
+    /**
+     * Emit a final batch (empty if nothing buffered, primed at
+     * @p fallbackLineNumber) and forward OnFinished(@p wasCancelled).
+     */
     void Finish(size_t fallbackLineNumber, bool wasCancelled);
 
 private:

@@ -1,3 +1,11 @@
+/**
+ * @brief Writes and reads the line prefix of parse error messages.
+ *
+ * Parsers report problems as text. These helpers add a line or line range prefix to a message and read it back, so the
+ * interface can jump to the line an error refers to.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include <cstdint>
@@ -10,10 +18,10 @@ namespace loglib
 /**
  * @brief Physical line span and body of one parse-error string.
  *
- * Parsers report errors as display strings. `FormatLineError` and
- * `FormatLineRangeError` write the location prefix; `LocateParseError`
- * reads it back. `firstLine` and `lastLine` are 1-based and both 0 when
- * the error has no location. `message` views the text after the prefix,
+ * Parsers report errors as display strings. FormatLineError and
+ * FormatLineRangeError write the location prefix; LocateParseError
+ * reads it back. firstLine and lastLine are 1-based and both 0 when
+ * the error has no location. message views the text after the prefix,
  * or the whole input when there is no prefix.
  */
 struct ParseErrorLocation
@@ -28,7 +36,7 @@ struct ParseErrorLocation
  *
  * @param line 1-based line number.
  * @param message Error body.
- * @return `Error on line <line>: <message>`.
+ * @return Error on line <line>: <message>.
  */
 [[nodiscard]] std::string FormatLineError(std::uint64_t line, std::string_view message);
 
@@ -38,7 +46,7 @@ struct ParseErrorLocation
  * @param firstLine 1-based first line.
  * @param lastLine 1-based last line.
  * @param message Error body.
- * @return `Error on lines <firstLine>-<lastLine>: <message>`.
+ * @return Error on lines <firstLine>-<lastLine>: <message>.
  */
 [[nodiscard]] std::string FormatLineRangeError(
     std::uint64_t firstLine, std::uint64_t lastLine, std::string_view message

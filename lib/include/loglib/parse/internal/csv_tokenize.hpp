@@ -1,3 +1,11 @@
+/**
+ * @brief Splits one CSV line into cells.
+ *
+ * The tokenizer handles quoted cells and doubled quotes. It hands each cell to a callback and uses a scratch string for
+ * cells that need unescaping, so plain cells stay views into the line.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -7,10 +15,12 @@
 namespace loglib::internal
 {
 
-/// One cell from a CSV record.
-///
-/// Quoted cells remain strings. `fromScratch` means `value` points
-/// into the caller's unescape buffer and must be copied before reuse.
+/**
+ * One cell from a CSV record.
+ *
+ * Quoted cells remain strings. fromScratch means value points
+ * into the caller's unescape buffer and must be copied before reuse.
+ */
 struct CsvCell
 {
     std::string_view value;
@@ -18,15 +28,17 @@ struct CsvCell
     bool fromScratch = false;
 };
 
-/// Tokenize one CSV record using RFC 4180 quoting with lax recovery.
-/// Calls @p emit per cell and rejects unterminated quoted cells.
-///
-/// Grammar: cells separated by `,`; a leading `"` opens a quoted cell
-/// closed by an unescaped `"`, with `""` decoded to a literal `"`; an
-/// unquoted cell ends at the next `,` or EOL; a trailing `,` emits one
-/// final empty cell.
-///
-/// @p quotedScratch stores unescaped quoted cells.
+/**
+ * Tokenize one CSV record using RFC 4180 quoting with lax recovery.
+ * Calls @p emit per cell and rejects unterminated quoted cells.
+ *
+ * Grammar: cells separated by ,; a leading " opens a quoted cell
+ * closed by an unescaped ", with "" decoded to a literal "; an
+ * unquoted cell ends at the next , or EOL; a trailing , emits one
+ * final empty cell.
+ *
+ * @p quotedScratch stores unescaped quoted cells.
+ */
 template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emit)
 {
     const char *const data = line.data();
@@ -115,7 +127,7 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
             }
             if (i >= end)
             {
-                // `"a"x` ends with the quoted cell, not an empty one.
+                // "a"x ends with the quoted cell, not an empty one.
                 return true;
             }
             ++i;

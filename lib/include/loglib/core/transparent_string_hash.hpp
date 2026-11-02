@@ -1,3 +1,11 @@
+/**
+ * @brief Hash and equality that allow string_view lookups.
+ *
+ * Using these with an unordered map lets a caller look up by string_view or const char pointer without building a
+ * std::string first.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -8,7 +16,7 @@
 namespace loglib
 {
 
-/** @brief Transparent hash for heterogeneous `string` / `string_view` lookup. */
+/** @brief Transparent hash for heterogeneous string / string_view lookup. */
 struct TransparentStringHash
 {
     using is_transparent = void;
@@ -27,7 +35,7 @@ struct TransparentStringHash
     }
 };
 
-/** @brief Transparent equality companion for `TransparentStringHash`. */
+/** @brief Transparent equality companion for TransparentStringHash. */
 struct TransparentStringEqual
 {
     using is_transparent = void;

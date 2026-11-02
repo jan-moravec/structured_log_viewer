@@ -1,3 +1,12 @@
+/**
+ * @brief Which columns are visible, in display order.
+ *
+ * A ColumnProjection reads the visible flag of each configured column and lists the visible column indices. Hidden
+ * columns stay in the configuration but are left out. Exporters and the table view use it to decide what to show or
+ * write.
+ *
+ * This is part of the query module.
+ */
 #pragma once
 
 #include "loglib/schema/log_configuration.hpp"
@@ -10,16 +19,16 @@ namespace loglib
 {
 
 /**
- * @brief Visible column indices of a `LogConfiguration`, in display order.
+ * @brief Visible column indices of a LogConfiguration, in display order.
  *
- * Reads `Column::visible` only. Hidden columns stay in the
+ * Reads Column::visible only. Hidden columns stay in the
  * configuration; they are omitted from the result. An all-hidden
  * configuration yields an empty index list.
  *
  * Missing keys on a row are not this type's concern. CSV and
  * Markdown still emit a projected column (empty / monostate cell).
  * JSON Lines omits keys that are absent from the row. When
- * `includeAllFieldsForJson` is true it emits every field present
+ * includeAllFieldsForJson is true it emits every field present
  * on the row.
  */
 class ColumnProjection

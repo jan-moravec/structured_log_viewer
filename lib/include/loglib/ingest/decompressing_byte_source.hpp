@@ -1,3 +1,13 @@
+/**
+ * @brief Reads compressed log files as plain files.
+ *
+ * A DecompressingByteSource detects gzip, bzip2, xz and zstd files from their first bytes and decompresses them into an
+ * owned temporary file. EffectivePath returns that file, so the rest of the library can map a compressed log like a
+ * normal one. Plain files are returned unchanged. It supports cancellation and a cap on the decompressed size, and
+ * reports both as exceptions
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include <loglib/core/stop_token.hpp>
@@ -16,7 +26,7 @@ namespace loglib
 class DecompressionCancelled : public std::exception
 {
 public:
-    // Not `noexcept`: by-value copy of an lvalue would allocate.
+    // Not noexcept: by-value copy of an lvalue would allocate.
     explicit DecompressionCancelled(std::string what)
         : mWhat(std::move(what))
     {
@@ -53,7 +63,7 @@ private:
  * @brief RAII decoder for gzip, bzip2, xz, and zstd files.
  *
  * Compressed input is streamed to an owned temp file exposed through
- * `EffectivePath()`. Plain input is returned unchanged. Not thread-safe.
+ * EffectivePath(). Plain input is returned unchanged. Not thread-safe.
  */
 class DecompressingByteSource
 {
@@ -71,7 +81,7 @@ public:
     {
         /** @brief Compressed bytes consumed so far. */
         std::size_t bytesIn = 0;
-        /** @brief Total compressed size from `file_size`. */
+        /** @brief Total compressed size from file_size. */
         std::size_t totalBytesIn = 0;
     };
 
@@ -88,11 +98,11 @@ public:
         /**
          * @brief Hard cap on decompressed output.
          *
-         * Throws `DecompressionSizeCapExceeded` if exceeded. Zero
+         * Throws DecompressionSizeCapExceeded if exceeded. Zero
          * disables the cap.
          */
         std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;
-        /** @brief When true, strips the first line and exposes it via `DiscardedFirstLine()`. */
+        /** @brief When true, strips the first line and exposes it via DiscardedFirstLine(). */
         bool discardFirstLine = false;
         /** @brief Maximum buffered first-line size. */
         std::size_t maxDiscardedFirstLineBytes = DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES;
@@ -130,10 +140,10 @@ public:
     /**
      * @brief Detects a codec from up to six magic bytes.
      *
-     * Plain, empty, and unreadable files return `Codec::None`.
+     * Plain, empty, and unreadable files return Codec::None.
      *
      * @param input Path to sniff.
-     * @return Detected codec, or `Codec::None`.
+     * @return Detected codec, or Codec::None.
      */
     [[nodiscard]] static Codec SniffCodec(const std::filesystem::path &input) noexcept;
 
@@ -151,7 +161,7 @@ public:
     /**
      * @brief Returns the path downstream code should mmap or probe.
      *
-     * Equal to `DisplayPath()` when the input was not compressed.
+     * Equal to DisplayPath() when the input was not compressed.
      */
     [[nodiscard]] const std::filesystem::path &EffectivePath() const noexcept;
 
@@ -163,12 +173,12 @@ public:
 
     /**
      * @brief Returns the decompressed temp-file size in bytes.
-     * @return Zero when `WasDecompressed()` is false.
+     * @return Zero when WasDecompressed() is false.
      */
     [[nodiscard]] std::size_t DecompressedSize() const noexcept;
 
     /**
-     * @brief Returns bytes stripped by `Options::discardFirstLine`.
+     * @brief Returns bytes stripped by Options::discardFirstLine.
      *
      * The view excludes the terminating newline. Empty when the option
      * was off.
@@ -183,7 +193,7 @@ private:
     Codec mCodec = Codec::None;
     std::size_t mCompressedSize = 0;
     std::size_t mDecompressedSize = 0;
-    /** @brief True when `mEffectivePath` is a temp file owned by this object. */
+    /** @brief True when mEffectivePath is a temp file owned by this object. */
     bool mOwnsTempFile = false;
     std::string mDiscardedFirstLine;
 };
@@ -191,7 +201,7 @@ private:
 /**
  * @brief Returns a human-readable codec name.
  *
- * Names are `"gzip"`, `"bzip2"`, `"xz"`, `"zstd"`, and `"none"`. The
+ * Names are "gzip", "bzip2", "xz", "zstd", and "none". The
  * returned view has static storage duration.
  *
  * @param codec Codec to name.

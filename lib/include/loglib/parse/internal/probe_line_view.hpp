@@ -1,3 +1,11 @@
+/**
+ * @brief Reads one line at a time from a probe buffer.
+ *
+ * Format detection looks at the first few kilobytes of input. NextProbeLine returns the next line of that buffer
+ * without its line ending, and notes whether the line was complete.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -6,32 +14,42 @@
 namespace loglib::internal
 {
 
-/// One probe line extracted from a byte buffer.
+/** One probe line extracted from a byte buffer. */
 struct ProbeLine
 {
-    /// Contents of the line with any trailing `\r` stripped. Empty
-    /// for a bare `\n` in the input (the caller decides whether to
-    /// skip blank lines).
+    /**
+     * Contents of the line with any trailing \r stripped. Empty
+     * for a bare \n in the input (the caller decides whether to
+     * skip blank lines).
+     */
     std::string_view line;
 
-    /// Cumulative bytes consumed from the input, including the
-    /// terminating `\n` if one was found.
+    /**
+     * Cumulative bytes consumed from the input, including the
+     * terminating \n if one was found.
+     */
     std::size_t bytesConsumed = 0;
 
-    /// Position of the first byte *after* this line in the input,
-    /// used to advance the cursor for the next call.
+    /**
+     * Position of the first byte *after* this line in the input,
+     * used to advance the cursor for the next call.
+     */
     std::size_t nextOffset = 0;
 
-    /// True iff the line ended with `\n` in the input. A final
-    /// unterminated line (buffer truncated by the probe budget) is
-    /// still returned so callers can inspect the partial content;
-    /// they must decide whether a partial line is meaningful.
+    /**
+     * True iff the line ended with \n in the input. A final
+     * unterminated line (buffer truncated by the probe budget) is
+     * still returned so callers can inspect the partial content;
+     * they must decide whether a partial line is meaningful.
+     */
     bool terminated = false;
 };
 
-/// Extract the line at @p offset from @p bytes. At end-of-buffer,
-/// returns an empty `ProbeLine` with `nextOffset == bytes.size()`.
-/// Trailing `\r` is stripped from the returned view.
+/**
+ * Extract the line at @p offset from @p bytes. At end-of-buffer,
+ * returns an empty ProbeLine with nextOffset == bytes.size().
+ * Trailing \r is stripped from the returned view.
+ */
 [[nodiscard]] inline ProbeLine NextProbeLine(std::string_view bytes, std::size_t offset)
 {
     ProbeLine result;

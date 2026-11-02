@@ -1,3 +1,12 @@
+/**
+ * @brief Parallel pipeline for parsing a memory-mapped file.
+ *
+ * The pipeline splits the file into batches, decodes them on worker threads, and then reassembles the results in file
+ * order on a single thread before they reach the sink. Every static parser plugs in a batch splitter and a decoder and
+ * reuses the rest.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/compact_log_value.hpp"
@@ -35,53 +44,69 @@
 namespace loglib::internal
 {
 
-/// Coalescing thresholds for the static TBB pipeline.
+/** Coalescing thresholds for the static TBB pipeline. */
 constexpr size_t STATIC_BATCH_FLUSH_LINES = 1000;
 constexpr auto STATIC_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(50);
 
-/// Stage B per-line error. `relativeLine` is 1-based within the batch;
-/// Stage C composes the absolute "Error on line N: ..." wrapper using
-/// its running line-number cursor.
+/**
+ * Stage B per-line error. relativeLine is 1-based within the batch;
+ * Stage C composes the absolute "Error on line N: ..." wrapper using
+ * its running line-number cursor.
+ */
 struct ParsedLineError
 {
     size_t relativeLine = 0;
     std::string body;
 };
 
-/// Stage B output. Stage C re-asserts ordering before the sink sees it.
+/** Stage B output. Stage C re-asserts ordering before the sink sees it. */
 struct ParsedPipelineBatch
 {
     uint64_t batchIndex = 0;
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
-    /// Per-batch owned-string staging. Stage B appends escape-decoded
-    /// bytes; Stage C concatenates into the `LogFile` arena and
-    /// rebases the offsets on `lines` in one pass.
+    /**
+     * Per-batch owned-string staging. Stage B appends escape-decoded
+     * bytes; Stage C concatenates into the LogFile arena and
+     * rebases the offsets on lines in one pass.
+     */
     std::string ownedStringsArena;
-    /// Source lines consumed (parsed + errors + skipped empties);
-    /// advances Stage C's line-number cursor across batches.
+    /**
+     * Source lines consumed (parsed + errors + skipped empties);
+     * advances Stage C's line-number cursor across batches.
+     */
     size_t totalLineCount = 0;
-    /// Newline-separated continuation bytes at the start of this
-    /// batch, to be spliced into the preceding batch's held record.
+    /**
+     * Newline-separated continuation bytes at the start of this
+     * batch, to be spliced into the preceding batch's held record.
+     */
     std::string leadingContinuationBytes;
-    /// Number of physical lines through the last leading continuation.
-    /// Includes preceding/interspersed blanks, but excludes blanks
-    /// between the last continuation and the next header.
+    /**
+     * Number of physical lines through the last leading continuation.
+     * Includes preceding/interspersed blanks, but excludes blanks
+     * between the last continuation and the next header.
+     */
     size_t leadingContinuationLineCount = 0;
-    /// Whether Stage C must hold the final record for possible
-    /// continuations from the next batch.
+    /**
+     * Whether Stage C must hold the final record for possible
+     * continuations from the next batch.
+     */
     bool lastRecordOpenForContinuation = false;
-    /// String field extended on the held final record.
+    /** String field extended on the held final record. */
     KeyId continuationTargetKeyId = INVALID_KEY_ID;
-    /// Batch-relative physical index of the held record's last
-    /// content line. Valid only when `lastRecordOpenForContinuation`.
+    /**
+     * Batch-relative physical index of the held record's last
+     * content line. Valid only when lastRecordOpenForContinuation.
+     */
     size_t tailRecordLastPhysicalLine = 0;
-    /// Batch-relative physical index of the held record's header.
+    /** Batch-relative physical index of the held record's header. */
     size_t tailRecordHeaderPhysicalLine = 0;
 
-    /// Batch-relative spans for multi-line records sealed within this
-    /// batch. Stage C converts them to absolute indices.
+    /**
+     * Batch-relative spans for multi-line records sealed within this
+     * batch. Stage C converts them to absolute indices.
+     */
     struct MultiLineSpan
     {
         size_t headerPhysicalLine = 0;
@@ -90,7 +115,7 @@ struct ParsedPipelineBatch
     std::vector<MultiLineSpan> completedMultiLineSpans;
 };
 
-/// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.
+/** Resolved defaults for effectiveThreads and ntokens. Both >= 1. */
 struct ResolvedPipelineSettings
 {
     unsigned int effectiveThreads = 1;
@@ -99,9 +124,11 @@ struct ResolvedPipelineSettings
 
 ResolvedPipelineSettings ResolvePipelineSettings(const ParserOptions &options);
 
-/// Append @p leadingContinuationBytes to @p heldLine's `targetKey`.
-/// Arena-tail values extend in place to keep records spanning many
-/// batches linear; other values are copied and rebased at the tail.
+/**
+ * Append @p leadingContinuationBytes to @p heldLine's targetKey.
+ * Arena-tail values extend in place to keep records spanning many
+ * batches linear; other values are copied and rebased at the tail.
+ */
 inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     LogLine &heldLine, LogFile &file, KeyId targetKey, std::string_view leadingContinuationBytes
 )
@@ -152,7 +179,7 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     }
     joined.reserve(current.size() + 1 + leadingContinuationBytes.size());
     joined.append(current);
-    // A bare `key=` has no preceding content to separate.
+    // A bare key= has no preceding content to separate.
     if (slot->tag != CompactTag::Monostate)
     {
         joined.push_back('\n');
@@ -166,20 +193,22 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     return ContinuationSpliceOutcome::Ok;
 }
 
-/// Static-file TBB pipeline. Stage A (`serial_in_order`) drives
-/// tokens; Stage B (`parallel`) decodes; Stage C (`serial_in_order`)
-/// rebases per-batch arenas into `source.File()`'s session-global
-/// arena, coalesces, diffs new keys, runs inline timestamp promotion,
-/// and honours `stop_token`. Stage B stamps each emitted `LogLine` with
-/// `&source` and its absolute `lineId`.
-///
-/// @p newKeyBaseline forwards to `BatchCoalescer` (see its docstring);
-/// parsers that intern their schema before the pipeline pass the
-/// pre-intern key count. Defaults to the index's current size.
-// `stageADriver` / `stageBDecoder` are forwarding refs to keep both
-// lvalue and rvalue callables callable without an explicit `std::move`
-// at the call site, but they are captured by the inner `[&]` lambdas
-// and invoked many times by TBB's pipeline. `std::forward<...>` would
+/**
+ * Static-file TBB pipeline. Stage A (serial_in_order) drives
+ * tokens; Stage B (parallel) decodes; Stage C (serial_in_order)
+ * rebases per-batch arenas into source.File()'s session-global
+ * arena, coalesces, diffs new keys, runs inline timestamp promotion,
+ * and honours stop_token. Stage B stamps each emitted LogLine with
+ * &source and its absolute lineId.
+ *
+ * @p newKeyBaseline forwards to BatchCoalescer (see its docstring);
+ * parsers that intern their schema before the pipeline pass the
+ * pre-intern key count. Defaults to the index's current size.
+ */
+// stageADriver / stageBDecoder are forwarding refs to keep both
+// lvalue and rvalue callables callable without an explicit std::move
+// at the call site, but they are captured by the inner [&] lambdas
+// and invoked many times by TBB's pipeline. std::forward<...> would
 // be UB on the second invocation when the original argument was an
 // rvalue, so we deliberately do not forward and silence the warnings.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
@@ -194,11 +223,11 @@ void RunStaticParserPipeline(
     std::optional<size_t> newKeyBaseline = std::nullopt
 )
 {
-    // `ParserOptions::initialCarry` is a streaming-only mechanism
-    // (see `parser_options.hpp`); the static file pipeline reads
+    // ParserOptions::initialCarry is a streaming-only mechanism
+    // (see parser_options.hpp); the static file pipeline reads
     // from the mmap directly and has nowhere to splice the carry
     // in. A non-empty carry here means a caller wired an
-    // `AutoDetectParser`-style handoff onto a `FileLineSource`,
+    // AutoDetectParser-style handoff onto a FileLineSource,
     // which would silently drop bytes.
     assert(options.initialCarry.empty() && "initialCarry is streaming-only; static file parses must not set it");
 
@@ -209,7 +238,7 @@ void RunStaticParserPipeline(
     KeyIndex &keys = sink.Keys();
     BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline);
 
-    // Sink contract: at least one `OnBatch` before `OnFinished` on
+    // Sink contract: at least one OnBatch before OnFinished on
     // every early-exit path.
     if (options.stopToken.stop_requested())
     {
@@ -240,7 +269,7 @@ void RunStaticParserPipeline(
     {
         LogLine line;
         KeyId continuationTargetKeyId = INVALID_KEY_ID;
-        size_t absoluteLineNumber = 0; // header's absolute line number for `Prime`
+        size_t absoluteLineNumber = 0; // header's absolute line number for Prime
         size_t headerLineIdx = 0;      // 0-based absolute physical-line index (mLineOffsets index)
         size_t lastLineIdx = 0;        // 0-based absolute physical-line index of the record's last line
     };
@@ -286,7 +315,7 @@ void RunStaticParserPipeline(
         }
 
         // Registration belongs to the sink thread and must follow
-        // `AppendLineOffsets`; registering here would race readers and
+        // AppendLineOffsets; registering here would race readers and
         // may reference a terminating offset not appended yet.
         std::vector<MultiLineRecordSpan> spansThisBatch;
         if (!parsed.completedMultiLineSpans.empty())
@@ -303,7 +332,7 @@ void RunStaticParserPipeline(
             }
         }
 
-        // Rebase per-batch `OwnedString` offsets into the `LogFile`
+        // Rebase per-batch OwnedString offsets into the LogFile
         // arena. Stage C is serial_in_order, so this write is
         // single-threaded.
         if (!parsed.ownedStringsArena.empty())
@@ -370,7 +399,7 @@ void RunStaticParserPipeline(
         }
 
         // Compose absolute "Error on line N: ..." here so error and
-        // line numbering stay in lockstep with `ShiftLineId` above.
+        // line numbering stay in lockstep with ShiftLineId above.
         auto formatErrorsInto = [&](std::vector<std::string> &out) {
             if (parsed.errors.empty())
             {

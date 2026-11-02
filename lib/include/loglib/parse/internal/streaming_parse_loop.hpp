@@ -1,3 +1,11 @@
+/**
+ * @brief Line loop for parsing a live stream.
+ *
+ * The loop reads bytes from the producer, cuts them into lines, runs the format's decoder, folds continuation lines
+ * into records and flushes batches to the sink on a timer. It is the live-stream counterpart of the static pipeline.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/bytes_producer.hpp"
@@ -30,22 +38,30 @@
 namespace loglib::internal
 {
 
-/// Coalescing thresholds for the live-tail loop. Tighter than the
-/// static pipeline because we optimise for latency, not throughput.
+/**
+ * Coalescing thresholds for the live-tail loop. Tighter than the
+ * static pipeline because we optimise for latency, not throughput.
+ */
 constexpr size_t STREAMING_BATCH_FLUSH_LINES = 250;
 constexpr auto STREAMING_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(100);
 
-/// Maximum time a multi-line record may remain invisible while
-/// waiting for another header or EOF.
+/**
+ * Maximum time a multi-line record may remain invisible while
+ * waiting for another header or EOF.
+ */
 constexpr auto STREAMING_PENDING_RECORD_MAX_AGE = std::chrono::milliseconds(500);
 
-/// Read buffer size for the live-tail loop. Matches `TailingBytesProducer`'s
-/// pre-fill chunk; small enough that each `Read` returns promptly.
+/**
+ * Read buffer size for the live-tail loop. Matches TailingBytesProducer's
+ * pre-fill chunk; small enough that each Read returns promptly.
+ */
 constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 
-/// Extend @p targetKey with separator-prefixed continuation bytes.
-/// Mmap-backed values require @p mmapBytes and are materialised into
-/// @p ownedArena. A bare `key=` is promoted without a leading separator.
+/**
+ * Extend @p targetKey with separator-prefixed continuation bytes.
+ * Mmap-backed values require @p mmapBytes and are materialised into
+ * @p ownedArena. A bare key= is promoted without a leading separator.
+ */
 inline ContinuationSpliceOutcome ExtendContinuationTarget(
     std::vector<std::pair<KeyId, CompactLogValue>> &values,
     std::string &ownedArena,
@@ -97,7 +113,7 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
         }
         case CompactTag::Monostate:
         {
-            // A bare `key=` has no preceding content to separate.
+            // A bare key= has no preceding content to separate.
             std::string_view bytes = continuationBytes;
             if (!bytes.empty() && bytes.front() == '\n')
             {
@@ -139,27 +155,29 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
     return ContinuationSpliceOutcome::MissingTarget;
 }
 
-/// Format-agnostic live-tail entry point. Drains `source.Producer()`
-/// line-by-line, hands each non-blank line to @p decoder (must
-/// satisfy `CompactLineDecoder`), commits `(rawText, ownedArena)` to
-/// @p source, and emits `LogLine`s into batches throttled by
-/// `STREAMING_BATCH_FLUSH_*`.
-///
-/// Single-threaded: the target is thousands of lines/s, so TBB
-/// overhead is not warranted. `source` is mutated on the parser
-/// thread and read concurrently by the GUI; `StreamLineSource`'s
-/// internal mutex + deque storage make that safe.
-///
-/// A `Continue` result extends the pending record's raw text and the
-/// field selected by `decoder.LastContinuationTarget()`. Pending
-/// records commit on `Emit`, EOF, or the maximum pending age.
-/// @p newKeyBaseline forwards to `BatchCoalescer`. Parsers that
-/// pre-intern keys into the sink's `KeyIndex` before calling here
-/// (e.g. `RegexParser`, whose schema comes from the pattern's
-/// named capture groups) pass the snapshot taken *before* the
-/// intern step, so eagerly-interned columns still surface as
-/// `newKeys` on the first emitted batch. Parsers that add keys
-/// lazily (JSON, logfmt, CSV) leave this `std::nullopt`.
+/**
+ * Format-agnostic live-tail entry point. Drains source.Producer()
+ * line-by-line, hands each non-blank line to @p decoder (must
+ * satisfy CompactLineDecoder), commits (rawText, ownedArena) to
+ * @p source, and emits LogLines into batches throttled by
+ * STREAMING_BATCH_FLUSH_*.
+ *
+ * Single-threaded: the target is thousands of lines/s, so TBB
+ * overhead is not warranted. source is mutated on the parser
+ * thread and read concurrently by the GUI; StreamLineSource's
+ * internal mutex + deque storage make that safe.
+ *
+ * A Continue result extends the pending record's raw text and the
+ * field selected by decoder.LastContinuationTarget(). Pending
+ * records commit on Emit, EOF, or the maximum pending age.
+ * @p newKeyBaseline forwards to BatchCoalescer. Parsers that
+ * pre-intern keys into the sink's KeyIndex before calling here
+ * (e.g. RegexParser, whose schema comes from the pattern's
+ * named capture groups) pass the snapshot taken *before* the
+ * intern step, so eagerly-interned columns still surface as
+ * newKeys on the first emitted batch. Parsers that add keys
+ * lazily (JSON, logfmt, CSV) leave this std::nullopt.
+ */
 template <class Decoder>
 void RunStreamingParseLoop(
     StreamLineSource &source,
@@ -177,7 +195,7 @@ void RunStreamingParseLoop(
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)
     {
-        // No producer (e.g. unit tests driving `AppendLine` directly).
+        // No producer (e.g. unit tests driving AppendLine directly).
         // Honour the sink contract with one empty terminal batch.
         coalescer.Finish(1, false);
         return;
@@ -193,15 +211,15 @@ void RunStreamingParseLoop(
 
     size_t nextLineNumber = 1;
 
-    // Seed `carry` from `options.initialCarry` so a wrapping parser
-    // (e.g. `AutoDetectParser`) can hand back bytes it already
+    // Seed carry from options.initialCarry so a wrapping parser
+    // (e.g. AutoDetectParser) can hand back bytes it already
     // consumed from the producer during format detection. Zero cost
-    // on the default path where `initialCarry` is empty.
+    // on the default path where initialCarry is empty.
     std::string carry = options.initialCarry;
     std::vector<char> readBuffer(STREAMING_READ_BUFFER_SIZE);
-    // Bytes of `carry` already searched for a newline.
+    // Bytes of carry already searched for a newline.
     size_t carrySearched = 0;
-    // Set while discarding the rest of a line past `maxLineBytes`.
+    // Set while discarding the rest of a line past maxLineBytes.
     bool skippingOversizedLine = false;
     const size_t maxLineBytes = options.maxLineBytes;
 
@@ -210,8 +228,10 @@ void RunStreamingParseLoop(
     std::string ownedArena;
     std::string lineError;
 
-    /// Mutable record held outside the coalescer until `AppendLine`
-    /// assigns its stable line ID.
+    /**
+     * Mutable record held outside the coalescer until AppendLine
+     * assigns its stable line ID.
+     */
     struct PendingRecord
     {
         std::string rawText;
@@ -228,10 +248,12 @@ void RunStreamingParseLoop(
         // Blanks become record content only if another continuation follows.
         size_t pendingBlanks = 0;
         std::chrono::steady_clock::time_point openedAt;
-        /// Whether continuation bytes can be buffered safely. Invalid
-        /// targets are counted and dropped to bound memory use.
+        /**
+         * Whether continuation bytes can be buffered safely. Invalid
+         * targets are counted and dropped to bound memory use.
+         */
         bool continuationAcceptsText = false;
-        /// Invalid-target continuations summarized at commit.
+        /** Invalid-target continuations summarized at commit. */
         size_t droppedContinuationLines = 0;
     };
     std::optional<PendingRecord> pending;
@@ -420,7 +442,7 @@ void RunStreamingParseLoop(
             }
             return;
         }
-        // Keep new result variants from silently falling through as `Emit`.
+        // Keep new result variants from silently falling through as Emit.
         assert(result == LineDecodeResult::Emit);
         if (result != LineDecodeResult::Emit)
         {
@@ -437,7 +459,7 @@ void RunStreamingParseLoop(
         fresh.compactValues = std::move(compactValues);
         fresh.startLineNumber = lineNumber;
         fresh.openedAt = std::chrono::steady_clock::now();
-        // Decoders that return `Continue` must expose its target.
+        // Decoders that return Continue must expose its target.
         if constexpr (requires { decoder.LastContinuationTarget(); })
         {
             fresh.continuationTarget = decoder.LastContinuationTarget();
@@ -452,7 +474,7 @@ void RunStreamingParseLoop(
         ownedArena.clear();
     };
 
-    // Emit complete lines already present in `initialCarry` before
+    // Emit complete lines already present in initialCarry before
     // waiting for more producer bytes.
     auto scanCarry = [&]() {
         if (skippingOversizedLine)

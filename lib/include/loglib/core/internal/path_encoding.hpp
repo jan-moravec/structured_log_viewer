@@ -1,3 +1,11 @@
+/**
+ * @brief Converts between file system paths and UTF-8 text.
+ *
+ * Paths are stored as UTF-8 in session files and error messages. These helpers convert both ways and open files with
+ * wide-character calls on Windows, so non-ASCII names work on every platform.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <cstdio>
@@ -8,23 +16,27 @@
 namespace loglib::internal
 {
 
-/// Return @p path as a UTF-8 encoded `std::string`.
-///
-/// Unlike `path::string()`, this preserves non-ASCII Windows paths.
+/**
+ * Return @p path as a UTF-8 encoded std::string.
+ *
+ * Unlike path::string(), this preserves non-ASCII Windows paths.
+ */
 [[nodiscard]] inline std::string PathToUtf8(const std::filesystem::path &path)
 {
     const auto u8 = path.u8string();
     return {reinterpret_cast<const char *>(u8.data()), u8.size()};
 }
 
-/// Convert UTF-8 bytes to a portable filesystem path.
+/** Convert UTF-8 bytes to a portable filesystem path. */
 [[nodiscard]] inline std::filesystem::path Utf8ToPath(std::string_view utf8)
 {
     return std::filesystem::path{std::u8string{reinterpret_cast<const char8_t *>(utf8.data()), utf8.size()}};
 }
 
-/// Open a binary file for reading, using the wide path on Windows.
-/// Returns `nullptr` and sets `errno` on failure. Caller owns the FILE*.
+/**
+ * Open a binary file for reading, using the wide path on Windows.
+ * Returns nullptr and sets errno on failure. Caller owns the FILE*.
+ */
 [[nodiscard]] inline std::FILE *OpenFileForBinaryRead(const std::filesystem::path &path) noexcept
 {
 #ifdef _WIN32
@@ -40,8 +52,10 @@ namespace loglib::internal
 #endif
 }
 
-/// Open a binary file for writing, using the wide path on Windows.
-/// Caller owns the FILE*.
+/**
+ * Open a binary file for writing, using the wide path on Windows.
+ * Caller owns the FILE*.
+ */
 [[nodiscard]] inline std::FILE *OpenFileForBinaryWrite(const std::filesystem::path &path) noexcept
 {
 #ifdef _WIN32

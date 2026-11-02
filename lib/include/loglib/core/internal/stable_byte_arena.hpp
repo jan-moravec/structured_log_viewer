@@ -1,3 +1,12 @@
+/**
+ * @brief Append-only byte store whose bytes never move.
+ *
+ * Writers take an internal lock. Readers take none, and a view returned from the arena stays valid for the arena's
+ * whole lifetime. LogFile uses it to keep strings that cannot be views into the mapped file, so rows can safely refer
+ * to them while parsing continues on other threads.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <array>
@@ -15,10 +24,10 @@ namespace loglib::internal
 /**
  * @brief Append-only byte store whose bytes never move.
  *
- * Writers serialise on an internal mutex. `View` takes no lock and may run
+ * Writers serialise on an internal mutex. View takes no lock and may run
  * concurrently with writers: a returned view stays valid for the arena's
  * lifetime. Offsets address a sparse logical space and are only meaningful
- * when they come from `Append`.
+ * when they come from Append.
  */
 class StableByteArena
 {
@@ -58,7 +67,7 @@ public:
     /**
      * @brief Resolves a stored range.
      *
-     * @param offset Offset returned by `Append`.
+     * @param offset Offset returned by Append.
      * @param length Number of bytes.
      * @return The bytes, or an empty view when the range was never stored.
      */
@@ -80,9 +89,9 @@ private:
     mutable std::mutex mWriteLock;
     std::vector<std::unique_ptr<char[]>> mBlocks;
     std::vector<std::unique_ptr<Page>> mPages;
-    /** @brief Next free logical offset. Guarded by `mWriteLock`. */
+    /** @brief Next free logical offset. Guarded by mWriteLock. */
     uint64_t mTail = 0;
-    /** @brief Logical end of the current block. Guarded by `mWriteLock`. */
+    /** @brief Logical end of the current block. Guarded by mWriteLock. */
     uint64_t mBlockEnd = 0;
     /** @brief Logical address of the next free byte inside the current block's memory. */
     char *mTailBytes = nullptr;

@@ -1,3 +1,12 @@
+/**
+ * @brief Byte queue that drops whole lines under back-pressure.
+ *
+ * The TCP and UDP producers buffer bytes in this queue between the network thread and the parser thread. When the queue
+ * grows past its limit it discards the oldest bytes up to the next newline, so the reader never sees a torn line, and
+ * it counts the dropped bytes. The queue is not thread-safe; callers lock around it.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include <atomic>
@@ -10,23 +19,25 @@
 namespace loglib::internal
 {
 
-/// Single-producer / single-consumer FIFO byte queue with line-aware
-/// back-pressure. Used by `TcpServerProducer` and `UdpServerProducer`
-/// to buffer bytes between the Asio worker thread and the parser
-/// thread. The queue is *not* internally synchronised; callers wrap
-/// access in their own mutex (the same one that already guards the
-/// pending state in those producers).
-///
-/// Back-pressure semantics: when an `Append` would push the queue
-/// past `cap` bytes, the oldest queued bytes are dropped down to the
-/// next newline boundary so the consumer never sees a torn line. The
-/// drop count goes into a caller-supplied atomic so the producer can
-/// surface it via its `DroppedByteCount` accessor.
-///
-/// Backed by `std::deque<char>` for O(1) `pop_front` and bounded
-/// resident memory under sustained back-pressure. Read sizes
-/// (`STREAMING_READ_BUFFER_SIZE`) stay below a deque block, so most
-/// `Read` calls do not cross a block boundary.
+/**
+ * Single-producer / single-consumer FIFO byte queue with line-aware
+ * back-pressure. Used by TcpServerProducer and UdpServerProducer
+ * to buffer bytes between the Asio worker thread and the parser
+ * thread. The queue is *not* internally synchronised; callers wrap
+ * access in their own mutex (the same one that already guards the
+ * pending state in those producers).
+ *
+ * Back-pressure semantics: when an Append would push the queue
+ * past cap bytes, the oldest queued bytes are dropped down to the
+ * next newline boundary so the consumer never sees a torn line. The
+ * drop count goes into a caller-supplied atomic so the producer can
+ * surface it via its DroppedByteCount accessor.
+ *
+ * Backed by std::deque<char> for O(1) pop_front and bounded
+ * resident memory under sustained back-pressure. Read sizes
+ * (STREAMING_READ_BUFFER_SIZE) stay below a deque block, so most
+ * Read calls do not cross a block boundary.
+ */
 class LineBytesQueue
 {
 public:
@@ -38,20 +49,22 @@ public:
     LineBytesQueue &operator=(LineBytesQueue &&) = delete;
     ~LineBytesQueue() = default;
 
-    /// Number of bytes currently queued.
+    /** Number of bytes currently queued. */
     [[nodiscard]] std::size_t Size() const noexcept
     {
         return mBytes.size();
     }
 
-    /// Whether the queue holds zero bytes.
+    /** Whether the queue holds zero bytes. */
     [[nodiscard]] bool Empty() const noexcept
     {
         return mBytes.empty();
     }
 
-    /// Copy up to `buffer.size()` bytes into @p buffer and pop them
-    /// off the front. Returns the actual byte count copied.
+    /**
+     * Copy up to buffer.size() bytes into @p buffer and pop them
+     * off the front. Returns the actual byte count copied.
+     */
     std::size_t Read(std::span<char> buffer) noexcept
     {
         if (buffer.empty() || mBytes.empty())
@@ -59,7 +72,7 @@ public:
             return 0;
         }
         const std::size_t toCopy = std::min(buffer.size(), mBytes.size());
-        // `std::copy_n` over a deque iterator is the conventional way
+        // std::copy_n over a deque iterator is the conventional way
         // to extract a span; modern stdlibs lower it to a memcpy per
         // contiguous block.
         std::copy_n(mBytes.begin(), toCopy, buffer.data());
@@ -67,11 +80,13 @@ public:
         return toCopy;
     }
 
-    /// Append @p data of length @p size, applying line-aware
-    /// back-pressure: if the resulting queue would exceed @p cap, drop
-    /// oldest bytes (rounded up to the next newline) until it fits.
-    /// `cap == 0` disables back-pressure. Increments @p droppedCounter
-    /// by the number of bytes dropped.
+    /**
+     * Append @p data of length @p size, applying line-aware
+     * back-pressure: if the resulting queue would exceed @p cap, drop
+     * oldest bytes (rounded up to the next newline) until it fits.
+     * cap == 0 disables back-pressure. Increments @p droppedCounter
+     * by the number of bytes dropped.
+     */
     void Append(const char *data, std::size_t size, std::size_t cap, std::atomic<std::size_t> &droppedCounter)
     {
         if (size == 0)
@@ -102,7 +117,7 @@ public:
         mBytes.insert(mBytes.end(), data, data + size);
     }
 
-    /// Convenience overload for `std::string_view` payloads.
+    /** Convenience overload for std::string_view payloads. */
     void Append(std::string_view payload, std::size_t cap, std::atomic<std::size_t> &droppedCounter)
     {
         Append(payload.data(), payload.size(), cap, droppedCounter);

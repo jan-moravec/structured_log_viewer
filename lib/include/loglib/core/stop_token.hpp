@@ -1,3 +1,12 @@
+/**
+ * @brief Cooperative cancellation token and its source.
+ *
+ * Long operations such as parsing, filtering and exporting check a StopToken and stop early when it is triggered. The
+ * API follows std::stop_token but is implemented here, because some standard libraries restrict the standard type by
+ * platform version.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <atomic>
@@ -10,17 +19,17 @@ namespace loglib
 class StopSource;
 
 /**
- * @brief Cooperative cancellation token. API mirrors `std::stop_token` (the only
- * surface we use is `stop_requested()` / `stop_possible()`), so call sites
+ * @brief Cooperative cancellation token. API mirrors std::stop_token (the only
+ * surface we use is stop_requested() / stop_possible()), so call sites
  * read identically to the standard.
  *
- * We ship our own type rather than depending on `std::stop_token` because
+ * We ship our own type rather than depending on std::stop_token because
  * Apple's libc++ gates the standard type behind availability annotations on
- * some toolchain/SDK combinations (the type is removed from `namespace std`
- * entirely under `_LIBCPP_AVAILABILITY_HAS_SYNC == 0`), which produced hard
+ * some toolchain/SDK combinations (the type is removed from namespace std
+ * entirely under _LIBCPP_AVAILABILITY_HAS_SYNC == 0), which produced hard
  * "no type named 'stop_token' in namespace 'std'" failures on the GitHub
- * Actions macOS runner. The implementation is a `shared_ptr<atomic<bool>>`
- * so a default-constructed token is unstoppable (matches `std::stop_token`).
+ * Actions macOS runner. The implementation is a shared_ptr<atomic<bool>>
+ * so a default-constructed token is unstoppable (matches std::stop_token).
  */
 class StopToken
 {
@@ -49,11 +58,11 @@ private:
 };
 
 /**
- * @brief Cooperative cancellation source paired with `loglib::StopToken`. API
- * mirrors `std::stop_source` for the methods we use (`get_token()`,
- * `request_stop()`, `stop_requested()`). Default construction creates an
- * active source with shared state, matching `std::stop_source` (rather than
- * the `std::nostopstate` overload).
+ * @brief Cooperative cancellation source paired with loglib::StopToken. API
+ * mirrors std::stop_source for the methods we use (get_token(),
+ * request_stop(), stop_requested()). Default construction creates an
+ * active source with shared state, matching std::stop_source (rather than
+ * the std::nostopstate overload).
  */
 class StopSource
 {
@@ -69,8 +78,8 @@ public:
     }
 
     /**
-     * @brief Returns `true` if this call flipped the state from "no stop requested"
-     * to "stop requested" (matches `std::stop_source::request_stop`).
+     * @brief Returns true if this call flipped the state from "no stop requested"
+     * to "stop requested" (matches std::stop_source::request_stop).
      */
     bool request_stop() noexcept
     {

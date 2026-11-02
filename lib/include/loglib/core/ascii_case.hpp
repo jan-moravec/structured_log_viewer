@@ -1,3 +1,11 @@
+/**
+ * @brief Case-insensitive comparison for ASCII text.
+ *
+ * The keys and literals the library compares, such as level or true, are plain ASCII. Folding only the 7-bit letters
+ * avoids a locale-aware allocation, so the helper is cheap enough for hot paths.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -9,12 +17,12 @@ namespace loglib
 /**
  * @brief Returns whether two views are equal ignoring 7-bit ASCII case.
  *
- * The keys this folds (`"level"`, `"true"`, `"false"`, ...) are ASCII, so
+ * The keys this folds ("level", "true", "false", ...) are ASCII, so
  * the comparison avoids a locale-aware allocation. Safe on hot paths.
  *
  * @param a First view.
  * @param b Second view.
- * @return `true` when the views match after folding `A`–`Z` to `a`–`z`.
+ * @return true when the views match after folding A–Z to a–z.
  */
 [[nodiscard]] constexpr bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
 {

@@ -1,3 +1,11 @@
+/**
+ * @brief Container for parsed rows, their keys and their sources.
+ *
+ * LogData owns the KeyIndex, the list of LineSources and the rows of one log. Every row resolves its keys through the
+ * shared index and its text through the source it came from. Parsers fill a LogData and LogTable consumes it.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include "loglib/core/file_line_source.hpp"
@@ -16,12 +24,12 @@ namespace loglib
 
 /**
  * @brief Log data loaded from one or more sources. Owns the canonical
- * `KeyIndex`; every `LogLine` resolves keys through it.
+ * KeyIndex; every LogLine resolves keys through it.
  *
- * The source list is heterogeneous: `FileLineSource`s for static
- * opens, `StreamLineSource`s for live-tail. Polymorphic access via
- * `Sources()`, typed access via `FrontFileSource()` for code that
- * still needs direct `LogFile` control.
+ * The source list is heterogeneous: FileLineSources for static
+ * opens, StreamLineSources for live-tail. Polymorphic access via
+ * Sources(), typed access via FrontFileSource() for code that
+ * still needs direct LogFile control.
  */
 class LogData
 {
@@ -29,8 +37,8 @@ public:
     LogData();
 
     /**
-     * @brief Constructs a `LogData` from a single source and rebinds each
-     * line's `KeyIndex` back-pointer to @p keys.
+     * @brief Constructs a LogData from a single source and rebinds each
+     * line's KeyIndex back-pointer to @p keys.
      */
     LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines, KeyIndex keys);
 
@@ -38,9 +46,9 @@ public:
     LogData &operator=(const LogData &) = delete;
 
     /**
-     * @brief Move ops rebind each line's `KeyIndex` back-pointer.
-     * `LogLine::mSource` survives the move because the underlying
-     * `LineSource` heap object stays put.
+     * @brief Move ops rebind each line's KeyIndex back-pointer.
+     * LogLine::mSource survives the move because the underlying
+     * LineSource heap object stays put.
      */
     LogData(LogData &&other) noexcept;
     LogData &operator=(LogData &&other) noexcept;
@@ -50,23 +58,23 @@ public:
     [[nodiscard]] std::vector<std::unique_ptr<LineSource>> &Sources() noexcept;
 
     /**
-     * @brief First source iff it is a `FileLineSource`, else nullptr. Used
-     * by static-file branches (e.g. `LogTable::ReserveLineOffsets`)
+     * @brief First source iff it is a FileLineSource, else nullptr. Used
+     * by static-file branches (e.g. LogTable::ReserveLineOffsets)
      * that target the initial source.
      */
     [[nodiscard]] FileLineSource *FrontFileSource() noexcept;
     [[nodiscard]] const FileLineSource *FrontFileSource() const noexcept;
 
     /**
-     * @brief Last `FileLineSource` in `Sources()`, or nullptr. Tracks the
+     * @brief Last FileLineSource in Sources(), or nullptr. Tracks the
      * in-flight file for sequential multi-file streaming so
-     * `AppendBatch` routes line offsets to the right source.
+     * AppendBatch routes line offsets to the right source.
      */
     [[nodiscard]] FileLineSource *BackFileSource() noexcept;
     [[nodiscard]] const FileLineSource *BackFileSource() const noexcept;
 
     /**
-     * @brief Last `StreamLineSource` in `Sources()`, or nullptr. This may
+     * @brief Last StreamLineSource in Sources(), or nullptr. This may
      * differ from the front source when file history precedes a live tail.
      */
     [[nodiscard]] StreamLineSource *BackStreamSource() noexcept;
@@ -83,20 +91,20 @@ public:
 
     /**
      * @brief Whether Stage B already promoted timestamp columns in the parser, so
-     * `LogTable::Update` can skip the whole-data pass.
+     * LogTable::Update can skip the whole-data pass.
      */
     bool TimestampsAlreadyParsed() const;
     void MarkTimestampsParsed();
 
     /**
      * @brief Merges @p other in place, rewiring back-pointers and remapping KeyIds
-     * to this side's canonical `KeyIndex`.
+     * to this side's canonical KeyIndex.
      */
     void Merge(LogData other);
 
     /**
-     * @brief Append a parsed batch. `lineOffsets` populates
-     * `LogFile::mLineOffsets` for file sources; the live-tail path
+     * @brief Append a parsed batch. lineOffsets populates
+     * LogFile::mLineOffsets for file sources; the live-tail path
      * passes an empty vector (the source owns its per-line storage).
      * Registers @p multiLineSpans after their offsets are appended.
      */

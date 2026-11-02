@@ -1,3 +1,11 @@
+/**
+ * @brief Line source backed by a memory-mapped file.
+ *
+ * A FileLineSource owns a LogFile. It resolves the offsets stored in rows against the mapped bytes, so rows from a
+ * static file never copy their text. It is used when a file is opened as a whole, as opposed to followed live.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include "loglib/core/line_source.hpp"
@@ -15,19 +23,19 @@ namespace loglib
 class LogFile;
 
 /**
- * @brief `LineSource` over a memory-mapped, finite `LogFile`. Used by the
- * static `File → Open…` path: the TBB pipeline parses directly over
- * the mmap, and emitted `LogLine`s use this source for `MmapSlice` /
- * `OwnedString` resolution.
+ * @brief LineSource over a memory-mapped, finite LogFile. Used by the
+ * static File → Open… path: the TBB pipeline parses directly over
+ * the mmap, and emitted LogLines use this source for MmapSlice /
+ * OwnedString resolution.
  *
- * Owns the `LogFile`.
+ * Owns the LogFile.
  * LineIds are 0-based file-line indices.
  */
 class FileLineSource final : public LineSource
 {
 public:
     /**
-     * @brief Takes ownership of @p file. Throws `std::invalid_argument` if
+     * @brief Takes ownership of @p file. Throws std::invalid_argument if
      * @p file is null.
      */
     explicit FileLineSource(std::unique_ptr<LogFile> file);
@@ -61,7 +69,7 @@ public:
     [[nodiscard]] size_t FirstAvailableLineId() const noexcept override;
 
     /**
-     * @brief Direct access to the `LogFile`. Used by the parser fast path
+     * @brief Direct access to the LogFile. Used by the parser fast path
      * and any code that needs file-level state.
      */
     [[nodiscard]] LogFile &File() noexcept;

@@ -1,3 +1,11 @@
+/**
+ * @brief JSON field names and enum spellings for the configuration types.
+ *
+ * This header tells the JSON library how to read and write each schema type. It is only included where the
+ * configuration is serialized, so the public headers stay free of the JSON library.
+ *
+ * This is part of the schema module.
+ */
 #pragma once
 
 #include "loglib/schema/filter_expression.hpp"
@@ -7,14 +15,14 @@
 
 #include <array>
 
-// Glaze meta-specialisations for `LogConfiguration` enums. String-based
+// Glaze meta-specialisations for LogConfiguration enums. String-based
 // JSON encoding keeps saved configs stable and human-readable. The on-disk
-// `keys` stay as the original lowerCamelCase even though the C++
+// keys stay as the original lowerCamelCase even though the C++
 // enumerators are UpperCamelCase, so existing configurations keep working.
-// Out-of-line so the public header does not pull in `<glaze/glaze.hpp>`.
-// (`floating` rather than `double` since `double` is a reserved keyword.)
+// Out-of-line so the public header does not pull in <glaze/glaze.hpp>.
+// (floating rather than double since double is a reserved keyword.)
 //
-// `keys` and `value` are slot names mandated by glaze's reflection: its
+// keys and value are slot names mandated by glaze's reflection: its
 // template machinery looks them up by exact name, so they cannot adopt the
 // project-wide UPPER_CASE constexpr convention without breaking JSON I/O.
 // NOLINTBEGIN(readability-identifier-naming)
@@ -42,14 +50,14 @@ template <> struct glz::meta<loglib::LeafRule::Match>
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
 
-// `HighlightRule::Type` / `HighlightRule::Match` are aliases of
-// `LeafRule::Type` / `LeafRule::Match`, so their meta comes from
+// HighlightRule::Type / HighlightRule::Match are aliases of
+// LeafRule::Type / LeafRule::Match, so their meta comes from
 // the specialisations above.
 
 template <> struct glz::meta<loglib::Source::Kind>
 {
     using enum loglib::Source::Kind;
-    // Append `Stdin` so existing `File` and `NetworkStream` ordinals
+    // Append Stdin so existing File and NetworkStream ordinals
     // remain stable in saved sessions. Stdin sessions are not auto-saved.
     static constexpr std::array keys{"file", "networkStream", "stdin"};
     static constexpr std::array value{File, NetworkStream, Stdin};
@@ -119,8 +127,8 @@ template <> struct glz::meta<loglib::Column>
 };
 
 // A leaf of the filter tree. Column identity is a subset-match
-// against `Column::keys`, so leaves survive
-// `MoveColumn` and cross-source apply without any remap.
+// against Column::keys, so leaves survive
+// MoveColumn and cross-source apply without any remap.
 template <> struct glz::meta<loglib::LeafRule>
 {
     using T = loglib::LeafRule;
@@ -154,8 +162,8 @@ template <> struct glz::meta<loglib::LeafRule>
 //   { "kind": "not", "child": <sub-expression> }
 //   { "kind": "leaf", "rule": <LeafRule> }
 //
-// The discriminator lives on the `"kind"` field chosen by
-// `glz::meta<std::variant<...>>::tag` below. Each node struct
+// The discriminator lives on the "kind" field chosen by
+// glz::meta<std::variant<...>>::tag below. Each node struct
 // exposes only its payload field so the tag sits alongside it at
 // the same level.
 template <> struct glz::meta<loglib::FilterExpression::Leaf>
@@ -176,9 +184,9 @@ template <> struct glz::meta<loglib::FilterExpression::Or>
     static constexpr auto value = object("children", &T::children);
 };
 
-// `Not::child` is a `unique_ptr<FilterExpression>`; Glaze handles
+// Not::child is a unique_ptr<FilterExpression>; Glaze handles
 // smart pointers automatically. A null child on-disk is represented
-// as `null` and reconstructed as a null pointer -- editors treat
+// as null and reconstructed as a null pointer -- editors treat
 // that as an unfinished tree and coerce it to match-all on load.
 template <> struct glz::meta<loglib::FilterExpression::Not>
 {
@@ -186,7 +194,7 @@ template <> struct glz::meta<loglib::FilterExpression::Not>
     static constexpr auto value = object("child", &T::child);
 };
 
-// Internally-tagged variant: the discriminator `"kind"` lives on
+// Internally-tagged variant: the discriminator "kind" lives on
 // the same object as the payload fields. Names are stable on disk;
 // append new alternatives at the end, never reorder.
 template <>
@@ -217,12 +225,12 @@ template <> struct glz::meta<loglib::Sort>
 //     "lineId":  1234,     // provider-assigned line id
 //     "colorIndex": 0,     // palette slot
 //     "note":    "..." }   // optional; sanitised + byte-capped by
-//                          // `AnchorManager::SanitiseNote`. Absent
+//                          // AnchorManager::SanitiseNote. Absent
 //                          // on pre-notes configs; loads as "".
 //
-// Add new fields at the end of `object(...)` with defaults in
-// `AnchorEntry` so old configs still round-trip.
-// `error_on_unknown_keys=false` lets old builds tolerate new keys.
+// Add new fields at the end of object(...) with defaults in
+// AnchorEntry so old configs still round-trip.
+// error_on_unknown_keys=false lets old builds tolerate new keys.
 template <> struct glz::meta<loglib::AnchorEntry>
 {
     using T = loglib::AnchorEntry;

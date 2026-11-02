@@ -1,3 +1,11 @@
+/**
+ * @brief Identifies a file independently of its name.
+ *
+ * FileIdentity captures the operating system's identity of a file, so the tailing producer can tell whether the path
+ * now points at the same file or at a new one after a rotation.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include <cstdint>
@@ -13,19 +21,21 @@
 namespace loglib::internal
 {
 
-/// Cross-platform file identity used by `TailingBytesProducer`
-/// rotation detection. POSIX: `(st_dev, st_ino)`. Windows: volume
-/// serial + `nFileIndexHigh:nFileIndexLow`.
-///
-/// On filesystems where the index isn't stable across rename
-/// (FAT/exFAT, some SMB), identity comparison is unreliable. The
-/// size-shrunk branch covers `copytruncate` there; rename-and-create
-/// degrades to undetected — a documented limitation.
+/**
+ * Cross-platform file identity used by TailingBytesProducer
+ * rotation detection. POSIX: (st_dev, st_ino). Windows: volume
+ * serial + nFileIndexHigh:nFileIndexLow.
+ *
+ * On filesystems where the index isn't stable across rename
+ * (FAT/exFAT, some SMB), identity comparison is unreliable. The
+ * size-shrunk branch covers copytruncate there; rename-and-create
+ * degrades to undetected — a documented limitation.
+ */
 struct FileIdentity
 {
     uint64_t high = 0; // POSIX: st_dev; Windows: volume serial
     uint64_t low = 0;  // POSIX: st_ino; Windows: file-index halves
-    /// False values never compare equal — branch on `valid` first.
+    /** False values never compare equal — branch on valid first. */
     bool valid = false;
 
     [[nodiscard]] friend bool operator==(const FileIdentity &lhs, const FileIdentity &rhs) noexcept
@@ -39,9 +49,11 @@ struct FileIdentity
     }
 };
 
-/// Sample identity of @p path without holding it open. POSIX: `stat`.
-/// Windows: `OPEN_EXISTING` with full share flags, so a concurrent
-/// writer is not disturbed. Returns `valid = false` on stat failure.
+/**
+ * Sample identity of @p path without holding it open. POSIX: stat.
+ * Windows: OPEN_EXISTING with full share flags, so a concurrent
+ * writer is not disturbed. Returns valid = false on stat failure.
+ */
 [[nodiscard]] FileIdentity FromPath(const std::filesystem::path &path) noexcept;
 
 #if defined(_WIN32)
@@ -50,8 +62,10 @@ using NativeFileHandle = HANDLE;
 using NativeFileHandle = int; // POSIX fd
 #endif
 
-/// Sample identity of an open handle. POSIX: `fstat`. Windows:
-/// `GetFileInformationByHandle`. Returns `valid = false` on failure.
+/**
+ * Sample identity of an open handle. POSIX: fstat. Windows:
+ * GetFileInformationByHandle. Returns valid = false on failure.
+ */
 [[nodiscard]] FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept;
 
 } // namespace loglib::internal

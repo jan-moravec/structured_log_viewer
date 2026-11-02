@@ -1,3 +1,12 @@
+/**
+ * @brief Per-thread scratch state shared by the parsing pipelines.
+ *
+ * Each worker keeps a cache from key text to key id and the last parsed timestamp per time column, so repeated work is
+ * skipped. The static pipeline and the live-stream loop share this state. This header defines it and the helper that
+ * promotes time columns on a line.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/key_index.hpp"
@@ -17,16 +26,20 @@
 namespace loglib::internal
 {
 
-/// Per-worker key-string -> KeyId cache. Hit: alloc-free `find`. Miss:
-/// one `KeyIndex::GetOrInsert` + write-back.
+/**
+ * Per-worker key-string -> KeyId cache. Hit: alloc-free find. Miss:
+ * one KeyIndex::GetOrInsert + write-back.
+ */
 struct PerWorkerKeyCache
 {
     tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
 };
 
-/// Per-worker scratch shared by the static TBB pipeline and the
-/// live-tail loop: key cache + per-time-column carry-over for inline
-/// timestamp promotion.
+/**
+ * Per-worker scratch shared by the static TBB pipeline and the
+ * live-tail loop: key cache + per-time-column carry-over for inline
+ * timestamp promotion.
+ */
 struct WorkerScratchBase
 {
     PerWorkerKeyCache keyCache;
@@ -46,11 +59,13 @@ struct WorkerScratchBase
         }
     }
 
-    /// Promote `Type::Time` columns of @p line in place. @p ownedArena
-    /// is the buffer backing any `OwnedString` payloads on @p line:
-    /// the TBB pipeline passes its per-batch staging buffer; the
-    /// live-tail loop passes empty (resolution falls through to the
-    /// line's `LineSource *`).
+    /**
+     * Promote Type::Time columns of @p line in place. @p ownedArena
+     * is the buffer backing any OwnedString payloads on @p line:
+     * the TBB pipeline passes its per-batch staging buffer; the
+     * live-tail loop passes empty (resolution falls through to the
+     * line's LineSource *).
+     */
     void PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena)
     {
         if (timeColumns.empty())
@@ -61,15 +76,19 @@ struct WorkerScratchBase
     }
 };
 
-/// Adds format-specific scratch (e.g. simdjson parser + padded
-/// buffer) on top of the shared base. Used by the TBB pipeline.
+/**
+ * Adds format-specific scratch (e.g. simdjson parser + padded
+ * buffer) on top of the shared base. Used by the TBB pipeline.
+ */
 template <class UserState> struct WorkerScratch : WorkerScratchBase
 {
     UserState user;
 };
 
-/// Look up @p key through @p cache. View bytes must outlive the cache
-/// entry on miss. `cache == nullptr` falls through to `KeyIndex`.
+/**
+ * Look up @p key through @p cache. View bytes must outlive the cache
+ * entry on miss. cache == nullptr falls through to KeyIndex.
+ */
 inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache)
 {
     if (cache == nullptr)

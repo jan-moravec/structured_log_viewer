@@ -1,3 +1,11 @@
+/**
+ * @brief A saved rule that colors matching rows.
+ *
+ * A HighlightRule matches rows the same way a filter leaf does, but it only changes how rows look. Rules belong to the
+ * configuration, so they follow the column layout across sessions, while filters belong to one session.
+ *
+ * This is part of the schema module.
+ */
 #pragma once
 
 #include "loglib/schema/filter_expression.hpp"
@@ -13,17 +21,17 @@ namespace loglib
 /**
  * @brief A user-defined row-highlighting rule.
  *
- * Configuration-scope: persisted alongside `columns` so a
- * rule bound to `service == "auth"` roams with the column
+ * Configuration-scope: persisted alongside columns so a
+ * rule bound to service == "auth" roams with the column
  * schema. Filters, by contrast, are session-scope.
  *
- * Bound by `columnKeys` (matching `Column::keys`) so rules
- * survive `MoveColumn`, cross-source apply, and unrelated
+ * Bound by columnKeys (matching Column::keys) so rules
+ * survive MoveColumn, cross-source apply, and unrelated
  * column additions. Unresolvable rules are inert at match
  * time (editor greys them out).
  *
- * The `type` / `matchType` / `filter*` fields mirror `LeafRule`
- * so `ToLeafRule` and `CompileLeaf` apply uniformly to filters
+ * The type / matchType / filter* fields mirror LeafRule
+ * so ToLeafRule and CompileLeaf apply uniformly to filters
  * and highlight rules. Rules apply in vector order, last match
  * wins per row.
  */
@@ -31,7 +39,7 @@ struct HighlightRule
 {
     /**
      * @brief Aliased so filter-side and highlight-side rules share a
-     * single canonical `Type` / `Match` enum without changing
+     * single canonical Type / Match enum without changing
      * the on-disk JSON.
      */
     using Type = loglib::LeafRule::Type;
@@ -47,7 +55,7 @@ struct HighlightRule
     bool enabled = true;
 
     /**
-     * @brief Column identity (subset-matched against `Column::keys`).
+     * @brief Column identity (subset-matched against Column::keys).
      * Empty = no column bound (rule is inert). Usually a
      * single-entry vector.
      */
@@ -62,7 +70,7 @@ struct HighlightRule
     std::optional<double> filterMaxValue;
     std::vector<std::string> filterValues;
 
-    /** @brief 0 = inherit; 1..`HIGHLIGHT_PALETTE_SIZE` = theme slot. */
+    /** @brief 0 = inherit; 1..HIGHLIGHT_PALETTE_SIZE = theme slot. */
     uint8_t foregroundIndex = 0;
     uint8_t backgroundIndex = 0;
     bool bold = false;

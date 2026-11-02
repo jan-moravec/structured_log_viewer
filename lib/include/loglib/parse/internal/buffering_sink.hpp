@@ -1,3 +1,11 @@
+/**
+ * @brief Sink that collects everything into a LogData.
+ *
+ * BufferingSink backs the synchronous ParseFile helpers. It appends every batch to one LogData and keeps the errors
+ * until the caller takes them.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/file_line_source.hpp"
@@ -12,14 +20,18 @@
 namespace loglib::internal
 {
 
-/// `LogParseSink` adapter behind the synchronous `LogParser::Parse(path)`
-/// overload: accumulates every batch into a single `LogData`. One sink per parse.
+/**
+ * LogParseSink adapter behind the synchronous LogParser::Parse(path)
+ * overload: accumulates every batch into a single LogData. One sink per parse.
+ */
 class BufferingSink : public LogParseSink
 {
 public:
-    /// Takes ownership of @p source. The source's `LogFile` is the
-    /// arena for `OwnedString` payload concatenation; line offsets are
-    /// pushed in via `OnBatch`.
+    /**
+     * Takes ownership of @p source. The source's LogFile is the
+     * arena for OwnedString payload concatenation; line offsets are
+     * pushed in via OnBatch.
+     */
     explicit BufferingSink(std::unique_ptr<FileLineSource> source);
 
     KeyIndex &Keys() override;
@@ -28,13 +40,13 @@ public:
     void OnBatch(StreamedBatch batch) override;
     void OnFinished(bool cancelled) override;
 
-    /// We re-buffer batches anyway, so opt out of the harness's coalescing.
+    /** We re-buffer batches anyway, so opt out of the harness's coalescing. */
     [[nodiscard]] bool PrefersUncoalesced() const noexcept override
     {
         return true;
     }
 
-    /// Call exactly once after `OnFinished`.
+    /** Call exactly once after OnFinished. */
     LogData TakeData();
     std::vector<std::string> TakeErrors();
 

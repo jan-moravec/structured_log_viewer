@@ -1,3 +1,12 @@
+/**
+ * @brief Retries a file operation while Windows reports the file as busy.
+ *
+ * Virus scanners, indexers and sync clients briefly open files that were just written, which makes a rename fail with
+ * an access or sharing error. Callers wrap the operation in RetryWhileFileBusy and only the busy errors are retried,
+ * for up to one second. Used wherever the library replaces a file on disk.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <chrono>
@@ -16,7 +25,7 @@ namespace loglib::internal
  * Those errors are retried for up to one second. Every other result, and
  * every result on other platforms, returns at once.
  *
- * @param attempt Callable that performs the operation and returns its `std::error_code`.
+ * @param attempt Callable that performs the operation and returns its std::error_code.
  * @return The result of the last attempt.
  */
 template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(const Attempt &attempt)
@@ -45,7 +54,7 @@ template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(con
 }
 
 /**
- * @brief Renames a file through `RetryWhileFileBusy`.
+ * @brief Renames a file through RetryWhileFileBusy.
  *
  * @param from Existing path.
  * @param to New path, replaced when it already exists.

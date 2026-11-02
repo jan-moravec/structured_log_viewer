@@ -1,3 +1,12 @@
+/**
+ * @brief Options that control a parse.
+ *
+ * ParserOptions carries the stop token, the optional configuration, and the knobs for the parallel file pipeline:
+ * thread count and batch size. It also holds the logfmt continuation switch, the longest line a live stream buffers,
+ * and bytes already consumed that the parser must process first.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/bytes_producer.hpp"
@@ -19,12 +28,12 @@ inline constexpr unsigned int DEFAULT_MAX_PARSE_THREADS = 8;
 inline constexpr std::size_t DEFAULT_PARSE_BATCH_BYTES = std::size_t{1024} * 1024;
 
 /**
- * @brief Public options for `LogParser::ParseStreaming`.
+ * @brief Public options for LogParser::ParseStreaming.
  *
- * `threads` and `batchSizeBytes` tune the static-file TBB path.
- * `0` selects the library defaults (`min(hardware_concurrency, 8)`
- * threads and a 1 MiB Stage A batch). `configuration` is a nullable
- * shared pointer; this header forward-declares `LogConfiguration` so
+ * threads and batchSizeBytes tune the static-file TBB path.
+ * 0 selects the library defaults (min(hardware_concurrency, 8)
+ * threads and a 1 MiB Stage A batch). configuration is a nullable
+ * shared pointer; this header forward-declares LogConfiguration so
  * parse options do not pull in the full configuration definition.
  */
 struct ParserOptions
@@ -44,10 +53,10 @@ struct ParserOptions
     /**
      * @brief Bytes already consumed that must be reprocessed first.
      *
-     * Used by `AutoDetectParser` and the stdin path to hand bytes
+     * Used by AutoDetectParser and the stdin path to hand bytes
      * drained during format detection back to the resolved parser
      * without swapping the producer. Non-empty only on the streaming
-     * (`StreamLineSource`) path; the static-file path asserts the
+     * (StreamLineSource) path; the static-file path asserts the
      * carry is empty. Empty by default.
      */
     std::string initialCarry;
@@ -55,14 +64,14 @@ struct ParserOptions
     /**
      * @brief TBB worker cap for the static-file pipeline.
      *
-     * `0` means `min(hardware_concurrency, 8)`.
+     * 0 means min(hardware_concurrency, 8).
      */
     unsigned int threads = 0;
 
     /**
      * @brief Stage A batch size in bytes.
      *
-     * `0` means 1 MiB. The pipeline auto-expands so a line never
+     * 0 means 1 MiB. The pipeline auto-expands so a line never
      * spans batches.
      */
     std::size_t batchSizeBytes = 0;

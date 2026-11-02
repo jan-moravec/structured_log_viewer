@@ -1,3 +1,11 @@
+/**
+ * @brief Sort order of the rows of a table.
+ *
+ * A RowOrdering holds a column and a direction and describes how a table's rows are ordered. It does not depend on any
+ * GUI type, so the interface converts its own sort order at the boundary.
+ *
+ * This is part of the query module.
+ */
 #pragma once
 
 #include "loglib/query/log_compare.hpp"
@@ -12,9 +20,9 @@ namespace loglib
 class LogTable;
 
 /**
- * @brief Sort direction for `RowOrdering`.
+ * @brief Sort direction for RowOrdering.
  *
- * Not a Qt type; the GUI converts `Qt::SortOrder` at the proxy
+ * Not a GUI type; applications convert their own sort order at the
  * boundary.
  */
 enum class SortDirection
@@ -24,12 +32,12 @@ enum class SortDirection
 };
 
 /**
- * @brief Packages one-column compare and permute for a `LogTable`.
+ * @brief Packages one-column compare and permute for a LogTable.
  *
- * Composes `CompareRows`, `EnumDictRank`, and
- * `SortPermutationByColumn`. Does not fork a second comparator.
+ * Composes CompareRows, EnumDictRank, and
+ * SortPermutationByColumn. Does not fork a second comparator.
  * Equal cells keep a caller-supplied tie key in ascending order,
- * matching `SortPermutationByColumn`'s input-index tie-break.
+ * matching SortPermutationByColumn's input-index tie-break.
  */
 class RowOrdering
 {
@@ -37,10 +45,10 @@ public:
     /**
      * @brief Constructs an ordering over @p columnIndex.
      *
-     * @param columnIndex Index into `LogConfiguration::columns`.
+     * @param columnIndex Index into LogConfiguration::columns.
      * @param direction Display order.
-     * @param rankForEnumColumn Precomputed enum ranks, or `nullptr`.
-     *     Required for the `Enumeration` fast path in `Permute`.
+     * @param rankForEnumColumn Precomputed enum ranks, or nullptr.
+     *     Required for the Enumeration fast path in Permute.
      */
     RowOrdering(
         std::size_t columnIndex, SortDirection direction, const EnumDictRank *rankForEnumColumn = nullptr
@@ -58,13 +66,13 @@ public:
         return mDirection;
     }
 
-    /** @brief Returns whether the direction is `Ascending`. */
+    /** @brief Returns whether the direction is Ascending. */
     [[nodiscard]] bool Ascending() const noexcept
     {
         return mDirection == SortDirection::Ascending;
     }
 
-    /** @brief Returns the borrowed enum-rank table, or `nullptr`. */
+    /** @brief Returns the borrowed enum-rank table, or nullptr. */
     [[nodiscard]] const EnumDictRank *RankForEnumColumn() const noexcept
     {
         return mRankForEnumColumn;
@@ -73,28 +81,28 @@ public:
     /**
      * @brief Three-way-compares two log rows on this column.
      *
-     * Delegates to `CompareRows`. Does not apply direction.
+     * Delegates to CompareRows. Does not apply direction.
      *
      * @param table Table that owns the rows.
      * @param lhsRow Left log-row index.
      * @param rhsRow Right log-row index.
-     * @return Negative, zero, or positive as `CompareRows`.
+     * @return Negative, zero, or positive as CompareRows.
      */
     [[nodiscard]] int Compare(const LogTable &table, std::size_t lhsRow, std::size_t rhsRow) const;
 
     /**
      * @brief Returns whether @p lhsRow sorts before @p rhsRow.
      *
-     * Applies @p direction to `CompareRows`. Equal cells compare
+     * Applies @p direction to CompareRows. Equal cells compare
      * @p lhsTieKey and @p rhsTieKey ascending, matching
-     * `SortPermutationByColumn`.
+     * SortPermutationByColumn.
      *
      * @param table Table that owns the rows.
      * @param lhsRow Left log-row index.
      * @param rhsRow Right log-row index.
      * @param lhsTieKey Stable tie key for the left row.
      * @param rhsTieKey Stable tie key for the right row.
-     * @return `true` when the left row belongs earlier in display order.
+     * @return true when the left row belongs earlier in display order.
      */
     [[nodiscard]] bool LessThan(
         const LogTable &table, std::size_t lhsRow, std::size_t rhsRow, std::size_t lhsTieKey, std::size_t rhsTieKey
@@ -103,7 +111,7 @@ public:
     /**
      * @brief Returns a stable permutation of @p logRows.
      *
-     * Delegates to `SortPermutationByColumn`.
+     * Delegates to SortPermutationByColumn.
      *
      * @param table Table that owns the rows.
      * @param logRows Log-row indices to order.

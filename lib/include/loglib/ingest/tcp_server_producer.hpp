@@ -1,3 +1,11 @@
+/**
+ * @brief Byte producer that listens on a TCP port.
+ *
+ * A TcpServerProducer accepts several clients at once and merges their lines into one stream, one complete line at a
+ * time, so concurrent senders never interleave inside a line. TLS is available when the library is built with it.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include "loglib/core/bytes_producer.hpp"
@@ -21,18 +29,18 @@ class TcpServerProducerImpl; // pimpl forward decl
 }
 
 /**
- * @brief `BytesProducer` over a TCP listening socket. Accepts multiple
- * concurrent client connections, drains each via `async_read_some`,
+ * @brief BytesProducer over a TCP listening socket. Accepts multiple
+ * concurrent client connections, drains each via async_read_some,
  * and interleaves their lines into the shared byte queue at line
  * granularity (per-session carry buffer; only complete lines are
  * flushed into the shared queue, so concurrent senders never
- * produce torn records). Optional TLS via `asio::ssl` when the
- * project is built with `LOGLIB_NETWORK_TLS=ON`.
+ * produce torn records). Optional TLS via asio::ssl when the
+ * project is built with LOGLIB_NETWORK_TLS=ON.
  *
  * Design summary:
- *   - One `asio::io_context` worker thread per producer drives both
+ *   - One asio::io_context worker thread per producer drives both
  *     accept and per-session reads. Sessions are reference-counted
- *     `shared_ptr`s so the in-flight async chain keeps them alive
+ *     shared_ptrs so the in-flight async chain keeps them alive
  *     until the read completes.
  *   - Per-session carry buffer guarantees the shared queue is
  *     append-only at line boundaries: a partial line from peer A
@@ -40,19 +48,19 @@ class TcpServerProducerImpl; // pimpl forward decl
  *     disconnect the carry is flushed as a synthetic final line.
  *   - Source addresses are dropped: the GUI shows one interleaved
  *     view across all peers.
- *   - `SetStatusCallback` reports `Waiting` until the first byte
- *     arrives from any client, then `Running`. It does not flip back
- *     to `Waiting` on an idle period: TCP listening with no clients
+ *   - SetStatusCallback reports Waiting until the first byte
+ *     arrives from any client, then Running. It does not flip back
+ *     to Waiting on an idle period: TCP listening with no clients
  *     is normal, not an environmental fault.
  */
 class TcpServerProducer final : public BytesProducer
 {
 public:
     /**
-     * @brief TLS configuration. Pass `Options::tls = std::nullopt` for
+     * @brief TLS configuration. Pass Options::tls = std::nullopt for
      * plaintext. When the project is built with
-     * `LOGLIB_NETWORK_TLS=OFF`, supplying any TLS options causes
-     * the constructor to throw `std::runtime_error`.
+     * LOGLIB_NETWORK_TLS=OFF, supplying any TLS options causes
+     * the constructor to throw std::runtime_error.
      */
     struct TlsOptions
     {
@@ -73,10 +81,10 @@ public:
         std::filesystem::path caBundle;
 
         /**
-         * @brief When true and `caBundle` is set, the handshake fails if
+         * @brief When true and caBundle is set, the handshake fails if
          * the client does not present a certificate the bundle
          * trusts. When false, client certs are optional even if
-         * `caBundle` is set.
+         * caBundle is set.
          */
         bool requireClientCertificate = false;
     };
@@ -84,13 +92,13 @@ public:
     struct Options
     {
         /**
-         * @brief Bind address. `"0.0.0.0"` for IPv4-any, `"::"` for IPv6
+         * @brief Bind address. "0.0.0.0" for IPv4-any, "::" for IPv6
          * dual-stack, or a specific interface IP.
          */
         std::string bindAddress = "0.0.0.0";
 
         /**
-         * @brief TCP port to listen on. `0` requests an OS-assigned port,
+         * @brief TCP port to listen on. 0 requests an OS-assigned port,
          * useful for tests.
          */
         uint16_t port = 0;
@@ -99,12 +107,12 @@ public:
          * @brief Hard cap on simultaneous accepted connections. New
          * connections beyond this are accepted-and-immediately-closed
          * so the OS-side accept queue does not back up indefinitely;
-         * the rejection is counted in `TotalClientsRejected()`.
+         * the rejection is counted in TotalClientsRejected().
          */
         size_t maxConcurrentClients = 16;
 
         /**
-         * @brief `async_read_some` chunk size per session. 64 KiB amortises
+         * @brief async_read_some chunk size per session. 64 KiB amortises
          * syscall cost while keeping per-session memory bounded.
          */
         size_t readChunkBytes = 64 * 1024;
@@ -113,20 +121,20 @@ public:
          * @brief Soft cap on the byte queue. When the parser falls behind
          * and the queue exceeds this, the oldest queued bytes are
          * dropped (rounded up to the next newline) and counted in
-         * `DroppedByteCount`. `0` disables back-pressure.
+         * DroppedByteCount. 0 disables back-pressure.
          */
         size_t maxQueueBytes = 16 * 1024 * 1024;
 
         /**
          * @brief Longest line buffered per connection while waiting for its
          * newline. A longer line is dropped up to its newline and counted
-         * in `DroppedByteCount`.
+         * in DroppedByteCount.
          */
         size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 
         /**
-         * @brief `std::nullopt` for plaintext. Filled in to enable TLS.
-         * `LOGLIB_NETWORK_TLS=OFF` builds reject any non-nullopt
+         * @brief std::nullopt for plaintext. Filled in to enable TLS.
+         * LOGLIB_NETWORK_TLS=OFF builds reject any non-nullopt
          * value at the constructor.
          */
         std::optional<TlsOptions> tls;
@@ -135,8 +143,8 @@ public:
     /**
      * @brief Construct, bind the listening socket, optionally initialise
      * the TLS context, and spawn the I/O worker thread. Throws
-     * `std::system_error` on bind / listen failure or
-     * `std::runtime_error` for TLS misconfiguration (missing files,
+     * std::system_error on bind / listen failure or
+     * std::runtime_error for TLS misconfiguration (missing files,
      * build without TLS, etc.).
      */
     explicit TcpServerProducer(Options options);
@@ -161,9 +169,9 @@ public:
     [[nodiscard]] bool IsClosed() const noexcept override;
 
     /**
-     * @brief e.g. `"tcp://0.0.0.0:5140"` (or `"tcp+tls://..."` when TLS is
+     * @brief e.g. "tcp://0.0.0.0:5140" (or "tcp+tls://..." when TLS is
      * configured). Resolved to the actually-bound port when
-     * `Options::port == 0`.
+     * Options::port == 0.
      */
     [[nodiscard]] std::string DisplayName() const override;
 
@@ -183,7 +191,7 @@ public:
 
     /**
      * @brief Cumulative count of connections rejected because
-     * `Options::maxConcurrentClients` was reached. Useful for tests.
+     * Options::maxConcurrentClients was reached. Useful for tests.
      */
     [[nodiscard]] size_t TotalClientsRejected() const noexcept;
 

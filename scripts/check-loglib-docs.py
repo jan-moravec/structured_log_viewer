@@ -2,7 +2,7 @@
 
 Every header under lib/include must start with a /** */ file comment that
 has an @brief, placed above #pragma once, and comments must not contain
-backticks. Reports only for now: the exit status is 0 unless --strict is given.
+backticks.
 
 Invoked from pre-commit.
 """
@@ -35,7 +35,6 @@ def check(path: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--strict", action="store_true", help="exit 1 when any problem is found")
     parser.add_argument("files", nargs="*", type=Path)
     args = parser.parse_args()
     files = args.files or sorted(HEADER_ROOT.rglob("*.hpp"))
@@ -49,7 +48,7 @@ def main() -> int:
         if len(problems) > 3:
             print(f"{shown}: ... and {len(problems) - 3} more")
     print(f"check-loglib-docs: {total} problem(s) in {len(files)} header(s)")
-    return 1 if args.strict and total else 0
+    return 1 if total else 0
 
 
 if __name__ == "__main__":

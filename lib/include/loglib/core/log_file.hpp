@@ -1,3 +1,12 @@
+/**
+ * @brief Memory-mapped log file with its line offsets.
+ *
+ * LogFile maps the file into memory and records where each line starts. It also owns the arenas that hold strings which
+ * could not stay as views into the file. Rows keep views into the mapping, so a LogFile must outlive the rows built
+ * from it. Moving a LogFile keeps the mapped pointer stable.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -18,22 +27,22 @@ class StableByteArena;
 }
 
 /**
- * @brief Memory-mapped log file. Owns the mapping so `LogValue` instances can
- * hold `string_view`s into the content; move keeps the pointer stable.
- * Per-record addressing is `FileLineSource`'s job; `LogFile` only
+ * @brief Memory-mapped log file. Owns the mapping so LogValue instances can
+ * hold string_views into the content; move keeps the pointer stable.
+ * Per-record addressing is FileLineSource's job; LogFile only
  * holds the bytes and arenas.
  */
 class LogFile
 {
 public:
-    /** @brief Throws `std::runtime_error` if the file cannot be opened or mapped. */
+    /** @brief Throws std::runtime_error if the file cannot be opened or mapped. */
     explicit LogFile(const std::filesystem::path &filePath);
     /** @brief Map @p storagePath while reporting @p logicalPath as the source. */
     LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath);
 
     /**
      * @brief Out-of-line so the mapping backend can be incomplete. Unmaps
-     * before releasing `mLifetimeAnchor`.
+     * before releasing mLifetimeAnchor.
      */
     ~LogFile();
 
@@ -41,7 +50,7 @@ public:
     LogFile &operator=(const LogFile &) = delete;
 
     /**
-     * @brief Transfers the mapping without copying bytes. Views into `Data()`
+     * @brief Transfers the mapping without copying bytes. Views into Data()
      * remain valid.
      */
     LogFile(LogFile &&) noexcept;
@@ -55,7 +64,7 @@ public:
     const char *Data() const;
     size_t Size() const;
 
-    /** @brief Trailing `'\r'` is trimmed. Throws `std::out_of_range` when out of range. */
+    /** @brief Trailing '\r' is trimmed. Throws std::out_of_range when out of range. */
     std::string GetLine(size_t lineNumber) const;
     size_t GetLineCount() const;
 
@@ -68,15 +77,15 @@ public:
     void AppendLineOffsets(const std::vector<uint64_t> &offsets);
 
     /**
-     * @brief Heap bytes owned by `mLineOffsets` (capacity, not size). Used by the
+     * @brief Heap bytes owned by mLineOffsets (capacity, not size). Used by the
      * memory-footprint benchmark; not part of the parse hot path.
      */
     size_t LineOffsetsMemoryBytes() const noexcept;
 
     /**
      * @brief Register the inclusive physical-line span for a multi-line
-     * record. Indices are zero-based; `lastLineId` must exceed
-     * `headerLineId`. Single-line spans are ignored.
+     * record. Indices are zero-based; lastLineId must exceed
+     * headerLineId. Single-line spans are ignored.
      */
     void RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId);
 
@@ -93,7 +102,7 @@ public:
      * Safe to call while another thread appends. The view stays valid for
      * the lifetime of this file.
      *
-     * @param offset Offset returned by `AppendOwnedStrings`.
+     * @param offset Offset returned by AppendOwnedStrings.
      * @param length Number of bytes.
      * @return The bytes, or an empty view when the range was never stored.
      */
@@ -127,7 +136,7 @@ private:
     std::filesystem::path mPath;
     std::filesystem::path mStoragePath;
 
-    /** @brief Declared before `mMapping` so reverse destruction unmaps first. */
+    /** @brief Declared before mMapping so reverse destruction unmaps first. */
     std::shared_ptr<void> mLifetimeAnchor;
 
     std::unique_ptr<Mapping> mMapping;
@@ -136,15 +145,15 @@ private:
     std::vector<uint64_t> mLineOffsets;
 
     /**
-     * @brief Escape-decoded strings referenced by this file's `LogLine` values
-     * via `(offset, length)`.
+     * @brief Escape-decoded strings referenced by this file's LogLine values
+     * via (offset, length).
      */
     std::unique_ptr<internal::StableByteArena> mOwnedStrings;
 
     /**
      * @brief Maps each multi-line header to its final physical line.
-     * Held by `unique_ptr` so `LogFile`'s defaulted move is noexcept;
-     * `unordered_map`'s move constructor can throw.
+     * Held by unique_ptr so LogFile's defaulted move is noexcept;
+     * unordered_map's move constructor can throw.
      */
     std::unique_ptr<std::unordered_map<size_t, size_t>> mMultiLineSpans{
         std::make_unique<std::unordered_map<size_t, size_t>>()

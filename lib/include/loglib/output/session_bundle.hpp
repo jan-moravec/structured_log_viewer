@@ -1,3 +1,13 @@
+/**
+ * @brief Reading and writing session bundle files.
+ *
+ * A session bundle is one zstd-compressed file with the extension slvbundle. Its first line holds metadata: the format
+ * version, the row count and the configuration. Every following line is one row as normalized JSON. WriteSessionBundle
+ * creates a bundle from a LogTable and a configuration. LooksLikeSessionBundle checks a file,
+ * ParseSessionBundleMetadata reads the metadata line, and the reading code in the sources loads the rows back.
+ *
+ * This is part of the output module.
+ */
 #pragma once
 
 #include "loglib/core/stop_token.hpp"
@@ -17,7 +27,7 @@ namespace loglib
 
 class LogTable;
 
-/** @brief File extension for a session bundle produced by `WriteSessionBundle`. */
+/** @brief File extension for a session bundle produced by WriteSessionBundle. */
 constexpr const char *SESSION_BUNDLE_EXTENSION = ".slvbundle";
 
 /** @brief Encoder options for the single zstd frame. */
@@ -31,7 +41,7 @@ struct SessionBundleWriteOptions
 
     /**
      * @brief Cooperative cancellation. The writer removes its staging file
-     * before throwing `SessionBundleCancelled`.
+     * before throwing SessionBundleCancelled.
      */
     StopToken stopToken;
 
@@ -39,7 +49,7 @@ struct SessionBundleWriteOptions
     std::function<void(std::uint64_t rowsWritten, std::uint64_t rowsTotal)> progress;
 
     /**
-     * @brief Convert source paths to the same form as `AnchorEntry::locator`
+     * @brief Convert source paths to the same form as AnchorEntry::locator
      * before remapping anchors. Defaults to a raw UTF-8 path.
      */
     std::function<std::string(const std::filesystem::path &)> canonicalizeSourceLocator;

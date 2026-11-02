@@ -1,3 +1,12 @@
+/**
+ * @brief Parser for logfmt.
+ *
+ * Each line holds key=value pairs separated by spaces, and values may be double quoted with escapes. By default, an
+ * indented line continues the previous record; ParserOptions can turn that off. It supports both the parallel file
+ * pipeline and the live-stream path.
+ *
+ * This is part of the parse module.
+ */
 #pragma once
 
 #include "loglib/core/log_line.hpp"
@@ -15,41 +24,41 @@ class FileLineSource;
 class StreamLineSource;
 
 /**
- * @brief Newline-delimited logfmt parser (Heroku / `kr/logfmt` flavour).
+ * @brief Newline-delimited logfmt parser (Heroku / kr/logfmt flavour).
  *
- * Records contain whitespace-separated `key=value` pairs and optional
- * double-quoted values with C-style escapes (`\"`, `\\`, `\n`, `\r`,
- * `\t`). By default, indented lines continue the preceding record;
- * set `ParserOptions::multilineLogfmt` to false for line-per-record parsing.
+ * Records contain whitespace-separated key=value pairs and optional
+ * double-quoted values with C-style escapes (\", \\, \n, \r,
+ * \t). By default, indented lines continue the preceding record;
+ * set ParserOptions::multilineLogfmt to false for line-per-record parsing.
  *
- * Bare values are typed: `key=` -> null, `true`/`false` -> bool,
+ * Bare values are typed: key= -> null, true/false -> bool,
  * decimal -> int64/uint64, decimal-with-point/exponent -> double,
  * else string. Quoted values stay strings even if numeric (so
- * `pid="42"` keeps the user's intent).
+ * pid="42" keeps the user's intent).
  *
  * Reuses the same TBB static pipeline and streaming loop as
- * `JsonParser` via `internal::CompactLineDecoder`.
+ * JsonParser via internal::CompactLineDecoder.
  */
 class LogfmtParser : public LogParser
 {
 public:
     /**
      * @brief Probe: the first non-blank line of @p sniffBuffer must look
-     * like `key=value` pairs (see `LineLooksLikeLogfmt`). Bounded
-     * by `PROBE_BYTES_BUDGET` when called via the file shim.
+     * like key=value pairs (see LineLooksLikeLogfmt). Bounded
+     * by PROBE_BYTES_BUDGET when called via the file shim.
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /**
-     * @brief Static parse over @p source's mmap. Each emitted `LogLine`
-     * carries `&source` and its 0-based file-line id.
+     * @brief Static parse over @p source's mmap. Each emitted LogLine
+     * carries &source and its 0-based file-line id.
      */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
-     * @brief Live-tail parse. Each line from `source.Producer()` is
-     * appended via `AppendLine` and emitted as a `LogLine`
-     * carrying `&source` and the new 1-based id.
+     * @brief Live-tail parse. Each line from source.Producer() is
+     * appended via AppendLine and emitted as a LogLine
+     * carrying &source and the new 1-based id.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 };

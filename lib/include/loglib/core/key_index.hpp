@@ -1,3 +1,11 @@
+/**
+ * @brief Maps field names to dense integer ids.
+ *
+ * Every distinct key in a log, such as level or message, gets a KeyId the first time it is seen. Rows then store ids
+ * instead of strings, and the ids index per-key arrays directly. One KeyIndex is shared by all rows in a LogData.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include <cstdint>
@@ -27,11 +35,11 @@ inline constexpr KeyId INVALID_KEY_ID = std::numeric_limits<KeyId>::max();
  * @brief Shared, lock-light, append-only dictionary mapping keys to dense ids.
  *
  * Thread-safety contract:
- * - `GetOrInsert` and `Find` are safe to call concurrently with overlapping
+ * - GetOrInsert and Find are safe to call concurrently with overlapping
  *   key sets.
- * - The `string_view` returned by `KeyOf` is pointer-stable for the lifetime
- *   of the `KeyIndex`; concurrent inserts do not invalidate it.
- * - `Size` may grow between the call and the caller observing the value.
+ * - The string_view returned by KeyOf is pointer-stable for the lifetime
+ *   of the KeyIndex; concurrent inserts do not invalidate it.
+ * - Size may grow between the call and the caller observing the value.
  */
 class KeyIndex
 {
@@ -51,10 +59,10 @@ public:
      */
     [[nodiscard]] KeyId GetOrInsert(std::string_view key);
 
-    /** @brief Returns `INVALID_KEY_ID` if @p key has not been inserted. Thread-safe. */
+    /** @brief Returns INVALID_KEY_ID if @p key has not been inserted. Thread-safe. */
     [[nodiscard]] KeyId Find(std::string_view key) const;
 
-    /** @brief Stable for the lifetime of the `KeyIndex`. UB if @p id is out of range. */
+    /** @brief Stable for the lifetime of the KeyIndex. UB if @p id is out of range. */
     [[nodiscard]] std::string_view KeyOf(KeyId id) const;
 
     [[nodiscard]] size_t Size() const noexcept;

@@ -1,3 +1,12 @@
+/**
+ * @brief Row predicates and the evaluator that applies a filter to a table.
+ *
+ * The predicates here test one row: enumeration membership, a time range, a number range, a boolean, or a string match
+ * supplied as a callback. A compiled filter expression combines predicates with and, or and not. FilterAcceptedRows
+ * applies it to every row of a table in parallel and returns the accepted rows.
+ *
+ * This is part of the query module.
+ */
 #pragma once
 
 #include "loglib/core/enum_dictionary.hpp"
@@ -22,17 +31,17 @@ namespace loglib
 class LogTable;
 
 /**
- * @brief Multi-select equality predicate for `Type::Enumeration` columns.
+ * @brief Multi-select equality predicate for Type::Enumeration columns.
  *
- * Hot path: one `GetEnumValueId` + `vector<bool>` test. Rows whose
- * slot isn't a `DictRef` (column not promoted yet) fall back to a
+ * Hot path: one GetEnumValueId + vector<bool> test. Rows whose
+ * slot isn't a DictRef (column not promoted yet) fall back to a
  * transparent-hash string set. The bitset is a dictionary snapshot
- * from construction time; rebuild on `enumColumnsChanged` for
+ * from construction time; rebuild on enumColumnsChanged for
  * freshness. Stale predicates stay correct: ids past the bitset
- * end reject when `mAllResolved`, else use the string set.
+ * end reject when mAllResolved, else use the string set.
  *
- * Threading: `MatchesRow` is stateless post-construction and safe
- * from `tbb::parallel_for`, even if a writer grows the dictionary
+ * Threading: MatchesRow is stateless post-construction and safe
+ * from tbb::parallel_for, even if a writer grows the dictionary
  * mid-evaluation (new ids go past the bitset; string set handles them).
  */
 class EnumRowPredicate
@@ -50,7 +59,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in `LogTable` coords. */
+    /** @brief Column index this predicate targets, in LogTable coords. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -64,7 +73,7 @@ public:
 
 private:
     size_t mColumnIndex = 0;
-    /** @brief Indexed by `EnumValueId`. Empty when no dictionary was given. */
+    /** @brief Indexed by EnumValueId. Empty when no dictionary was given. */
     std::vector<bool> mSelectedIds;
     /**
      * @brief Selected values that didn't resolve at construction (or all
@@ -75,13 +84,13 @@ private:
     bool mFastPathArmed = false;
     /** @brief Every selected value resolved to an id at construction time. */
     bool mAllResolved = false;
-    /** @brief Empty selection sentinel; `MatchesRow` rejects every row. */
+    /** @brief Empty selection sentinel; MatchesRow rejects every row. */
     bool mEmptySelection = false;
 };
 
 /**
  * @brief Inclusive time-range predicate. Bounds are microseconds since the
- * UNIX epoch. An inverted range (`begin > end`) rejects every row.
+ * UNIX epoch. An inverted range (begin > end) rejects every row.
  */
 class TimeRangeRowPredicate
 {
@@ -96,7 +105,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in `LogTable` coords. */
+    /** @brief Column index this predicate targets, in LogTable coords. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -109,14 +118,14 @@ private:
 };
 
 /**
- * @brief Inclusive numeric range over `int64_t` / `uint64_t` / `double`
- * slots. Non-numeric slots reject; `nullopt` on a side means
+ * @brief Inclusive numeric range over int64_t / uint64_t / double
+ * slots. Non-numeric slots reject; nullopt on a side means
  * unbounded.
  *
- * Compares as `double`, so integer precision loss past `2^53` is
- * accepted (use `TimeRangeRowPredicate` for bit-exact int64).
- * `NaN` slots reject; `NaN` bounds collapse to unbounded; `±inf`
- * bounds are honoured. The GUI rejects `NaN`/`±inf` upstream.
+ * Compares as double, so integer precision loss past 2^53 is
+ * accepted (use TimeRangeRowPredicate for bit-exact int64).
+ * NaN slots reject; NaN bounds collapse to unbounded; ±inf
+ * bounds are honoured. The GUI rejects NaN/±inf upstream.
  */
 class NumericRangeRowPredicate
 {
@@ -131,7 +140,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in `LogTable` coords. */
+    /** @brief Column index this predicate targets, in LogTable coords. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -144,8 +153,8 @@ private:
 };
 
 /**
- * @brief Two-state predicate for `Type::Boolean`. Neither side selected
- * = reject every row (like empty `EnumRowPredicate`). Non-bool
+ * @brief Two-state predicate for Type::Boolean. Neither side selected
+ * = reject every row (like empty EnumRowPredicate). Non-bool
  * slots reject too.
  */
 class BoolRowPredicate
@@ -161,7 +170,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in `LogTable` coords. */
+    /** @brief Column index this predicate targets, in LogTable coords. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -186,7 +195,7 @@ private:
 /**
  * @brief String predicate that defers to a caller-supplied callback.
  *
- * `MakeStringMatcher` supplies the PCRE2 and wildcard callbacks.
+ * MakeStringMatcher supplies the PCRE2 and wildcard callbacks.
  * The caller owns callback thread-safety; matchers used from filter
  * workers must be safe to copy and to call concurrently.
  */
@@ -205,7 +214,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in `LogTable` coords. */
+    /** @brief Column index this predicate targets, in LogTable coords. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -241,7 +250,7 @@ using RowPredicate = std::variant<
 
 /**
  * @brief Relative cost weight for cheap-first child ordering in
- * `And`/`Or`. No unit; only the monotonic order matters.
+ * And/Or. No unit; only the monotonic order matters.
  *   Bool     - 1  (alt-check on decoded slot)
  *   Enum     - 2  (id lookup + bitset test)
  *   Time     - 3  (int64 compare)
@@ -251,19 +260,19 @@ using RowPredicate = std::variant<
 [[nodiscard]] int EstimatedLeafCost(const RowPredicate &predicate) noexcept;
 
 /**
- * @brief Compiled mirror of `FilterExpression`. Leaves hold pre-built
- * `RowPredicate`s; combinators own their children; each node
- * caches `estimatedCost` so children stay cheap-first from
- * `CompileExpression`.
+ * @brief Compiled mirror of FilterExpression. Leaves hold pre-built
+ * RowPredicates; combinators own their children; each node
+ * caches estimatedCost so children stay cheap-first from
+ * CompileExpression.
  *
- * Move-only in practice (`EnumRowPredicate` is move-only, so
+ * Move-only in practice (EnumRowPredicate is move-only, so
  * callers move rather than copy). Evaluation is read-only, safe
- * from `tbb::parallel_for` in `FilterAcceptedRows`.
+ * from tbb::parallel_for in FilterAcceptedRows.
  *
- * clang-tidy suppression: `misc-non-private-member-variables-in-classes`
+ * clang-tidy suppression: misc-non-private-member-variables-in-classes
  * -- the alternatives are transparent data holders that the
  * evaluator, compiler, and tests read / write directly by field
- * name. Same treatment as `FilterExpression`.
+ * name. Same treatment as FilterExpression.
  */
 // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
 struct CompiledFilterExpression
@@ -305,13 +314,13 @@ struct CompiledFilterExpression
 
     using Node = std::variant<Leaf, And, Or, Not>;
 
-    /** @brief Default = empty `And` (match-all). */
+    /** @brief Default = empty And (match-all). */
     Node node = And{};
 
     /**
      * @brief Column indices referenced by leaves, sorted + deduped.
-     * `LogFilterModel` uses this to decide whether a source
-     * `dataChanged` requires a full rebuild.
+     * LogFilterModel uses this to decide whether a source
+     * dataChanged requires a full rebuild.
      */
     std::vector<size_t> referencedColumns;
 
@@ -327,14 +336,14 @@ struct CompiledFilterExpression
 // NOLINTEND(misc-non-private-member-variables-in-classes)
 
 /**
- * @brief Short-circuiting per-row evaluator. Empty `And` = true, empty
- * `Or` = false, `Not` inverts, `And`/`Or` stop at the first
+ * @brief Short-circuiting per-row evaluator. Empty And = true, empty
+ * Or = false, Not inverts, And/Or stop at the first
  * decisive child. Cheap-first ordering is baked in by
- * `CompileExpression`.
+ * CompileExpression.
  */
 [[nodiscard]] bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row);
 
-/** @brief True iff @p expression is an empty `And` (match-all). */
+/** @brief True iff @p expression is an empty And (match-all). */
 [[nodiscard]] bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept;
 
 /**
@@ -343,12 +352,12 @@ struct CompiledFilterExpression
  *
  * Picks one of two paths per rebuild:
  *
- * - **Visit path** (default): `tbb::parallel_for` over rows, each
- *   row calling `EvaluateExpression`. Same envelope as the old
- *   flat `span<RowPredicate>` for flat `And` trees.
+ * - **Visit path** (default): tbb::parallel_for over rows, each
+ *   row calling EvaluateExpression. Same envelope as the old
+ *   flat span<RowPredicate> for flat And trees.
  * - **Bitset materialisation path**: kicks in for trees with an
- *   `OR`/`NOT` and >=2 total leaves (or >=4 leaves overall), when
- *   `row_count * unique_leaves / 8 <= 512 MiB`. Flat `And` never
+ *   OR/NOT and >=2 total leaves (or >=4 leaves overall), when
+ *   row_count * unique_leaves / 8 <= 512 MiB. Flat And never
  *   qualifies (short-circuiting beats materialising). Each unique
  *   leaf's accept-set becomes a packed bitset (shared across
  *   repeats); the tree walks with word-parallel AND/OR/NOT.

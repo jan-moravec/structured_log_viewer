@@ -1,3 +1,12 @@
+/**
+ * @brief Finds the rotated files that belong to one log.
+ *
+ * Log rotation leaves series such as app.log, app.log.1 and app.log.2.gz. These helpers list the other files of a
+ * series for a given primary file, and decide whether a set of selected paths forms one series. Each file gets a
+ * normalized key so duplicates can be detected.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include <cstdint>
@@ -10,8 +19,8 @@ namespace loglib
 {
 
 /**
- * @brief One file in a rotation family. `path` preserves the path used for
- * opening; `canonicalKey` is the normalized UTF-8 deduplication key.
+ * @brief One file in a rotation family. path preserves the path used for
+ * opening; canonicalKey is the normalized UTF-8 deduplication key.
  */
 struct RotatedFile
 {
@@ -19,7 +28,7 @@ struct RotatedFile
     {
         /** @brief Active primary; last when stored in a series. */
         Primary,
-        /** @brief `<primary>.<N>`, optionally compressed. */
+        /** @brief <primary>.<N>, optionally compressed. */
         NumberedSuffix,
         /** @brief Dated suffix or stem-inserted date. */
         DatedSuffix,
@@ -45,7 +54,7 @@ struct RotationSeries
 /**
  * @brief Enumerates numbered and dated companions in @p primary's directory.
  * Numbered suffixes sort by descending number and dated suffixes by date.
- * Mixed families compare days since 1970 with `1,000,000,000 - N`;
+ * Mixed families compare days since 1970 with 1,000,000,000 - N;
  * equal ranks have unspecified order.
  * The primary is always present and last. Directory I/O is advisory:
  * errors may return partial results, and no matches yield the primary alone.
@@ -63,7 +72,7 @@ struct PartitionedSelection
 
 /**
  * @brief Splits @p paths into rotation families and residual inputs. Family
- * ordering matches `EnumerateRotatedSiblings`; families are ordered by
+ * ordering matches EnumerateRotatedSiblings; families are ordered by
  * their earliest input member. Filesystem checks are best-effort.
  */
 [[nodiscard]] PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::path> paths);

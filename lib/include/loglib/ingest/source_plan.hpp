@@ -1,3 +1,12 @@
+/**
+ * @brief Turns the paths a user selected into the list of files to open.
+ *
+ * ResolveSourcePlan expands each input into its rotation family when rotation history is on, lists every file once, and
+ * returns the files in the order they should be loaded. With rotation history off, inputs come back in caller order,
+ * duplicates included.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include <filesystem>
@@ -11,16 +20,16 @@ namespace loglib
 /**
  * @brief Controls rotation expansion and already-loaded deduplication.
  *
- * `rotationHistory` is the on/off switch. Callers turn it off for a
+ * rotationHistory is the on/off switch. Callers turn it off for a
  * user preference, a launch opt-out, or a session that does not follow
  * rotated siblings. With it off, inputs are returned in caller order,
  * including duplicates, and nothing is marked auto-added.
  *
- * `suppressKeys` is the append-time dedup set, matched against
- * `CanonicalKeyForPath`. A log-only append passes the keys of locators
+ * suppressKeys is the append-time dedup set, matched against
+ * CanonicalKeyForPath. A log-only append passes the keys of locators
  * still visible in the session. A replace, a live-tail open, and a
  * mixed open after a configuration reset pass an empty span: those
- * locators no longer describe visible rows, so they must not hide a
+ * locators do not describe visible rows, so they must not hide a
  * file the caller just asked to open. Suppression applies whether or
  * not rotation history is on. The span must outlive the call.
  */
@@ -33,7 +42,7 @@ struct SourcePlanOptions
 /**
  * @brief One path in load order.
  *
- * `autoAdded` is true only for a numbered or dated sibling that
+ * autoAdded is true only for a numbered or dated sibling that
  * rotation discovery found and the caller did not list. The primary,
  * a residual file, and a caller-listed companion are never auto-added,
  * so a host can count discovered files without treating an explicit
@@ -54,7 +63,7 @@ struct ResolvedSource
 /**
  * @brief Expands positional paths into the order they should be opened.
  *
- * With rotation history on, paths go through `PartitionAsRotationSeries`.
+ * With rotation history on, paths go through PartitionAsRotationSeries.
  * Each family is emitted oldest-first with its primary last. Families
  * are ordered by their earliest input, and inputs that belong to no
  * family follow in caller order. The host opens that sequence front

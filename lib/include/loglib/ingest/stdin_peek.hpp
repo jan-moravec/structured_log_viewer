@@ -1,3 +1,11 @@
+/**
+ * @brief Looks at the start of standard input before committing to a format.
+ *
+ * IsStdinInteractive tells a terminal apart from a pipe or file, so callers can refuse a bare terminal. StdinPeek reads
+ * a limited number of bytes within a time limit, which format detection then inspects.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include <chrono>
@@ -12,14 +20,14 @@ namespace loglib
  *
  * Distinguishes a console from a pipe, redirected file, or closed
  * handle. Used by the stdin session opener to refuse the
- * bare-terminal case before `StdinPeek` can block the GUI thread.
+ * bare-terminal case before StdinPeek can block the GUI thread.
  *
- * Windows treats every `FILE_TYPE_CHAR` handle as interactive;
- * POSIX uses `isatty(STDIN_FILENO)`. Both return false on a closed
+ * Windows treats every FILE_TYPE_CHAR handle as interactive;
+ * POSIX uses isatty(STDIN_FILENO). Both return false on a closed
  * or invalid stdin, which is the safer default (an invalid handle
  * triggers a soft error later, not a UI hang).
  *
- * @return `true` when stdin is an interactive terminal.
+ * @return true when stdin is an interactive terminal.
  */
 [[nodiscard]] bool IsStdinInteractive() noexcept;
 
@@ -31,17 +39,17 @@ namespace loglib
  * deadline so a chatty-but-slow producer does not freeze the GUI
  * while the peek gathers format evidence.
  *
- * The deadline is applied *between* syscalls: a `read` / `ReadFile`
+ * The deadline is applied *between* syscalls: a read / ReadFile
  * already in the kernel is not cancelled, but the loop stops issuing
  * new syscalls once the deadline passes. The polling implementation
- * uses `poll` (POSIX) or `PeekNamedPipe` (Windows pipes) to avoid
+ * uses poll (POSIX) or PeekNamedPipe (Windows pipes) to avoid
  * parking in the kernel past the deadline; console handles are already
- * rejected upstream via `IsStdinInteractive`.
+ * rejected upstream via IsStdinInteractive.
  *
- * Used by the stdin path (`--stdin` / `-`) as the first step of the
+ * Used by the stdin path (--stdin / -) as the first step of the
  * peek → detect → hand-off handshake: the peeked bytes are fed to
- * `DetectFormatFromBytes` and then re-injected into the streaming
- * parse loop via `ParserOptions::initialCarry`, so the stdin producer
+ * DetectFormatFromBytes and then re-injected into the streaming
+ * parse loop via ParserOptions::initialCarry, so the stdin producer
  * only has to yield the remaining bytes.
  *
  * Runs on the GUI thread during app startup, before the producer's

@@ -1,3 +1,12 @@
+/**
+ * @brief Byte producer that follows a file as it grows.
+ *
+ * A TailingBytesProducer first loads the last lines already in the file, then delivers new lines as they are appended.
+ * It keeps following through the usual rotation styles: rename and create, copy and truncate, truncate in place, and
+ * delete and recreate. Used for live-tail sessions.
+ *
+ * This is part of the ingest module.
+ */
 #pragma once
 
 #include "loglib/core/bytes_producer.hpp"
@@ -19,25 +28,25 @@ class TailingBytesProducerImpl; // pimpl forward decl
 }
 
 /**
- * @brief `BytesProducer` over a file being actively written. Pre-fills the
+ * @brief BytesProducer over a file being actively written. Pre-fills the
  * last N complete lines from disk and then tails the producer's
  * appends, surviving rename-and-create / copy-truncate / in-place
  * truncate / delete-then-recreate rotations.
  *
  * Design summary:
- *   - Buffered POSIX `read(2)` / Windows `ReadFile`. No mmap on the
+ *   - Buffered POSIX read(2) / Windows ReadFile. No mmap on the
  *     tail because rotations would invalidate the mapping or block
  *     the producer.
  *   - One worker thread per producer. It polls the file size at a
  *     configurable cadence (default 250 ms) and is also signalled by
- *     `efsw` filesystem events so the typical wake latency is the
+ *     efsw filesystem events so the typical wake latency is the
  *     watcher's, not the poll's.
  *   - Rotation detection evaluates branches in order: identity /
  *     missing / size-shrunk. Bursts within 1 s coalesce into a single
  *     rotation event.
- *   - `Read()` drains a byte queue holding only complete lines; the
+ *   - Read() drains a byte queue holding only complete lines; the
  *     partial-line buffer is separate, discarded on truncation, flushed
- *     as a synthetic last line on `Stop` and when a rename rotation
+ *     as a synthetic last line on Stop and when a rename rotation
  *     retires the file.
  *   - A rename rotation reads the old file to its end before switching,
  *     so bytes written before the rename are delivered.
@@ -45,7 +54,7 @@ class TailingBytesProducerImpl; // pimpl forward decl
 class TailingBytesProducer final : public BytesProducer
 {
 public:
-    /** @brief Default for `Options::maxQueuedBytes`. */
+    /** @brief Default for Options::maxQueuedBytes. */
     static constexpr size_t DEFAULT_MAX_QUEUED_BYTES = size_t{64} * 1024 * 1024;
 
     /**
@@ -68,20 +77,20 @@ public:
 
         /**
          * @brief Bytes per pre-fill backwards chunk. Separate from
-         * `readChunkBytes` so tests can shrink it independently.
+         * readChunkBytes so tests can shrink it independently.
          */
         size_t prefillChunkBytes = 64 * 1024;
 
         /**
          * @brief Upper bound on the backwards pre-fill scan. Protects against
-         * files with no newlines or absurdly large `retentionLines`
+         * files with no newlines or absurdly large retentionLines
          * on multi-GB files. On overflow, pre-fill yields zero lines
          * and tailing begins from EOF.
          */
         size_t prefillMaxScanBytes = 16 * 1024 * 1024;
 
         /**
-         * @brief Skip the `efsw` watcher and rely on polling alone. Used by
+         * @brief Skip the efsw watcher and rely on polling alone. Used by
          * tests on CI runners where filesystem events are unreliable.
          */
         bool disableNativeWatcher = false;
@@ -89,7 +98,7 @@ public:
         /**
          * @brief Longest line buffered while waiting for its newline. A longer
          * line is dropped up to its newline and counted in
-         * `DroppedByteCount`.
+         * DroppedByteCount.
          */
         size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 
@@ -125,7 +134,7 @@ public:
     void WaitForBytes(std::chrono::milliseconds timeout) override;
 
     /**
-     * @brief Unblock any in-flight `Read`/`WaitForBytes`, flush the partial
+     * @brief Unblock any in-flight Read/WaitForBytes, flush the partial
      * line as a synthetic last line (unless a rotation is in
      * progress), and signal the worker to exit. Idempotent. Safe
      * from any thread.
@@ -147,7 +156,7 @@ public:
      */
     [[nodiscard]] size_t RotationCount() const noexcept;
 
-    /** @brief Cumulative bytes dropped from lines past `Options::maxLineBytes`. */
+    /** @brief Cumulative bytes dropped from lines past Options::maxLineBytes. */
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
 private:

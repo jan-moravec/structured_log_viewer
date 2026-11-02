@@ -1,3 +1,12 @@
+/**
+ * @brief Dictionaries that replace repeated strings with small ids.
+ *
+ * Columns such as level hold few distinct values. An EnumDictionary interns each distinct string once and hands out an
+ * id, and the row stores only that id. EnumDictionaryRegistry keeps one dictionary per column, and a LineSource points
+ * at it so the ids can be turned back into text.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include "loglib/core/key_index.hpp"
@@ -17,8 +26,8 @@ namespace loglib
 {
 
 /**
- * @brief Per-column id for a string interned in an `EnumDictionary`.
- * Insertion-ordered; stored in a `CompactTag::DictRef` payload.
+ * @brief Per-column id for a string interned in an EnumDictionary.
+ * Insertion-ordered; stored in a CompactTag::DictRef payload.
  */
 enum class EnumValueId : uint16_t
 {
@@ -40,8 +49,8 @@ inline constexpr uint32_t MAX_ENUM_CANDIDATE_LEN = 64;
 
 /**
  * @brief Per-column dictionary of distinct string values. Insertion-ordered;
- * `EnumValueId`s are stable for the dictionary's lifetime.
- * Single writer (`LogTable` thread); readers may race with each other.
+ * EnumValueIds are stable for the dictionary's lifetime.
+ * Single writer (LogTable thread); readers may race with each other.
  */
 class EnumDictionary
 {
@@ -49,8 +58,8 @@ public:
     EnumDictionary() = default;
 
     /**
-     * @brief @p cap is clamped to `[1, MAX_ENUM_VALUES]`; over-cap inserts return
-     * `INVALID_ENUM_VALUE_ID` and `Full()` returns true.
+     * @brief @p cap is clamped to [1, MAX_ENUM_VALUES]; over-cap inserts return
+     * INVALID_ENUM_VALUE_ID and Full() returns true.
      */
     explicit EnumDictionary(uint16_t cap) noexcept;
 
@@ -62,12 +71,12 @@ public:
 
     ~EnumDictionary() = default;
 
-    /** @brief Existing id for @p bytes, or `INVALID_ENUM_VALUE_ID`. */
+    /** @brief Existing id for @p bytes, or INVALID_ENUM_VALUE_ID. */
     [[nodiscard]] EnumValueId Find(std::string_view bytes) const noexcept;
 
     /**
      * @brief Id for @p bytes, allocating one on first sight. Returns
-     * `INVALID_ENUM_VALUE_ID` when full and @p bytes is new.
+     * INVALID_ENUM_VALUE_ID when full and @p bytes is new.
      */
     [[nodiscard]] EnumValueId Insert(std::string_view bytes);
 
@@ -107,8 +116,8 @@ public:
 
 private:
     /**
-     * @brief `std::deque` keeps each string's address stable so the index can
-     * key on `string_view`s into them.
+     * @brief std::deque keeps each string's address stable so the index can
+     * key on string_views into them.
      */
     std::deque<std::string> mValues;
     tsl::robin_map<std::string_view, EnumValueId, loglib::TransparentStringHash, loglib::TransparentStringEqual> mIndex;
@@ -116,10 +125,10 @@ private:
 };
 
 /**
- * @brief `KeyId` -> `EnumDictionary` for every `Type::Enumeration` column.
- * Owned by `LogTable`; each `LineSource` points at it so
- * `CompactLogValue::Materialise(DictRef)` can resolve bytes. Multiple
- * alias keys can share one dictionary via `Alias`.
+ * @brief KeyId -> EnumDictionary for every Type::Enumeration column.
+ * Owned by LogTable; each LineSource points at it so
+ * CompactLogValue::Materialise(DictRef) can resolve bytes. Multiple
+ * alias keys can share one dictionary via Alias.
  */
 class EnumDictionaryRegistry
 {
@@ -140,14 +149,14 @@ public:
 
     /**
      * @brief Returns the dictionary for @p key, creating one (with @p cap) if absent.
-     * The reference is stable until `Erase`/`Clear`.
+     * The reference is stable until Erase/Clear.
      */
     [[nodiscard]] EnumDictionary &GetOrInsert(KeyId key, uint16_t cap = DEFAULT_ENUM_VALUE_CAP);
 
     /**
      * @brief Map @p alias to @p canonical's dictionary. @p canonical must have a
      * dictionary; @p alias must not already be canonical or aliased to a
-     * different dictionary. Idempotent; returns `false` on precondition
+     * different dictionary. Idempotent; returns false on precondition
      * violation without modifying state.
      */
     [[nodiscard]] bool Alias(KeyId canonical, KeyId alias);
@@ -171,16 +180,16 @@ public:
     [[nodiscard]] size_t EstimatedMemoryBytes() const noexcept;
 
 private:
-    /** @brief `aliases` always includes the canonical key. */
+    /** @brief aliases always includes the canonical key. */
     struct DictionaryEntry
     {
         std::unique_ptr<EnumDictionary> dict;
         std::vector<KeyId> aliases;
     };
 
-    /** @brief `unique_ptr` so dict refs survive rehashes of `mDictionaries`. */
+    /** @brief unique_ptr so dict refs survive rehashes of mDictionaries. */
     tsl::robin_map<KeyId, DictionaryEntry> mDictionaries;
-    /** @brief Canonical and alias keys -> pointer into `mDictionaries`. */
+    /** @brief Canonical and alias keys -> pointer into mDictionaries. */
     tsl::robin_map<KeyId, EnumDictionary *> mIndex;
 };
 

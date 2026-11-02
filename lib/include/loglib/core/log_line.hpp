@@ -1,3 +1,12 @@
+/**
+ * @brief One parsed log row.
+ *
+ * A LogLine is a small sorted array of key and value pairs plus the source and line number it came from. Strings stay
+ * as offsets into the source, so a row is cheap to create and keep. This header also defines the span type that marks
+ * the physical lines of a multi-line record.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include "loglib/core/compact_log_value.hpp"
@@ -28,24 +37,24 @@ struct MultiLineRecordSpan
 };
 
 /**
- * @brief One log record: a `(KeyId, CompactLogValue)` vector sorted by KeyId.
- * Strings are stored as `(offset, length)` resolved via the owning
- * `LineSource`. `(LineSource*, lineId)` is the row's session identity.
+ * @brief One log record: a (KeyId, CompactLogValue) vector sorted by KeyId.
+ * Strings are stored as (offset, length) resolved via the owning
+ * LineSource. (LineSource*, lineId) is the row's session identity.
  */
 class LogLine
 {
 public:
     /**
      * @brief Cold path: convert variant values to compact storage. Views inside
-     * `StableBytes()` become `MmapSlice`; others are copied to the arena.
+     * StableBytes() become MmapSlice; others are copied to the arena.
      */
     LogLine(
         std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LineSource &source, size_t lineId
     );
 
     /**
-     * @brief Hot path: pre-built compact values, ascending on `pair::first`.
-     * `OwnedString` payloads must be arena-relative already.
+     * @brief Hot path: pre-built compact values, ascending on pair::first.
+     * OwnedString payloads must be arena-relative already.
      */
     LogLine(
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
@@ -63,16 +72,16 @@ public:
     LogLine(LogLine &&) = default;
     LogLine &operator=(LogLine &&) = default;
 
-    /** @brief Returns `std::monostate` if @p id is not present. */
+    /** @brief Returns std::monostate if @p id is not present. */
     LogValue GetValue(KeyId id) const;
     LogValue GetValue(const std::string &key) const;
 
-    /** @brief Debug builds assert @p value is not a `string_view`. */
+    /** @brief Debug builds assert @p value is not a string_view. */
     void SetValue(KeyId id, const LogValue &value);
 
     /**
-     * @brief Caller promises any view in @p value outlives the `LogLine`. Views
-     * inside `StableBytes()` are stored zero-copy; others are copied.
+     * @brief Caller promises any view in @p value outlives the LogLine. Views
+     * inside StableBytes() are stored zero-copy; others are copied.
      */
     void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
@@ -89,12 +98,12 @@ public:
 
     LogMap Values() const;
 
-    /** @brief Used by `LogData::Merge` and `LogData` move-ops. */
+    /** @brief Used by LogData::Merge and LogData move-ops. */
     void RebindKeys(const KeyIndex &keys);
 
     const KeyIndex &Keys() const;
 
-    /** @brief The owning `LineSource`. Never null post-construction. */
+    /** @brief The owning LineSource. Never null post-construction. */
     [[nodiscard]] LineSource *Source() const noexcept;
 
     /** @brief Line id within the source's id space. */
@@ -109,24 +118,24 @@ public:
     size_t ValueCount() const noexcept;
 
     /**
-     * @brief Add @p delta to every `OwnedString` payload after rebasing the
+     * @brief Add @p delta to every OwnedString payload after rebasing the
      * source arena.
      */
     void RebaseOwnedStringOffsets(uint64_t delta) noexcept;
 
     bool IsDictRef(KeyId id) const noexcept;
 
-    /** @brief `EnumValueId` payload for a `DictRef` slot, else nullopt. */
+    /** @brief EnumValueId payload for a DictRef slot, else nullopt. */
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(KeyId id) const noexcept;
 
     /** @brief Linear scan over the sorted compact storage; nullptr if absent. */
     [[nodiscard]] const loglib::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
-    /** @brief Mutable counterpart; callers may overwrite `*slot` in place. */
+    /** @brief Mutable counterpart; callers may overwrite *slot in place. */
     [[nodiscard]] loglib::CompactLogValue *FindCompactMutable(KeyId id) noexcept;
 
     /**
-     * @brief Bytes for a `MmapSlice` / `OwnedString` slot; nullopt otherwise.
+     * @brief Bytes for a MmapSlice / OwnedString slot; nullopt otherwise.
      * Safe with a null source.
      */
     [[nodiscard]] std::optional<std::string_view> PeekStringView(KeyId id) const noexcept;

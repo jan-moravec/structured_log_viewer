@@ -1,3 +1,12 @@
+/**
+ * @brief The saveable configuration of a log view and the manager that edits it.
+ *
+ * LogConfiguration collects the columns, the source description, the session view, anchors and highlight rules into one
+ * value that can be written to JSON. LogConfigurationManager builds a configuration from the keys found in a log, keeps
+ * it consistent when columns move, and loads and saves it.
+ *
+ * This is part of the schema module.
+ */
 #pragma once
 
 #include "loglib/schema/anchor_entry.hpp"
@@ -20,16 +29,16 @@
 namespace loglib
 {
 
-// Forward-declared so consumers don't pull in the full `log_data.hpp` chain.
+// Forward-declared so consumers don't pull in the full log_data.hpp chain.
 
 /**
  * @brief Serializable configuration root.
  *
  * Value groups are named types with one responsibility each:
- * `Column` / `ColumnType` (schema), `Source` / `SourceLocator`
- * (persisted source), `SessionView` (`expression` + `Sort`),
- * `AnchorEntry`, and `HighlightRule`. Nested aliases keep existing
- * `LogConfiguration::Column` spellings compiling. JSON keys stay
+ * Column / ColumnType (schema), Source / SourceLocator
+ * (persisted source), SessionView (expression + Sort),
+ * AnchorEntry, and HighlightRule. Nested aliases keep existing
+ * LogConfiguration::Column spellings compiling. JSON keys stay
  * flat on this root.
  */
 struct LogConfiguration
@@ -49,66 +58,66 @@ struct LogConfiguration
      * @brief Session-only fields; default-valued when the file on disk is a
      * columns-only configuration.
      *
-     * `expression` is the single boolean tree that drives the
-     * filter view. Default-constructed `FilterExpression` is an
-     * empty `And` node -- i.e. "match every row" -- so an unfilled
+     * expression is the single boolean tree that drives the
+     * filter view. Default-constructed FilterExpression is an
+     * empty And node -- i.e. "match every row" -- so an unfilled
      * session is a plain view. Leaves bind columns by
-     * `LeafRule::columnKeys` (durable across `MoveColumn` and
-     * cross-source apply), which is why `MoveColumn` no longer
-     * remaps filter row indices.
+     * LeafRule::columnKeys (durable across MoveColumn and
+     * cross-source apply), so MoveColumn does not remap filter
+     * row indices.
      */
     FilterExpression expression;
     Sort sort;
     std::optional<Source> source;
 
     /**
-     * @brief Persisted anchors. Sorted by `(locator, lineId)` on save
+     * @brief Persisted anchors. Sorted by (locator, lineId) on save
      * for stable diffs; no ordering guarantee on read.
      */
     std::vector<AnchorEntry> anchors;
 
     /**
-     * @brief Configuration-scope: written in both `SaveScope::Full`
-     * and `SaveScope::ColumnsOnly` so highlight rules roam with
+     * @brief Configuration-scope: written in both SaveScope::Full
+     * and SaveScope::ColumnsOnly so highlight rules roam with
      * the columns. Order matters (last-match-wins per row).
      */
     std::vector<HighlightRule> highlightRules;
 };
 
 /**
- * @brief Case-insensitive match against known log-level field names (`level`,
- * `severity`, ...). `LogTable` uses this to gate `Enumeration -> Level`
+ * @brief Case-insensitive match against known log-level field names (level,
+ * severity, ...). LogTable uses this to gate Enumeration -> Level
  * promotion.
  */
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
 /**
- * @brief Index of the first `Type::Time` column in @p configuration, or -1.
+ * @brief Index of the first Type::Time column in @p configuration, or -1.
  * Single source of truth for "which column is the canonical timestamp"
- * (Record Details summary, row right-click time-filter menu, ...).
+ * (for example a record summary or a time-filter menu).
  */
 [[nodiscard]] int FirstTimeColumnIndex(const LogConfiguration &configuration);
 
 /**
- * @brief Selects which fields `Save` writes. Both shapes share one JSON
- * schema -- a `ColumnsOnly` file is a `Full` file with the
+ * @brief Selects which fields Save writes. Both shapes share one JSON
+ * schema -- a ColumnsOnly file is a Full file with the
  * session-only members defaulted.
  */
 enum class SaveScope
 {
-    /** @brief Writes only `columns`; portable across data sources. */
+    /** @brief Writes only columns; portable across data sources. */
     ColumnsOnly,
     /** @brief Writes the full struct (columns + filters + sort + source). */
     Full
 };
 
-/** @brief Loads, saves, and updates a `LogConfiguration` from observed data. */
+/** @brief Loads, saves, and updates a LogConfiguration from observed data. */
 class LogConfigurationManager
 {
 public:
     LogConfigurationManager() = default;
 
-    /** @brief Throws `std::runtime_error` on open failure. */
+    /** @brief Throws std::runtime_error on open failure. */
     void Load(const std::filesystem::path &path);
 
     /**
@@ -118,14 +127,14 @@ public:
      * multi-gigabyte log through the IO path.
      */
     void LoadFromString(std::string_view content);
-    /** @brief Writes the full struct (equivalent to `SaveScope::Full`). */
+    /** @brief Writes the full struct (equivalent to SaveScope::Full). */
     void Save(const std::filesystem::path &path) const;
     /** @brief Writes the subset selected by @p scope. */
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
     /**
      * @brief Free-standing save for callers that already hold a
-     * `LogConfiguration` value. Throws on serialization / open
+     * LogConfiguration value. Throws on serialization / open
      * failure. @p scope has no default so callers can't silently
      * drift between Columns-only and Full as the schema grows.
      */
@@ -135,9 +144,8 @@ public:
     void Update(std::span<const std::string> sortedKeys);
 
     /**
-     * @brief Wipe to a default-constructed `LogConfiguration`. Invalidates
-     * the key cache. Used by `MainWindow::NewSession` to produce a
-     * true blank-window state.
+     * @brief Wipe to a default-constructed LogConfiguration. Invalidates
+     * the key cache. Gives a true blank state for a new session.
      */
     void Reset();
 
@@ -154,14 +162,14 @@ public:
      */
     void AppendKeys(const std::vector<std::string> &newKeys);
 
-    /** @brief Non-mutating count of fresh columns `AppendKeys(newKeys)` would add. */
+    /** @brief Non-mutating count of fresh columns AppendKeys(newKeys) would add. */
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
     /**
      * @brief Move the column at @p srcIndex to @p destIndex.
-     * `LogConfiguration::expression` binds leaves by column keys,
+     * LogConfiguration::expression binds leaves by column keys,
      * so no filter remap is required here -- rules follow their
-     * column across reorders automatically. `sort.columnIndex`
+     * column across reorders automatically. sort.columnIndex
      * still tracks the moved column and is remapped in step.
      */
     void MoveColumn(size_t srcIndex, size_t destIndex);
@@ -173,77 +181,77 @@ public:
     void SetColumnType(size_t columnIndex, ColumnType type);
 
     /**
-     * @brief Toggle `Column::autoDetect`. `true` hands the column to the
-     * auto-detector; `false` pins it at the current `type`. No-op
+     * @brief Toggle Column::autoDetect. true hands the column to the
+     * auto-detector; false pins it at the current type. No-op
      * out of range.
      */
     void SetColumnAutoDetect(size_t columnIndex, bool autoDetect);
 
     /**
-     * @brief Write `type` and `autoDetect` atomically. Editor path uses
-     * this so observers never see an intermediate `(newType,
-     * staleAutoDetect)` pair. No-op out of range.
+     * @brief Write type and autoDetect atomically. Editor path uses
+     * this so observers never see an intermediate (newType,
+     * staleAutoDetect) pair. No-op out of range.
      */
     void SetColumnTypePair(size_t columnIndex, ColumnType type, bool autoDetect);
 
     /**
-     * @brief Toggle `Column::visible`. The column stays in the table; only
+     * @brief Toggle Column::visible. The column stays in the table; only
      * the header section is hidden. No-op out of range.
      */
     void SetColumnVisible(size_t columnIndex, bool visible);
 
     /**
-     * @brief Replace `Column::header`. Display-only -- `keys` remains the
+     * @brief Replace Column::header. Display-only -- keys remains the
      * stable identifier -- so renaming is safe at any point. No-op
      * out of range.
      */
     void SetColumnHeader(size_t columnIndex, std::string header);
 
     /**
-     * @brief Replace `Column::printFormat`. Used by the editor when pinning
-     * a column to `Type::Time` so the cell formatting actually
+     * @brief Replace Column::printFormat. Used by the editor when pinning
+     * a column to Type::Time so the cell formatting actually
      * shows a date instead of the raw bytes. No-op out of range.
      */
     void SetColumnPrintFormat(size_t columnIndex, std::string printFormat);
 
     /**
-     * @brief Replace `Column::parseFormats`. Companion to
-     * `SetColumnPrintFormat`; without parse formats the Time
+     * @brief Replace Column::parseFormats. Companion to
+     * SetColumnPrintFormat; without parse formats the Time
      * back-fill walks the rows but matches nothing. No-op out of range.
      */
     void SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats);
 
     /**
-     * @brief Replace `LogConfiguration::expression` wholesale. The app
+     * @brief Replace LogConfiguration::expression wholesale. The app
      * mirrors its runtime expression tree through this before
-     * `Save` and after every user edit in the simple / Advanced
+     * Save and after every user edit in the simple / Advanced
      * filter editors.
      */
     void SetExpression(FilterExpression expression);
 
     /**
-     * @brief Replace `LogConfiguration::sort`. Called by the session-state
-     * mirror before a `Full` save.
+     * @brief Replace LogConfiguration::sort. Called by the session-state
+     * mirror before a Full save.
      */
     void SetSort(Sort sort);
 
-    /** @brief Replace `LogConfiguration::source`. `nullopt` clears the binding. */
+    /** @brief Replace LogConfiguration::source. nullopt clears the binding. */
     void SetSource(std::optional<Source> source);
 
-    /** @brief Replace `LogConfiguration::anchors`. Empty clears them all. */
+    /** @brief Replace LogConfiguration::anchors. Empty clears them all. */
     void SetAnchors(std::vector<AnchorEntry> anchors);
 
     /**
-     * @brief Replace `LogConfiguration::highlightRules` wholesale. Rules
-     * bind by column keys, so no `MoveColumn` remap is needed
+     * @brief Replace LogConfiguration::highlightRules wholesale. Rules
+     * bind by column keys, so no MoveColumn remap is needed
      * afterwards.
      */
     void SetHighlightRules(std::vector<HighlightRule> rules);
 
     /**
-     * @brief Apply `(srcIndex -> destIndex)` to a stored column index.
+     * @brief Apply (srcIndex -> destIndex) to a stored column index.
      * Out-of-range inputs (including negative sentinels like
-     * `Sort::columnIndex == -1`) pass through unchanged. Exposed
+     * Sort::columnIndex == -1) pass through unchanged. Exposed
      * so the app can remap its runtime filter map with the same
      * logic.
      */
@@ -259,14 +267,14 @@ private:
 
     /**
      * @brief Cached "every key referenced by any column"; mutators flip
-     * `mCacheStale`.
+     * mCacheStale.
      */
     mutable std::unordered_set<std::string> mKeysInColumns;
     mutable bool mCacheStale = true;
 };
 
 /**
- * @brief Canonical position for a `Type::Level` column (index 1, after
+ * @brief Canonical position for a Type::Level column (index 1, after
  * the time column at index 0). Reading order: time -> severity
  * -> message.
  */
@@ -274,7 +282,7 @@ inline constexpr size_t CANONICAL_LEVEL_COLUMN_INDEX = 1;
 
 /**
  * @brief True iff a column at @p columnIndex should be bubbled to
- * `CANONICAL_LEVEL_COLUMN_INDEX`. False for out-of-range,
+ * CANONICAL_LEVEL_COLUMN_INDEX. False for out-of-range,
  * already-in-place, single-column, and "another Level column
  * already holds the slot" cases.
  */

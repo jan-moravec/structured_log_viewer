@@ -1,3 +1,11 @@
+/**
+ * @brief Parses the text of the advanced filter into a filter expression.
+ *
+ * ParseQuery reads a query with and, or, not and groups, and returns either a FilterExpression or an error with the
+ * position of the problem. FormatExpression writes an expression back as text. Nesting depth is limited.
+ *
+ * This is part of the query module.
+ */
 #pragma once
 
 #include "loglib/schema/filter_expression.hpp"
@@ -10,12 +18,12 @@
 namespace loglib
 {
 
-/** @brief Deepest group and `NOT` nesting `ParseQuery` accepts. */
+/** @brief Deepest group and NOT nesting ParseQuery accepts. */
 inline constexpr std::size_t MAX_QUERY_NESTING = 64;
 
 /**
- * @brief Parse error surfaced by `ParseQuery`: a byte offset into the
- * input (clamped to `input.size()` at EOI) and a one-line message.
+ * @brief Parse error surfaced by ParseQuery: a byte offset into the
+ * input (clamped to input.size() at EOI) and a one-line message.
  */
 struct QueryParseError
 {
@@ -24,7 +32,7 @@ struct QueryParseError
 };
 
 /**
- * @brief Parse @p input into a `FilterExpression`.
+ * @brief Parse @p input into a FilterExpression.
  *
  * Grammar (v1):
  *
@@ -59,28 +67,28 @@ struct QueryParseError
  *                   parse as ISO timestamps, else Numeric;
  *                   either bound may be empty)
  *
- * An ISO timestamp without `Z` or an offset is read in `ProcessDefaultTimeZone()`.
+ * An ISO timestamp without Z or an offset is read in ProcessDefaultTimeZone().
  *
- * `AND`, `OR`, `NOT`, `IN` are case-insensitive; `FormatExpression`
+ * AND, OR, NOT, IN are case-insensitive; FormatExpression
  * canonicalises to uppercase. Column identity is captured
- * verbatim into `LeafRule::columnKeys` as a single element.
+ * verbatim into LeafRule::columnKeys as a single element.
  * Empty / whitespace-only input returns match-all.
  */
 [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view input);
 
 /**
  * @brief Render @p expression back to the query grammar. Round-trips
- * with `ParseQuery` for every tree the parser can produce.
+ * with ParseQuery for every tree the parser can produce.
  *
  * Notable rules:
- *   - `Leaf`: bareword tokens are quoted when they contain
+ *   - Leaf: bareword tokens are quoted when they contain
  *     whitespace / operator chars or start with a digit; regex
- *     leaves always render as `/.../`.
- *   - Top-level empty `And` renders as the empty string. Nested
- *     empty `And` (never produced by the parser) debug-renders
- *     as `*`; empty `Or` debug-renders as `()`.
- *   - `Or` is parenthesised when nested under `And` or `Not`;
- *     `Not` parenthesises its child unless it's a leaf or `Not`.
+ *     leaves always render as /.../.
+ *   - Top-level empty And renders as the empty string. Nested
+ *     empty And (never produced by the parser) debug-renders
+ *     as *; empty Or debug-renders as ().
+ *   - Or is parenthesised when nested under And or Not;
+ *     Not parenthesises its child unless it's a leaf or Not.
  */
 [[nodiscard]] std::string FormatExpression(const FilterExpression &expression);
 

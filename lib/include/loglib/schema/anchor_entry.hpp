@@ -1,3 +1,12 @@
+/**
+ * @brief A saved bookmark on one log line.
+ *
+ * An anchor is identified by the source it belongs to and the line number the parser gave the line. It carries a color
+ * index into the theme's anchor palette and an optional one-line note. Anchors are stored in the configuration so they
+ * survive reopening the log.
+ *
+ * This is part of the schema module.
+ */
 #pragma once
 
 #include <cstdint>
@@ -9,16 +18,16 @@ namespace loglib
 /**
  * @brief A persisted bookmark on one log line.
  *
- * Identified by `(locator, lineId)`: `lineId` is the parser's
- * monotonic per-`LineSource` id; `locator` disambiguates files
+ * Identified by (locator, lineId): lineId is the parser's
+ * monotonic per-LineSource id; locator disambiguates files
  * in a multi-file session (empty for single-file / network).
- * `colorIndex` indexes `Theme::anchorPalette`; out-of-range
+ * colorIndex indexes Theme::anchorPalette; out-of-range
  * values are dropped on load.
  *
- * `note` is a one-line free-form annotation surfaced in the
+ * note is a one-line free-form annotation surfaced in the
  * Anchors dock, row tooltips, and the record-detail view.
  * Empty for anchors saved by older builds -- Glaze's
- * `error_on_unknown_keys=false` + default-on-missing lets
+ * error_on_unknown_keys=false + default-on-missing lets
  * them load cleanly. Multi-line values are legal on disk but
  * the editors sanitise on commit, so the on-disk shape is a
  * single line by construction.

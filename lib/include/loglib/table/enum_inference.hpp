@@ -1,3 +1,13 @@
+/**
+ * @brief Detects columns that hold only a few distinct strings and encodes them.
+ *
+ * While rows arrive, EnumInference watches each undecided column. A column with few distinct short values is promoted
+ * to an enumeration, and its values are replaced by small ids in an EnumDictionary. A column that grows too many
+ * distinct values is demoted again. It also detects level columns and caches the rank of each level for sorting.
+ * LogTable owns one and drives it.
+ *
+ * This is part of the table module.
+ */
 #pragma once
 
 #include "loglib/core/enum_dictionary.hpp"
@@ -22,47 +32,49 @@ class LogData;
 struct LogConfiguration;
 class LogConfigurationManager;
 
-/// Static-parse min rows before promoting `Type::Any + autoDetect` to enum.
-/// Smaller files are caught at end-of-parse by `EnumInference::Finalize`.
+/**
+ * Static-parse min rows before promoting Type::Any + autoDetect to enum.
+ * Smaller files are caught at end-of-parse by EnumInference::Finalize.
+ */
 inline constexpr size_t ENUM_PROMOTION_MIN_ROWS = 4096;
 
-/// Streaming promotion threshold; promote eagerly, dictionary/length caps guard.
+/** Streaming promotion threshold; promote eagerly, dictionary/length caps guard. */
 inline constexpr size_t STREAM_PROMOTION_MIN_ROWS = 2;
 
-/// Static-mode cardinality bail: distinct/observed ratio limit.
+/** Static-mode cardinality bail: distinct/observed ratio limit. */
 inline constexpr double ENUM_CARDINALITY_BAIL_RATIO = 0.05;
 
-/// Max fraction of over-cap-length or wrong-type observations before demotion.
+/** Max fraction of over-cap-length or wrong-type observations before demotion. */
 inline constexpr double ENUM_HEALTH_TOLERANCE_RATIO = 0.01;
 
-/// Minimum samples before consulting the tolerance ratio.
+/** Minimum samples before consulting the tolerance ratio. */
 inline constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 50;
 
-/// Dict-weighted tolerance for `MaybePromoteToLevel`.
+/** Dict-weighted tolerance for MaybePromoteToLevel. */
 inline constexpr size_t LEVEL_DICT_TOLERANCE_RATIO = 4;
 
 /**
  * @brief Per-column tracker for enum auto-detection.
  *
- * Holds up to `cap` distinct values (hard cap, no tolerance). Long
- * values accrue in `longValueCount`; numeric-tag counters route the
- * no-string bail to a numeric type rather than `string`.
- * `presenceCount` and `rowsObserved` are separate so sparse columns
+ * Holds up to cap distinct values (hard cap, no tolerance). Long
+ * values accrue in longValueCount; numeric-tag counters route the
+ * no-string bail to a numeric type rather than string.
+ * presenceCount and rowsObserved are separate so sparse columns
  * aren't bailed before their first observation.
  *
- * Owned by `EnumInference`. Per-row `Observe` is a concrete method
+ * Owned by EnumInference. Per-row Observe is a concrete method
  * (no virtual dispatch).
  */
 struct EnumCandidateTracker
 {
     // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-    /** @brief Distinct values seen so far (insertion order, capped at `cap`). */
+    /** @brief Distinct values seen so far (insertion order, capped at cap). */
     std::vector<std::string> values;
     /**
-     * @brief O(1) membership index over `values`. Transparent hashing
-     * avoids the per-row `std::string` materialisation a
-     * non-transparent `unordered_set<string>` would force on
-     * every `string_view` lookup.
+     * @brief O(1) membership index over values. Transparent hashing
+     * avoids the per-row std::string materialisation a
+     * non-transparent unordered_set<string> would force on
+     * every string_view lookup.
      */
     std::unordered_set<std::string, TransparentStringHash, TransparentStringEqual> seen;
     uint32_t valueMaxLen = 0;
@@ -87,8 +99,8 @@ struct EnumCandidateTracker
     }
 
     /**
-     * @brief Caller has already incremented `presenceCount`. Updates
-     * state and flips `killed` on tolerance breach or hard-cap
+     * @brief Caller has already incremented presenceCount. Updates
+     * state and flips killed on tolerance breach or hard-cap
      * overflow.
      */
     void Observe(std::string_view bytes);
@@ -112,13 +124,13 @@ struct EnumColumnHealth
 /**
  * @brief Pick a terminal type from observed numeric / bool tag counts.
  *
- *   - bools only         -> `Boolean`
- *   - integers / doubles -> `Integer` / `Floating` / `Number`
- *   - bool + numeric mix -> `Any` (no specialised widget)
- *   - nothing observed   -> `Any` (historical bail)
+ *   - bools only         -> Boolean
+ *   - integers / doubles -> Integer / Floating / Number
+ *   - bool + numeric mix -> Any (no specialised widget)
+ *   - nothing observed   -> Any (historical bail)
  *
  * An already-promoted enum that later sees bool slots demotes to
- * `Type::String` (via lumped `wrongTypeSlots`), not `Boolean`.
+ * Type::String (via lumped wrongTypeSlots), not Boolean.
  */
 [[nodiscard]] ColumnType RouteNoStringBail(
     size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
@@ -126,19 +138,19 @@ struct EnumColumnHealth
 
 /**
  * @brief Returns whether @p column participates in the enum encode / candidate
- * scan. `Enumeration` / `Level` always do; `Any` only when `autoDetect`.
+ * scan. Enumeration / Level always do; Any only when autoDetect.
  */
 [[nodiscard]] bool IsEnumPassEligible(const Column &column) noexcept;
 
 /**
- * @brief Type-inference and enum/level cache collaborator for `LogTable`.
+ * @brief Type-inference and enum/level cache collaborator for LogTable.
  *
  * Owns dictionaries, candidate trackers, health budgets, the level
- * rank cache, and pending level-bubble keys. Borrows `LogData` and
- * `LogConfigurationManager` for each mutating pass; does not own
+ * rank cache, and pending level-bubble keys. Borrows LogData and
+ * LogConfigurationManager for each mutating pass; does not own
  * row storage. Callers construct one instance per table.
  *
- * Hot paths (`Observe`, `EncodeColumnRange`) are concrete member
+ * Hot paths (Observe, EncodeColumnRange) are concrete member
  * functions. There is no per-row virtual dispatch and no extra
  * heap allocation beyond the dictionaries and trackers the table
  * already required.
@@ -152,9 +164,9 @@ public:
     EnumInference &operator=(const EnumInference &) = delete;
 
     /**
-     * @brief Move rebinds no source registries; `LogTable` calls
-     * `RewireSourceRegistries` after moving because each
-     * `LineSource` caches a pointer to `Dictionaries()`.
+     * @brief Move rebinds no source registries; LogTable calls
+     * RewireSourceRegistries after moving because each
+     * LineSource caches a pointer to Dictionaries().
      */
     EnumInference(EnumInference &&) noexcept = default;
     EnumInference &operator=(EnumInference &&) noexcept = default;
@@ -166,7 +178,7 @@ public:
 
     /**
      * @brief Clears inference caches and enables stream-mode thresholds
-     * (`STREAM_PROMOTION_MIN_ROWS`, no cardinality bail).
+     * (STREAM_PROMOTION_MIN_ROWS, no cardinality bail).
      */
     void BeginStreaming();
 
@@ -193,12 +205,12 @@ public:
     /**
      * @brief Pre-create dictionaries for configured enum / level columns
      * and seed the level rank cache. Idempotent. Clears the rank
-     * cache first so a freshly-loaded `levelMapping` is honoured.
+     * cache first so a freshly-loaded levelMapping is honoured.
      */
     void RefreshSnapshot(LogData &data, const LogConfigurationManager &configuration);
 
     /**
-     * @brief Enum pass over `[oldLineCount, Lines().size())`: encode active
+     * @brief Enum pass over [oldLineCount, Lines().size()): encode active
      * columns, demote overflowing ones, auto-promote quiescent
      * candidates. Extends @p firstBackfilled / @p lastBackfilled.
      */
@@ -214,7 +226,7 @@ public:
     /**
      * @brief End-of-parse/end-of-stream auto-detection sweep. Idempotent.
      * Returns true if at least one column was promoted to
-     * `Type::Enumeration`.
+     * Type::Enumeration.
      */
     bool Finalize(LogData &data, LogConfigurationManager &configuration);
 
@@ -230,38 +242,38 @@ public:
     );
 
     /**
-     * @brief Promote @p columnIndex to `Type::Enumeration`, encoding every
-     * existing row's slot as `DictRef`.
+     * @brief Promote @p columnIndex to Type::Enumeration, encoding every
+     * existing row's slot as DictRef.
      */
     void PromoteColumnToEnum(LogData &data, LogConfigurationManager &configuration, size_t columnIndex);
 
     /**
-     * @brief Demote @p columnIndex to `Type::String`, materialising every
-     * `DictRef` into `OwnedString` and dropping the dictionary.
+     * @brief Demote @p columnIndex to Type::String, materialising every
+     * DictRef into OwnedString and dropping the dictionary.
      *
      * @p recordForBatch records the demoted column in
-     * `LastBatchDemotedKeys`. The editor path passes `false`.
+     * LastBatchDemotedKeys. The editor path passes false.
      */
     void DemoteColumnFromEnum(
         LogData &data, LogConfigurationManager &configuration, size_t columnIndex, bool recordForBatch = true
     );
 
     /**
-     * @brief Promote @p columnIndex from `Type::Enumeration` to `Type::Level`
-     * when the key matches `IsLogLevelKey` and the dictionary
-     * satisfies `LEVEL_DICT_TOLERANCE_RATIO`. Queues a bubble
-     * `KeyId`; does not move columns.
+     * @brief Promote @p columnIndex from Type::Enumeration to Type::Level
+     * when the key matches IsLogLevelKey and the dictionary
+     * satisfies LEVEL_DICT_TOLERANCE_RATIO. Queues a bubble
+     * KeyId; does not move columns.
      */
     void MaybePromoteToLevel(LogData &data, LogConfigurationManager &configuration, size_t columnIndex);
 
     /**
-     * @brief Rebuild / extend the `EnumValueId -> LogLevel` cache. No-op
+     * @brief Rebuild / extend the EnumValueId -> LogLevel cache. No-op
      * for non-Level columns.
      */
     void RefreshLevelRankCache(const LogData &data, const LogConfiguration &configuration, size_t columnIndex);
 
     /**
-     * @brief Encode column slots in `[rowBegin, rowEnd)` as `DictRef`.
+     * @brief Encode column slots in [rowBegin, rowEnd) as DictRef.
      * Returns false on hard cap overflow; long/wrong-type slots
      * accrue in @p health.
      */
@@ -277,7 +289,7 @@ public:
     );
 
     /**
-     * @brief Rank cache for a `Type::Level` column, or `nullptr`.
+     * @brief Rank cache for a Type::Level column, or nullptr.
      */
     [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(
         const LogData &data, const LogConfiguration &configuration, size_t columnIndex

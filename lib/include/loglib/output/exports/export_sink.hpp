@@ -1,3 +1,12 @@
+/**
+ * @brief Destinations for exported bytes.
+ *
+ * An ExportSink receives the bytes of one export run. Write may buffer, and Finish must be called once on success. If a
+ * sink is destroyed without Finish, the export counts as aborted and no partial file is left behind. The header
+ * provides sinks for files and for streams such as standard output.
+ *
+ * This is part of the output module.
+ */
 #pragma once
 
 #include <cstddef>
@@ -13,11 +22,11 @@ namespace loglib::exports
 /**
  * @brief Byte sink for one export run.
  *
- * `Write` may buffer; `Finish` flushes and finalises. Call `Finish`
- * exactly once on the success path. Destruction without `Finish` is
+ * Write may buffer; Finish flushes and finalises. Call Finish
+ * exactly once on the success path. Destruction without Finish is
  * an abort and must not leave a partial destination file. Any method
- * may throw `std::runtime_error` on I/O failure. `StreamSink` throws
- * `BrokenPipe` when the peer closes the read end. The sink is
+ * may throw std::runtime_error on I/O failure. StreamSink throws
+ * BrokenPipe when the peer closes the read end. The sink is
  * unusable after a throw.
  */
 class ExportSink
@@ -43,34 +52,34 @@ public:
     /**
      * @brief Finalises the sink.
      *
-     * For `FileSink` this closes the temp file and renames it onto
-     * the destination. For `StreamSink` this flushes the borrowed
+     * For FileSink this closes the temp file and renames it onto
+     * the destination. For StreamSink this flushes the borrowed
      * stream and does not rename. Must be called exactly once on
-     * the success path. Throws `std::runtime_error` on failure.
-     * `StreamSink` throws `BrokenPipe` when the peer has gone away.
+     * the success path. Throws std::runtime_error on failure.
+     * StreamSink throws BrokenPipe when the peer has gone away.
      */
     virtual void Finish() = 0;
 };
 
 /**
- * @brief File-backed sink that writes `<destination>.tmp` and renames
- * atomically on `Finish`.
+ * @brief File-backed sink that writes <destination>.tmp and renames
+ * atomically on Finish.
  *
  * A cancelled or failed export never leaves a partial file at the
  * destination path. Matches the pattern used by
- * `LogConfigurationManager::Save`.
+ * LogConfigurationManager::Save.
  */
 class FileSink final : public ExportSink
 {
 public:
     /**
-     * @brief Opens `<destination>.tmp` for buffered writing.
+     * @brief Opens <destination>.tmp for buffered writing.
      *
-     * @param destination Final path after a successful `Finish`.
+     * @param destination Final path after a successful Finish.
      */
     explicit FileSink(std::filesystem::path destination);
 
-    /** @brief Unlinks the temp file if `Finish` did not succeed. */
+    /** @brief Unlinks the temp file if Finish did not succeed. */
     ~FileSink() override;
 
     FileSink(const FileSink &) = delete;
@@ -88,7 +97,7 @@ public:
      */
     void Finish() override;
 
-    /** @brief Returns whether `Finish` has completed successfully. */
+    /** @brief Returns whether Finish has completed successfully. */
     [[nodiscard]] bool Finished() const noexcept
     {
         return mFinished;
@@ -112,9 +121,9 @@ private:
 /**
  * @brief Thrown when a write hits a closed pipe or socket.
  *
- * Not a `std::runtime_error`, so a generic I/O handler does not
+ * Not a std::runtime_error, so a generic I/O handler does not
  * report it. Callers that treat a closed consumer as success
- * (`slp query ... | head`) catch this and exit quietly.
+ * (slp query ... | head) catch this and exit quietly.
  */
 class BrokenPipe : public std::exception
 {
@@ -126,10 +135,10 @@ public:
 };
 
 /**
- * @brief Sink that writes to a borrowed `FILE *`.
+ * @brief Sink that writes to a borrowed FILE *.
  *
- * `Write` uses the stream buffer. `Finish` flushes and does not
- * rename or replace a path. The destructor does not close `file`
+ * Write uses the stream buffer. Finish flushes and does not
+ * rename or replace a path. The destructor does not close file
  * and does not remove anything.
  */
 class StreamSink final : public ExportSink
@@ -155,13 +164,13 @@ public:
     /**
      * @brief Flushes the borrowed stream.
      *
-     * Idempotent. Does not close the stream. Throws `BrokenPipe`
-     * when the peer has closed the read end, and `std::runtime_error`
+     * Idempotent. Does not close the stream. Throws BrokenPipe
+     * when the peer has closed the read end, and std::runtime_error
      * on any other flush failure.
      */
     void Finish() override;
 
-    /** @brief Returns whether `Finish` has completed successfully. */
+    /** @brief Returns whether Finish has completed successfully. */
     [[nodiscard]] bool Finished() const noexcept
     {
         return mFinished;

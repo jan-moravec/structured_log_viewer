@@ -1,3 +1,12 @@
+/**
+ * @brief Compact 16-byte storage for one field of a log row.
+ *
+ * A CompactLogValue holds a tag and a payload. Strings are not copied into the row: the payload stores an offset and a
+ * length that the owning LineSource turns back into bytes. CompactLineFields is the small sorted array of key and value
+ * pairs that each LogLine owns. Keeping fields at 16 bytes is what lets a million rows fit in memory.
+ *
+ * This is part of the core module.
+ */
 #pragma once
 
 #include "loglib/core/enum_dictionary.hpp"
@@ -19,19 +28,19 @@ namespace loglib
 {
 
 /**
- * @brief Discriminator for `CompactLogValue`.
+ * @brief Discriminator for CompactLogValue.
  *
- * Mirrors `LogValue`'s alternatives but stores strings as
- * `(offset, length)` pairs.
+ * Mirrors LogValue's alternatives but stores strings as
+ * (offset, length) pairs.
  */
 enum class CompactTag : uint8_t
 {
     Monostate = 0,
-    /** @brief `payload` is an offset into `ResolveMmapBytes`; `aux` is the length. */
+    /** @brief payload is an offset into ResolveMmapBytes; aux is the length. */
     MmapSlice,
-    /** @brief `payload` is an offset into `ResolveOwnedBytes`; `aux` is the length. */
+    /** @brief payload is an offset into ResolveOwnedBytes; aux is the length. */
     OwnedString,
-    /** @brief `payload` is an `EnumValueId`; resolved via `LineSource::EnumDictionaries`. */
+    /** @brief payload is an EnumValueId; resolved via LineSource::EnumDictionaries. */
     DictRef,
     Int64,
     Uint64,
@@ -44,7 +53,7 @@ enum class CompactTag : uint8_t
  * @brief 16-byte tagged union for per-field storage.
  *
  * Layout is 8 bytes of payload, 4 bytes of aux, 1 byte of tag, and
- * padding. `LogValue` is materialised on demand.
+ * padding. LogValue is materialised on demand.
  */
 struct CompactLogValue
 {
@@ -66,38 +75,38 @@ struct CompactLogValue
     static CompactLogValue MakeTimestamp(TimeStamp value) noexcept;
 
     /**
-     * @brief Materialises this slot into a `LogValue`.
+     * @brief Materialises this slot into a LogValue.
      *
-     * For `DictRef`, pass `INVALID_KEY_ID` to materialise as
+     * For DictRef, pass INVALID_KEY_ID to materialise as
      * monostate. A null source is safe.
      *
      * @param source Line source used to resolve string and dictionary
-     *     payloads, or `nullptr`.
+     *     payloads, or nullptr.
      * @param lineId Line id within @p source.
-     * @param keyId Key used to resolve `DictRef` payloads.
+     * @param keyId Key used to resolve DictRef payloads.
      * @return The materialised value.
      */
     LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };
 
-/** @brief Required size of `CompactLogValue`; growing it inflates every per-line allocation. */
+/** @brief Required size of CompactLogValue; growing it inflates every per-line allocation. */
 inline constexpr size_t COMPACT_LOG_VALUE_EXPECTED_BYTES = 16;
 static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "CompactLogValue must stay 16 bytes");
 
 /**
- * @brief Adds @p delta to every `OwnedString` payload in @p values.
+ * @brief Adds @p delta to every OwnedString payload in @p values.
  * @param values Compact field pairs to rebase.
  * @param valueCount Number of pairs in @p values.
- * @param delta Offset applied to each `OwnedString` payload.
+ * @param delta Offset applied to each OwnedString payload.
  */
 void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept;
 
 /**
  * @brief Per-line compact field storage.
  *
- * Exact-fit heap array of `(KeyId, CompactLogValue)` pairs sorted by
- * `KeyId`. Pointer, size, and capacity occupy 16 bytes, avoiding
- * `std::vector`'s reserve overhead on narrow rows.
+ * Exact-fit heap array of (KeyId, CompactLogValue) pairs sorted by
+ * KeyId. Pointer, size, and capacity occupy 16 bytes, avoiding
+ * std::vector's reserve overhead on narrow rows.
  */
 class CompactLineFields
 {
@@ -190,7 +199,7 @@ public:
     /**
      * @brief Appends a pair at the end.
      *
-     * The caller must keep the array sorted by `KeyId`.
+     * The caller must keep the array sorted by KeyId.
      *
      * @param key Field key.
      * @param value Compact field value.
@@ -221,7 +230,7 @@ private:
     uint32_t mCapacity = 0;
 };
 
-/** @brief Required size of `CompactLineFields`. */
+/** @brief Required size of CompactLineFields. */
 inline constexpr size_t COMPACT_LINE_FIELDS_EXPECTED_BYTES = 16;
 static_assert(sizeof(CompactLineFields) == COMPACT_LINE_FIELDS_EXPECTED_BYTES, "CompactLineFields must stay 16 bytes");
 
