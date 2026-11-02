@@ -232,16 +232,8 @@ struct CsvWorkerState
 };
 
 /// Stage A token: a contiguous mmap range covering complete lines.
-struct CsvByteRange
-{
-    uint64_t batchIndex = 0;
-    const char *bytesBegin = nullptr;
-    const char *bytesEnd = nullptr;
-    const char *fileEnd = nullptr;
-};
-
 void DecodeCsvBatch(
-    const CsvByteRange &batch,
+    const internal::ByteRange &batch,
     internal::WorkerScratch<CsvWorkerState> &worker,
     KeyIndex &keys,
     FileLineSource &source,
@@ -587,39 +579,11 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
         return;
     }
 
-    const char *cursor = fileBegin;
-    uint64_t batchIndex = 0;
-
-    auto stageA = [cursor, fileEnd, batchSize, batchIndex](CsvByteRange &out) mutable -> bool {
-        if (cursor >= fileEnd)
-        {
-            return false;
-        }
-        const char *batchBegin = cursor;
-        const auto remaining = static_cast<size_t>(fileEnd - cursor);
-        const size_t advance = std::min(batchSize, remaining);
-        const char *target = cursor + advance;
-        if (advance < remaining)
-        {
-            const char *newline =
-                static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
-            cursor = (newline != nullptr) ? newline + 1 : fileEnd;
-        }
-        else
-        {
-            cursor = fileEnd;
-        }
-
-        out.batchIndex = batchIndex++;
-        out.bytesBegin = batchBegin;
-        out.bytesEnd = cursor;
-        out.fileEnd = fileEnd;
-        return true;
-    };
+    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 
     FileLineSource *sourcePtr = &source;
     auto stageB = [sourcePtr, &columnKeys, headerLineOffset](
-                      CsvByteRange token,
+                      internal::ByteRange token,
                       internal::WorkerScratch<CsvWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
@@ -628,7 +592,7 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
         DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset);
     };
 
-    internal::RunStaticParserPipeline<CsvByteRange, CsvWorkerState>(
+    internal::RunStaticParserPipeline<internal::ByteRange, CsvWorkerState>(
         source, sink, options, stageA, stageB, newKeyBaseline
     );
 }

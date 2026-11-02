@@ -482,16 +482,8 @@ struct JsonWorkerState
 };
 
 /// Stage A token: a contiguous byte range of the mmap covering complete lines.
-struct JsonByteRange
-{
-    uint64_t batchIndex = 0;
-    const char *bytesBegin = nullptr;
-    const char *bytesEnd = nullptr;
-    const char *fileEnd = nullptr;
-};
-
 void DecodeJsonBatch(
-    const JsonByteRange &batch,
+    const internal::ByteRange &batch,
     internal::WorkerScratch<JsonWorkerState> &worker,
     KeyIndex &keys,
     FileLineSource &source,
@@ -775,47 +767,18 @@ void JsonParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Pars
     const char *fileBegin = file.Data();
     const size_t fileSize = file.Size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
-    const char *cursor = fileBegin;
-    uint64_t batchIndex = 0;
-
-    auto stageA = [cursor, fileEnd, batchSize, batchIndex](JsonByteRange &out) mutable -> bool {
-        if (cursor >= fileEnd)
-        {
-            return false;
-        }
-        const char *batchBegin = cursor;
-        // Bounded advance: `cursor + batchSize` past one-past-end is UB.
-        const auto remaining = static_cast<size_t>(fileEnd - cursor);
-        const size_t advance = std::min(batchSize, remaining);
-        const char *target = cursor + advance;
-        if (advance < remaining)
-        {
-            const char *newline =
-                static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
-            cursor = (newline != nullptr) ? newline + 1 : fileEnd;
-        }
-        else
-        {
-            cursor = fileEnd;
-        }
-
-        out.batchIndex = batchIndex++;
-        out.bytesBegin = batchBegin;
-        out.bytesEnd = cursor;
-        out.fileEnd = fileEnd;
-        return true;
-    };
+    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 
     FileLineSource *sourcePtr = &source;
     auto stageB = [sourcePtr](
-                      JsonByteRange token,
+                      internal::ByteRange token,
                       internal::WorkerScratch<JsonWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
                   ) { DecodeJsonBatch(token, worker, keys, *sourcePtr, timeColumns, parsed); };
 
-    internal::RunStaticParserPipeline<JsonByteRange, JsonWorkerState>(source, sink, options, stageA, stageB);
+    internal::RunStaticParserPipeline<internal::ByteRange, JsonWorkerState>(source, sink, options, stageA, stageB);
 }
 
 } // namespace loglib

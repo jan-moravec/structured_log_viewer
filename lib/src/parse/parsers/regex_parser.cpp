@@ -618,17 +618,6 @@ void EnsureWorkerMatchData(RegexWorkerState &worker, const CompiledPattern &comp
     }
 }
 
-/// Stage A token: a contiguous mmap range covering complete
-/// lines. Identical to `CsvByteRange`; kept separate so a future
-/// regex-specific per-token field stays decoupled from CSV.
-struct RegexByteRange
-{
-    uint64_t batchIndex = 0;
-    const char *bytesBegin = nullptr;
-    const char *bytesEnd = nullptr;
-    const char *fileEnd = nullptr;
-};
-
 bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line);
 
 std::string_view StripCr(std::string_view s) noexcept
@@ -652,7 +641,7 @@ std::string_view StripBom(std::string_view sv) noexcept
 }
 
 void DecodeRegexBatch(
-    const RegexByteRange &batch,
+    const internal::ByteRange &batch,
     internal::WorkerScratch<RegexWorkerState> &worker,
     KeyIndex &keys,
     FileLineSource &source,
@@ -1187,37 +1176,11 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
 
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
-    const char *cursor = fileBegin;
-    uint64_t batchIndex = 0;
-    auto stageA = [cursor, fileEnd, batchSize, batchIndex](RegexByteRange &out) mutable -> bool {
-        if (cursor == nullptr || cursor >= fileEnd)
-        {
-            return false;
-        }
-        const char *batchBegin = cursor;
-        const auto remaining = static_cast<size_t>(fileEnd - cursor);
-        const size_t advance = std::min(batchSize, remaining);
-        const char *target = cursor + advance;
-        if (advance < remaining)
-        {
-            const char *newline =
-                static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
-            cursor = (newline != nullptr) ? newline + 1 : fileEnd;
-        }
-        else
-        {
-            cursor = fileEnd;
-        }
-        out.batchIndex = batchIndex++;
-        out.bytesBegin = batchBegin;
-        out.bytesEnd = cursor;
-        out.fileEnd = fileEnd;
-        return true;
-    };
+    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 
     FileLineSource *sourcePtr = &source;
     auto stageB = [sourcePtr, &compiled, &columnKeys, staticContinuationMode, anchorPtr](
-                      RegexByteRange token,
+                      internal::ByteRange token,
                       internal::WorkerScratch<RegexWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
@@ -1237,7 +1200,7 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
         );
     };
 
-    internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(
+    internal::RunStaticParserPipeline<internal::ByteRange, RegexWorkerState>(
         source, sink, options, stageA, stageB, newKeyBaseline
     );
 }

@@ -372,16 +372,8 @@ struct LogfmtWorkerState
 };
 
 /// Stage A token: a contiguous byte range of the mmap covering complete lines.
-struct LogfmtByteRange
-{
-    uint64_t batchIndex = 0;
-    const char *bytesBegin = nullptr;
-    const char *bytesEnd = nullptr;
-    const char *fileEnd = nullptr;
-};
-
 void DecodeLogfmtBatch(
-    const LogfmtByteRange &batch,
+    const internal::ByteRange &batch,
     internal::WorkerScratch<LogfmtWorkerState> &worker,
     KeyIndex &keys,
     FileLineSource &source,
@@ -724,47 +716,19 @@ void LogfmtParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Pa
     const char *fileBegin = file.Data();
     const size_t fileSize = file.Size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
-    const char *cursor = fileBegin;
-    uint64_t batchIndex = 0;
-
-    auto stageA = [cursor, fileEnd, batchSize, batchIndex](LogfmtByteRange &out) mutable -> bool {
-        if (cursor >= fileEnd)
-        {
-            return false;
-        }
-        const char *batchBegin = cursor;
-        const auto remaining = static_cast<size_t>(fileEnd - cursor);
-        const size_t advance = std::min(batchSize, remaining);
-        const char *target = cursor + advance;
-        if (advance < remaining)
-        {
-            const char *newline =
-                static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
-            cursor = (newline != nullptr) ? newline + 1 : fileEnd;
-        }
-        else
-        {
-            cursor = fileEnd;
-        }
-
-        out.batchIndex = batchIndex++;
-        out.bytesBegin = batchBegin;
-        out.bytesEnd = cursor;
-        out.fileEnd = fileEnd;
-        return true;
-    };
+    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 
     FileLineSource *sourcePtr = &source;
     const bool multiline = options.multilineLogfmt;
     auto stageB = [sourcePtr, multiline](
-                      LogfmtByteRange token,
+                      internal::ByteRange token,
                       internal::WorkerScratch<LogfmtWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
                   ) { DecodeLogfmtBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, multiline); };
 
-    internal::RunStaticParserPipeline<LogfmtByteRange, LogfmtWorkerState>(source, sink, options, stageA, stageB);
+    internal::RunStaticParserPipeline<internal::ByteRange, LogfmtWorkerState>(source, sink, options, stageA, stageB);
 }
 
 } // namespace loglib

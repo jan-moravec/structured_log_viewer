@@ -34,6 +34,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -121,6 +122,48 @@ struct ResolvedPipelineSettings
     unsigned int effectiveThreads = 1;
     size_t ntokens = 0;
 };
+
+/// One line-aligned slice of the mapped file handed from Stage A to Stage B.
+struct ByteRange
+{
+    uint64_t batchIndex = 0;
+    const char *bytesBegin = nullptr;
+    const char *bytesEnd = nullptr;
+    const char *fileEnd = nullptr;
+};
+
+/// Returns the Stage A source for a mapped file: each call emits the next slice of about @p batchSize bytes, extended
+/// to the end of its last line, until @p fileEnd. A null range yields no slices.
+inline auto MakeLineAlignedBatcher(const char *fileBegin, const char *fileEnd, size_t batchSize)
+{
+    return [cursor = fileBegin, fileEnd, batchSize, batchIndex = uint64_t{0}](ByteRange &out) mutable -> bool {
+        if (cursor == nullptr || cursor >= fileEnd)
+        {
+            return false;
+        }
+        const char *batchBegin = cursor;
+        const auto remaining = static_cast<size_t>(fileEnd - cursor);
+        // Bounded advance: cursor + batchSize past one-past-end is undefined.
+        const size_t advance = std::min(batchSize, remaining);
+        const char *target = cursor + advance;
+        if (advance < remaining)
+        {
+            const char *newline =
+                static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
+            cursor = (newline != nullptr) ? newline + 1 : fileEnd;
+        }
+        else
+        {
+            cursor = fileEnd;
+        }
+
+        out.batchIndex = batchIndex++;
+        out.bytesBegin = batchBegin;
+        out.bytesEnd = cursor;
+        out.fileEnd = fileEnd;
+        return true;
+    };
+}
 
 ResolvedPipelineSettings ResolvePipelineSettings(const ParserOptions &options);
 
