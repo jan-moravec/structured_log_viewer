@@ -354,7 +354,253 @@ inline void ObservePoll(
     }
 }
 
-// --- gzip / zlib -------------------------------------------------------
+// --- gzip / bzip2: concatenated-member streams -------------------------
+
+/// Decodes a stream made of one or more concatenated members. The codec adapter supplies the library calls:
+/// SetInput, SetOutput, AvailIn, AvailOut, Step (returns true when a member ended, throws on error) and
+/// ResetForNextMember. A stream that ends without a clean member end is truncated.
+template <typename Codec>
+void DecodeConcatenatedMembers(
+    Codec &codec,
+    std::ifstream &in,
+    FileHandle &out,
+    const std::filesystem::path &sourcePath,
+    const std::filesystem::path &tempPath,
+    std::size_t totalBytesIn,
+    const DecompressingByteSource::ProgressCallback &progress,
+    const StopToken &stopToken,
+    std::size_t &decompressedSize,
+    std::size_t maxDecompressedBytes
+)
+{
+    std::array<char, CHUNK_SIZE> inBuf{};
+    std::array<char, CHUNK_SIZE> outBuf{};
+
+    std::size_t consumed = 0;
+    // Preserve end-of-member state across chunk boundaries.
+    bool memberEnded = false;
+    for (;;)
+    {
+        in.read(inBuf.data(), static_cast<std::streamsize>(inBuf.size()));
+        const auto gotSigned = in.gcount();
+        if (gotSigned < 0)
+        {
+            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+        }
+        const bool eof = in.eof() || gotSigned == 0;
+        codec.SetInput(inBuf.data(), static_cast<std::size_t>(gotSigned));
+        consumed += static_cast<std::size_t>(gotSigned);
+        ObservePoll(consumed, totalBytesIn, progress, stopToken);
+
+        // Pure-EOF read has nothing to decode; the check after the loop catches truncation.
+        if (gotSigned == 0)
+        {
+            break;
+        }
+
+        // Drain all input and output, polling between decoder calls.
+        while (true)
+        {
+            if (memberEnded)
+            {
+                if (codec.AvailIn() == 0)
+                {
+                    // Member ended at the chunk edge; wait for the next read to see if another follows.
+                    break;
+                }
+                codec.ResetForNextMember(sourcePath, consumed);
+            }
+            ObservePoll(consumed, totalBytesIn, progress, stopToken);
+            codec.SetOutput(outBuf.data(), outBuf.size());
+            memberEnded = codec.Step(sourcePath, consumed);
+            const std::size_t produced = outBuf.size() - codec.AvailOut();
+            WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
+            if (codec.AvailOut() != 0 && codec.AvailIn() == 0)
+            {
+                break;
+            }
+        }
+
+        if (eof)
+        {
+            break;
+        }
+    }
+
+    // Real EOF without a clean member end == truncation.
+    if (!memberEnded)
+    {
+        throw std::runtime_error(
+            fmt::format(
+                "Unexpected EOF in {} stream '{}' at input byte {}",
+                Codec::NAME,
+                internal::PathToUtf8(sourcePath),
+                consumed
+            )
+        );
+    }
+}
+
+class ZlibCodec
+{
+public:
+    static constexpr std::string_view NAME = "gzip";
+
+    explicit ZlibCodec(const std::filesystem::path &sourcePath)
+    {
+        // windowBits = 15 + 32: accept both zlib (RFC 1950) and gzip (RFC 1952), auto-detect across
+        // concatenated members.
+        if (::inflateInit2(&mStream, 15 + 32) != Z_OK)
+        {
+            throw std::runtime_error(
+                fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath))
+            );
+        }
+    }
+    ~ZlibCodec() noexcept
+    {
+        (void)::inflateEnd(&mStream);
+    }
+    ZlibCodec(const ZlibCodec &) = delete;
+    ZlibCodec &operator=(const ZlibCodec &) = delete;
+    ZlibCodec(ZlibCodec &&) = delete;
+    ZlibCodec &operator=(ZlibCodec &&) = delete;
+
+    void SetInput(char *data, std::size_t size) noexcept
+    {
+        mStream.next_in = reinterpret_cast<Bytef *>(data);
+        mStream.avail_in = static_cast<uInt>(size);
+    }
+    void SetOutput(char *data, std::size_t size) noexcept
+    {
+        mStream.next_out = reinterpret_cast<Bytef *>(data);
+        mStream.avail_out = static_cast<uInt>(size);
+    }
+    [[nodiscard]] std::size_t AvailIn() const noexcept
+    {
+        return mStream.avail_in;
+    }
+    [[nodiscard]] std::size_t AvailOut() const noexcept
+    {
+        return mStream.avail_out;
+    }
+
+    void ResetForNextMember(const std::filesystem::path &sourcePath, std::size_t consumed)
+    {
+        if (::inflateReset(&mStream) != Z_OK)
+        {
+            throw std::runtime_error(
+                fmt::format(
+                    "zlib inflateReset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
+                )
+            );
+        }
+    }
+
+    /// Z_NO_FLUSH handles concatenated members uniformly; Z_FINISH + reset-on-Z_STREAM_END breaks when member
+    /// boundaries land mid-buffer.
+    bool Step(const std::filesystem::path &sourcePath, std::size_t consumed)
+    {
+        const int ret = ::inflate(&mStream, Z_NO_FLUSH);
+        switch (ret)
+        {
+        case Z_NEED_DICT:
+        case Z_DATA_ERROR:
+        case Z_MEM_ERROR:
+        case Z_STREAM_ERROR:
+            throw std::runtime_error(
+                fmt::format(
+                    "zlib inflate error on '{}' at input byte {} (code {})",
+                    internal::PathToUtf8(sourcePath),
+                    consumed,
+                    ret
+                )
+            );
+        default:
+            break;
+        }
+        return ret == Z_STREAM_END;
+    }
+
+private:
+    z_stream mStream{};
+};
+
+class Bzip2Codec
+{
+public:
+    static constexpr std::string_view NAME = "bzip2";
+
+    explicit Bzip2Codec(const std::filesystem::path &sourcePath)
+    {
+        if (::BZ2_bzDecompressInit(&mStream, 0, 0) != BZ_OK)
+        {
+            throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
+        }
+    }
+    ~Bzip2Codec() noexcept
+    {
+        (void)::BZ2_bzDecompressEnd(&mStream);
+    }
+    Bzip2Codec(const Bzip2Codec &) = delete;
+    Bzip2Codec &operator=(const Bzip2Codec &) = delete;
+    Bzip2Codec(Bzip2Codec &&) = delete;
+    Bzip2Codec &operator=(Bzip2Codec &&) = delete;
+
+    void SetInput(char *data, std::size_t size) noexcept
+    {
+        mStream.next_in = data;
+        mStream.avail_in = static_cast<unsigned>(size);
+    }
+    void SetOutput(char *data, std::size_t size) noexcept
+    {
+        mStream.next_out = data;
+        mStream.avail_out = static_cast<unsigned>(size);
+    }
+    [[nodiscard]] std::size_t AvailIn() const noexcept
+    {
+        return mStream.avail_in;
+    }
+    [[nodiscard]] std::size_t AvailOut() const noexcept
+    {
+        return mStream.avail_out;
+    }
+
+    /// Reinitializes the decoder for the next concatenated member and keeps the input that is still pending.
+    void ResetForNextMember(const std::filesystem::path &sourcePath, std::size_t consumed)
+    {
+        char *pendingIn = mStream.next_in;
+        const unsigned pendingAvail = mStream.avail_in;
+        if (::BZ2_bzDecompressEnd(&mStream) != BZ_OK || ::BZ2_bzDecompressInit(&mStream, 0, 0) != BZ_OK)
+        {
+            throw std::runtime_error(
+                fmt::format("bzip2 reset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed)
+            );
+        }
+        mStream.next_in = pendingIn;
+        mStream.avail_in = pendingAvail;
+    }
+
+    bool Step(const std::filesystem::path &sourcePath, std::size_t consumed)
+    {
+        const int ret = ::BZ2_bzDecompress(&mStream);
+        if (ret != BZ_OK && ret != BZ_STREAM_END)
+        {
+            throw std::runtime_error(
+                fmt::format(
+                    "bzip2 decompress error on '{}' at input byte {} (code {})",
+                    internal::PathToUtf8(sourcePath),
+                    consumed,
+                    ret
+                )
+            );
+        }
+        return ret == BZ_STREAM_END;
+    }
+
+private:
+    bz_stream mStream{};
+};
 
 void DecodeGzip(
     std::ifstream &in,
@@ -368,134 +614,11 @@ void DecodeGzip(
     std::size_t maxDecompressedBytes
 )
 {
-    z_stream strm{};
-    // windowBits = 15 + 32: accept both zlib (RFC 1950) and gzip
-    // (RFC 1952), auto-detect across concatenated members.
-    if (::inflateInit2(&strm, 15 + 32) != Z_OK)
-    {
-        throw std::runtime_error(fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath)));
-    }
-    class ZlibGuard
-    {
-    public:
-        explicit ZlibGuard(z_stream *s) noexcept
-            : mStream(s)
-        {
-        }
-        ~ZlibGuard() noexcept
-        {
-            (void)::inflateEnd(mStream);
-        }
-        ZlibGuard(const ZlibGuard &) = delete;
-        ZlibGuard &operator=(const ZlibGuard &) = delete;
-        ZlibGuard(ZlibGuard &&) = delete;
-        ZlibGuard &operator=(ZlibGuard &&) = delete;
-
-    private:
-        z_stream *mStream;
-    };
-    const ZlibGuard guard(&strm);
-
-    std::array<Bytef, CHUNK_SIZE> inBuf{};
-    std::array<Bytef, CHUNK_SIZE> outBuf{};
-
-    std::size_t consumed = 0;
-    // Preserve end-of-member state across chunk boundaries.
-    int ret = Z_OK;
-    for (;;)
-    {
-        in.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
-        const auto gotSigned = in.gcount();
-        if (gotSigned < 0)
-        {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
-        }
-        const bool eof = in.eof() || gotSigned == 0;
-        strm.next_in = inBuf.data();
-        strm.avail_in = static_cast<uInt>(gotSigned);
-        consumed += static_cast<std::size_t>(gotSigned);
-        ObservePoll(consumed, totalBytesIn, progress, stopToken);
-
-        // Pure-EOF read has nothing to decode; the post-loop check
-        // catches truncation.
-        if (gotSigned == 0)
-        {
-            break;
-        }
-
-        // Drain all input/output and poll between inflate calls.
-        while (true)
-        {
-            if (ret == Z_STREAM_END)
-            {
-                if (strm.avail_in == 0)
-                {
-                    // Member ended at the chunk edge; wait for the
-                    // next read to see if another follows.
-                    break;
-                }
-                // Reset before the next concatenated member.
-                if (::inflateReset(&strm) != Z_OK)
-                {
-                    throw std::runtime_error(
-                        fmt::format(
-                            "zlib inflateReset failed on '{}' at input byte {}",
-                            internal::PathToUtf8(sourcePath),
-                            consumed
-                        )
-                    );
-                }
-            }
-            ObservePoll(consumed, totalBytesIn, progress, stopToken);
-            strm.next_out = outBuf.data();
-            strm.avail_out = static_cast<uInt>(outBuf.size());
-            // Z_NO_FLUSH handles concatenated members uniformly;
-            // Z_FINISH + reset-on-Z_STREAM_END breaks when member
-            // boundaries land mid-buffer.
-            ret = ::inflate(&strm, Z_NO_FLUSH);
-            switch (ret)
-            {
-            case Z_NEED_DICT:
-            case Z_DATA_ERROR:
-            case Z_MEM_ERROR:
-            case Z_STREAM_ERROR:
-                throw std::runtime_error(
-                    fmt::format(
-                        "zlib inflate error on '{}' at input byte {} (code {})",
-                        internal::PathToUtf8(sourcePath),
-                        consumed,
-                        ret
-                    )
-                );
-            default:
-                break;
-            }
-            const std::size_t produced = outBuf.size() - strm.avail_out;
-            WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
-            if (strm.avail_out != 0 && strm.avail_in == 0)
-            {
-                break;
-            }
-        }
-
-        if (eof)
-        {
-            break;
-        }
-    }
-
-    // Real EOF without a clean member end == truncation.
-    if (ret != Z_STREAM_END)
-    {
-        throw std::runtime_error(
-            fmt::format(
-                "Unexpected EOF in gzip stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
-            )
-        );
-    }
+    ZlibCodec codec(sourcePath);
+    DecodeConcatenatedMembers(
+        codec, in, out, sourcePath, tempPath, totalBytesIn, progress, stopToken, decompressedSize, maxDecompressedBytes
+    );
 }
-
-// --- bzip2 -------------------------------------------------------------
 
 void DecodeBzip2(
     std::ifstream &in,
@@ -509,113 +632,10 @@ void DecodeBzip2(
     std::size_t maxDecompressedBytes
 )
 {
-    bz_stream strm{};
-    if (::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
-    {
-        throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
-    }
-    class BzGuard
-    {
-    public:
-        explicit BzGuard(bz_stream *s) noexcept
-            : mStream(s)
-        {
-        }
-        ~BzGuard() noexcept
-        {
-            (void)::BZ2_bzDecompressEnd(mStream);
-        }
-        BzGuard(const BzGuard &) = delete;
-        BzGuard &operator=(const BzGuard &) = delete;
-        BzGuard(BzGuard &&) = delete;
-        BzGuard &operator=(BzGuard &&) = delete;
-
-    private:
-        bz_stream *mStream;
-    };
-    const BzGuard guard(&strm);
-
-    std::array<char, CHUNK_SIZE> inBuf{};
-    std::array<char, CHUNK_SIZE> outBuf{};
-
-    std::size_t consumed = 0;
-    // Preserve end-of-member state across chunk boundaries.
-    int ret = BZ_OK;
-    for (;;)
-    {
-        in.read(inBuf.data(), static_cast<std::streamsize>(inBuf.size()));
-        const auto gotSigned = in.gcount();
-        if (gotSigned < 0)
-        {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
-        }
-        const bool eof = in.eof() || gotSigned == 0;
-        strm.next_in = inBuf.data();
-        strm.avail_in = static_cast<unsigned>(gotSigned);
-        consumed += static_cast<std::size_t>(gotSigned);
-        ObservePoll(consumed, totalBytesIn, progress, stopToken);
-
-        if (gotSigned == 0)
-        {
-            break;
-        }
-
-        // Drain all input/output and poll between decoder calls.
-        while (true)
-        {
-            if (ret == BZ_STREAM_END)
-            {
-                if (strm.avail_in == 0)
-                {
-                    break;
-                }
-                // Reinitialize for the next concatenated member.
-                if (::BZ2_bzDecompressEnd(&strm) != BZ_OK || ::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
-                {
-                    throw std::runtime_error(
-                        fmt::format(
-                            "bzip2 reset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
-                        )
-                    );
-                }
-            }
-            ObservePoll(consumed, totalBytesIn, progress, stopToken);
-            strm.next_out = outBuf.data();
-            strm.avail_out = static_cast<unsigned>(outBuf.size());
-            ret = ::BZ2_bzDecompress(&strm);
-            if (ret != BZ_OK && ret != BZ_STREAM_END)
-            {
-                throw std::runtime_error(
-                    fmt::format(
-                        "bzip2 decompress error on '{}' at input byte {} (code {})",
-                        internal::PathToUtf8(sourcePath),
-                        consumed,
-                        ret
-                    )
-                );
-            }
-            const std::size_t produced = outBuf.size() - strm.avail_out;
-            WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
-            if (strm.avail_out != 0 && strm.avail_in == 0)
-            {
-                break;
-            }
-        }
-
-        if (eof)
-        {
-            break;
-        }
-    }
-
-    if (ret != BZ_STREAM_END)
-    {
-        throw std::runtime_error(
-            fmt::format(
-                "Unexpected EOF in bzip2 stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
-            )
-        );
-    }
+    Bzip2Codec codec(sourcePath);
+    DecodeConcatenatedMembers(
+        codec, in, out, sourcePath, tempPath, totalBytesIn, progress, stopToken, decompressedSize, maxDecompressedBytes
+    );
 }
 
 // --- xz / lzma ---------------------------------------------------------
