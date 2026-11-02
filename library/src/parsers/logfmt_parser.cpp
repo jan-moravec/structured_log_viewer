@@ -10,7 +10,6 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_parser.hpp"
-#include "loglib/log_processing.hpp"
 #include "loglib/stream_line_source.hpp"
 
 #include <fmt/format.h>

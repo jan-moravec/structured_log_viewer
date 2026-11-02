@@ -157,7 +157,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
     const size_t initialColumnCount = manager.Configuration().columns.size();
 
     const LogData emptyLogData;
-    manager.Update(emptyLogData);
+    manager.Update(emptyLogData.SortedKeys());
 
     CHECK(manager.Configuration().columns.size() == initialColumnCount);
     CHECK(manager.Configuration().columns[0].header == defaultColumn.header);
@@ -225,7 +225,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 3);
 
@@ -286,7 +286,7 @@ TEST_CASE(
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
@@ -378,7 +378,7 @@ TEST_CASE(
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
@@ -469,7 +469,7 @@ TEST_CASE(
         const LogData logData(std::move(source), std::move(lines), std::move(keys));
 
         LogConfigurationManager manager;
-        manager.Update(logData);
+        manager.Update(logData.SortedKeys());
 
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
@@ -1327,7 +1327,7 @@ TEST_CASE(
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "timestamp");

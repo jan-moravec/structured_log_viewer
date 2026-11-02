@@ -18,6 +18,16 @@ namespace loglib
 class LineSource;
 
 /**
+ * @brief Inclusive span of a multi-line record. Both members are zero-based
+ * absolute physical-line indices.
+ */
+struct MultiLineRecordSpan
+{
+    size_t headerLineId = 0;
+    size_t lastLineId = 0;
+};
+
+/**
  * @brief One log record: a `(KeyId, CompactLogValue)` vector sorted by KeyId.
  * Strings are stored as `(offset, length)` resolved via the owning
  * `LineSource`. `(LineSource*, lineId)` is the row's session identity.

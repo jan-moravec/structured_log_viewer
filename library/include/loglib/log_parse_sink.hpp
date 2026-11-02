@@ -12,16 +12,6 @@ namespace loglib
 {
 
 /**
- * @brief Inclusive span of a multi-line record. Both members are zero-based
- * absolute physical-line indices.
- */
-struct MultiLineRecordSpan
-{
-    size_t headerLineId = 0;
-    size_t lastLineId = 0;
-};
-
-/**
  * @brief One unit of work handed from the parser to a `LogParseSink`. A
  * "rows-empty" batch with non-empty `errors`/`newKeys` is valid; the parser
  * always emits a final batch before `OnFinished`.

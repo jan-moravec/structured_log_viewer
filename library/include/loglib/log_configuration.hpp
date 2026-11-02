@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -20,7 +21,6 @@ namespace loglib
 {
 
 // Forward-declared so consumers don't pull in the full `log_data.hpp` chain.
-class LogData;
 
 /**
  * @brief Serializable configuration root.
@@ -131,8 +131,8 @@ public:
      */
     static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
 
-    /** @brief Rebuilds the configuration from @p logData. Not safe mid-stream. */
-    void Update(const LogData &logData);
+    /** @brief Rebuilds the configuration from @p sortedKeys, the keys of the loaded data. Not safe mid-stream. */
+    void Update(std::span<const std::string> sortedKeys);
 
     /**
      * @brief Wipe to a default-constructed `LogConfiguration`. Invalidates

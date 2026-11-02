@@ -3,8 +3,8 @@
 #include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/column_key_id_cache.hpp"
-#include "loglib/log_processing.hpp"
 #include "loglib/time_zone_context.hpp"
+#include "loglib/timestamp_backfill.hpp"
 
 #include <fmt/format.h>
 
@@ -71,7 +71,7 @@ void LogTable::Update(LogData &&data)
 {
     mEnum.ClearLastBatchDemotedKeys();
     const size_t oldLineCount = mData.Lines().size();
-    mConfiguration.Update(data);
+    mConfiguration.Update(data.SortedKeys());
     if (!data.TimestampsAlreadyParsed())
     {
         ParseTimestamps(data, mConfiguration.Configuration());

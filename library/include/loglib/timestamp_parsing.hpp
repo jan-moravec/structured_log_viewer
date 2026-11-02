@@ -1,15 +1,10 @@
 #pragma once
 
-#include "key_index.hpp"
-#include "log_configuration.hpp"
-#include "log_data.hpp"
-#include "log_line.hpp"
-#include "time_zone_context.hpp"
+#include "loglib/key_index.hpp"
+#include "loglib/time_zone_context.hpp"
 
 #include <chrono>
 #include <cstdint>
-#include <optional>
-#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -117,67 +112,5 @@ bool TryParseTimestamp(
     TimestampParseScratch &scratch,
     TimeStamp &out
 );
-
-/** @brief Promotes timestamp columns in @p logData; returns per-line failure messages. */
-std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
-
-/**
- * @brief Promotes one configured `Type::Time` column over @p lines in place.
- * Caller must ensure `column.type == Type::Time`. Pass a sub-span to
- * restrict the back-fill to a slice of a larger vector (e.g. only the rows
- * just appended in a streaming batch). Returns per-line failure messages.
- */
-std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines);
-
-/**
- * @brief Tag selecting the `void` overload that skips per-line "Failed to parse"
- * formatting on the streaming hot path.
- */
-enum class BackfillErrors : uint8_t
-{
-    Discard
-};
-
-/** @brief `void` overload of `BackfillTimestampColumn` that drops error messages. */
-void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors);
-
-int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp, const TimeZoneContext &timeZone);
-int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);
-
-int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone);
-int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
-
-TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone);
-TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
-
-/**
- * @brief Convert @p localMicroseconds -- interpreted as a wall-clock
- * instant in @p timeZone -- to UTC epoch microseconds.
- *
- * DST edge cases resolve via earliest-instant choice:
- *   * Ambiguous "fall-back" hour: the earlier candidate.
- *   * Non-existent "spring-forward" gap: the transition boundary
- *     (the first real instant after the gap).
- * Non-DST exceptions (far-future dates past the tzdata table,
- * corrupt zone entries) yield the naive value so the Goto Timestamp
- * slot stays exception-safe. UTC contexts pass the value through.
- */
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone);
-
-/**
- * @brief Convenience overload using `ProcessDefaultTimeZone()`.
- *
- * That default is process-wide convenience, not a prerequisite for
- * the explicit-context overload.
- */
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
-
-/** @brief Formats UTC microseconds since epoch as a `%F %T`-style local-time string. */
-std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone);
-std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
-
-/** @brief Formats a `TimeStamp` as a `%F %T`-style local-time string. */
-std::string TimeStampToDateTimeString(TimeStamp timeStamp, const TimeZoneContext &timeZone);
-std::string TimeStampToDateTimeString(TimeStamp timeStamp);
 
 } // namespace loglib

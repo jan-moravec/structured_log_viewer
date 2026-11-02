@@ -1,6 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/log_processing.hpp>
+#include <loglib/time_zone_context.hpp>
 #include <loglib/user_timestamp.hpp>
 
 #include <catch2/catch_all.hpp>

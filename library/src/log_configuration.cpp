@@ -324,10 +324,10 @@ void LogConfigurationManager::SetConfiguration(LogConfiguration configuration)
     mCacheStale = true;
 }
 
-void LogConfigurationManager::Update(const LogData &logData)
+void LogConfigurationManager::Update(std::span<const std::string> sortedKeys)
 {
     EnsureKeyCacheBuilt();
-    for (const std::string &key : logData.SortedKeys())
+    for (const std::string &key : sortedKeys)
     {
         if (!IsKeyInAnyColumnCached(key))
         {

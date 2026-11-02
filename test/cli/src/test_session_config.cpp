@@ -65,7 +65,7 @@ constexpr std::string_view FOUR_ROWS =
     const loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     return manager.Configuration();
 }
 
@@ -282,7 +282,7 @@ TEST_CASE("slp query --config precedence over a bundle and under flags", "[cli][
         loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
         REQUIRE(parsed.errors.empty());
         loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data);
+        manager.Update(parsed.data.SortedKeys());
         const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
         loglib::WriteSessionBundle(table, bundled, bundlePath);
     }
@@ -523,7 +523,7 @@ TEST_CASE("slp stats honors a configuration expression", "[cli][session][e2e]")
     {
         loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
         loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data);
+        manager.Update(parsed.data.SortedKeys());
         const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
         loglib::WriteSessionBundle(table, configuration, bundlePath);
     }

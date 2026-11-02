@@ -42,7 +42,6 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
@@ -301,7 +300,7 @@ QString WriteBundleFixture(
     const TempJsonFile source(lines);
     loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(source.Path()));
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     loglib::LogTable table(std::move(parsed.data), std::move(manager));
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configure(configuration);

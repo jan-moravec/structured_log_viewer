@@ -4,7 +4,7 @@
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/log_level.hpp>
-#include <loglib/log_processing.hpp>
+#include <loglib/time_zone_context.hpp>
 
 #include <QApplication>
 #include <QDoubleValidator>

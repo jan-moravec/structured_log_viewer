@@ -27,7 +27,6 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_filter.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>

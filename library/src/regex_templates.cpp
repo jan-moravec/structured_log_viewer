@@ -1,7 +1,9 @@
 #include "loglib/regex_templates.hpp"
 
+#include "loglib/ascii_case.hpp"
 #include "loglib/internal/embedded_regex_templates.hpp"
 #include "loglib/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/internal/path_encoding.hpp"
 #include "loglib/internal/regex_template_glaze_meta.hpp"
 #include "loglib/internal/regex_template_probe_list.hpp"
 
@@ -9,7 +11,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
+#include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -17,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -166,6 +173,33 @@ std::shared_ptr<const MergedRegistry> CurrentRegistry()
         return snap;
     }
     return RebuildLocked();
+}
+
+[[nodiscard]] bool IsJsonFile(const std::filesystem::path &path)
+{
+    return EqualsIgnoreCaseAscii(internal::PathToUtf8(path.extension()), ".json");
+}
+
+constexpr size_t FILE_READ_CHUNK_BYTES = 4096;
+
+[[nodiscard]] std::string ReadFile(std::FILE *file, bool &failed)
+{
+    std::string data;
+    char buffer[FILE_READ_CHUNK_BYTES];
+    while (true)
+    {
+        const size_t read = std::fread(buffer, 1, sizeof(buffer), file);
+        if (read > 0)
+        {
+            data.append(buffer, read);
+        }
+        if (read < sizeof(buffer))
+        {
+            break;
+        }
+    }
+    failed = std::ferror(file) != 0;
+    return data;
 }
 
 } // namespace
@@ -325,6 +359,87 @@ std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern)
         }
     }
     return std::nullopt;
+}
+
+RegexTemplateLoadResult LoadRegexTemplatesFromDirectory(const std::filesystem::path &directory)
+{
+    RegexTemplateLoadResult result;
+    std::error_code existsError;
+    const bool exists = std::filesystem::exists(directory, existsError);
+    if (existsError || !exists)
+    {
+        if (existsError)
+        {
+            result.errors.push_back(
+                "Cannot inspect regex template directory '" + internal::PathToUtf8(directory) +
+                "': " + existsError.message()
+            );
+        }
+        return result;
+    }
+    if (!std::filesystem::is_directory(directory, existsError) || existsError)
+    {
+        result.errors.push_back("Regex template path is not a directory: '" + internal::PathToUtf8(directory) + "'");
+        return result;
+    }
+
+    std::vector<std::filesystem::path> files;
+    try
+    {
+        for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator{directory})
+        {
+            if (!entry.is_regular_file() || !IsJsonFile(entry.path()))
+            {
+                continue;
+            }
+            files.push_back(entry.path());
+        }
+    }
+    catch (const std::filesystem::filesystem_error &error)
+    {
+        result.errors.push_back(
+            "Cannot list regex template directory '" + internal::PathToUtf8(directory) + "': " + error.what()
+        );
+        return result;
+    }
+
+    std::ranges::sort(files, [](const std::filesystem::path &left, const std::filesystem::path &right) {
+        return left.filename() < right.filename();
+    });
+
+    result.templates.reserve(files.size());
+    for (const std::filesystem::path &path : files)
+    {
+        const std::string pathText = internal::PathToUtf8(path);
+        std::FILE *file = internal::OpenFileForBinaryRead(path);
+        if (file == nullptr)
+        {
+            const int error = errno;
+            result.errors.push_back(
+                "Cannot read regex template '" + pathText +
+                "': " + std::error_code{error, std::generic_category()}.message()
+            );
+            continue;
+        }
+        bool failed = false;
+        const std::string bytes = ReadFile(file, failed);
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
+        (void)std::fclose(file);
+        if (failed)
+        {
+            result.errors.push_back("Cannot read regex template '" + pathText + "'");
+            continue;
+        }
+        try
+        {
+            result.templates.push_back(ParseRegexTemplate(bytes));
+        }
+        catch (const std::exception &error)
+        {
+            result.errors.push_back("Cannot parse regex template '" + pathText + "': " + error.what());
+        }
+    }
+    return result;
 }
 
 namespace internal

@@ -12,7 +12,6 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_parser.hpp"
-#include "loglib/log_processing.hpp"
 #include "loglib/regex_templates.hpp"
 #include "loglib/stream_line_source.hpp"
 

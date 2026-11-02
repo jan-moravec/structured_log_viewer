@@ -3,8 +3,8 @@
 #include "loglib/key_index.hpp"
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_line.hpp"
-#include "loglib/log_processing.hpp"
 #include "loglib/time_zone_context.hpp"
+#include "loglib/timestamp_parsing.hpp"
 
 #include <cstddef>
 #include <optional>

@@ -116,7 +116,7 @@ ParseResult ParseText(const test_common::TempDir &dir, const LogParser &parser, 
 LogTable TableOf(LogData data)
 {
     LogConfigurationManager configuration;
-    configuration.Update(data);
+    configuration.Update(data.SortedKeys());
     return {std::move(data), std::move(configuration)};
 }
 

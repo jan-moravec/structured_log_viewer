@@ -14,7 +14,6 @@
 #include <loglib/line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_parse_sink.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>

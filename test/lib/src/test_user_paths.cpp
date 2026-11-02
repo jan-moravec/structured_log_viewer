@@ -1,3 +1,4 @@
+#include <loglib/regex_templates.hpp>
 #include <loglib/user_paths.hpp>
 
 #include <catch2/catch_all.hpp>

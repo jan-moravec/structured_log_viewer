@@ -41,7 +41,6 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_level.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/parsers/csv_parser.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
@@ -56,6 +55,7 @@
 #include <loglib/tailing_bytes_producer.hpp>
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/theme.hpp>
+#include <loglib/time_zone_context.hpp>
 #include <loglib/tzdata_search.hpp>
 #include <loglib/udp_server_producer.hpp>
 

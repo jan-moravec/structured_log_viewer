@@ -148,7 +148,7 @@ void ExpectTwoLinesCount(const slp::test::CommandResult &result)
     loglib::ParseResult parsed = loglib::ParseFile(FixturesDir() / "two_lines.jsonl");
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     return {std::move(parsed.data), std::move(manager)};
 }
 

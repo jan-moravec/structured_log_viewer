@@ -2,7 +2,6 @@
 
 #include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/log_file.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/time_zone_context.hpp>
 #include <loglib/tzdata_search.hpp>
 

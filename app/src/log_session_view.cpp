@@ -10,7 +10,7 @@
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
-#include <loglib/log_processing.hpp>
+#include <loglib/time_zone_context.hpp>
 #include <loglib/user_timestamp.hpp>
 
 #include <QAbstractItemModel>

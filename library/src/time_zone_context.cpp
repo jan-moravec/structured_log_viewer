@@ -239,4 +239,44 @@ TimeZoneContext ProcessDefaultTimeZone()
     return DefaultContextSlot();
 }
 
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.UtcMicrosecondsToLocalMilliseconds(microseconds);
+}
+
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds)
+{
+    return UtcMicrosecondsToLocalMilliseconds(microseconds, ProcessDefaultTimeZone());
+}
+
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.LocalMillisecondsToUtc(milliseconds);
+}
+
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
+{
+    return LocalMillisecondsSinceEpochToTimeStamp(milliseconds, ProcessDefaultTimeZone());
+}
+
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.LocalMicrosecondsToUtc(localMicroseconds);
+}
+
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
+{
+    return LocalMicrosecondsSinceEpochToUtc(localMicroseconds, ProcessDefaultTimeZone());
+}
+
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone)
+{
+    return timeZone.FormatUtcMicroseconds(microseconds);
+}
+
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
+{
+    return UtcMicrosecondsToDateTimeString(microseconds, ProcessDefaultTimeZone());
+}
+
 } // namespace loglib

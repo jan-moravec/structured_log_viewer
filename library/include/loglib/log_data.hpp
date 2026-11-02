@@ -4,7 +4,6 @@
 #include "key_index.hpp"
 #include "line_source.hpp"
 #include "log_line.hpp"
-#include "log_parse_sink.hpp"
 #include "stream_line_source.hpp"
 
 #include <memory>

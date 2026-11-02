@@ -155,4 +155,36 @@ void SetProcessDefaultTimeZone(TimeZoneContext context);
 /** @brief Process-wide convenience context. Never unset; defaults to UTC. */
 [[nodiscard]] TimeZoneContext ProcessDefaultTimeZone();
 
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone);
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
+
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone);
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
+
+/**
+ * @brief Convert @p localMicroseconds -- interpreted as a wall-clock
+ * instant in @p timeZone -- to UTC epoch microseconds.
+ *
+ * DST edge cases resolve via earliest-instant choice:
+ *   * Ambiguous "fall-back" hour: the earlier candidate.
+ *   * Non-existent "spring-forward" gap: the transition boundary
+ *     (the first real instant after the gap).
+ * Non-DST exceptions (far-future dates past the tzdata table,
+ * corrupt zone entries) yield the naive value so the Goto Timestamp
+ * slot stays exception-safe. UTC contexts pass the value through.
+ */
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone);
+
+/**
+ * @brief Convenience overload using `ProcessDefaultTimeZone()`.
+ *
+ * That default is process-wide convenience, not a prerequisite for
+ * the explicit-context overload.
+ */
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
+
+/** @brief Formats UTC microseconds since epoch as a `%F %T`-style local-time string. */
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone);
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
+
 } // namespace loglib

@@ -5,7 +5,6 @@
 
 #include <loglib/histogram_bucket_index.hpp>
 #include <loglib/log_level.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/time_zone_context.hpp>
 

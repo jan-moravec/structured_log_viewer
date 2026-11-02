@@ -55,9 +55,10 @@ add_library(
     src/log_line.cpp
     src/log_parser.cpp
     src/leaf_rule_compile.cpp
-    src/log_processing.cpp
     src/log_string_matcher.cpp
     src/time_zone_context.cpp
+    src/timestamp_backfill.cpp
+    src/timestamp_parsing.cpp
     src/user_timestamp.cpp
     src/log_table.cpp
     src/normalized_json_row.cpp
@@ -122,7 +123,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/log_line.hpp
     include/loglib/log_parse_sink.hpp
     include/loglib/log_parser.hpp
-    include/loglib/log_processing.hpp
     include/loglib/log_string_matcher.hpp
     include/loglib/log_table.hpp
     include/loglib/log_value.hpp
@@ -149,6 +149,8 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/tcp_server_producer.hpp
     include/loglib/theme.hpp
     include/loglib/time_zone_context.hpp
+    include/loglib/timestamp_backfill.hpp
+    include/loglib/timestamp_parsing.hpp
     include/loglib/transparent_string_hash.hpp
     include/loglib/udp_server_producer.hpp
     include/loglib/tzdata_search.hpp

@@ -160,7 +160,7 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
     {
         loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(jsonlPath));
         loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data);
+        manager.Update(parsed.data.SortedKeys());
         loglib::LogTable table(std::move(parsed.data), std::move(manager));
         loglib::LogConfiguration configuration = table.Configuration().Configuration();
         if (configuration.columns.empty())
