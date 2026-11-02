@@ -453,8 +453,7 @@ public:
         }
         if (mNextRow < mTable->RowCount())
         {
-            (void)mTable->FinalizeAutoDetection();
-            mTable->ApplyPendingLevelBubbles();
+            mTable->BubbleLevelColumns(mTable->FinalizeAutoDetection().levelBubbleKeys);
             Process(true);
         }
     }

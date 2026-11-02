@@ -34,7 +34,7 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     std::optional<size_t> lastBackfilled;
     mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, 0U, firstBackfilled, lastBackfilled);
     mEnum.Finalize(mData, mConfiguration);
-    ApplyPendingLevelBubbles();
+    BubbleLevelColumns(mEnum.TakePendingLevelBubbleKeys());
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -44,8 +44,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
       mStageBSnapshotTimeKeys(std::move(other.mStageBSnapshotTimeKeys)),
       mPostSnapshotTimeKeys(std::move(other.mPostSnapshotTimeKeys)),
-      mEnum(std::move(other.mEnum)),
-      mLastBackfillRange(std::move(other.mLastBackfillRange))
+      mEnum(std::move(other.mEnum))
 {
     RewireSourceRegistries();
 }
@@ -62,7 +61,6 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mStageBSnapshotTimeKeys = std::move(other.mStageBSnapshotTimeKeys);
     mPostSnapshotTimeKeys = std::move(other.mPostSnapshotTimeKeys);
     mEnum = std::move(other.mEnum);
-    mLastBackfillRange = std::move(other.mLastBackfillRange);
     RewireSourceRegistries();
     return *this;
 }
@@ -84,7 +82,7 @@ void LogTable::Update(LogData &&data)
     std::optional<size_t> lastBackfilled;
     mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
     mEnum.Finalize(mData, mConfiguration);
-    ApplyPendingLevelBubbles();
+    BubbleLevelColumns(mEnum.TakePendingLevelBubbleKeys());
 }
 
 void LogTable::Reset()
@@ -93,7 +91,6 @@ void LogTable::Reset()
     mStageBSnapshotTimeKeys.clear();
     mPostSnapshotTimeKeys.clear();
     mEnum.Clear();
-    mLastBackfillRange.reset();
     RefreshColumnKeyIds();
     mEnum.RefreshSnapshot(mData, mConfiguration);
 }
@@ -106,7 +103,6 @@ void LogTable::OnConfigurationReloaded()
 
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
-    mLastBackfillRange.reset();
     mEnum.BeginStreaming();
 
     if (source)
@@ -136,14 +132,12 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
         return;
     }
 
-    mLastBackfillRange.reset();
     source->SetEnumDictionaries(&mEnum.Dictionaries());
     mData.Sources().push_back(std::move(source));
 }
 
-void LogTable::AppendBatch(StreamedBatch batch)
+LogTable::AppendBatchResult LogTable::AppendBatch(StreamedBatch batch)
 {
-    mLastBackfillRange.reset();
     mEnum.ClearLastBatchDemotedKeys();
     (void)mEnum.TakePendingLevelBubbleKeys();
 
@@ -238,10 +232,14 @@ void LogTable::AppendBatch(StreamedBatch batch)
 
     mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
 
+    AppendBatchResult result;
     if (firstBackfilled.has_value())
     {
-        mLastBackfillRange = std::make_pair(*firstBackfilled, *lastBackfilled);
+        result.backfilledColumns = std::make_pair(*firstBackfilled, *lastBackfilled);
     }
+    result.demotedKeys = mEnum.LastBatchDemotedKeys();
+    result.levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
+    return result;
 }
 
 LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch) const
@@ -251,16 +249,6 @@ LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch)
     preview.newColumnCount =
         mConfiguration.Configuration().columns.size() + mConfiguration.CountAppendableKeys(batch.newKeys);
     return preview;
-}
-
-const std::optional<std::pair<size_t, size_t>> &LogTable::LastBackfillRange() const noexcept
-{
-    return mLastBackfillRange;
-}
-
-const std::vector<KeyId> &LogTable::LastBatchDemotedKeys() const noexcept
-{
-    return mEnum.LastBatchDemotedKeys();
 }
 
 void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
@@ -567,9 +555,12 @@ ColumnType LogTable::RescanColumnForAutoDetection(size_t columnIndex)
     return mEnum.RescanColumn(mData, mConfiguration, mColumnKeyIds, columnIndex);
 }
 
-bool LogTable::FinalizeAutoDetection()
+LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
 {
-    return mEnum.Finalize(mData, mConfiguration);
+    FinalizeResult result;
+    result.promotedToEnumeration = mEnum.Finalize(mData, mConfiguration);
+    result.levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
+    return result;
 }
 
 void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousType)
@@ -685,11 +676,6 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     }
 }
 
-std::vector<KeyId> LogTable::TakePendingLevelBubbleKeys() noexcept
-{
-    return mEnum.TakePendingLevelBubbleKeys();
-}
-
 std::vector<size_t> LogTable::TimeColumnsToFront(size_t firstColumn) const
 {
     std::vector<size_t> moves;
@@ -707,18 +693,17 @@ std::vector<size_t> LogTable::TimeColumnsToFront(size_t firstColumn) const
 void LogTable::AppendBatchArranged(StreamedBatch batch)
 {
     const size_t oldColumnCount = ColumnCount();
-    AppendBatch(std::move(batch));
+    const AppendBatchResult result = AppendBatch(std::move(batch));
     for (const size_t srcIndex : TimeColumnsToFront(oldColumnCount))
     {
         MoveColumn(srcIndex, 0);
     }
-    ApplyPendingLevelBubbles();
+    BubbleLevelColumns(result.levelBubbleKeys);
 }
 
-void LogTable::ApplyPendingLevelBubbles()
+void LogTable::BubbleLevelColumns(std::span<const KeyId> keys)
 {
-    const std::vector<KeyId> pending = TakePendingLevelBubbleKeys();
-    for (const KeyId kid : pending)
+    for (const KeyId kid : keys)
     {
         const int srcIndex = FindColumnIndexByKey(kid);
         if (srcIndex < 0)

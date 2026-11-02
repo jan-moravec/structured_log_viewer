@@ -296,8 +296,7 @@ public:
     /** @brief Completes deferred type detection and returns the loaded table. */
     [[nodiscard]] LoadedTable Finish()
     {
-        mLoaded.table.FinalizeAutoDetection();
-        mLoaded.table.ApplyPendingLevelBubbles();
+        mLoaded.table.BubbleLevelColumns(mLoaded.table.FinalizeAutoDetection().levelBubbleKeys);
         return std::move(mLoaded);
     }
 

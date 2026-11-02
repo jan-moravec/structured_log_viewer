@@ -21458,7 +21458,7 @@ private slots:
 
     // Regression: a pre-existing enum column whose dict only grew in
     // a batch emits `Grew` exactly once and never `Promoted`.
-    // `LastBackfillRange` is a min/max over every back-filled
+    // the batch result backfill range is a min/max over every back-filled
     // column, so a grow-only column can fall inside it; the
     // back-fill loop must filter rather than firing `Promoted`
     // for every enum column in the range.
@@ -21529,7 +21529,7 @@ private slots:
         //   * `colA` promotes (presence count crosses 2): recordBackfill(0).
         //   * `colB` dict grows from 1 to 2 (`y` -> `y`, `w`): no back-fill.
         //   * `colC` promotes (2 same-value presences): recordBackfill(2).
-        // `LastBackfillRange` becomes `[0, 2]` with `colB` at column 1.
+        // the batch result backfill range becomes `[0, 2]` with `colB` at column 1.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;

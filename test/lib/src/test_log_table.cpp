@@ -290,7 +290,7 @@ TEST_CASE(
     CHECK(table.ColumnCount() == 2);
     CHECK(table.GetHeader(0) == firstHeader);
     CHECK(table.GetHeader(1) == secondHeader);
-    // No `LastBackfillRange` check: stream-mode auto-detection promotes both
+    // No the batch result backfill range check: stream-mode auto-detection promotes both
     // columns to enum after row 2, legitimately reporting a back-fill.
 }
 
@@ -320,7 +320,7 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
     CHECK(table.GetHeader(0) == alphaHeader); // unchanged position
     CHECK(table.GetHeader(1) == betaHeader);  // unchanged position
     CHECK(table.GetHeader(2) == "gamma");     // appended at the end
-    // No `LastBackfillRange` check: `alpha` promotes to enum at row 2 and
+    // No the batch result backfill range check: `alpha` promotes to enum at row 2 and
     // legitimately back-fills. Column ordering is what we guard.
 }
 
@@ -366,10 +366,11 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
     StreamedBatch errorOnly;
     errorOnly.firstLineNumber = 1;
     errorOnly.errors.emplace_back("Something went wrong on line 1");
-    REQUIRE_NOTHROW(table.AppendBatch(std::move(errorOnly)));
+    LogTable::AppendBatchResult appendResult1;
+    REQUIRE_NOTHROW(appendResult1 = table.AppendBatch(std::move(errorOnly)));
 
     CHECK(table.RowCount() == 0);
-    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(!appendResult1.backfilledColumns.has_value());
 
     StreamedBatch newKeysOnly;
     newKeysOnly.firstLineNumber = 1;
@@ -592,7 +593,7 @@ TEST_CASE(
     // column. The two already-appended rows did not see Stage B's timestamp pass (their
     // batch did not even contain the key) so AppendBatch must back-fill them — the new row
     // also gets parsed by the same back-fill (because its KeyId is not yet in the snapshot).
-    table.AppendBatch(BuildStreamedBatch(
+    const auto appendResult2 = table.AppendBatch(BuildStreamedBatch(
         keys,
         *sourcePtr,
         {
@@ -607,7 +608,7 @@ TEST_CASE(
     CHECK(table.GetHeader(1) == "timestamp");
 
     // The back-fill range covers exactly the new time column (index 1, inclusive on both ends).
-    const auto backfill = table.LastBackfillRange();
+    const auto backfill = appendResult2.backfilledColumns;
     REQUIRE(backfill.has_value());
     if (backfill.has_value())
     {
@@ -628,22 +629,22 @@ TEST_CASE(
     // must therefore back-fill the slice of just-appended rows; otherwise rows past the
     // first batch keep raw string timestamps. Because the slice is exactly the rows about
     // to fire `beginInsertRows` in `LogModel::AppendBatch`, we deliberately do *not* set
-    // `mLastBackfillRange` (which would emit a redundant `dataChanged` over rows that are
+    // the batch result backfill range (which would emit a redundant `dataChanged` over rows that are
     // simultaneously being inserted into the view).
-    table.AppendBatch(BuildStreamedBatch(
+    const auto appendResult3 = table.AppendBatch(BuildStreamedBatch(
         keys,
         *sourcePtr,
         {{{"msg", std::string("fourth")}, {"timestamp", std::string("2024-01-15T12:34:57")}}},
         keys.Size(),
         4
     ));
-    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(!appendResult3.backfilledColumns.has_value());
     const LogValue fourthRowTimestamp = table.GetValue(3, 1);
     CHECK(std::holds_alternative<TimeStamp>(fourthRowTimestamp));
 
     // A second post-snapshot batch with multiple new rows confirms the slice back-fill
     // keeps running on every batch (not just the immediate batch after first observation).
-    table.AppendBatch(BuildStreamedBatch(
+    const auto appendResult4 = table.AppendBatch(BuildStreamedBatch(
         keys,
         *sourcePtr,
         {
@@ -653,7 +654,7 @@ TEST_CASE(
         keys.Size(),
         5
     ));
-    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(!appendResult4.backfilledColumns.has_value());
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(4, 1)));
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(5, 1)));
 }
@@ -728,7 +729,7 @@ TEST_CASE(
     REQUIRE(batch.newKeys.size() == 1);
     CHECK(batch.newKeys.front() == "msg");
 
-    table.AppendBatch(std::move(batch));
+    const auto appendResult5 = table.AppendBatch(std::move(batch));
 
     REQUIRE(table.RowCount() == 2);
     REQUIRE(table.ColumnCount() == 2);
@@ -738,7 +739,7 @@ TEST_CASE(
     // The time column was Stage-B-handled, so `AppendBatch` must not run a
     // back-fill — a non-empty range here means redundant `dataChanged` plus
     // discarded per-line `fmt::format` error strings on the GUI thread.
-    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(!appendResult5.backfilledColumns.has_value());
 
     // Inline-promoted values survive intact and remain accessible through
     // the column->KeyId cache the GUI uses.
@@ -759,10 +760,10 @@ TEST_CASE(
         3
     );
     REQUIRE(batch2.newKeys.empty());
-    table.AppendBatch(std::move(batch2));
+    const auto appendResult6 = table.AppendBatch(std::move(batch2));
 
     CHECK(table.RowCount() == 3);
-    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(!appendResult6.backfilledColumns.has_value());
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(2, 0)));
 }
 
@@ -1348,7 +1349,8 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
+    const auto appendResult7 =
+        table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
@@ -1367,7 +1369,7 @@ TEST_CASE(
     REQUIRE(dict != nullptr);
     CHECK(dict->Size() == 2);
 
-    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(!appendResult7.backfilledColumns.has_value());
 }
 
 TEST_CASE(
@@ -1415,7 +1417,8 @@ TEST_CASE(
 
     // (cap+1)th distinct value forces demotion: prior `DictRef`s become
     // `OwnedString` and the column flips to the terminal `Type::String`.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, TEST_CAP + 1, 1, false));
+    const auto appendResult8 =
+        table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, TEST_CAP + 1, 1, false));
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
     CHECK(!table.EnumDictionaries().Contains(tagKey));
@@ -1434,7 +1437,7 @@ TEST_CASE(
     CHECK(*AsStringView(lastValue) == "never-seen");
     CHECK_FALSE(table.Data().Lines()[TEST_CAP].IsDictRef(tagKey));
 
-    const auto backfillRangeOpt = table.LastBackfillRange();
+    const auto backfillRangeOpt = appendResult8.backfilledColumns;
     REQUIRE(backfillRangeOpt.has_value());
     if (backfillRangeOpt.has_value())
     {
@@ -1995,14 +1998,14 @@ TEST_CASE(
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tag", LogValue{value}}}));
     }
-    table.AppendBatch(std::move(batch));
+    const auto appendResult9 = table.AppendBatch(std::move(batch));
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(tagKey));
     // Demote fires the back-fill notification.
-    REQUIRE(table.LastBackfillRange().has_value());
+    REQUIRE(appendResult9.backfilledColumns.has_value());
 }
 
 TEST_CASE(
@@ -2645,94 +2648,6 @@ TEST_CASE(
     CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
 }
 
-// Regression: the explicit `LogTable` move ctor / assignment used
-// to drop `mLastBatchDemotedKeys`, so a table moved between an
-// `AppendBatch` that demoted a column and the `LogModel` consumer
-// silently lost the "demoted-this-batch" trail. `LogModel` relies
-// on the trail to emit `enumColumnsChanged(Demoted)` for the
-// `Unknown -> Enumeration -> String` in-batch case where no
-// dictionary survives on either side.
-TEST_CASE(
-    "LogTable -- move ctor and assignment carry mLastBatchDemotedKeys forward",
-    "[log_table][move][last_batch_demoted_keys][regression]"
-)
-{
-    constexpr uint16_t TINY_CAP = 2;
-
-    auto driveInBatchPromoteThenDemote = [&](LogTable &table) {
-        const TestLogFile fixture("log_table_move_demoted_keys.json");
-        fixture.Write("");
-        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
-        FileLineSource *sourcePtr = source.get();
-
-        // Streaming entry point is what triggers
-        // `DemoteColumnFromEnum` to populate `LastBatchDemotedKeys`
-        // from `RunEnumPassForAppendBatch`.
-        table.BeginStreaming(std::move(source));
-        table.SetEnumValueCap(TINY_CAP);
-
-        // Stream-mode key "level" with the 2-row promotion threshold:
-        // `info`/`info` promotes, then the encode pass trips the
-        // 2-cap on `warn`/`error`/`fatal` and demotes to
-        // `Type::String` -- all in one `AppendBatch`.
-        KeyIndex &keys = table.Keys();
-        StreamedBatch batch;
-        batch.firstLineNumber = 1;
-        batch.newKeys.emplace_back("level");
-        for (const std::string_view value : {"info", "info", "warn", "error", "fatal"})
-        {
-            batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(value)}}));
-        }
-        table.AppendBatch(std::move(batch));
-    };
-
-    SECTION("Move ctor preserves the demoted-keys trail")
-    {
-        LogConfiguration cfg;
-        cfg.columns.push_back(
-            {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
-        );
-        const TestLogConfiguration cfgFile;
-        cfgFile.Write(cfg);
-        LogConfigurationManager mgr;
-        mgr.Load(cfgFile.GetFilePath());
-
-        LogTable source({}, std::move(mgr));
-        driveInBatchPromoteThenDemote(source);
-        REQUIRE_FALSE(source.LastBatchDemotedKeys().empty());
-        const KeyId demotedKey = source.LastBatchDemotedKeys().front();
-
-        const LogTable moved(std::move(source));
-        REQUIRE(moved.LastBatchDemotedKeys().size() == 1);
-        CHECK(moved.LastBatchDemotedKeys().front() == demotedKey);
-        // Moved-from is emptied: safe to read, but no trail.
-        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-    }
-
-    SECTION("Move assignment preserves the demoted-keys trail")
-    {
-        LogConfiguration cfg;
-        cfg.columns.push_back(
-            {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
-        );
-        const TestLogConfiguration cfgFile;
-        cfgFile.Write(cfg);
-        LogConfigurationManager mgr;
-        mgr.Load(cfgFile.GetFilePath());
-
-        LogTable source({}, std::move(mgr));
-        driveInBatchPromoteThenDemote(source);
-        REQUIRE_FALSE(source.LastBatchDemotedKeys().empty());
-        const KeyId demotedKey = source.LastBatchDemotedKeys().front();
-
-        LogTable target;
-        target = std::move(source);
-        REQUIRE(target.LastBatchDemotedKeys().size() == 1);
-        CHECK(target.LastBatchDemotedKeys().front() == demotedKey);
-        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-    }
-}
-
 TEST_CASE(
     "LogTable -- auto-detected `level` column with canonical values promotes to Type::Level",
     "[log_table][append_batch][level]"
@@ -2765,7 +2680,7 @@ TEST_CASE(
 )
 {
     // `MaybePromoteToLevel` queues the bubble; the consumer
-    // drains it via `ApplyPendingLevelBubbles`. Asserting both
+    // bubbles it via `BubbleLevelColumns`. Asserting both
     // halves blocks a regression to silent in-`AppendBatch`
     // rotation that would desync Qt's column-keyed state.
     const TestLogFile testFile("level_bubble.json");
@@ -2787,7 +2702,8 @@ TEST_CASE(
 
     // Batch 2: introduces the level column. Promoted + queued
     // but not moved until the drain.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+    const auto appendResult101 =
+        table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
@@ -2797,7 +2713,7 @@ TEST_CASE(
 
     // Drain via the static-load / test entry point. The app's
     // streaming consumer wraps this in `begin/endMoveColumns`.
-    table.ApplyPendingLevelBubbles();
+    table.BubbleLevelColumns(appendResult101.levelBubbleKeys);
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
     CHECK(table.Configuration().Configuration().columns[1].header == "level");
@@ -2833,14 +2749,15 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
 
     // Batch 2: level column appended at index 3, promoted and
     // queued (not yet moved).
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+    const auto appendResult102 =
+        table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 4);
     CHECK(table.Configuration().Configuration().columns[3].header == "level");
     CHECK(table.Configuration().Configuration().columns[3].type == ColumnType::Level);
 
     // Drain: `level` lands at index 1, `col_b` / `col_c` shift right.
-    table.ApplyPendingLevelBubbles();
+    table.BubbleLevelColumns(appendResult102.levelBubbleKeys);
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 4);
     CHECK(table.Configuration().Configuration().columns[0].header == "col_a");
@@ -2898,11 +2815,12 @@ TEST_CASE(
     // Pass the live key count so both `level` and `severity`
     // land in `newKeys`; hard-pinning would silently drop one if
     // the fixture later grows an extra pre-existing column.
-    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, levelRows, keyCountBeforeLevelBatch, 2));
+    const auto appendResult103 =
+        table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, levelRows, keyCountBeforeLevelBatch, 2));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
-    table.ApplyPendingLevelBubbles();
+    table.BubbleLevelColumns(appendResult103.levelBubbleKeys);
 
     const auto &columns = table.Configuration().Configuration().columns;
     REQUIRE(columns.size() == 3);
@@ -2929,14 +2847,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- pending Level bubble is visible via TakePendingLevelBubbleKeys",
-    "[log_table][append_batch][level][level_bubble]"
+    "LogTable -- AppendBatch reports the pending Level bubble key", "[log_table][append_batch][level][level_bubble]"
 )
 {
-    // `TakePendingLevelBubbleKeys` reports the queued `KeyId`,
-    // then a second call returns empty. Fixture uses three
-    // pre-existing columns so the bubble is multi-step (clearly
-    // distinct from a self-move).
+    // The AppendBatch result reports the `KeyId` of the column that
+    // flipped to Level. Fixture uses three pre-existing columns so
+    // the bubble is multi-step (clearly distinct from a self-move).
     const TestLogFile testFile("level_bubble_take.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2954,16 +2870,15 @@ TEST_CASE(
     table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+    const auto appendResult10 =
+        table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != loglib::INVALID_KEY_ID);
 
-    const std::vector<KeyId> pending = table.TakePendingLevelBubbleKeys();
+    const std::vector<KeyId> pending = appendResult10.levelBubbleKeys;
     REQUIRE(pending.size() == 1);
     CHECK(pending.front() == levelKey);
-
-    CHECK(table.TakePendingLevelBubbleKeys().empty());
 }
 
 TEST_CASE(
@@ -2991,9 +2906,10 @@ TEST_CASE(
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
-    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    const auto appendResult104 = table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+    const auto appendResult11 =
+        table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     // Level lands at canonical (1), but the queue must still
     // report its KeyId so a later same-batch reorder can re-bubble.
@@ -3001,12 +2917,12 @@ TEST_CASE(
     REQUIRE(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != loglib::INVALID_KEY_ID);
-    const std::vector<KeyId> pending = table.TakePendingLevelBubbleKeys();
+    const std::vector<KeyId> pending = appendResult11.levelBubbleKeys;
     REQUIRE(pending.size() == 1);
     CHECK(pending.front() == levelKey);
 
     // Drain must no-op on the already-canonical column.
-    table.ApplyPendingLevelBubbles();
+    table.BubbleLevelColumns(appendResult104.levelBubbleKeys);
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
     CHECK(table.Configuration().Configuration().columns[1].header == "level");
@@ -3410,15 +3326,11 @@ TEST_CASE(
     "[log_table][demote][on_user_changed_column_type][regression]"
 )
 {
-    // Regression: `LastBatchDemotedKeys()` is documented as
-    // "demotions during the *most recent batch*". `OnUserChangedColumnType`
+    // Regression: the demoted keys of an AppendBatch result cover
+    // only demotions during that batch. `OnUserChangedColumnType`
     // demotes outside a batch when the user picks a non-enum type
-    // from the editor; the GUI emits its own `enumColumnsChanged`
-    // signal from `LogModel::ApplyColumnTypeEdit`, so leaving the
-    // canonical KeyId in `mLastBatchDemotedKeys` would risk a
-    // double-emit if a consumer queried it before the next batch
-    // cleared the vector. The fix passes `recordForBatch=false`
-    // from `OnUserChangedColumnType`.
+    // from the editor; the application announces that itself, so
+    // the next batch result must not repeat it.
     const TestLogFile testFile("demote_record_for_batch.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -3429,19 +3341,19 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // Promote `category` to Enumeration via the streaming detector.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"a", "b"}, 1, 2, true));
+    const auto appendResult12 = table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"a", "b"}, 1, 2, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 
     // The streaming detector left the demote vector clean.
-    CHECK(table.LastBatchDemotedKeys().empty());
+    CHECK(appendResult12.demotedKeys.empty());
 
     // User picks Type::String -- `OnUserChangedColumnType` runs the
-    // demote walk but must NOT touch `mLastBatchDemotedKeys`.
+    // demote walk but must NOT show up in the next batch result.
     table.Configuration().SetColumnTypePair(0, ColumnType::String, false);
     table.OnUserChangedColumnType(0, ColumnType::Enumeration);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
-    CHECK(table.LastBatchDemotedKeys().empty());
+    CHECK(table.AppendBatch(StreamedBatch{}).demotedKeys.empty());
 }
 
 TEST_CASE(

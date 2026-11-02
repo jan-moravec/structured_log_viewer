@@ -58,10 +58,7 @@ public:
 
     /**
      * @brief Move re-runs RewireSourceRegistries() because each LineSource
-     * caches a pointer to mEnum.Dictionaries(). Per-batch bookkeeping
-     * (notably LastBatchDemotedKeys()) follows the move so a table
-     * moved between AppendBatch and the consuming model
-     * keeps a faithful Demoted-reason trail.
+     * caches a pointer to mEnum.Dictionaries().
      */
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
@@ -82,11 +79,35 @@ public:
     /** @brief Multi-file streaming append; adds @p source without resetting. */
     void AppendStreaming(std::unique_ptr<LineSource> source);
 
+    /** @brief What one AppendBatch call changed beyond the new rows. */
+    struct AppendBatchResult
+    {
+        /** @brief Inclusive [firstColumn, lastColumn] back-filled by the batch, or nullopt. */
+        std::optional<std::pair<size_t, size_t>> backfilledColumns;
+
+        /**
+         * @brief Canonical KeyIds of columns demoted away from Type::Enumeration by the batch. Includes the silent
+         * case where a column was promoted and demoted within the same batch, which a before and after comparison of
+         * dictionary sizes cannot see.
+         */
+        std::vector<KeyId> demotedKeys;
+
+        /**
+         * @brief Canonical KeyIds of columns the batch flipped to Type::Level. The bubble to
+         * CANONICAL_LEVEL_COLUMN_INDEX is left to the caller so a streaming consumer can wrap each move in
+         * begin/endMoveColumns. Re-resolve each KeyId to its current column index before moving, because earlier
+         * moves can shift later targets.
+         */
+        std::vector<KeyId> levelBubbleKeys;
+    };
+
     /**
      * @brief Splice @p batch in, extending the configuration for any
      * batch.newKeys and back-filling new Type::Time columns.
+     *
+     * @return The columns and keys the batch affected.
      */
-    void AppendBatch(StreamedBatch batch);
+    AppendBatchResult AppendBatch(StreamedBatch batch);
 
     /**
      * @brief Non-mutating preview of AppendBatch(batch)'s effect; lets the
@@ -98,24 +119,6 @@ public:
         size_t newColumnCount = 0;
     };
     [[nodiscard]] AppendBatchPreview PreviewAppend(const StreamedBatch &batch) const;
-
-    /**
-     * @brief Inclusive [firstColumn, lastColumn] back-filled by the last
-     * AppendBatch, or nullopt.
-     */
-    [[nodiscard]] const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const noexcept;
-
-    /**
-     * @brief Canonical KeyIds of columns demoted away from
-     * Type::Enumeration during the most recent AppendBatch /
-     * Update / BeginStreaming. Includes the silent
-     * "promoted-and-demoted-in-the-same-batch" case
-     * (Type::Any + autoDetect -> Enumeration -> String) where the
-     * registry shows no dict before or after, which a consumer-side
-     * snapshot of dictionary sizes can't see. Reset at the
-     * start of every batch-style call. Empty when no column demoted.
-     */
-    [[nodiscard]] const std::vector<KeyId> &LastBatchDemotedKeys() const noexcept;
 
     /**
      * @brief Reorder column @p srcIndex to @p destIndex. Callers must wrap with
@@ -141,34 +144,17 @@ public:
      * @brief Splices @p batch in and arranges columns without notifications.
      *
      * Runs AppendBatch, moves each new time column to index 0 as
-     * TimeColumnsToFront lists them, then applies
-     * ApplyPendingLevelBubbles. Hosts that must announce each move
-     * call those steps themselves.
+     * TimeColumnsToFront lists them, then bubbles
+     * the new Type::Level columns. Hosts that must announce each move
+     * call AppendBatch and the move steps themselves.
      *
      * @param batch Batch to append.
      */
     void AppendBatchArranged(StreamedBatch batch);
 
-    /**
-     * @brief Canonical KeyIds of columns that MaybePromoteToLevel
-     * flipped to Type::Level since the last drain. The bubble
-     * to CANONICAL_LEVEL_COLUMN_INDEX is deferred so the
-     * streaming consumer can wrap each move in
-     * begin/endMoveColumns. Caller must re-resolve each
-     * KeyId to its current column index before moving --
-     * earlier moves can shift later targets.
-     *
-     * Static-load paths use ApplyPendingLevelBubbles instead
-     * and leave this queue empty.
+    /** @brief Moves each column named in @p keys to CANONICAL_LEVEL_COLUMN_INDEX where ShouldBubbleLevelColumn allows.
      */
-    [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
-
-    /**
-     * @brief Drain the pending-bubble queue and apply each via
-     * MoveColumn. No Qt-side notifications -- intended for
-     * static-load paths whose callers reset the model afterward.
-     */
-    void ApplyPendingLevelBubbles();
+    void BubbleLevelColumns(std::span<const KeyId> keys);
 
     /**
      * @brief First column whose key list maps to @p kid, or -1. Linear
@@ -313,10 +299,17 @@ public:
      * permissive candidates and transition leftover Type::Any +
      * autoDetect columns to a terminal type (or leave them as
      * Type::Any + autoDetect for a future re-load when there is
-     * insufficient evidence). Idempotent. Returns true if at least
-     * one column was promoted to Type::Enumeration.
+     * insufficient evidence). Idempotent.
      */
-    bool FinalizeAutoDetection();
+    struct FinalizeResult
+    {
+        /** @brief True if at least one column was promoted to Type::Enumeration. */
+        bool promotedToEnumeration = false;
+
+        /** @brief Columns flipped to Type::Level, to bubble as described for AppendBatchResult. */
+        std::vector<KeyId> levelBubbleKeys;
+    };
+    FinalizeResult FinalizeAutoDetection();
 
     /**
      * @brief Reconcile loaded rows with a user-driven type flip at
@@ -403,8 +396,6 @@ private:
      * Owns dictionaries; LineSources borrow Dictionaries().
      */
     EnumInference mEnum;
-
-    std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
 };
 
 } // namespace loglib
