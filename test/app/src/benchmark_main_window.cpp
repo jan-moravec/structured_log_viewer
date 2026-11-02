@@ -20,19 +20,19 @@
 #include "qt_streaming_log_sink.hpp"
 #include "row_order_proxy_model.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/time_zone_context.hpp>
-#include <loglib/tzdata_search.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/support/tzdata_search.hpp>
+#include <loglib/table/log_table.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>

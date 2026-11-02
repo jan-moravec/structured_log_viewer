@@ -1,14 +1,14 @@
 #include "common.hpp"
 
-#include <loglib/column_schema.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/time_zone_context.hpp>
-#include <loglib/timestamp_backfill.hpp>
-#include <loglib/timestamp_parsing.hpp>
-#include <loglib/user_timestamp.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/column_schema.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/table/timestamp_backfill.hpp>
+#include <loglib/time/time_zone_context.hpp>
+#include <loglib/time/timestamp_parsing.hpp>
+#include <loglib/time/user_timestamp.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>

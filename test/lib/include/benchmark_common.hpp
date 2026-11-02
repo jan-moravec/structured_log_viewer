@@ -5,15 +5,15 @@
 // any parser's static `ParseStreaming` overload. See CONTRIBUTING.md
 // `## Benchmarking` for PR-process docs.
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parser_options.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <test_common/log_generator.hpp>
 

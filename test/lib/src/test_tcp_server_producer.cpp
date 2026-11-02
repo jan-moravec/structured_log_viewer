@@ -1,4 +1,4 @@
-#include <loglib/tcp_server_producer.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>

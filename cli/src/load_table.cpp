@@ -4,19 +4,19 @@
 #include "session_config.hpp"
 #include "text_util.hpp"
 
-#include <loglib/auto_detect_parser.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parse_error_text.hpp>
-#include <loglib/regex_templates.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/source_plan.hpp>
-#include <loglib/stdin_bytes_producer.hpp>
-#include <loglib/stdin_peek.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/user_paths.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/source_plan.hpp>
+#include <loglib/ingest/stdin_bytes_producer.hpp>
+#include <loglib/ingest/stdin_peek.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/auto_detect_parser.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parse_error_text.hpp>
+#include <loglib/parse/regex_templates.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <algorithm>
 #include <chrono>

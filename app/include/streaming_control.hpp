@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/line_source.hpp>
+#include <loglib/core/line_source.hpp>
 
 #include <cstddef>
 

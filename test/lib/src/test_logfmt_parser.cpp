@@ -1,16 +1,16 @@
 #include "common.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/buffering_sink.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/internal/buffering_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>

@@ -1,11 +1,11 @@
-#include <loglib/enum_inference.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/enum_inference.hpp>
 
 #include "common.hpp"
 

@@ -1,19 +1,19 @@
 #include "common.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/buffering_sink.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/internal/buffering_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
@@ -733,9 +733,9 @@ namespace
 {
 
 // Local replicas of the transparent-hash adapters from
-// `loglib/transparent_string_hash.hpp` so the move-survival test can stand up the
+// `loglib/core/transparent_string_hash.hpp` so the move-survival test can stand up the
 // exact `tsl::robin_map<std::string, KeyId, ..., ...>` instantiation that backs
-// `loglib::internal::PerWorkerKeyCache` (defined in `loglib/internal/parse_runtime.hpp`).
+// `loglib::internal::PerWorkerKeyCache` (defined in `loglib/parse/internal/parse_runtime.hpp`).
 // The wrapper struct adds nothing beyond the map field, so its compiler-generated move
 // constructor delegates straight through to the map's move constructor — exactly what we
 // exercise here.

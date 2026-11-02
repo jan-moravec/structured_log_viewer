@@ -1,11 +1,11 @@
-#include <loglib/column_schema.hpp>
-#include <loglib/column_type_health.hpp>
-#include <loglib/compact_log_value.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/schema/column_schema.hpp>
+#include <loglib/table/column_type_health.hpp>
 
 #include "common.hpp"
 

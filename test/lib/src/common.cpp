@@ -1,9 +1,9 @@
 #include "common.hpp"
 
-#include <loglib/internal/log_configuration_glaze_meta.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/time_zone_context.hpp>
-#include <loglib/tzdata_search.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
+#include <loglib/support/tzdata_search.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <test_common/log_generator.hpp>
 #include <test_common/temp_dir.hpp>

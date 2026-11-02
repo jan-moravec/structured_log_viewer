@@ -1,15 +1,15 @@
-#include <loglib/auto_detect_parser.hpp>
-#include <loglib/bytes_producer.hpp>
-#include <loglib/format_detection.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tcp_server_producer.hpp>
-#include <loglib/udp_server_producer.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
+#include <loglib/ingest/udp_server_producer.hpp>
+#include <loglib/parse/auto_detect_parser.hpp>
+#include <loglib/parse/format_detection.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>

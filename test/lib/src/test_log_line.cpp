@@ -1,9 +1,9 @@
 #include "common.hpp"
 
-#include <loglib/compact_log_value.hpp>
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_line.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 

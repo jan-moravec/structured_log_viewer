@@ -1,17 +1,17 @@
 #include "common.hpp"
 
-#include <loglib/compact_log_value.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/static_parser_pipeline.hpp>
-#include <loglib/internal/streaming_parse_loop.hpp>
-#include <loglib/internal/timestamp_promotion.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/internal/static_parser_pipeline.hpp>
+#include <loglib/parse/internal/streaming_parse_loop.hpp>
+#include <loglib/parse/internal/timestamp_promotion.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_all.hpp>
 

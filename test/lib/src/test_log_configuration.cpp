@@ -1,12 +1,12 @@
 #include "common.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/internal/log_configuration_glaze_meta.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_line.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/temp_dir.hpp>
 

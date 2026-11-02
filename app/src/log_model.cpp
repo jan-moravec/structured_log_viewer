@@ -9,15 +9,15 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QApplication>
 #include <QBrush>

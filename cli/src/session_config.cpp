@@ -4,9 +4,9 @@
 #include "diagnostics.hpp"
 #include "text_util.hpp"
 
-#include <loglib/column_projection.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/leaf_rule_compile.hpp>
+#include <loglib/query/column_projection.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <algorithm>
 #include <cctype>

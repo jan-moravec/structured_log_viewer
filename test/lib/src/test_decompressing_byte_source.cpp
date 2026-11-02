@@ -1,10 +1,10 @@
 #include "common.hpp"
 
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
 
 #include <test_common/temp_dir.hpp>
 

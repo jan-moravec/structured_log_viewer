@@ -4,7 +4,7 @@ Log Viewer's regex parser are adapted from lnav's `src/formats/*.json` log
 format definitions. Per BSD-2-Clause, attribution is preserved here.
 
 The patterns adapted from lnav are in
-library/src/regex_templates.cpp (search for "lnav"):
+lib/src/parse/regex_templates.cpp (search for "lnav"):
   - Syslog (RFC3164) -- adapted from `syslog_log.json` `std` pattern
   - Syslog (RFC5424) -- adapted from `syslog_log.json` `rfc5424` pattern
   - Apache error log -- cross-referenced against `error_log.json` shape

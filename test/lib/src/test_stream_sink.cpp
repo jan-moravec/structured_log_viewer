@@ -1,4 +1,4 @@
-#include <loglib/exports/export_sink.hpp>
+#include <loglib/output/exports/export_sink.hpp>
 
 #include <catch2/catch_all.hpp>
 

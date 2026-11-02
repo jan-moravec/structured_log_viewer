@@ -2,7 +2,7 @@
 
 #include "log_session_presentation.hpp"
 
-#include <loglib/log_configuration.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QIcon>
 #include <QWidget>

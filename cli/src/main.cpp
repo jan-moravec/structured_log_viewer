@@ -4,12 +4,12 @@
 #include "options.hpp"
 #include "platform.hpp"
 
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/tzdata_search.hpp>
-#include <loglib/worker_threads.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/worker_threads.hpp>
+#include <loglib/support/tzdata_search.hpp>
 
 #include <cstdio>
 #include <exception>

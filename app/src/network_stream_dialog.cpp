@@ -2,8 +2,8 @@
 
 #include "regex_template_registry.hpp"
 
-#include <loglib/parsers/regex_parser.hpp>
-#include <loglib/regex_templates.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 
 #include <QCheckBox>
 #include <QComboBox>

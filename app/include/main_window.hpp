@@ -24,10 +24,10 @@
 
 #include <QUuid>
 
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/theme.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/support/theme.hpp>
 
 // Forward-declared so this header does not pull in `<date/tz.h>`
 // just for the Goto Timestamp helpers' zone argument.

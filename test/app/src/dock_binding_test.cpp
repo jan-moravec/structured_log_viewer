@@ -18,12 +18,12 @@
 #include "row_order_proxy_model.hpp"
 #include "session_bind_context.hpp"
 
-#include <loglib/file_line_source.hpp>
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
 
 #include <QItemSelectionModel>
 #include <QObject>

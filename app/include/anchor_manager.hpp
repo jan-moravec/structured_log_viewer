@@ -1,7 +1,7 @@
 #pragma once
 
-#include <loglib/log_configuration.hpp>
-#include <loglib/theme.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/support/theme.hpp>
 
 #include <QObject>
 #include <QString>

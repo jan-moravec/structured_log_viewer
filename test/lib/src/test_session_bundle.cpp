@@ -1,11 +1,11 @@
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/internal/path_encoding.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/timestamp_backfill.hpp>
+#include <loglib/core/internal/path_encoding.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
+#include <loglib/table/timestamp_backfill.hpp>
 
 #include <test_common/temp_dir.hpp>
 

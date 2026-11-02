@@ -1,11 +1,11 @@
 #include "log_filter_model.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/row_ordering.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_ordering.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>

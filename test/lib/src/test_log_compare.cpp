@@ -1,14 +1,14 @@
 #include "common.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
 

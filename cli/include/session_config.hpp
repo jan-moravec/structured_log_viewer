@@ -5,9 +5,9 @@
 #include "load_table.hpp"
 #include "options.hpp"
 
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/row_ordering.hpp>
+#include <loglib/query/row_ordering.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <cstddef>
 #include <expected>

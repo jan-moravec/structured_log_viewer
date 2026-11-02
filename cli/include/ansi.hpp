@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/log_level.hpp>
+#include <loglib/core/log_level.hpp>
 
 #include <string_view>
 

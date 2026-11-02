@@ -2,10 +2,10 @@
 
 #include "text_util.hpp"
 
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/user_timestamp.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/time/user_timestamp.hpp>
 
 #include <algorithm>
 #include <chrono>

@@ -1,7 +1,7 @@
-#include <loglib/file_line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/regex_templates.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/parse/regex_templates.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>

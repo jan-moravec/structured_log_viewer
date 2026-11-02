@@ -1,9 +1,9 @@
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/buffering_sink.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/worker_threads.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/parse/internal/buffering_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/parse/worker_threads.hpp>
 
 #include <test_common/temp_dir.hpp>
 

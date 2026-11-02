@@ -135,7 +135,7 @@ jobs:
         run: |
           set -euo pipefail
           ARGS="$(python3 scripts/ci/tidy-include-args.py build/clang-coverage \
-            library/include app/include cli/include test/common/include test/log_generator/include)"
+            lib/include app/include cli/include test/common/include test/log_generator/include)"
           echo "extra-args=$ARGS" >> "$GITHUB_OUTPUT"
 
       - name: Run clang-tidy on PR changes

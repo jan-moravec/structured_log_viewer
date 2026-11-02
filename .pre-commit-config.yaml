@@ -92,4 +92,4 @@ repos:
         language: python
         entry: python scripts/check-loglib-internal-includes.py
         pass_filenames: false
-        files: '^(app|test/app|library/include)/.*\.(h|hpp|cpp)$'
+        files: '^(app|test/app|lib/include)/.*\.(h|hpp|cpp)$'

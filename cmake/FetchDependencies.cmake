@@ -276,7 +276,7 @@ endif()
 # into the PIC executable fails on Linux. The compiled
 # `pcre2_code*` is shared read-only across Stage B workers, each
 # owning its own `pcre2_match_data*` (see
-# `library/src/parsers/regex_parser.cpp`).
+# `lib/src/parse/parsers/regex_parser.cpp`).
 if(NOT USE_SYSTEM_PCRE2)
     FetchContent_Declare(
         pcre2

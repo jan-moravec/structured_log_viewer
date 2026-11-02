@@ -2,9 +2,9 @@
 
 #include "anchor_manager.hpp"
 
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/theme.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/support/theme.hpp>
 
 #include <QModelIndex>
 #include <QObject>

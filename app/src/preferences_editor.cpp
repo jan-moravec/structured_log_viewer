@@ -4,8 +4,8 @@
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
 
-#include <loglib/line_source.hpp>
-#include <loglib/theme.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/support/theme.hpp>
 
 #include <QApplication>
 #include <QCloseEvent>

@@ -5,14 +5,14 @@
 #include "options.hpp"
 #include "session_config.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/session_bundle.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 

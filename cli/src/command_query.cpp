@@ -5,13 +5,13 @@
 #include "load_table.hpp"
 #include "session_config.hpp"
 
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/row_ordering.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_ordering.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <algorithm>
 #include <chrono>

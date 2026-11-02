@@ -1,7 +1,7 @@
 #include "common.hpp"
 
-#include <loglib/time_zone_context.hpp>
-#include <loglib/user_timestamp.hpp>
+#include <loglib/time/time_zone_context.hpp>
+#include <loglib/time/user_timestamp.hpp>
 
 #include <catch2/catch_all.hpp>
 

@@ -2,8 +2,8 @@
 
 #include "histogram_model.hpp"
 
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
 
 #include <QPointer>
 #include <QString>

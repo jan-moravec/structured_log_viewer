@@ -1,0 +1,508 @@
+#include "loglib/time/timestamp_parsing.hpp"
+
+#include <date/date.h>
+#include <date/tz.h>
+#include <fmt/format.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <iterator>
+#include <sstream>
+#include <string>
+#include <string_view>
+
+namespace loglib
+{
+
+namespace
+{
+
+constexpr int DECIMAL_RADIX = 10;
+constexpr size_t ISO_DASH1_INDEX = 4;
+constexpr size_t MONTH_DIGITS_OFFSET = 5;
+constexpr size_t ISO_DASH2_INDEX = 7;
+constexpr size_t DAY_DIGITS_OFFSET = 8;
+constexpr size_t DATE_TIME_SEPARATOR_INDEX = 10;
+constexpr size_t HOUR_DIGITS_OFFSET = 11;
+constexpr size_t TIME_COLON1_INDEX = 13;
+constexpr size_t MINUTE_DIGITS_OFFSET = 14;
+constexpr size_t TIME_COLON2_INDEX = 16;
+constexpr size_t SECOND_DIGITS_OFFSET = 17;
+constexpr size_t FRACTION_DIGITS_SCALE = 6;
+constexpr int MAX_HOUR_INCLUSIVE = 23;
+constexpr int MAX_MINUTE_INCLUSIVE = 59;
+constexpr int MAX_SECOND_INCLUSIVE_LEAP = 60;
+
+constexpr std::int64_t SECONDS_PER_MINUTE = 60;
+constexpr std::int64_t SECONDS_PER_HOUR = 3600;
+
+bool ParseFixedDigits(const char *p, size_t n, int &out)
+{
+    int value = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const char c = p[i];
+        if (c < '0' || c > '9')
+        {
+            return false;
+        }
+        value = (value * DECIMAL_RADIX) + (c - '0');
+    }
+    out = value;
+    return true;
+}
+
+} // namespace
+
+TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
+{
+    constexpr std::string_view ISO_T{"%FT%T"};
+    constexpr std::string_view ISO_SPACE{"%F %T"};
+    constexpr std::string_view ISO_T_OFFSET{"%FT%T%Ez"};
+    constexpr std::string_view ISO_SPACE_OFFSET{"%F %T%Ez"};
+    // Both `%e` (space-padded day) and `%d` (zero-padded day) are
+    // legitimate RFC 3164 spellings. RFC 3164 §4.1.2 mandates the
+    // space-padded shape, but many implementations (and stdlib
+    // `strftime` on Windows) emit the zero-padded shape, so the fast
+    // path handles both. The parser accepts either input verbatim so
+    // either format string routes to the same manual parser.
+    constexpr std::string_view SYSLOG_E{"%b %e %H:%M:%S"};
+    constexpr std::string_view SYSLOG_D{"%b %d %H:%M:%S"};
+    if (format == ISO_T)
+    {
+        return TimestampFormatKind::Iso8601_T;
+    }
+    if (format == ISO_SPACE)
+    {
+        return TimestampFormatKind::Iso8601_Space;
+    }
+    if (format == ISO_T_OFFSET)
+    {
+        return TimestampFormatKind::Iso8601TOffset;
+    }
+    if (format == ISO_SPACE_OFFSET)
+    {
+        return TimestampFormatKind::Iso8601SpaceOffset;
+    }
+    if (format == SYSLOG_E || format == SYSLOG_D)
+    {
+        return TimestampFormatKind::SyslogRfc3164NoYear;
+    }
+    return TimestampFormatKind::Generic;
+}
+
+namespace
+{
+
+/// Which suffix may follow the date, time, and fraction.
+enum class IsoZoneSuffix : std::uint8_t
+{
+    /// Nothing, or a `Z`.
+    NoneOrUtc,
+    /// A required numeric offset.
+    Offset,
+};
+
+/// Parses all of @p digits as a decimal number.
+bool ParseDigits(std::string_view digits, int &out)
+{
+    return ParseFixedDigits(digits.data(), digits.size(), out);
+}
+
+/// Parses `+h`, `+hh`, `+hh:mm`, or `+hhmm` covering all of @p sv.
+bool ParseIsoOffset(std::string_view sv, std::int64_t &offsetSeconds)
+{
+    constexpr size_t COMPACT_DIGITS = 4;
+    constexpr size_t MAX_HOUR_DIGITS = 2;
+    if (sv.empty() || (sv.front() != '+' && sv.front() != '-'))
+    {
+        return false;
+    }
+    const std::int64_t sign = sv.front() == '-' ? -1 : 1;
+    sv.remove_prefix(1);
+
+    int hours = 0;
+    int minutes = 0;
+    const size_t colon = sv.find(':');
+    if (colon != std::string_view::npos)
+    {
+        if (colon == 0 || colon > MAX_HOUR_DIGITS || sv.size() != colon + 1 + 2 ||
+            !ParseDigits(sv.substr(0, colon), hours) || !ParseDigits(sv.substr(colon + 1), minutes))
+        {
+            return false;
+        }
+    }
+    else if (sv.size() == COMPACT_DIGITS)
+    {
+        if (!ParseDigits(sv.substr(0, 2), hours) || !ParseDigits(sv.substr(2), minutes))
+        {
+            return false;
+        }
+    }
+    else if (sv.empty() || sv.size() > MAX_HOUR_DIGITS || !ParseDigits(sv, hours))
+    {
+        return false;
+    }
+    if (hours > MAX_HOUR_INCLUSIVE || minutes > MAX_MINUTE_INCLUSIVE)
+    {
+        return false;
+    }
+    offsetSeconds = sign * ((hours * SECONDS_PER_HOUR) + (minutes * SECONDS_PER_MINUTE));
+    return true;
+}
+
+bool ParseIsoTimestamp(std::string_view sv, char dateTimeSep, IsoZoneSuffix zoneSuffix, TimeStamp &out)
+{
+    // Layout: YYYY-MM-DDsHH:MM:SS[.fraction]
+    constexpr size_t PREFIX_LEN = 19;
+    if (sv.size() < PREFIX_LEN)
+    {
+        return false;
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (!ParseFixedDigits(sv.data() + 0, 4, year) || sv[ISO_DASH1_INDEX] != '-' ||
+        !ParseFixedDigits(sv.data() + MONTH_DIGITS_OFFSET, 2, month) || sv[ISO_DASH2_INDEX] != '-' ||
+        !ParseFixedDigits(sv.data() + DAY_DIGITS_OFFSET, 2, day) || sv[DATE_TIME_SEPARATOR_INDEX] != dateTimeSep ||
+        !ParseFixedDigits(sv.data() + HOUR_DIGITS_OFFSET, 2, hour) || sv[TIME_COLON1_INDEX] != ':' ||
+        !ParseFixedDigits(sv.data() + MINUTE_DIGITS_OFFSET, 2, minute) || sv[TIME_COLON2_INDEX] != ':' ||
+        !ParseFixedDigits(sv.data() + SECOND_DIGITS_OFFSET, 2, second))
+    {
+        return false;
+    }
+
+    size_t cursor = PREFIX_LEN;
+    int64_t fractionalUs = 0;
+    // ISO 8601 permits both `.` and `,` as the decimal separator. Java
+    // Logback, log4j2, and SLF4J emit `,`. Digits past microseconds are
+    // consumed and truncated, so nanosecond timestamps keep their instant.
+    if (cursor < sv.size() && (sv[cursor] == '.' || sv[cursor] == ','))
+    {
+        ++cursor;
+        size_t digits = 0;
+        while (cursor < sv.size() && sv[cursor] >= '0' && sv[cursor] <= '9')
+        {
+            if (digits < FRACTION_DIGITS_SCALE)
+            {
+                fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[cursor] - '0');
+            }
+            ++digits;
+            ++cursor;
+        }
+        if (digits == 0)
+        {
+            return false;
+        }
+        for (size_t i = digits; i < FRACTION_DIGITS_SCALE; ++i)
+        {
+            fractionalUs *= DECIMAL_RADIX;
+        }
+    }
+
+    std::int64_t offsetSeconds = 0;
+    if (zoneSuffix == IsoZoneSuffix::Offset)
+    {
+        if (!ParseIsoOffset(sv.substr(cursor), offsetSeconds))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if (cursor < sv.size() && sv[cursor] == 'Z')
+        {
+            ++cursor;
+        }
+        if (cursor != sv.size())
+        {
+            return false;
+        }
+    }
+
+    // Accept second == 60 to match `date::parse("%T")` leap-second handling.
+    if (hour > MAX_HOUR_INCLUSIVE || minute > MAX_MINUTE_INCLUSIVE || second > MAX_SECOND_INCLUSIVE_LEAP)
+    {
+        return false;
+    }
+
+    const date::year_month_day ymd{
+        date::year{year}, date::month{static_cast<unsigned>(month)}, date::day{static_cast<unsigned>(day)}
+    };
+    if (!ymd.ok())
+    {
+        return false;
+    }
+
+    const auto days = date::sys_days{ymd};
+    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+                         std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::seconds{(hour * 3600) + (minute * 60) + second - offsetSeconds}
+                         ) +
+                         std::chrono::microseconds{fractionalUs};
+    out = TimeStamp{totalUs};
+    // Syntactically valid Y/M/D/H/M/S/fraction is success; the POSIX epoch
+    // and pre-1970 timestamps are valid outputs, not failures.
+    return true;
+}
+
+} // namespace
+
+bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
+{
+    return ParseIsoTimestamp(sv, dateTimeSep, IsoZoneSuffix::NoneOrUtc, out);
+}
+
+bool TryParseIsoOffsetTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
+{
+    return ParseIsoTimestamp(sv, dateTimeSep, IsoZoneSuffix::Offset, out);
+}
+
+namespace
+{
+
+/// Year and month used by the RFC 3164 year-injection heuristic.
+struct AssumedNowFields
+{
+    int year;
+    unsigned month;
+};
+
+AssumedNowFields AssumedNow(std::chrono::system_clock::time_point referenceNow)
+{
+    const auto today = date::floor<date::days>(referenceNow);
+    const date::year_month_day ymd{today};
+    return AssumedNowFields{
+        .year = static_cast<int>(ymd.year()),
+        .month = static_cast<unsigned>(ymd.month()),
+    };
+}
+
+/// Case-sensitive lookup for RFC 3164's English month abbreviations.
+/// Returns 1-based month index (`1..12`) or 0 on miss.
+unsigned MatchSyslogMonth(std::string_view sv) noexcept
+{
+    static constexpr size_t MONTH_ABBREV_LEN = 3;
+    if (sv.size() < MONTH_ABBREV_LEN)
+    {
+        return 0;
+    }
+    static constexpr std::array<std::string_view, 12> MONTHS = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    for (unsigned i = 0; i < MONTHS.size(); ++i)
+    {
+        const auto &m = MONTHS[i];
+        if (sv[0] == m[0] && sv[1] == m[1] && sv[2] == m[2])
+        {
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
+} // namespace
+
+bool TryParseSyslogRfc3164Timestamp(
+    std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
+)
+{
+    // Shortest legal shape is `Jan  1 00:00:00` = 15 bytes.
+    constexpr size_t MIN_LEN = 15;
+    if (sv.size() < MIN_LEN)
+    {
+        return false;
+    }
+
+    const unsigned month = MatchSyslogMonth(sv);
+    if (month == 0)
+    {
+        return false;
+    }
+    if (sv[3] != ' ')
+    {
+        return false;
+    }
+
+    // Skip the optional second padding space (`%e` shape); accept
+    // both `Aug  8 ...` (space-padded) and `Aug 08 ...` (zero-padded).
+    size_t cursor = 4;
+    if (sv[cursor] == ' ')
+    {
+        ++cursor;
+    }
+
+    // Day: 1 or 2 digits.
+    if (cursor >= sv.size() || sv[cursor] < '0' || sv[cursor] > '9')
+    {
+        return false;
+    }
+    int day = sv[cursor] - '0';
+    ++cursor;
+    if (cursor < sv.size() && sv[cursor] >= '0' && sv[cursor] <= '9')
+    {
+        day = (day * DECIMAL_RADIX) + (sv[cursor] - '0');
+        ++cursor;
+    }
+    constexpr int MAX_DAY_INCLUSIVE = 31;
+    if (day < 1 || day > MAX_DAY_INCLUSIVE)
+    {
+        return false;
+    }
+
+    if (cursor >= sv.size() || sv[cursor] != ' ')
+    {
+        return false;
+    }
+    ++cursor;
+
+    // Fixed-width `HH:MM:SS` tail (8 bytes) with a hard end-of-input.
+    constexpr size_t TIME_TAIL_LEN = 8;
+    if (sv.size() - cursor != TIME_TAIL_LEN)
+    {
+        return false;
+    }
+    // Byte offsets within the `HH:MM:SS` tail.
+    constexpr size_t MINUTE_COLON_OFFSET = 2;
+    constexpr size_t MINUTE_DIGITS_TAIL_OFFSET = 3;
+    constexpr size_t SECOND_COLON_OFFSET = 5;
+    constexpr size_t SECOND_DIGITS_TAIL_OFFSET = 6;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (!ParseFixedDigits(sv.data() + cursor, 2, hour))
+    {
+        return false;
+    }
+    if (sv[cursor + MINUTE_COLON_OFFSET] != ':')
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + cursor + MINUTE_DIGITS_TAIL_OFFSET, 2, minute))
+    {
+        return false;
+    }
+    if (sv[cursor + SECOND_COLON_OFFSET] != ':')
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + cursor + SECOND_DIGITS_TAIL_OFFSET, 2, second))
+    {
+        return false;
+    }
+    if (hour > MAX_HOUR_INCLUSIVE || minute > MAX_MINUTE_INCLUSIVE || second > MAX_SECOND_INCLUSIVE_LEAP)
+    {
+        return false;
+    }
+
+    // Standard RFC 3164 year-injection heuristic: if the parsed
+    // month is later in the year than the wall-clock month, the log
+    // record is from the prior calendar year (Dec log viewed in Jan
+    // is the classic case). Falls apart for records older than 12
+    // months, which is an inherent limitation of the year-less
+    // header shape -- users with longer horizons should switch the
+    // sender to RFC 5424.
+    const AssumedNowFields now = AssumedNow(referenceNow);
+    int year = now.year;
+    if (month > now.month)
+    {
+        year -= 1;
+    }
+
+    const date::year_month_day ymd{date::year{year}, date::month{month}, date::day{static_cast<unsigned>(day)}};
+    if (!ymd.ok())
+    {
+        return false;
+    }
+
+    const auto days = date::sys_days{ymd};
+    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+                         std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::seconds{(hour * 3600) + (minute * 60) + second}
+                         );
+    out = TimeStamp{totalUs};
+    return true;
+}
+
+bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
+{
+    return TryParseSyslogRfc3164Timestamp(sv, out, std::chrono::system_clock::now());
+}
+
+namespace
+{
+
+/// Removes fraction digits past microseconds. `date::from_stream` stops at
+/// microseconds and would read the digits left over as a UTC offset.
+void DropExcessFractionDigits(std::string &text)
+{
+    const auto isDigit = [](char ch) { return ch >= '0' && ch <= '9'; };
+    for (size_t dot = text.find('.'); dot != std::string::npos; dot = text.find('.', dot + 1))
+    {
+        const size_t firstDigit = dot + 1;
+        size_t end = firstDigit;
+        while (end < text.size() && isDigit(text[end]))
+        {
+            ++end;
+        }
+        if (end - firstDigit > FRACTION_DIGITS_SCALE)
+        {
+            text.erase(firstDigit + FRACTION_DIGITS_SCALE, end - firstDigit - FRACTION_DIGITS_SCALE);
+        }
+    }
+}
+
+} // namespace
+
+bool TryParseGenericTimestamp(
+    std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
+)
+{
+    scratch.str.assign(sv.data(), sv.size());
+    DropExcessFractionDigits(scratch.str);
+    scratch.stream.clear();
+    scratch.stream.str(scratch.str);
+    out = TimeStamp{};
+    // Call `date::from_stream` directly rather than using
+    // `scratch.stream >> date::parse(format, out)`. The latter expands inside
+    // `date::parse` to an unqualified `from_stream(...)` call, which becomes
+    // ambiguous in C++20+/libc++ where `std::chrono::from_stream` is also a
+    // viable overload for `std::chrono::time_point<system_clock, microseconds>`.
+    date::from_stream(scratch.stream, format.c_str(), out);
+    // The POSIX epoch and pre-1970 timestamps are valid outputs, so only the
+    // stream state decides. Unconsumed input means the format did not match.
+    return !scratch.stream.fail() && scratch.stream.peek() == std::istringstream::traits_type::eof();
+}
+
+bool TryParseTimestamp(
+    std::string_view sv,
+    const std::string &format,
+    TimestampFormatKind kind,
+    TimestampParseScratch &scratch,
+    TimeStamp &out
+)
+{
+    switch (kind)
+    {
+    case TimestampFormatKind::Iso8601_T:
+        return TryParseIsoTimestamp(sv, 'T', out);
+    case TimestampFormatKind::Iso8601_Space:
+        return TryParseIsoTimestamp(sv, ' ', out);
+    case TimestampFormatKind::Iso8601TOffset:
+        return TryParseIsoOffsetTimestamp(sv, 'T', out);
+    case TimestampFormatKind::Iso8601SpaceOffset:
+        return TryParseIsoOffsetTimestamp(sv, ' ', out);
+    case TimestampFormatKind::SyslogRfc3164NoYear:
+        return TryParseSyslogRfc3164Timestamp(sv, out);
+    case TimestampFormatKind::Generic:
+    default:
+        return TryParseGenericTimestamp(sv, format, scratch, out);
+    }
+}
+
+} // namespace loglib

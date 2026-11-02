@@ -1,19 +1,19 @@
 #include "common.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/compact_log_value.hpp>
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/timestamp_backfill.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
+#include <loglib/table/timestamp_backfill.hpp>
 
 #include <catch2/catch_all.hpp>
 

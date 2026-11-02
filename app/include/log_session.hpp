@@ -2,10 +2,10 @@
 
 #include "log_session_presentation.hpp"
 
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QAtomicInteger>
 #include <QElapsedTimer>

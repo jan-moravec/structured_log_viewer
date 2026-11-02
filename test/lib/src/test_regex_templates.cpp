@@ -1,10 +1,10 @@
 #include "common.hpp"
 
-#include <loglib/log_data.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parsers/regex_parser.hpp>
-#include <loglib/regex_templates.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 
 #include <catch2/catch_all.hpp>
 

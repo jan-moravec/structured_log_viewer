@@ -13,11 +13,11 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/file_line_source.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/regex_parser.hpp>
-#include <loglib/regex_templates.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>

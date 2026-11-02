@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/regex_templates.hpp>
+#include <loglib/parse/regex_templates.hpp>
 
 #include <QDir>
 #include <QList>

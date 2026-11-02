@@ -10,14 +10,14 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/key_index.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
 
 #include <memory>
 

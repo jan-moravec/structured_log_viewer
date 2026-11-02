@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/log_parse_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -26,7 +26,7 @@ namespace logapp
 /// Cancellation is explicit: `NotifyStop` flips a flag and broadcasts
 /// to wake any blocked producer immediately. We do not use
 /// `std::stop_token` because `loglib::StopToken` has no callback
-/// registry (see `loglib/stop_token.hpp`). `Reset` re-arms the queue
+/// registry (see `loglib/core/stop_token.hpp`). `Reset` re-arms the queue
 /// for a new session and is intended to be called from the GUI thread
 /// after the previous worker has been joined.
 class BoundedBatchQueue

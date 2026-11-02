@@ -2,7 +2,7 @@
 
 #include "log_model.hpp"
 
-#include <loglib/log_table.hpp>
+#include <loglib/table/log_table.hpp>
 #include <algorithm>
 
 #include <QMetaObject>

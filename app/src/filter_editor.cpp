@@ -2,9 +2,9 @@
 
 #include "theme_control.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/time_zone_context.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QApplication>
 #include <QDoubleValidator>

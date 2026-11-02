@@ -66,7 +66,7 @@ include(cmake/BundleLicenses.cmake)
 option(SLV_BUILD_GUI "Build the StructuredLogViewer GUI" ON)
 option(SLV_BUILD_CLI "Build the slp command-line tool" ON)
 
-add_subdirectory(library)
+add_subdirectory(lib)
 if(SLV_BUILD_GUI)
     add_subdirectory(app)
 endif()

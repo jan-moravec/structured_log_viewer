@@ -6,14 +6,14 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/session_bundle.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>

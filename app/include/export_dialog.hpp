@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/exports/row_exporter.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
 
 #include <QDialog>
 #include <QString>

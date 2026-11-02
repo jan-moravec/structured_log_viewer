@@ -1,5 +1,5 @@
-#include <loglib/rotation_siblings.hpp>
-#include <loglib/source_plan.hpp>
+#include <loglib/ingest/rotation_siblings.hpp>
+#include <loglib/ingest/source_plan.hpp>
 
 #include <test_common/temp_dir.hpp>
 

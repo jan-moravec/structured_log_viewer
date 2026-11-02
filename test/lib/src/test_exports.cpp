@@ -1,15 +1,15 @@
-#include <loglib/bytes_producer.hpp>
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
 

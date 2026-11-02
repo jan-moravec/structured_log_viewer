@@ -7,7 +7,7 @@
 // `simplified()` normalisation. So are `Exactly` and `Wildcard` patterns;
 // `Contains` patterns collapse whitespace but keep one space at an end.
 
-#include <loglib/filter_expression.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <string_view>
 #include <vector>

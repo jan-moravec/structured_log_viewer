@@ -4,7 +4,7 @@
 
 #include "theme_control.hpp"
 
-#include <loglib/theme.hpp>
+#include <loglib/support/theme.hpp>
 
 #include <QApplication>
 #include <QDir>

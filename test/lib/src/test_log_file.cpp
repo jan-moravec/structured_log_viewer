@@ -1,6 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/log_file.hpp>
+#include <loglib/core/log_file.hpp>
 
 #include <catch2/catch_all.hpp>
 

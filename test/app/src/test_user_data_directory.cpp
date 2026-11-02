@@ -1,4 +1,4 @@
-#include <loglib/user_paths.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <QCoreApplication>
 #include <QDir>

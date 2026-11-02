@@ -2,14 +2,14 @@
 
 #include "anchor_manager.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <QAbstractTableModel>
 #include <QFuture>

@@ -1,6 +1,6 @@
 #include "platform.hpp"
 
-#include <loglib/stop_token.hpp>
+#include <loglib/core/stop_token.hpp>
 
 #include <catch2/catch_all.hpp>
 

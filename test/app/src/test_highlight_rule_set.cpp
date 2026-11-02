@@ -13,18 +13,18 @@
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
-#include <loglib/leaf_rule_compile.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
 
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <QSignalSpy>
 #include <QString>

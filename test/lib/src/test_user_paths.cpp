@@ -1,5 +1,5 @@
-#include <loglib/regex_templates.hpp>
-#include <loglib/user_paths.hpp>
+#include <loglib/parse/regex_templates.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <catch2/catch_all.hpp>
 

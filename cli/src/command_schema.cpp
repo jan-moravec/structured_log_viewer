@@ -8,8 +8,8 @@
 #include "text_table.hpp"
 #include "text_util.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/log_value.hpp>
 
 #include <cstdint>
 #include <optional>

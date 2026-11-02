@@ -2,7 +2,7 @@
 
 #include "diagnostics.hpp"
 
-#include <loglib/user_paths.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <cstdint>
 #include <cstdlib>

@@ -3,8 +3,8 @@
 #include "advanced_filter_highlighter.hpp"
 #include "theme_control.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/query_parser.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <QColor>
 #include <QDialogButtonBox>

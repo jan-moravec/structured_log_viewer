@@ -1,6 +1,6 @@
 #include "session_bundle_dialog.hpp"
 
-#include <loglib/session_bundle.hpp>
+#include <loglib/output/session_bundle.hpp>
 
 #include <QCheckBox>
 #include <QDialogButtonBox>

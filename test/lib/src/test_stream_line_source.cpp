@@ -1,6 +1,6 @@
-#include <loglib/bytes_producer.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/stream_line_source.hpp>
 
 #include <catch2/catch_all.hpp>
 
