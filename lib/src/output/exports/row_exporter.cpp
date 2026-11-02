@@ -36,6 +36,40 @@ void PollStop(const loglib::StopToken &token)
     }
 }
 
+/// Calls @p writeRow for every source row that still exists, polling cancellation between batches and reporting
+/// progress. Rows past the end of the table, for example after a live-tail eviction, are skipped.
+template <typename WriteRow>
+void ForEachSourceRow(
+    const RowSource &source,
+    size_t lineCount,
+    const loglib::StopToken &stopToken,
+    const RowProgressCallback &progress,
+    WriteRow writeRow
+)
+{
+    const size_t total = source.sourceRows.size();
+    for (size_t slot = 0; slot < total; ++slot)
+    {
+        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
+        {
+            PollStop(stopToken);
+        }
+        const std::size_t sourceRow = source.sourceRows[slot];
+        if (sourceRow < lineCount)
+        {
+            writeRow(sourceRow);
+        }
+        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        {
+            progress(slot + 1, total);
+        }
+    }
+    if (progress)
+    {
+        progress(total, total);
+    }
+}
+
 // -----------------------------------------------------------------
 // JSON Lines
 // -----------------------------------------------------------------
@@ -64,33 +98,13 @@ void JsonLinesExporter::Run(
     std::string scratch;
     scratch.reserve(ROW_SCRATCH_RESERVE);
 
-    const size_t total = source.sourceRows.size();
-    for (size_t slot = 0; slot < total; ++slot)
-    {
-        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            PollStop(stopToken);
-        }
-        const std::size_t sourceRow = source.sourceRows[slot];
-        if (sourceRow >= lines.size())
-        {
-            continue;
-        }
+    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
         const auto &line = lines[sourceRow];
         scratch.clear();
         loglib::internal::SerializeNormalizedJsonRow(line, keys, scratch);
         scratch.push_back('\n');
         sink.Write(scratch);
-
-        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            progress(slot + 1, total);
-        }
-    }
-    if (progress)
-    {
-        progress(total, total);
-    }
+    });
 }
 
 // -----------------------------------------------------------------
@@ -182,22 +196,8 @@ void CsvExporter::Run(
         scratch.clear();
     }
 
-    const size_t total = source.sourceRows.size();
     std::string cellBuffer;
-    for (size_t slot = 0; slot < total; ++slot)
-    {
-        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            PollStop(stopToken);
-        }
-        const std::size_t sourceRow = source.sourceRows[slot];
-        // Skip past-the-end indices so a mid-export FIFO eviction
-        // on the GUI thread cannot hand us a dropped row.
-        if (sourceRow >= lines.size())
-        {
-            continue;
-        }
-
+    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
         scratch.clear();
         bool first = true;
         for (const size_t col : source.visibleColumns)
@@ -213,16 +213,7 @@ void CsvExporter::Run(
         }
         scratch.push_back('\n');
         sink.Write(scratch);
-
-        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            progress(slot + 1, total);
-        }
-    }
-    if (progress)
-    {
-        progress(total, total);
-    }
+    });
 }
 
 // -----------------------------------------------------------------
@@ -247,23 +238,12 @@ void SnapshotExporter::Run(
     assert(source.table != nullptr);
     const auto &lines = source.table->Data().Lines();
 
-    const size_t total = source.sourceRows.size();
-    for (size_t slot = 0; slot < total; ++slot)
-    {
-        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            PollStop(stopToken);
-        }
-        const std::size_t sourceRow = source.sourceRows[slot];
-        if (sourceRow >= lines.size())
-        {
-            continue;
-        }
+    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
         const auto &line = lines[sourceRow];
         const auto *lineSource = line.Source();
         if (lineSource == nullptr)
         {
-            continue;
+            return;
         }
         // Skip unavailable source rows, but let sink failures abort.
         std::string raw;
@@ -273,20 +253,11 @@ void SnapshotExporter::Run(
         }
         catch (const std::exception &)
         {
-            continue;
+            return;
         }
         sink.Write(raw);
         sink.WriteChar('\n');
-
-        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            progress(slot + 1, total);
-        }
-    }
-    if (progress)
-    {
-        progress(total, total);
-    }
+    });
 }
 
 // -----------------------------------------------------------------
@@ -370,23 +341,8 @@ void MarkdownExporter::Run(
         scratch.clear();
     }
 
-    const size_t total = source.sourceRows.size();
     std::string cellBuffer;
-    for (size_t slot = 0; slot < total; ++slot)
-    {
-        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            PollStop(stopToken);
-        }
-        const std::size_t sourceRow = source.sourceRows[slot];
-        // Skip past-the-end indices; matches JsonLines / Snapshot
-        // so a mid-export FIFO eviction on the GUI thread cannot
-        // hand us a dropped row.
-        if (sourceRow >= lines.size())
-        {
-            continue;
-        }
-
+    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
         scratch.clear();
         scratch.push_back('|');
         for (const size_t col : source.visibleColumns)
@@ -399,16 +355,7 @@ void MarkdownExporter::Run(
         }
         scratch.push_back('\n');
         sink.Write(scratch);
-
-        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            progress(slot + 1, total);
-        }
-    }
-    if (progress)
-    {
-        progress(total, total);
-    }
+    });
 }
 
 } // namespace

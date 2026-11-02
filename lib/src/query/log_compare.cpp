@@ -429,6 +429,53 @@ int CompareRows(
     }
 }
 
+namespace
+{
+
+/// Sorts @p permutation by the three-way @p compare, breaking ties by input index so the order is total. The
+/// direction is a template parameter so each instantiation compiles to a plain comparison.
+template <bool Ascending, typename ThreeWay>
+void SortWithTieBreak(std::vector<size_t> &permutation, const ThreeWay &compare)
+{
+    tbb::parallel_sort(permutation.begin(), permutation.end(), [&compare](size_t a, size_t b) {
+        const int cmp = compare(a, b);
+        if (cmp != 0)
+        {
+            return Ascending ? cmp < 0 : cmp > 0;
+        }
+        return a < b;
+    });
+}
+
+/// Sorts @p permutation by the precomputed per-row @p ranks, breaking ties by input index. The rank comparison stays a
+/// direct integer compare, because this is the fast path for enumeration and level columns.
+template <bool Ascending, typename Rank>
+void SortByRanksImpl(std::vector<size_t> &permutation, const std::vector<Rank> &ranks)
+{
+    tbb::parallel_sort(permutation.begin(), permutation.end(), [&ranks](size_t a, size_t b) {
+        if (ranks[a] != ranks[b])
+        {
+            return Ascending ? ranks[a] < ranks[b] : ranks[a] > ranks[b];
+        }
+        return a < b;
+    });
+}
+
+template <typename Rank>
+void SortByRanks(std::vector<size_t> &permutation, const std::vector<Rank> &ranks, bool ascending)
+{
+    if (ascending)
+    {
+        SortByRanksImpl<true>(permutation, ranks);
+    }
+    else
+    {
+        SortByRanksImpl<false>(permutation, ranks);
+    }
+}
+
+} // namespace
+
 std::vector<size_t> SortPermutationByColumn(
     const LogTable &table,
     std::span<const size_t> logRows,
@@ -477,34 +524,11 @@ std::vector<size_t> SortPermutationByColumn(
             }
         );
 
-        // `tbb::parallel_sort` is not stable, but the input-index
-        // tie-break gives a strict total order -- effectively
-        // `std::stable_sort` semantics for callers that rely on
-        // insertion-order ties.
-        if (ascending)
-        {
-            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
-                if (rankForRow[a] != rankForRow[b])
-                {
-                    return rankForRow[a] < rankForRow[b];
-                }
-                return a < b;
-            });
-        }
-        else
-        {
-            // Descending: invert the primary order, keep the
-            // secondary (input index) ascending. Matches legacy
-            // semantics where ties always resolved to source-row
-            // ascending regardless of the user's chosen direction.
-            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
-                if (rankForRow[a] != rankForRow[b])
-                {
-                    return rankForRow[a] > rankForRow[b];
-                }
-                return a < b;
-            });
-        }
+        // The input-index tie-break gives a strict total order, so the
+        // unstable parallel sort behaves like a stable sort for callers
+        // that rely on insertion-order ties. Descending inverts only the
+        // primary order; ties still resolve to source-row ascending.
+        SortByRanks(permutation, rankForRow, ascending);
         return permutation;
     }
 
@@ -545,26 +569,7 @@ std::vector<size_t> SortPermutationByColumn(
                 }
             );
         }
-        if (ascending)
-        {
-            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
-                if (rankForRow[a] != rankForRow[b])
-                {
-                    return rankForRow[a] < rankForRow[b];
-                }
-                return a < b;
-            });
-        }
-        else
-        {
-            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
-                if (rankForRow[a] != rankForRow[b])
-                {
-                    return rankForRow[a] > rankForRow[b];
-                }
-                return a < b;
-            });
-        }
+        SortByRanks(permutation, rankForRow, ascending);
         return permutation;
     }
 
@@ -573,35 +578,16 @@ std::vector<size_t> SortPermutationByColumn(
     // the non-enum types (`Time`, `Integer`, `Floating`, string),
     // where no cheap pre-materialisation is available. Still benefits
     // from parallel sort.
+    const auto compare = [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
+        return CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
+    };
     if (ascending)
     {
-        tbb::parallel_sort(
-            permutation.begin(),
-            permutation.end(),
-            [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
-                const int cmp = CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
-                if (cmp != 0)
-                {
-                    return cmp < 0;
-                }
-                return a < b;
-            }
-        );
+        SortWithTieBreak<true>(permutation, compare);
     }
     else
     {
-        tbb::parallel_sort(
-            permutation.begin(),
-            permutation.end(),
-            [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
-                const int cmp = CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
-                if (cmp != 0)
-                {
-                    return cmp > 0;
-                }
-                return a < b;
-            }
-        );
+        SortWithTieBreak<false>(permutation, compare);
     }
     return permutation;
 }
