@@ -23,35 +23,41 @@
 namespace loglib::internal
 {
 
-/// UTF-8 BOM. Some editors (Notepad, older PowerShell) prepend it
-/// to text files; with the BOM intact the `^date` / `^IP` / `^[`
-/// anchors in the built-in templates can't bind to position 0 and
-/// auto-detect silently refuses every file. Stripped from the first
-/// probe line only, leaving the rest of the byte stream untouched.
+/**
+ * UTF-8 BOM. Some editors (Notepad, older PowerShell) prepend it
+ * to text files; with the BOM intact the ^date / ^IP / ^[
+ * anchors in the built-in templates can't bind to position 0 and
+ * auto-detect silently refuses every file. Stripped from the first
+ * probe line only, leaving the rest of the byte stream untouched.
+ */
 inline constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
-/// PCRE2 backtracking limits applied to every match. The defaults
-/// (10M / 10M) are too permissive for untrusted patterns —
-/// something like `.*.*.*` against a long line could otherwise
-/// stall the parse for seconds. These values leave well-behaved
-/// patterns (lnav / grok) untouched and surface a `ParsedLineError`
-/// on pathological inputs.
+/**
+ * PCRE2 backtracking limits applied to every match. The defaults
+ * (10M / 10M) are too permissive for untrusted patterns —
+ * something like .*.*.* against a long line could otherwise
+ * stall the parse for seconds. These values leave well-behaved
+ * patterns (lnav / grok) untouched and surface a ParsedLineError
+ * on pathological inputs.
+ */
 inline constexpr uint32_t PCRE2_MATCH_LIMIT = 100'000;
 inline constexpr uint32_t PCRE2_DEPTH_LIMIT = 1'000;
 
 // ---------------------------------------------------------------------
 // CompiledPattern: shared compiled state for one PCRE2 pattern.
 
-/// Schema of a compiled pattern: every named capture group, sorted
-/// by `groupIndex` so the schema reads in pattern-source order
-/// (PCRE2 returns them alphabetically via
-/// `pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)`). The KeyId at
-/// `[i]` is `keys.GetOrInsert(groupNames[i])`; workers index into
-/// the ovector at `groupIndices[i] * 2`. Source order is
-/// consumer-visible: column order in `LogTable` follows KeyId
-/// allocation, so columns appear left-to-right as the user wrote
-/// them (e.g. CLF: `clientip ident auth timestamp verb ...`, not
-/// alphabetical `auth bytes clientip ...`).
+/**
+ * Schema of a compiled pattern: every named capture group, sorted
+ * by groupIndex so the schema reads in pattern-source order
+ * (PCRE2 returns them alphabetically via
+ * pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)). The KeyId at
+ * [i] is keys.GetOrInsert(groupNames[i]); workers index into
+ * the ovector at groupIndices[i] * 2. Source order is
+ * consumer-visible: column order in LogTable follows KeyId
+ * allocation, so columns appear left-to-right as the user wrote
+ * them (e.g. CLF: clientip ident auth timestamp verb ..., not
+ * alphabetical auth bytes clientip ...).
+ */
 struct PatternSchema
 {
     std::vector<std::string> groupNames;
@@ -63,12 +69,14 @@ class CompiledPattern
 public:
     CompiledPattern() = default;
 
-    /// Returns true on success. On failure, populates @p errorOut
-    /// with a human-readable message (used in parse-time error
-    /// reporting). On success the pattern is fully ready:
-    /// JIT-compiled where the platform allows (silently falls back
-    /// to the interpreted matcher otherwise), with a match context
-    /// carrying the project's match/depth limits.
+    /**
+     * Returns true on success. On failure, populates @p errorOut
+     * with a human-readable message (used in parse-time error
+     * reporting). On success the pattern is fully ready:
+     * JIT-compiled where the platform allows (silently falls back
+     * to the interpreted matcher otherwise), with a match context
+     * carrying the project's match/depth limits.
+     */
     bool Compile(std::string_view pattern, std::string &errorOut)
     {
         mPatternString.assign(pattern);
@@ -126,13 +134,15 @@ public:
         return mCode.get();
     }
 
-    /// The match context is set up once during `Compile()` (its
-    /// limits never change afterwards) and PCRE2's `pcre2_match`
-    /// requires a non-const context. Exposing a single method
-    /// returning `pcre2_match_context *` even from a logically
-    /// const `CompiledPattern` avoids sprinkling `const_cast`
-    /// throughout the parser; `unique_ptr::get() const` already
-    /// returns the mutable pointer type.
+    /**
+     * The match context is set up once during Compile() (its
+     * limits never change afterwards) and PCRE2's pcre2_match
+     * requires a non-const context. Exposing a single method
+     * returning pcre2_match_context * even from a logically
+     * const CompiledPattern avoids sprinkling const_cast
+     * throughout the parser; unique_ptr::get() const already
+     * returns the mutable pointer type.
+     */
     [[nodiscard]] pcre2_match_context *Context() const noexcept
     {
         return mContext.get();
@@ -153,10 +163,12 @@ public:
         return mJitCompiled;
     }
 
-    /// Allocate per-worker match data sized to this pattern's
-    /// capture count. PCRE2 documents
-    /// `pcre2_match_data_create_from_pattern` as the canonical
-    /// sizing call. Caller owns the returned handle.
+    /**
+     * Allocate per-worker match data sized to this pattern's
+     * capture count. PCRE2 documents
+     * pcre2_match_data_create_from_pattern as the canonical
+     * sizing call. Caller owns the returned handle.
+     */
     [[nodiscard]] Pcre2MatchDataPtr NewMatchData() const
     {
         if (mCode == nullptr)
@@ -181,10 +193,10 @@ private:
         uint32_t entrySize = 0;
         pcre2_pattern_info(mCode.get(), PCRE2_INFO_NAMEENTRYSIZE, &entrySize);
         PCRE2_SPTR table = nullptr;
-        // `pcre2_pattern_info` takes a `void *` out-parameter; going
-        // straight from `PCRE2_SPTR *` (a two-level pointer) is a
-        // multi-level implicit conversion. Route via `void *` so
-        // clang-tidy's `bugprone-multi-level-implicit-pointer-conversion`
+        // pcre2_pattern_info takes a void * out-parameter; going
+        // straight from PCRE2_SPTR * (a two-level pointer) is a
+        // multi-level implicit conversion. Route via void * so
+        // clang-tidy's bugprone-multi-level-implicit-pointer-conversion
         // stays quiet without changing the ABI-level call.
         pcre2_pattern_info(mCode.get(), PCRE2_INFO_NAMETABLE, static_cast<void *>(&table));
         if (table == nullptr || entrySize < 3)
@@ -208,8 +220,8 @@ private:
         // Re-sort into pattern-source order. PCRE2 gives us the
         // name table sorted alphabetically by name; sorting by
         // group index here is what makes columns follow the
-        // order the user wrote (see `PatternSchema`
-        // doc). `groupNames` and `groupIndices` are parallel
+        // order the user wrote (see PatternSchema
+        // doc). groupNames and groupIndices are parallel
         // arrays, so we permute them together via an index vector
         // — cheap, once at compile time.
         std::vector<size_t> order(mSchema.groupIndices.size());
