@@ -51,6 +51,7 @@ add_library(
     src/core/log_data.cpp
     src/core/log_file.cpp
     src/query/log_filter.cpp
+    src/query/log_filter_evaluator.cpp
     src/core/log_level.cpp
     src/core/log_line.cpp
     src/parse/log_parser.cpp
