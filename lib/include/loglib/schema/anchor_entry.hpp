@@ -16,27 +16,27 @@ namespace loglib
 {
 
 /**
- * @brief A persisted bookmark on one log line.
+ * @brief A saved bookmark on one log line.
  *
- * Identified by (locator, lineId): lineId is the parser's
- * monotonic per-LineSource id; locator disambiguates files
- * in a multi-file session (empty for single-file / network).
- * colorIndex indexes Theme::anchorPalette; out-of-range
- * values are dropped on load.
- *
- * note is a one-line free-form annotation surfaced in the
- * Anchors dock, row tooltips, and the record-detail view.
- * Empty for anchors saved by older builds -- Glaze's
- * error_on_unknown_keys=false + default-on-missing lets
- * them load cleanly. Multi-line values are legal on disk but
- * the editors sanitise on commit, so the on-disk shape is a
- * single line by construction.
+ * A line is identified by the locator of its source together with the line id the parser gave it.
  */
 struct AnchorEntry
 {
+    /** @brief Tells the source files of a session apart. Empty for a session with one file or a network source. */
     std::string locator;
+
+    /** @brief The parser's line id, which grows by one for each line of a source. */
     uint64_t lineId = 0;
+
+    /** @brief The index into the theme's anchor colors. A saved value outside the palette is dropped on load. */
     uint8_t colorIndex = 0;
+
+    /**
+     * @brief A short note for the user, empty if there is none.
+     *
+     * An anchor saved without a note loads with an empty one. A note with several lines is accepted from a file, but
+     * editors keep it to one line.
+     */
     std::string note;
 
     friend bool operator==(const AnchorEntry &, const AnchorEntry &) = default;

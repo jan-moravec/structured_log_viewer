@@ -19,45 +19,35 @@ namespace loglib
 {
 
 /**
- * @brief A user-defined row-highlighting rule.
+ * @brief A rule that changes how matching rows look.
  *
- * Configuration-scope: persisted alongside columns so a
- * rule bound to service == "auth" roams with the column
- * schema. Filters, by contrast, are session-scope.
+ * A rule belongs to the configuration, so it follows the column layout from session to session, for example a rule on
+ * service equal to auth. Filters belong to one session instead.
  *
- * Bound by columnKeys (matching Column::keys) so rules
- * survive MoveColumn, cross-source apply, and unrelated
- * column additions. Unresolvable rules are inert at match
- * time (editor greys them out).
- *
- * The type / matchType / filter* fields mirror LeafRule
- * so ToLeafRule and CompileLeaf apply uniformly to filters
- * and highlight rules. Rules apply in vector order, last match
- * wins per row.
+ * A rule finds its column by columnKeys, which are matched against Column::keys, so it keeps working when columns are
+ * moved or added. A rule whose column cannot be found does nothing. The type, matchType and filter fields have the same
+ * meaning as in LeafRule, so ToLeafRule and CompileLeaf treat filters and highlight rules alike. Rules are applied in
+ * list order, and the last matching rule wins for a row.
  */
 struct HighlightRule
 {
     /**
-     * @brief Aliased so filter-side and highlight-side rules share a
-     * single canonical Type / Match enum without changing
-     * the on-disk JSON.
+     * @brief The same types as a filter leaf uses, so both kinds of rule share them and the saved files do not change.
      */
     using Type = loglib::LeafRule::Type;
     using Match = loglib::LeafRule::Match;
 
-    /** @brief User-visible label. Free-form. */
+    /** @brief A label for the user. */
     std::string name;
 
     /**
-     * @brief Disabled rules stay in the list but don't paint, so a
-     * triage playbook can pause a rule without deleting it.
+     * @brief A disabled rule stays in the list but does not change any row, so it can be paused without deleting it.
      */
     bool enabled = true;
 
     /**
-     * @brief Column identity (subset-matched against Column::keys).
-     * Empty = no column bound (rule is inert). Usually a
-     * single-entry vector.
+     * @brief The keys of the column to test, matched as a subset of Column::keys. Usually one key. With none, the rule
+     * does nothing.
      */
     std::vector<std::string> columnKeys;
 
@@ -70,8 +60,9 @@ struct HighlightRule
     std::optional<double> filterMaxValue;
     std::vector<std::string> filterValues;
 
-    /** @brief 0 = inherit; 1..HIGHLIGHT_PALETTE_SIZE = theme slot. */
+    /** @brief The theme color for text, from 1 to HIGHLIGHT_PALETTE_SIZE. Zero keeps the normal color. */
     uint8_t foregroundIndex = 0;
+    /** @brief The theme color for the background, with the same values as foregroundIndex. */
     uint8_t backgroundIndex = 0;
     bool bold = false;
     bool italic = false;

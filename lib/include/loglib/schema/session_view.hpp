@@ -14,9 +14,8 @@ namespace loglib
 {
 
 /**
- * @brief Persisted sort. columnIndex == -1 means "no sort applied";
- * positive indices index LogConfiguration::columns and are remapped by
- * LogConfigurationManager::MoveColumn.
+ * @brief The saved sort. A column index of -1 means no sort. Other values index LogConfiguration::columns, and
+ * LogConfigurationManager::MoveColumn keeps them up to date.
  */
 struct Sort
 {
@@ -25,11 +24,10 @@ struct Sort
 };
 
 /**
- * @brief View/session state: the filter tree and persisted sort.
+ * @brief The filter and the sort of a session as one value.
  *
- * LogConfiguration stores these as adjacent root members so JSON
- * stays flat (expression, sort). Callers that want the pair as
- * one value construct a SessionView.
+ * LogConfiguration stores the two as separate members to keep its JSON flat. Build a SessionView when a caller wants to
+ * handle them together.
  */
 struct SessionView
 {

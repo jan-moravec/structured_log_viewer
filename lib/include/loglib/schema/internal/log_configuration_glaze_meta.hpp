@@ -15,16 +15,11 @@
 
 #include <array>
 
-// Glaze meta-specialisations for LogConfiguration enums. String-based
-// JSON encoding keeps saved configs stable and human-readable. The on-disk
-// keys stay as the original lowerCamelCase even though the C++
-// enumerators are UpperCamelCase, so existing configurations keep working.
-// Out-of-line so the public header does not pull in <glaze/glaze.hpp>.
-// (floating rather than double since double is a reserved keyword.)
+// Enums are written as strings, which keeps saved files readable and stable. The strings are lowerCamelCase while the
+// C++ enumerators are UpperCamelCase. The specializations live in this header so the public headers do not include the
+// JSON library. The name floating is used for the type because double is a keyword.
 //
-// keys and value are slot names mandated by glaze's reflection: its
-// template machinery looks them up by exact name, so they cannot adopt the
-// project-wide UPPER_CASE constexpr convention without breaking JSON I/O.
+// The names keys and value are required by the JSON library's reflection, so the naming check is turned off here.
 // NOLINTBEGIN(readability-identifier-naming)
 
 template <> struct glz::meta<loglib::ColumnType>
@@ -50,15 +45,11 @@ template <> struct glz::meta<loglib::LeafRule::Match>
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
 
-// HighlightRule::Type / HighlightRule::Match are aliases of
-// LeafRule::Type / LeafRule::Match, so their meta comes from
-// the specialisations above.
+// The types of HighlightRule are aliases of the LeafRule ones, so they use the specializations above.
 
 template <> struct glz::meta<loglib::Source::Kind>
 {
     using enum loglib::Source::Kind;
-    // Append Stdin so existing File and NetworkStream ordinals
-    // remain stable in saved sessions. Stdin sessions are not auto-saved.
     static constexpr std::array keys{"file", "networkStream", "stdin"};
     static constexpr std::array value{File, NetworkStream, Stdin};
 };
@@ -70,10 +61,8 @@ template <> struct glz::meta<loglib::Source::Format>
     static constexpr std::array value{Json, Logfmt, Csv, Regex};
 };
 
-// Pinned wire schemas for nested types. Explicit names turn a field
-// rename into a compile-time conflict instead of a silent breaking
-// schema change. The names match the current implicit reflection,
-// so adopting these meta declarations is a no-op for on-disk JSON.
+// The saved field names of the nested types are listed explicitly. Renaming a member then fails to compile and cannot
+// silently change the saved format.
 template <> struct glz::meta<loglib::Source>
 {
     using T = loglib::Source;
@@ -126,9 +115,7 @@ template <> struct glz::meta<loglib::Column>
     );
 };
 
-// A leaf of the filter tree. Column identity is a subset-match
-// against Column::keys, so leaves survive
-// MoveColumn and cross-source apply without any remap.
+// A leaf of the filter tree. It finds its column by matching its keys against Column::keys.
 template <> struct glz::meta<loglib::LeafRule>
 {
     using T = loglib::LeafRule;
@@ -154,18 +141,12 @@ template <> struct glz::meta<loglib::LeafRule>
     );
 };
 
-// Wire-format shape for the tagged boolean expression tree.
-//
-// On disk each node looks like:
+// The saved form of the filter tree. Each node is an object with a kind field next to its payload:
 //   { "kind": "and", "children": [ ... ] }
 //   { "kind": "or",  "children": [ ... ] }
 //   { "kind": "not", "child": <sub-expression> }
 //   { "kind": "leaf", "rule": <LeafRule> }
-//
-// The discriminator lives on the "kind" field chosen by
-// glz::meta<std::variant<...>>::tag below. Each node struct
-// exposes only its payload field so the tag sits alongside it at
-// the same level.
+// The kind comes from the tag of the variant specialization below, and each node type exposes only its payload.
 template <> struct glz::meta<loglib::FilterExpression::Leaf>
 {
     using T = loglib::FilterExpression::Leaf;
@@ -184,19 +165,16 @@ template <> struct glz::meta<loglib::FilterExpression::Or>
     static constexpr auto value = object("children", &T::children);
 };
 
-// Not::child is a unique_ptr<FilterExpression>; Glaze handles
-// smart pointers automatically. A null child on-disk is represented
-// as null and reconstructed as a null pointer -- editors treat
-// that as an unfinished tree and coerce it to match-all on load.
+// The child of a Not is a smart pointer, which the JSON library reads and writes by itself. A null child is saved as
+// null and loaded as null, and an editor treats such a tree as unfinished and turns it into match-all.
 template <> struct glz::meta<loglib::FilterExpression::Not>
 {
     using T = loglib::FilterExpression::Not;
     static constexpr auto value = object("child", &T::child);
 };
 
-// Internally-tagged variant: the discriminator "kind" lives on
-// the same object as the payload fields. Names are stable on disk;
-// append new alternatives at the end, never reorder.
+// The kind field sits in the same object as the payload fields. The kind names are part of the saved format, so add new
+// alternatives at the end and never reorder them.
 template <>
 struct glz::meta<std::variant<
     loglib::FilterExpression::Leaf,
@@ -220,17 +198,13 @@ template <> struct glz::meta<loglib::Sort>
     static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
 };
 
-// Wire schema for one anchor. On-disk JSON:
-//   { "locator": "...",    // stable per-source id (file path, stream)
-//     "lineId":  1234,     // provider-assigned line id
-//     "colorIndex": 0,     // palette slot
-//     "note":    "..." }   // optional; sanitised + byte-capped by
-//                          // AnchorManager::SanitiseNote. Absent
-//                          // on pre-notes configs; loads as "".
-//
-// Add new fields at the end of object(...) with defaults in
-// AnchorEntry so old configs still round-trip.
-// error_on_unknown_keys=false lets old builds tolerate new keys.
+// The saved form of one anchor:
+//   { "locator": "...",    // identifies the source
+//     "lineId":  1234,     // the line id from the parser
+//     "colorIndex": 0,     // the palette color
+//     "note":    "..." }   // optional, loads as an empty string when missing
+// Add new fields at the end of the object, with defaults in AnchorEntry, so older files still load. Unknown fields are
+// ignored, so older builds can read files that have newer fields.
 template <> struct glz::meta<loglib::AnchorEntry>
 {
     using T = loglib::AnchorEntry;
