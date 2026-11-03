@@ -2,7 +2,7 @@
 
 Every header under lib/include must start with a /** */ file comment that
 has an @brief, placed above #pragma once, and comments must not contain
-backticks.
+backticks. Comments must use /** */ and not the triple-slash form.
 
 Invoked from pre-commit.
 """
@@ -27,6 +27,9 @@ def check(path: Path) -> list[str]:
     if not head.startswith("/**") or "@brief" not in head[: max(pragma, 0)]:
         problems.append("1: header does not start with a /** */ file comment with @brief above #pragma once")
     for match in COMMENT_RE.finditer(text):
+        if match.group().startswith("///"):
+            line = text.count("\n", 0, match.start()) + 1
+            problems.append(f"{line}: triple-slash comment, use /** */")
         if "`" in match.group():
             line = text.count("\n", 0, match.start() + match.group().index("`")) + 1
             problems.append(f"{line}: backtick in comment")

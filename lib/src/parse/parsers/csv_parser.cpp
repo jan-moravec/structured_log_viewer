@@ -231,7 +231,7 @@ struct CsvWorkerState
     std::string quotedScratch;
 };
 
-/// Stage A token: a contiguous mmap range covering complete lines.
+/** @brief Stage B: decodes the CSV rows of one line-aligned batch into compact lines. */
 void DecodeCsvBatch(
     const internal::ByteRange &batch,
     internal::WorkerScratch<CsvWorkerState> &worker,

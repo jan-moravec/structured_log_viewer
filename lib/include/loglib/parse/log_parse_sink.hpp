@@ -65,7 +65,7 @@ struct StreamedBatch
  *      parse was stopped via the ParserOptions::stopToken.
  *
  * The same interface serves both the synchronous static-file path
- * (BufferingSink) and the live-tail GUI path (QtStreamingLogSink).
+ * (BufferingSink) and live streaming, where a sink hands each batch to a consumer on another thread.
  */
 class LogParseSink
 {

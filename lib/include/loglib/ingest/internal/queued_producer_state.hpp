@@ -45,7 +45,8 @@ public:
         return mReadyBuffer.Read(buffer);
     }
 
-    /** @brief Blocks until bytes are queued, the producer stops, or the timeout passes. A zero timeout returns at once.
+    /**
+     * @brief Blocks until bytes are queued, the producer stops, or the timeout passes. A zero timeout returns at once.
      */
     void WaitForBytes(std::chrono::milliseconds timeout)
     {

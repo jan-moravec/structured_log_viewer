@@ -481,7 +481,7 @@ struct JsonWorkerState
     ParseCache cache;
 };
 
-/// Stage A token: a contiguous byte range of the mmap covering complete lines.
+/** @brief Stage B: decodes the JSON lines of one line-aligned batch into compact lines. */
 void DecodeJsonBatch(
     const internal::ByteRange &batch,
     internal::WorkerScratch<JsonWorkerState> &worker,

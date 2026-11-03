@@ -371,7 +371,7 @@ struct LogfmtWorkerState
     std::string quotedScratch;
 };
 
-/// Stage A token: a contiguous byte range of the mmap covering complete lines.
+/** @brief Stage B: decodes the logfmt lines of one line-aligned batch into compact lines. */
 void DecodeLogfmtBatch(
     const internal::ByteRange &batch,
     internal::WorkerScratch<LogfmtWorkerState> &worker,

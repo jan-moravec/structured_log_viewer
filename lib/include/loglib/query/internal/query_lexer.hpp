@@ -77,33 +77,39 @@ inline constexpr std::int64_t MICROS_PER_SECOND = 1'000'000;
  */
 inline constexpr std::int64_t MICROS_DENOM_CAP = 10'000'000;
 
-/** Tokens emitted by the lexer. */
+/**
+ * @brief Tokens emitted by the lexer.
+ *
+ * Ident is a bareword column or value. Quoted carries the decoded body of a quoted string. Regex carries the body of a
+ * slash-delimited pattern and is only produced after the tilde operator. Number carries the raw digits. The remaining
+ * kinds are keywords and punctuation named after what they match.
+ */
 enum class TokenKind : std::uint8_t
 {
-    Ident,  ///< bareword identifier (column or value)
-    Quoted, ///< "quoted string" (text = decoded body)
-    Regex,  ///< /regex body/ (only produced after ~)
-    Number, ///< numeric literal (text = raw digits)
+    Ident,
+    Quoted,
+    Regex,
+    Number,
     True,
     False,
     KwAnd,
     KwOr,
     KwNot,
     KwIn,
-    Colon,    ///< :
-    Eq,       ///< =
-    Tilde,    ///< ~
-    Percent,  ///< %
-    Gt,       ///< >
-    GtEq,     ///< >=
-    Lt,       ///< <
-    LtEq,     ///< <=
-    LParen,   ///< (
-    RParen,   ///< )
-    LBracket, ///< [
-    RBracket, ///< ]
-    Comma,    ///< ,
-    DotDot,   ///< ..
+    Colon,
+    Eq,
+    Tilde,
+    Percent,
+    Gt,
+    GtEq,
+    Lt,
+    LtEq,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Comma,
+    DotDot,
     End,
 };
 

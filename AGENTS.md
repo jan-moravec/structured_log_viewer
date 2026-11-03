@@ -23,7 +23,7 @@ code when it is touched. Match the example below.
    comment by hand.
 1. Every comment must be true. Check what the code does before writing about it.
 
-`scripts/check-loglib-docs.py` checks the first two rules for `lib/include` and fails on a violation.
+`scripts/check-loglib-docs.py` checks rules 1 and 2, and that no `///` comment is used, for `lib/include` and fails on a violation.
 
 ```cpp
 /**

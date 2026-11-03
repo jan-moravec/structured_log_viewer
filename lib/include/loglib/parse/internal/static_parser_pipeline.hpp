@@ -123,7 +123,7 @@ struct ResolvedPipelineSettings
     size_t ntokens = 0;
 };
 
-/// One line-aligned slice of the mapped file handed from Stage A to Stage B.
+/** @brief One line-aligned slice of the mapped file handed from Stage A to Stage B. */
 struct ByteRange
 {
     uint64_t batchIndex = 0;
@@ -132,8 +132,12 @@ struct ByteRange
     const char *fileEnd = nullptr;
 };
 
-/// Returns the Stage A source for a mapped file: each call emits the next slice of about @p batchSize bytes, extended
-/// to the end of its last line, until @p fileEnd. A null range yields no slices.
+/**
+ * @brief Returns the Stage A source for a mapped file.
+ *
+ * Each call emits the next slice of about batchSize bytes, extended to the end of its last line, until fileEnd. A null
+ * range yields no slices.
+ */
 inline auto MakeLineAlignedBatcher(const char *fileBegin, const char *fileEnd, size_t batchSize)
 {
     return [cursor = fileBegin, fileEnd, batchSize, batchIndex = uint64_t{0}](ByteRange &out) mutable -> bool {
