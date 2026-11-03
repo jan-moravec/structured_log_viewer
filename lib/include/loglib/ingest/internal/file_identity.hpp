@@ -22,20 +22,26 @@ namespace loglib::internal
 {
 
 /**
- * Cross-platform file identity used by TailingBytesProducer
- * rotation detection. POSIX: (st_dev, st_ino). Windows: volume
- * serial + nFileIndexHigh:nFileIndexLow.
+ * @brief The operating system's identity of a file, used by TailingBytesProducer to detect rotation.
  *
- * On filesystems where the index isn't stable across rename
- * (FAT/exFAT, some SMB), identity comparison is unreliable. The
- * size-shrunk branch covers copytruncate there; rename-and-create
- * degrades to undetected — a documented limitation.
+ * On POSIX it is the device and the inode. On Windows it is the volume serial number and the file index.
+ *
+ * On file systems where the index changes when a file is renamed, such as FAT, exFAT and some network shares, the
+ * comparison is unreliable. The size check still catches copy and truncate there, but a rename followed by a new file
+ * is not detected.
  */
 struct FileIdentity
 {
-    uint64_t high = 0; // POSIX: st_dev; Windows: volume serial
-    uint64_t low = 0;  // POSIX: st_ino; Windows: file-index halves
-    /** False values never compare equal — branch on valid first. */
+    /** @brief The device on POSIX, the volume serial number on Windows. */
+    uint64_t high = 0;
+
+    /** @brief The inode on POSIX, the two halves of the file index on Windows. */
+    uint64_t low = 0;
+
+    /**
+     * @brief False when the identity could not be read. Such an identity is never equal to another, so check this
+     * first.
+     */
     bool valid = false;
 
     [[nodiscard]] friend bool operator==(const FileIdentity &lhs, const FileIdentity &rhs) noexcept
@@ -50,22 +56,20 @@ struct FileIdentity
 };
 
 /**
- * Sample identity of @p path without holding it open. POSIX: stat.
- * Windows: OPEN_EXISTING with full share flags, so a concurrent
- * writer is not disturbed. Returns valid = false on stat failure.
+ * @brief Reads the identity of the file at a path without keeping it open.
+ *
+ * On Windows the file is opened with full sharing, so a writer is not disturbed. A failure gives an identity that is
+ * not valid.
  */
 [[nodiscard]] FileIdentity FromPath(const std::filesystem::path &path) noexcept;
 
 #ifdef _WIN32
 using NativeFileHandle = HANDLE;
 #else
-using NativeFileHandle = int; // POSIX fd
+using NativeFileHandle = int;
 #endif
 
-/**
- * Sample identity of an open handle. POSIX: fstat. Windows:
- * GetFileInformationByHandle. Returns valid = false on failure.
- */
+/** @brief Reads the identity of an open file. A failure gives an identity that is not valid. */
 [[nodiscard]] FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept;
 
 } // namespace loglib::internal

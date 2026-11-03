@@ -29,62 +29,47 @@ class TcpServerProducerImpl; // pimpl forward decl
 }
 
 /**
- * @brief BytesProducer over a TCP listening socket. Accepts multiple
- * concurrent client connections, drains each via async_read_some,
- * and interleaves their lines into the shared byte queue at line
- * granularity (per-session carry buffer; only complete lines are
- * flushed into the shared queue, so concurrent senders never
- * produce torn records). Optional TLS via asio::ssl when the
- * project is built with LOGLIB_NETWORK_TLS=ON.
+ * @brief A BytesProducer that listens on a TCP port and merges the lines of all clients into one stream.
  *
- * Design summary:
- *   - One asio::io_context worker thread per producer drives both
- *     accept and per-session reads. Sessions are reference-counted
- *     shared_ptrs so the in-flight async chain keeps them alive
- *     until the read completes.
- *   - Per-session carry buffer guarantees the shared queue is
- *     append-only at line boundaries: a partial line from peer A
- *     never interleaves into a partial line from peer B. On a peer
- *     disconnect the carry is flushed as a synthetic final line.
- *   - Source addresses are dropped: the GUI shows one interleaved
- *     view across all peers.
- *   - SetStatusCallback reports Waiting until the first byte
- *     arrives from any client, then Running. It does not flip back
- *     to Waiting on an idle period: TCP listening with no clients
- *     is normal, not an environmental fault.
+ * It accepts several clients at once and reads each of them. Only complete lines go into the shared queue, so lines
+ * from different senders never mix inside a line. TLS is available when the library is built with LOGLIB_NETWORK_TLS.
+ *
+ * - One I/O thread runs both the accepting and the reading of all clients. A client lives until its read chain ends.
+ * - Each client has its own buffer for the partial line it is sending. When the client disconnects, that partial line
+ *   is delivered as a last line.
+ * - The sender addresses are not kept, so the result is one merged view of all senders.
+ * - The status callback reports Waiting until the first byte arrives from any client, and Running after that. It does
+ *   not go back to Waiting when things are quiet, because a listener with no clients is normal.
  */
 class TcpServerProducer final : public BytesProducer
 {
 public:
     /**
-     * @brief TLS configuration. Pass Options::tls = std::nullopt for
-     * plaintext. When the project is built with
-     * LOGLIB_NETWORK_TLS=OFF, supplying any TLS options causes
-     * the constructor to throw std::runtime_error.
+     * @brief Settings for encrypted connections. Leave Options::tls empty for plain TCP.
+     *
+     * In a build without LOGLIB_NETWORK_TLS, giving any TLS settings makes the constructor throw std::runtime_error.
      */
     struct TlsOptions
     {
-        /** @brief PEM file with the server's certificate chain (leaf first). */
+        /** @brief PEM file with the server's certificate chain, the server certificate first. */
         std::filesystem::path certificateChain;
 
         /**
-         * @brief PEM file with the matching private key (RSA or ECDSA).
-         * Encrypted keys are not supported by the current
-         * implementation -- decrypt offline before pointing at it.
+         * @brief PEM file with the matching private key, RSA or ECDSA. Encrypted keys are not supported, so decrypt
+         * the key first.
          */
         std::filesystem::path privateKey;
 
         /**
-         * @brief Optional PEM CA bundle used to verify client certificates.
-         * Empty path means client certs are not validated.
+         * @brief PEM file with the certificate authorities used to check client certificates. An empty path means
+         * client certificates are not checked.
          */
         std::filesystem::path caBundle;
 
         /**
-         * @brief When true and caBundle is set, the handshake fails if
-         * the client does not present a certificate the bundle
-         * trusts. When false, client certs are optional even if
-         * caBundle is set.
+         * @brief Makes the handshake fail unless the client presents a certificate that caBundle trusts.
+         *
+         * It only has an effect when caBundle is set. Otherwise client certificates are optional.
          */
         bool requireClientCertificate = false;
     };
@@ -92,60 +77,51 @@ public:
     struct Options
     {
         /**
-         * @brief Bind address. "0.0.0.0" for IPv4-any, "::" for IPv6
-         * dual-stack, or a specific interface IP.
+         * @brief The address to listen on: "0.0.0.0" for any IPv4 address, "::" for IPv6 and IPv4, or the address of
+         * one interface.
          */
         std::string bindAddress = "0.0.0.0";
 
-        /**
-         * @brief TCP port to listen on. 0 requests an OS-assigned port,
-         * useful for tests.
-         */
+        /** @brief The port to listen on. Zero lets the operating system choose, which tests use. */
         uint16_t port = 0;
 
         /**
-         * @brief Hard cap on simultaneous accepted connections. New
-         * connections beyond this are accepted-and-immediately-closed
-         * so the OS-side accept queue does not back up indefinitely;
-         * the rejection is counted in TotalClientsRejected().
+         * @brief The most clients served at the same time.
+         *
+         * A connection beyond the limit is accepted and closed at once, so that the system's accept queue does not grow
+         * without end. It is counted in TotalClientsRejected.
          */
         size_t maxConcurrentClients = 16;
 
         /**
-         * @brief async_read_some chunk size per session. 64 KiB amortises
-         * syscall cost while keeping per-session memory bounded.
+         * @brief How many bytes one read takes for each client. 64 KiB keeps the per-client memory small without many
+         * calls.
          */
         size_t readChunkBytes = 64 * 1024;
 
         /**
-         * @brief Soft cap on the byte queue. When the parser falls behind
-         * and the queue exceeds this, the oldest queued bytes are
-         * dropped (rounded up to the next newline) and counted in
-         * DroppedByteCount. 0 disables back-pressure.
+         * @brief The soft limit for the byte queue.
+         *
+         * When the parser falls behind and the queue grows past it, the oldest bytes are dropped up to the next newline
+         * and counted in DroppedByteCount. Zero turns the limit off.
          */
         size_t maxQueueBytes = 16 * 1024 * 1024;
 
         /**
-         * @brief Longest line buffered per connection while waiting for its
-         * newline. A longer line is dropped up to its newline and counted
-         * in DroppedByteCount.
+         * @brief The longest line held for each client while waiting for its newline. A longer line is dropped up to
+         * its newline and counted in DroppedByteCount.
          */
         size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 
-        /**
-         * @brief std::nullopt for plaintext. Filled in to enable TLS.
-         * LOGLIB_NETWORK_TLS=OFF builds reject any non-nullopt
-         * value at the constructor.
-         */
+        /** @brief TLS settings. Leave empty for plain TCP. A build without LOGLIB_NETWORK_TLS throws if this is set. */
         std::optional<TlsOptions> tls;
     };
 
     /**
-     * @brief Construct, bind the listening socket, optionally initialise
-     * the TLS context, and spawn the I/O worker thread. Throws
-     * std::system_error on bind / listen failure or
-     * std::runtime_error for TLS misconfiguration (missing files,
-     * build without TLS, etc.).
+     * @brief Binds the port, sets up TLS if requested, and starts the I/O thread.
+     *
+     * Throws std::system_error if binding or listening fails, and std::runtime_error for TLS problems such as missing
+     * files or a build without TLS.
      */
     explicit TcpServerProducer(Options options);
 
@@ -161,41 +137,34 @@ public:
     void WaitForBytes(std::chrono::milliseconds timeout) override;
 
     /**
-     * @brief Stop accepting connections, close every active session, drain
-     * the I/O context, and signal the worker to exit. Idempotent.
+     * @brief Stops accepting, closes every client, lets pending I/O finish and ends the I/O thread. Safe to call
+     * twice.
      */
     void Stop() noexcept override;
 
     [[nodiscard]] bool IsClosed() const noexcept override;
 
     /**
-     * @brief e.g. "tcp://0.0.0.0:5140" (or "tcp+tls://..." when TLS is
-     * configured). Resolved to the actually-bound port when
-     * Options::port == 0.
+     * @brief The address being served, such as tcp://0.0.0.0:5140, or tcp+tls:// with TLS. The port is the one
+     * actually bound when Options::port is zero.
      */
     [[nodiscard]] std::string DisplayName() const override;
 
     void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
-    /** @brief Actual port the listener is bound to. */
+    /** @brief The port the listener is bound to. */
     [[nodiscard]] uint16_t BoundPort() const noexcept;
 
-    /** @brief Currently-active session count. Drops as clients disconnect. */
+    /** @brief How many clients are connected now. */
     [[nodiscard]] size_t ActiveClientCount() const noexcept;
 
-    /**
-     * @brief Cumulative count of accepted-and-served sessions since
-     * construction. Excludes connections rejected by the cap.
-     */
+    /** @brief How many connections were accepted and served so far. Rejected ones are not counted. */
     [[nodiscard]] size_t TotalClientsAccepted() const noexcept;
 
-    /**
-     * @brief Cumulative count of connections rejected because
-     * Options::maxConcurrentClients was reached. Useful for tests.
-     */
+    /** @brief How many connections were turned away because Options::maxConcurrentClients was reached. */
     [[nodiscard]] size_t TotalClientsRejected() const noexcept;
 
-    /** @brief Cumulative bytes dropped from the queue under back-pressure. */
+    /** @brief How many bytes were dropped from the queue because it was full. */
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
 private:

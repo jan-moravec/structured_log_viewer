@@ -28,96 +28,79 @@ class TailingBytesProducerImpl; // pimpl forward decl
 }
 
 /**
- * @brief BytesProducer over a file being actively written. Pre-fills the
- * last N complete lines from disk and then tails the producer's
- * appends, surviving rename-and-create / copy-truncate / in-place
- * truncate / delete-then-recreate rotations.
+ * @brief A BytesProducer that follows a file while it is being written.
  *
- * Design summary:
- *   - Buffered POSIX read(2) / Windows ReadFile. No mmap on the
- *     tail because rotations would invalidate the mapping or block
- *     the producer.
- *   - One worker thread per producer. It polls the file size at a
- *     configurable cadence (default 250 ms) and is also signalled by
- *     efsw filesystem events so the typical wake latency is the
- *     watcher's, not the poll's.
- *   - Rotation detection evaluates branches in order: identity /
- *     missing / size-shrunk. Bursts within 1 s coalesce into a single
- *     rotation event.
- *   - Read() drains a byte queue holding only complete lines; the
- *     partial-line buffer is separate, discarded on truncation, flushed
- *     as a synthetic last line on Stop and when a rename rotation
- *     retires the file.
- *   - A rename rotation reads the old file to its end before switching,
- *     so bytes written before the rename are delivered.
+ * It first delivers the last complete lines already in the file, then the lines that are appended. It keeps following
+ * through the usual rotation styles: rename and create, copy and truncate, truncate in place, and delete and recreate.
+ *
+ * - Reads use plain read calls and not a memory mapping, because a rotation would invalidate a mapping or block the
+ *   writer.
+ * - A worker thread checks the file size every pollInterval and also wakes when the operating system reports a change,
+ *   so the delay is usually the watcher's and not the poll's.
+ * - A rotation is detected when the file identity changes, the path is missing, or the size shrank. Rotations within
+ *   rotationDebounce count as one.
+ * - Read returns complete lines only. A partial last line waits in a separate buffer. It is dropped on truncation and
+ *   delivered as a last line on Stop or when a rename rotation retires the file.
+ * - After a rename rotation the old file is read to its end before switching, so nothing written before the rename is
+ *   lost.
  */
 class TailingBytesProducer final : public BytesProducer
 {
 public:
-    /** @brief Default for Options::maxQueuedBytes. */
+    /** @brief The default for Options::maxQueuedBytes, 64 MiB. */
     static constexpr size_t DEFAULT_MAX_QUEUED_BYTES = size_t{64} * 1024 * 1024;
 
-    /**
-     * @brief Tuning knobs, exposed mainly so tests on slow CI runners can
-     * shrink poll intervals and disable the native watcher.
-     */
+    /** @brief Settings. Tests on slow machines shorten the intervals and turn the native watcher off. */
     struct Options
     {
-        /** @brief Worker poll cadence when no filesystem event has fired. */
+        /** @brief How often the worker checks the file when the operating system reports nothing. */
         std::chrono::milliseconds pollInterval = std::chrono::milliseconds(250);
 
-        /** @brief Rotations within this window coalesce into a single event. */
+        /** @brief Rotations that happen within this time count as one event. */
         std::chrono::milliseconds rotationDebounce = std::chrono::milliseconds(1000);
 
-        /**
-         * @brief Bytes per tail-read syscall. 64 KiB amortises syscall cost
-         * while bounding the partial-line buffer.
-         */
+        /** @brief How many bytes one read takes. 64 KiB keeps the partial-line buffer small without many calls. */
         size_t readChunkBytes = 64 * 1024;
 
         /**
-         * @brief Bytes per pre-fill backwards chunk. Separate from
-         * readChunkBytes so tests can shrink it independently.
+         * @brief How many bytes one backward read takes while looking for the last lines. Separate so tests can shrink
+         * it.
          */
         size_t prefillChunkBytes = 64 * 1024;
 
         /**
-         * @brief Upper bound on the backwards pre-fill scan. Protects against
-         * files with no newlines or absurdly large retentionLines
-         * on multi-GB files. On overflow, pre-fill yields zero lines
-         * and tailing begins from EOF.
+         * @brief The most bytes the backward search for the last lines may scan.
+         *
+         * It protects against files without newlines and against a huge retentionLines on a file of many gigabytes. If
+         * the limit is reached, no earlier lines are delivered and tailing starts at the end of the file.
          */
         size_t prefillMaxScanBytes = 16 * 1024 * 1024;
 
         /**
-         * @brief Skip the efsw watcher and rely on polling alone. Used by
-         * tests on CI runners where filesystem events are unreliable.
+         * @brief Does not use the native file watcher and relies on polling only. Tests set it where file events are
+         * unreliable.
          */
         bool disableNativeWatcher = false;
 
         /**
-         * @brief Longest line buffered while waiting for its newline. A longer
-         * line is dropped up to its newline and counted in
-         * DroppedByteCount.
+         * @brief The longest line that is held while waiting for its newline. A longer line is dropped up to its
+         * newline and counted in DroppedByteCount.
          */
         size_t maxLineBytes = DEFAULT_MAX_LINE_BYTES;
 
         /**
-         * @brief Pause reading the file while this many unconsumed bytes are
-         * queued. Reading resumes once the consumer catches up; nothing
-         * is dropped.
+         * @brief Reading pauses while this many unread bytes are queued, and resumes when the consumer catches up.
+         * Nothing is dropped.
          */
         size_t maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES;
     };
 
     /**
-     * @brief Construct and spawn the worker. Pre-fill drains the last
-     * @p retentionLines complete lines into the byte queue; tailing
-     * begins from the byte offset pre-fill stopped at.
+     * @brief Starts the worker thread.
      *
-     * Throws if the initial open fails; transient missing-path errors
-     * during tailing are handled internally (rotation branch ii) and
-     * never propagate.
+     * The last retentionLines complete lines of the file are queued first, and tailing continues from where they ended.
+     * It throws if the file cannot be opened at the start. A path that goes missing later, during a rotation, is
+     * handled inside and never thrown.
      */
     TailingBytesProducer(std::filesystem::path path, size_t retentionLines);
     TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options);
@@ -134,10 +117,10 @@ public:
     void WaitForBytes(std::chrono::milliseconds timeout) override;
 
     /**
-     * @brief Unblock any in-flight Read/WaitForBytes, flush the partial
-     * line as a synthetic last line (unless a rotation is in
-     * progress), and signal the worker to exit. Idempotent. Safe
-     * from any thread.
+     * @brief Wakes any blocked Read or WaitForBytes, delivers the partial last line as a line of its own, unless a
+     * rotation is in progress, and tells the worker to exit.
+     *
+     * Safe from any thread and safe to call twice.
      */
     void Stop() noexcept override;
 
@@ -150,13 +133,12 @@ public:
     void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
     /**
-     * @brief Total rotations the worker has observed since construction.
-     * Used by tests to assert debounce coalescing (the user-visible
-     * callback fires less often than this counter increments).
+     * @brief How many rotations the worker has seen. The rotation callback fires less often when rotations are merged,
+     * which tests check with this count.
      */
     [[nodiscard]] size_t RotationCount() const noexcept;
 
-    /** @brief Cumulative bytes dropped from lines past Options::maxLineBytes. */
+    /** @brief How many bytes were dropped from lines longer than Options::maxLineBytes. */
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
 private:

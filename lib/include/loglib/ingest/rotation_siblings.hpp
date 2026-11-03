@@ -18,32 +18,36 @@
 namespace loglib
 {
 
-/**
- * @brief One file in a rotation family. path preserves the path used for
- * opening; canonicalKey is the normalized UTF-8 deduplication key.
- */
+/** @brief One file of a rotation series. */
 struct RotatedFile
 {
+    /** @brief How the file was found. */
     enum class Origin
     {
-        /** @brief Active primary; last when stored in a series. */
+        /** @brief The active log file. It is always the last file of a series. */
         Primary,
-        /** @brief <primary>.<N>, optionally compressed. */
+        /** @brief A file named like the primary with a number added, such as app.log.1, possibly compressed. */
         NumberedSuffix,
-        /** @brief Dated suffix or stem-inserted date. */
+        /** @brief A file with a date added to the name, as a suffix or inside the name. */
         DatedSuffix,
-        /** @brief Explicit input added to a family but missed by enumeration. */
+        /** @brief A file the caller named that the search did not find. */
         CallerListed,
     };
 
+    /** @brief The path as it should be opened. */
     std::filesystem::path path;
+
+    /** @brief The key that identifies the file when removing duplicates. See CanonicalKeyForPath. */
     std::string canonicalKey;
+
     Origin origin = Origin::Primary;
 };
 
 /**
- * @brief Classified files are oldest-first within each naming convention.
- * Unranked caller inputs precede the primary, which is always last.
+ * @brief A primary log file and its rotated companions, oldest first.
+ *
+ * Within each naming style the files are ordered from oldest to newest. Files the caller listed that have no rank come
+ * before the primary, which is always last.
  */
 struct RotationSeries
 {
@@ -52,34 +56,38 @@ struct RotationSeries
 };
 
 /**
- * @brief Enumerates numbered and dated companions in @p primary's directory.
- * Numbered suffixes sort by descending number and dated suffixes by date.
- * Mixed families compare days since 1970 with 1,000,000,000 - N;
- * equal ranks have unspecified order.
- * The primary is always present and last. Directory I/O is advisory:
- * errors may return partial results, and no matches yield the primary alone.
+ * @brief Finds the numbered and dated companions of a log file in its folder.
+ *
+ * Numbered files are ordered by descending number and dated files by date. When both styles occur, a date is ranked by
+ * its days since 1970 and a number N by 1,000,000,000 minus N. Files of equal rank may come in any order. The primary
+ * is always in the result, last. Reading the folder is best effort: an error can give a partial result, and finding
+ * nothing gives the primary alone.
  */
 [[nodiscard]] RotationSeries EnumerateRotatedSiblings(const std::filesystem::path &primary);
 
+/** @brief The result of splitting a list of paths into rotation series. */
 struct PartitionedSelection
 {
-    /** @brief Detected families in caller order. */
+    /** @brief The series that were found, ordered by their earliest input path. */
     std::vector<RotationSeries> series;
 
-    /** @brief Inputs not assigned to a family, in caller order and deduplicated by key. */
+    /** @brief The paths that belong to no series, in the order given and without duplicates. */
     std::vector<std::filesystem::path> residual;
 };
 
 /**
- * @brief Splits @p paths into rotation families and residual inputs. Family
- * ordering matches EnumerateRotatedSiblings; families are ordered by
- * their earliest input member. Filesystem checks are best-effort.
+ * @brief Groups paths into rotation series.
+ *
+ * Each series is ordered like the result of EnumerateRotatedSiblings, and series are ordered by their earliest input
+ * path. Looking at the file system is best effort.
  */
 [[nodiscard]] PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::path> paths);
 
 /**
- * @brief Returns a best-effort absolute, lexically normalized UTF-8 key with
- * forward slashes. ASCII letters are lower-cased only on Windows.
+ * @brief Builds a key that is the same for different spellings of one path.
+ *
+ * The key is an absolute path in UTF-8 with forward slashes, normalized without touching the file system. Letters are
+ * lower-cased on Windows only. Failures are tolerated, so the key is best effort.
  */
 [[nodiscard]] std::string CanonicalKeyForPath(const std::filesystem::path &path);
 

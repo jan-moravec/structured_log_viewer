@@ -27,82 +27,56 @@ struct StdinBytesProducerTestAccess;
 } // namespace internal
 
 /**
- * @brief BytesProducer over the process's standard input. Used by the
- * stdin CLI path (StructuredLogViewer - / --stdin) and any
- * future feature that consumes a pipe. Bytes flow one direction, EOF is
- * terminal: unlike TailingBytesProducer there is nothing to
- * rotate or recover.
+ * @brief A BytesProducer that reads the process's standard input.
  *
- * Design summary:
- *   - Blocking read(2) / ReadFile on a duplicate of the process's
- *     stdin FD / HANDLE. The dup is closed on Stop() so a
- *     blocked read returns immediately; the process's original
- *     stdin is left untouched.
- *   - One worker thread per producer, drains readChunkBytes per
- *     syscall (default 64 KiB, matching TailingBytesProducer).
- *   - Read() drains a byte queue backed by
- *     internal::LineBytesQueue, shared with the network stream
- *     producers.
- *   - WaitForBytes parks on a condition variable that the
- *     worker signals on every new chunk or on EOF.
- *   - Stop() closes the dup, joins the worker, marks the
- *     producer terminally closed. Idempotent and safe from any
- *     thread (GUI teardown, session switch, NewSession).
- *   - Format detection is handled *outside* this class via
- *     StdinPeek on the GUI thread; the peeked bytes are fed to
- *     the parser via ParserOptions::initialCarry and the producer
- *     only yields the bytes remaining after the peek.
+ * It serves piped input such as a command line tool started with a pipe. Bytes flow one way and the end of input is
+ * final, so unlike TailingBytesProducer there is nothing to rotate or recover.
+ *
+ * - A worker thread reads from a duplicate of the standard input handle, so the original handle stays untouched. Stop
+ *   closes the duplicate, which wakes a read that is blocked.
+ * - Each read takes up to readChunkBytes. The bytes go into a LineBytesQueue, the same queue the network producers use,
+ *   and Read takes them from there.
+ * - WaitForBytes sleeps until the worker adds bytes or reaches the end of input.
+ * - Stop closes the duplicate, joins the worker and marks the producer closed. It is safe to call twice and from any
+ *   thread.
+ * - Format detection happens before the producer is used. The caller peeks with StdinPeek and hands those bytes to the
+ *   parser through ParserOptions::initialCarry, so the producer only delivers the bytes that come after the peek.
  */
 class StdinBytesProducer final : public BytesProducer
 {
 public:
     /**
-     * @brief Default read syscall size. 64 KiB amortises syscall cost
-     * across a typical console-piped writer's chunk boundary and
-     * matches TailingBytesProducer so throughput profiles
-     * compare like-for-like.
+     * @brief The default size of one read, 64 KiB. TailingBytesProducer uses the same size, so their throughput can be
+     * compared.
      */
     static constexpr std::size_t DEFAULT_READ_CHUNK_BYTES = 64UZ * 1024UZ;
 
-    /**
-     * @brief Default soft cap on the internal byte queue (64 MiB).
-     * Sized to match TcpServerProducer so all live-tail
-     * producers share the same back-pressure envelope.
-     */
+    /** @brief The default soft limit for the byte queue, 64 MiB. TcpServerProducer uses the same limit. */
     static constexpr std::size_t DEFAULT_QUEUE_CAP_BYTES = 64UZ * 1024UZ * 1024UZ;
 
-    /** @brief Tuning knobs, mostly for tests. */
+    /** @brief Settings, mostly for tests. */
     struct Options
     {
-        /**
-         * @brief Bytes per stdin read syscall. See
-         * DEFAULT_READ_CHUNK_BYTES for the sizing rationale.
-         */
+        /** @brief How many bytes one read takes. */
         std::size_t readChunkBytes = DEFAULT_READ_CHUNK_BYTES;
 
         /**
-         * @brief Soft cap on the internal byte queue. 0 disables the
-         * cap. When the parser can't keep up, oldest bytes are
-         * dropped to the next newline boundary (identical
-         * semantics to TcpServerProducer).
+         * @brief Soft limit for the byte queue. Zero turns it off.
+         *
+         * When the parser cannot keep up, the oldest bytes are dropped up to the next newline, as in
+         * TcpServerProducer.
          */
         std::size_t queueCapBytes = DEFAULT_QUEUE_CAP_BYTES;
 
-        /**
-         * @brief Display name shown in the status bar / window title.
-         * The default <stdin> matches shell convention; tests
-         * override it to distinguish multiple producers.
-         */
+        /** @brief The name DisplayName returns. Tests change it to tell several producers apart. */
         std::string displayName = "<stdin>";
     };
 
     /**
-     * @brief Construct and spawn the worker. Duplicates the process's
-     * stdin FD / HANDLE up front so the worker's read calls
-     * don't race with any other code that might still be using
-     * stdin (in practice only in tests). Throws
-     * std::runtime_error if the duplicate fails; the OS
-     * error is included in the message.
+     * @brief Starts the worker thread.
+     *
+     * The handle of standard input is duplicated first, so reads in the worker cannot race with other code that still
+     * uses standard input. Throws std::runtime_error, with the operating system's message, if duplicating fails.
      */
     StdinBytesProducer();
     explicit StdinBytesProducer(Options options);
@@ -125,9 +99,7 @@ public:
     [[nodiscard]] std::string DisplayName() const override;
 
     /**
-     * @brief Byte count dropped because of queue-cap back-pressure.
-     * Mirrors the accessor on TcpServerProducer; tests use it
-     * to assert bounded memory under sustained overload.
+     * @brief How many bytes were dropped because the queue was full. Tests use it to check that memory stays bounded.
      */
     [[nodiscard]] std::size_t DroppedByteCount() const noexcept;
 
@@ -135,10 +107,8 @@ private:
     friend struct internal::StdinBytesProducerTestAccess;
 
     /**
-     * @brief Test-only ctor. opaqueHandle is a HANDLE on Windows or a
-     * POSIX fd cast to void* on other platforms; the producer
-     * takes ownership and closes it on Stop(). Reachable only
-     * through internal::StdinBytesProducerTestAccess.
+     * @brief Constructor for tests. It reads from the given handle, a HANDLE on Windows or a file descriptor cast to a
+     * pointer elsewhere. The producer owns the handle and closes it on Stop.
      */
     struct FromRawTag
     {
@@ -152,14 +122,11 @@ namespace internal
 {
 
 /**
- * @brief Test-support hook. Not part of the public API; production code
- * should always construct StdinBytesProducer with its default
- * / Options ctor. Tests build a pipe(2) / CreatePipe and
- * hand the read-end to Create -- the producer then owns and
- * closes that handle on Stop(). opaqueHandle conventions:
- * - Windows: HANDLE cast to void * (i.e. the read-end).
- * - POSIX: a file descriptor packed into void * via
- *   reinterpret_cast<void *>(static_cast<intptr_t>(fd)).
+ * @brief Lets tests build a StdinBytesProducer on a pipe of their own. It is not part of the public API.
+ *
+ * Tests create a pipe and pass its read end to Create, and the producer owns and closes that end. On Windows the handle
+ * is a HANDLE cast to a pointer. Elsewhere it is a file descriptor converted to an integer and then to a pointer.
+ * Production code uses the public constructors.
  */
 struct StdinBytesProducerTestAccess
 {

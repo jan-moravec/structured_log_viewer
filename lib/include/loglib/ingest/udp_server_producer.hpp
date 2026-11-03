@@ -27,26 +27,16 @@ class UdpServerProducerImpl; // pimpl forward decl
 }
 
 /**
- * @brief BytesProducer over a UDP socket. Receives datagrams on the
- * configured bind endpoint, normalises trailing newlines (so each
- * datagram lands as one or more complete log lines in the parser's
- * view), and queues the bytes for the streaming pipeline to drain.
+ * @brief A BytesProducer that listens on a UDP port and turns each datagram into complete lines.
  *
- * Design summary:
- *   - One asio::io_context worker thread per producer running an
- *     async_receive_from reschedule loop.
- *   - Datagrams are NOT framed across packets: each datagram must
- *     contain one or more complete records. Records straddling
- *     datagram boundaries are not supported (UDP packet loss would
- *     silently corrupt the line stream anyway).
- *   - The producer appends a synthetic \n to any datagram missing
- *     one so datagram boundaries always match line boundaries
- *     downstream of RunStreamingParseLoop.
- *   - Source address is dropped: the GUI displays one interleaved
- *     view across all peers.
- *   - maxQueueBytes provides simple back-pressure: when the parser
- *     falls behind, the oldest queued bytes are dropped and counted
- *     in DroppedByteCount.
+ * A datagram that does not end with a newline gets one, so datagram boundaries always match line boundaries for the
+ * parser. Every datagram must hold one or more complete records, because records are not joined across datagrams and
+ * lost packets would corrupt such a stream anyway.
+ *
+ * - One I/O thread receives datagrams in a loop.
+ * - The sender address is not kept, so the result is one merged view of all senders.
+ * - When the parser falls behind and the queue passes maxQueueBytes, the oldest bytes are dropped and counted in
+ *   DroppedByteCount.
  */
 class UdpServerProducer final : public BytesProducer
 {
@@ -54,40 +44,34 @@ public:
     struct Options
     {
         /**
-         * @brief Bind address. "0.0.0.0" for IPv4-any, "::" for IPv6-any
-         * dual-stack, or a specific interface IP. Resolved via Asio's
-         * from_string; the ctor throws std::system_error on parse
-         * or bind failure.
+         * @brief The address to listen on: "0.0.0.0" for any IPv4 address, "::" for IPv6 and IPv4, or the address of
+         * one interface. An address that cannot be parsed makes the constructor throw std::system_error.
          */
         std::string bindAddress = "0.0.0.0";
 
         /**
-         * @brief UDP port to listen on. 0 requests an OS-assigned port,
-         * useful for tests; production callers should pin a port.
+         * @brief The port to listen on. Zero lets the operating system choose, which suits tests. Other callers should
+         * choose a fixed port.
          */
         uint16_t port = 0;
 
         /**
-         * @brief Receive-buffer size, also the maximum size of a single
-         * datagram accepted. Datagrams larger than this are silently
-         * truncated by the OS at recv time. 64 KiB matches the IPv4
-         * upper bound for datagram size.
+         * @brief The receive buffer size, which is also the largest datagram accepted. A longer datagram is cut off by
+         * the operating system. 64 KiB is the IPv4 maximum.
          */
         size_t maxDatagramBytes = 64 * 1024;
 
         /**
-         * @brief Soft cap on the byte queue. When the parser falls behind
-         * and the queue exceeds this, the oldest queued bytes are
-         * dropped (counted in DroppedByteCount). 0 disables
-         * back-pressure (the queue may grow unbounded).
+         * @brief The soft limit for the byte queue. When the parser falls behind and the queue passes it, the oldest
+         * bytes are dropped and counted in DroppedByteCount. Zero turns the limit off, and then the queue can grow
+         * without end.
          */
         size_t maxQueueBytes = 16 * 1024 * 1024;
     };
 
     /**
-     * @brief Construct, bind the socket, and spawn the I/O worker thread.
-     * Throws std::system_error if Options::bindAddress cannot be
-     * parsed or the socket cannot be bound.
+     * @brief Binds the socket and starts the I/O thread. Throws std::system_error if the address cannot be parsed or
+     * the socket cannot be bound.
      */
     explicit UdpServerProducer(Options options);
 
@@ -103,40 +87,30 @@ public:
     void WaitForBytes(std::chrono::milliseconds timeout) override;
 
     /**
-     * @brief Stop accepting datagrams, unblock any in-flight Read /
-     * WaitForBytes, and signal the worker to exit. Idempotent.
-     * Safe from any thread.
+     * @brief Stops receiving, wakes any blocked Read or WaitForBytes and ends the I/O thread. Safe from any thread and
+     * safe to call twice.
      */
     void Stop() noexcept override;
 
     [[nodiscard]] bool IsClosed() const noexcept override;
 
     /**
-     * @brief e.g. "udp://0.0.0.0:5141". Resolves to the actually-bound
-     * port when Options::port == 0.
+     * @brief The address being served, such as udp://0.0.0.0:5141. The port is the one actually bound when
+     * Options::port is zero.
      */
     [[nodiscard]] std::string DisplayName() const override;
 
     void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
-    /**
-     * @brief Actual port the socket is bound to. Equals Options::port
-     * unless that was 0, in which case it returns the kernel-chosen
-     * port. Stable for the producer's lifetime once the ctor returns.
-     */
+    /** @brief The port the socket is bound to. It is Options::port, or the port the system chose if that was zero. */
     [[nodiscard]] uint16_t BoundPort() const noexcept;
 
-    /**
-     * @brief Cumulative datagrams received since construction. Includes any
-     * dropped under back-pressure (drops happen at the queue, not at
-     * the recv layer).
-     */
+    /** @brief How many datagrams were received. It includes datagrams whose bytes were later dropped from the queue. */
     [[nodiscard]] size_t DatagramCount() const noexcept;
 
     /**
-     * @brief Cumulative bytes dropped from the queue under back-pressure.
-     * 0 when Options::maxQueueBytes == 0 or when the parser kept
-     * up the whole session.
+     * @brief How many bytes were dropped from the queue because it was full. Zero when the limit is off or the parser
+     * kept up.
      */
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
