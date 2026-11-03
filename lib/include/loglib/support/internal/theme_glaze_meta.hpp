@@ -14,11 +14,8 @@
 
 #include <array>
 
-// Glaze meta-specialisations for loglib::Theme. Kept out of the
-// public header so it doesn't pull in <glaze/glaze.hpp>.
-//
-// keys and value are slot names required by Glaze reflection,
-// so they keep their lowercase names.
+// JSON field names for Theme and its parts. They live in this header so the public header does not include the JSON
+// library. The names keys and value are required by the library's reflection, so the naming check is turned off here.
 // NOLINTBEGIN(readability-identifier-naming)
 
 template <> struct glz::meta<loglib::ThemeKind>

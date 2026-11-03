@@ -21,20 +21,18 @@ namespace loglib
 {
 
 /**
- * @brief Range of wall-clock times that share one UTC offset.
- *
- * A default-constructed window contains nothing.
+ * @brief A range of local times that all have the same offset from UTC. A default-constructed window contains nothing.
  */
 struct LocalOffsetWindow
 {
-    /** @brief First local microsecond in the window. */
+    /** @brief The first local microsecond in the window. */
     std::int64_t beginLocal = 0;
-    /** @brief Local microsecond just past the window. */
+    /** @brief One past the last local microsecond in the window. */
     std::int64_t endLocal = 0;
-    /** @brief Microseconds to subtract from a local time to get UTC. */
+    /** @brief The microseconds to subtract from a local time to get UTC. */
     std::int64_t utcOffset = 0;
 
-    /** @brief Returns whether @p localMicroseconds is inside the window. */
+    /** @brief True if the local time is inside the window. */
     [[nodiscard]] bool Contains(std::int64_t localMicroseconds) const noexcept
     {
         return beginLocal <= localMicroseconds && localMicroseconds < endLocal;
@@ -42,49 +40,40 @@ struct LocalOffsetWindow
 };
 
 /**
- * @brief Immutable timezone used for local/UTC conversion and formatting.
+ * @brief A time zone that converts between local time and UTC and formats times in that zone.
  *
- * Owns the selected IANA zone after validating tzdata. Copies share the
- * implementation and are safe for concurrent read-only conversion and
- * formatting. Construction is the only point that can fail; later calls
- * do not depend on a separate Initialize step.
+ * A context holds an IANA zone and cannot be changed after it is built. Building it is the only step that can fail,
+ * and there is no separate initialization. Copies share the same data and can be used by several threads at once for
+ * converting and formatting.
  *
- * Installing tzdata is process-wide. Load with conflicting tzdata
- * paths in one process is unsupported. The selected zone is per context.
+ * Loading time zone data is process-wide, so loading from different data paths in one process is not supported. The
+ * selected zone belongs to each context. A default-constructed context is UTC and needs no time zone data.
  *
- * A default-constructed context is UTC and does not require tzdata.
- * SetProcessDefaultTimeZone is a documented process-wide convenience
- * for formatting helpers such as TimeStampToDateTimeString; core
- * conversion APIs take an explicit TimeZoneContext.
+ * Conversion functions take a context as an argument. SetProcessDefaultTimeZone also sets one process-wide context for
+ * the formatting helpers that do not take one, such as TimeStampToDateTimeString.
  */
 class TimeZoneContext
 {
 public:
-    /** @brief UTC identity conversions that do not require tzdata. */
+    /** @brief Creates a UTC context, which needs no time zone data. */
     TimeZoneContext();
 
     /**
-     * @brief Loads tzdata from @p tzdataPath and selects the system zone.
+     * @brief Loads time zone data from a folder and selects the zone the computer is set to.
      *
-     * @param tzdataPath Directory containing IANA tzdata. Must exist.
-     * @return Context bound to the host's current IANA zone.
-     * @throws std::runtime_error if the path is invalid or the zone cannot
-     *     be resolved.
+     * The folder must exist and hold IANA time zone data. Throws std::runtime_error if the path is invalid or the zone
+     * cannot be found.
      */
     [[nodiscard]] static TimeZoneContext Load(const std::filesystem::path &tzdataPath);
 
     /**
-     * @brief Loads tzdata from @p tzdataPath and selects @p zoneName.
+     * @brief Loads time zone data from a folder and selects a zone by its IANA name, such as Europe/Berlin.
      *
-     * @param tzdataPath Directory containing IANA tzdata. Must exist.
-     * @param zoneName IANA identifier such as Europe/Berlin.
-     * @return Context bound to the named zone.
-     * @throws std::runtime_error if the path is invalid or the zone is
-     *     unavailable.
+     * Throws std::runtime_error if the path is invalid or the zone is not available.
      */
     [[nodiscard]] static TimeZoneContext Load(const std::filesystem::path &tzdataPath, std::string_view zoneName);
 
-    /** @brief UTC context that does not require tzdata. */
+    /** @brief Creates a UTC context, which needs no time zone data. */
     [[nodiscard]] static TimeZoneContext Utc();
 
     TimeZoneContext(const TimeZoneContext &) = default;
@@ -93,55 +82,48 @@ public:
     TimeZoneContext &operator=(TimeZoneContext &&) noexcept = default;
     ~TimeZoneContext() = default;
 
-    /** @brief IANA name (UTC for the default context). */
+    /** @brief The IANA name of the zone, or UTC for a default-constructed context. */
     [[nodiscard]] std::string_view IanaName() const noexcept;
 
     /**
-     * @brief Converts wall-clock local microseconds to UTC microseconds.
+     * @brief Converts local microseconds to UTC microseconds.
      *
-     * Ambiguous fall-back times choose the earlier instant. Nonexistent
-     * spring-forward times resolve to the transition boundary. Far-future
-     * or corrupt-zone failures return @p localMicroseconds unchanged.
+     * A local time that occurs twice when the clocks go back gives the earlier instant. A local time that does not
+     * occur when the clocks go forward gives the moment of the change. If the conversion fails, because the date is too
+     * far in the future or the zone data is damaged, the value is returned unchanged.
      */
     [[nodiscard]] std::int64_t LocalMicrosecondsToUtc(std::int64_t localMicroseconds) const;
 
     /**
-     * @brief Returns the window of wall-clock times sharing the offset at @p localMicroseconds.
+     * @brief Returns the range of local times around a time that share its UTC offset.
      *
-     * Inside the window, subtracting utcOffset gives the same result as
-     * LocalMicrosecondsToUtc with no zone lookup. The window stays clear of
-     * transitions, so it does not contain @p localMicroseconds when that time
-     * is close to one.
-     *
-     * @param localMicroseconds Wall-clock local microseconds.
-     * @return The window, which may be empty.
+     * Inside the window, subtracting utcOffset gives the same result as LocalMicrosecondsToUtc without a zone lookup,
+     * which makes converting many nearby times cheap. The window stays away from clock changes, so it is empty when the
+     * time is close to one.
      */
     [[nodiscard]] LocalOffsetWindow OffsetWindowAt(std::int64_t localMicroseconds) const;
 
-    /** @brief Converts a UTC TimeStamp to local milliseconds since epoch. */
+    /** @brief Converts a UTC time to local milliseconds since the epoch. */
     [[nodiscard]] std::int64_t ToLocalMilliseconds(TimeStamp timeStamp) const;
 
-    /** @brief Converts UTC epoch microseconds to local milliseconds. */
+    /** @brief Converts UTC microseconds since the epoch to local milliseconds. */
     [[nodiscard]] std::int64_t UtcMicrosecondsToLocalMilliseconds(std::int64_t microseconds) const;
 
     /**
-     * @brief Interprets local milliseconds as a wall-clock time in this zone
-     * and returns the UTC TimeStamp.
+     * @brief Reads local milliseconds as a time in this zone and returns the UTC time.
      *
-     * DST handling matches LocalMicrosecondsToUtc: ambiguous fall-back
-     * times choose the earlier instant; nonexistent spring-forward times
-     * resolve to the transition boundary; far-future or corrupt-zone
-     * failures treat the milliseconds as UTC.
+     * Times that occur twice or not at all, and failures, are handled as in LocalMicrosecondsToUtc. On failure the
+     * milliseconds are taken as UTC.
      */
     [[nodiscard]] TimeStamp LocalMillisecondsToUtc(std::int64_t milliseconds) const;
 
-    /** @brief Formats @p timeStamp in this zone using @p format. */
+    /** @brief Formats a time in this zone with a strftime-style format. */
     [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format) const;
 
-    /** @brief Formats UTC microseconds as %F %T local time in this zone. */
+    /** @brief Formats UTC microseconds as local time in this zone, as year-month-day hours:minutes:seconds. */
     [[nodiscard]] std::string FormatUtcMicroseconds(std::int64_t microseconds) const;
 
-    /** @brief Formats @p timeStamp as %F %T local time in this zone. */
+    /** @brief Formats a time as local time in this zone, as year-month-day hours:minutes:seconds. */
     [[nodiscard]] std::string FormatTimeStamp(TimeStamp timeStamp) const;
 
 private:
@@ -153,46 +135,47 @@ private:
 };
 
 /**
- * @brief Replaces the process-wide convenience context used by formatting
- * overloads that do not take an explicit TimeZoneContext.
+ * @brief Sets the process-wide context used by the formatting functions that do not take one.
  *
- * Starts as UTC. The application should call this once at bootstrap after
- * Load. It is not a prerequisite for core APIs that take a context.
+ * It starts as UTC. The application should call it once at startup, after loading the time zone data. Functions that
+ * take a context do not depend on it.
  */
 void SetProcessDefaultTimeZone(TimeZoneContext context);
 
-/** @brief Process-wide convenience context. Never unset; defaults to UTC. */
+/** @brief The context set by SetProcessDefaultTimeZone, or UTC if none was set. */
 [[nodiscard]] TimeZoneContext ProcessDefaultTimeZone();
 
+/**
+ * @brief Converts UTC microseconds since the epoch to local milliseconds. The overload without a context uses the
+ * process-wide one.
+ */
 int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone);
 int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 
+/**
+ * @brief Reads local milliseconds since the epoch as a time in a zone and returns the UTC time. The overload without a
+ * context uses the process-wide one.
+ */
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone);
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
 /**
- * @brief Convert @p localMicroseconds -- interpreted as a wall-clock
- * instant in @p timeZone -- to UTC epoch microseconds.
+ * @brief Reads local microseconds as a time in a zone and returns UTC microseconds since the epoch.
  *
- * DST edge cases resolve via earliest-instant choice:
- *   * Ambiguous "fall-back" hour: the earlier candidate.
- *   * Non-existent "spring-forward" gap: the transition boundary
- *     (the first real instant after the gap).
- * Non-DST exceptions (far-future dates past the tzdata table,
- * corrupt zone entries) yield the naive value so the Goto Timestamp
- * slot stays exception-safe. UTC contexts pass the value through.
+ * A time that occurs twice when the clocks go back gives the earlier instant. A time that does not occur when the
+ * clocks go forward gives the first instant after the gap. If the date is too far ahead or the zone data is damaged,
+ * the value is returned unchanged, so callers do not need to handle exceptions. A UTC context returns the value as it
+ * is.
  */
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone);
 
-/**
- * @brief Convenience overload using ProcessDefaultTimeZone().
- *
- * That default is process-wide convenience, not a prerequisite for
- * the explicit-context overload.
- */
+/** @brief Same as above, with the process-wide context. */
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
 
-/** @brief Formats UTC microseconds since epoch as a %F %T-style local-time string. */
+/**
+ * @brief Formats UTC microseconds since the epoch as local time, as year-month-day hours:minutes:seconds. The overload
+ * without a context uses the process-wide one.
+ */
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone);
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
 

@@ -20,15 +20,12 @@ namespace loglib::internal
 {
 
 /**
- * Serialize @p line as a compact typed JSON object in KeyId order.
- * The result has no trailing newline.
+ * @brief Returns the row as a compact JSON object with typed values, ordered by key id. The text has no newline at the
+ * end.
  */
 [[nodiscard]] std::string SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys);
 
-/**
- * Append the same representation to @p out, allowing callers to
- * reuse its capacity across rows.
- */
+/** @brief Appends the same text to out, so a caller can reuse one string for many rows. */
 void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::string &out);
 
 } // namespace loglib::internal

@@ -27,35 +27,32 @@ namespace loglib
 
 class LogTable;
 
-/** @brief File extension for a session bundle produced by WriteSessionBundle. */
+/** @brief The file extension of a session bundle. */
 constexpr const char *SESSION_BUNDLE_EXTENSION = ".slvbundle";
 
-/** @brief Encoder options for the single zstd frame. */
+/** @brief Settings for writing a bundle, which is one zstd frame. */
 struct SessionBundleWriteOptions
 {
-    /** @brief zstd compression level; 3 is the balanced default. */
+    /** @brief The zstd compression level. 3 is a balance between speed and size. */
     int compressionLevel = 3;
 
-    /** @brief Number of zstd workers. Zero uses zstd's single-threaded path. */
+    /** @brief The number of zstd worker threads. Zero compresses on the calling thread. */
     int totalWorkers = 0;
 
-    /**
-     * @brief Cooperative cancellation. The writer removes its staging file
-     * before throwing OperationCancelled.
-     */
+    /** @brief Cancels the write. The writer deletes its temporary file and then throws OperationCancelled. */
     StopToken stopToken;
 
-    /** @brief Progress in source-model rows. Called on the writer thread. */
+    /** @brief Reports progress in rows of the table. It is called on the writing thread. */
     RowProgressCallback progress;
 
     /**
-     * @brief Convert source paths to the same form as AnchorEntry::locator
-     * before remapping anchors. Defaults to a raw UTF-8 path.
+     * @brief Turns a source path into the same form that AnchorEntry::locator uses, so that anchors can be matched to
+     * their sources. The default is the path as UTF-8 text.
      */
     std::function<std::string(const std::filesystem::path &)> canonicalizeSourceLocator;
 };
 
-/** @brief Metadata stored on the first decompressed JSONL line. */
+/** @brief What the first line of a bundle holds: the format version, the number of rows and the configuration. */
 struct SessionBundleMetadata
 {
     std::uint32_t formatVersion = 0;
@@ -63,14 +60,14 @@ struct SessionBundleMetadata
     LogConfiguration configuration;
 };
 
-/** @brief Thrown when the bundle version is unsupported. */
+/** @brief Thrown when a bundle has a format version this build does not read. */
 class SessionBundleVersionError : public std::runtime_error
 {
 public:
     using std::runtime_error::runtime_error;
 };
 
-/** @brief Generic bundle metadata failure. */
+/** @brief Thrown when the metadata line of a bundle is missing or invalid. */
 class SessionBundleReadError : public std::runtime_error
 {
 public:
@@ -78,8 +75,10 @@ public:
 };
 
 /**
- * @brief Write metadata and every retained row as JSONL in one checksummed
- * zstd frame. Replace the destination only after a durable flush.
+ * @brief Writes the metadata and every row of the table as lines of JSON, in one zstd frame with a checksum.
+ *
+ * The destination is replaced only after the data has been flushed to disk, so a failed write leaves an existing bundle
+ * untouched.
  */
 void WriteSessionBundle(
     const LogTable &table,
@@ -88,19 +87,22 @@ void WriteSessionBundle(
     const SessionBundleWriteOptions &options = {}
 );
 
-/** @brief Parse and validate the first decompressed JSONL line. */
+/**
+ * @brief Reads and checks the first line of a bundle. Throws SessionBundleVersionError or SessionBundleReadError if it
+ * is not valid.
+ */
 [[nodiscard]] SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json);
 
 /**
- * @brief Return whether @p file has zstd input accepted by the decoder.
- * Missing, unreadable, and non-zstd files return false.
+ * @brief True if the file is zstd data that the decoder accepts. A file that is missing, unreadable or not zstd gives
+ * false.
  */
 [[nodiscard]] bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept;
 
-/** @brief Exact on-disk version emitted and accepted by this build. */
+/** @brief The format version this build writes and reads. Any other version is rejected. */
 constexpr std::uint32_t SESSION_BUNDLE_FORMAT_VERSION = 1;
 
-/** @brief Maximum row count accepted by the writer and reader. */
+/** @brief The most rows a bundle may hold. The writer and the reader both enforce it. */
 constexpr std::uint64_t SESSION_BUNDLE_MAX_ROWS = 1'000'000'000ULL;
 
 } // namespace loglib

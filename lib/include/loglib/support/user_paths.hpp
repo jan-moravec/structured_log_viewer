@@ -18,10 +18,16 @@
 namespace loglib
 {
 
-/** @brief Organization directory used by UserDataDirectory. Matches the GUI application identity. */
+/**
+ * @brief The organization folder name used by UserDataDirectory. The desktop application uses the same name, so both
+ * share one data folder.
+ */
 inline constexpr std::string_view USER_DATA_ORGANIZATION_NAME = "jan-moravec";
 
-/** @brief Application directory used by UserDataDirectory. Matches the GUI application identity. */
+/**
+ * @brief The application folder name used by UserDataDirectory. The desktop application uses the same name, so both
+ * share one data folder.
+ */
 inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogViewer";
 
 /**
@@ -44,7 +50,7 @@ inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogVie
 [[nodiscard]] bool EnvironmentIsSet(std::string_view name);
 
 /**
- * @brief Writable application-data directory, matching QStandardPaths::AppDataLocation.
+ * @brief The folder where the application stores its data, the same one Qt reports as the application data location.
  *
  * Windows uses %APPDATA%/<organization>/<application> and returns an
  * empty path when %APPDATA% is unset. Linux uses

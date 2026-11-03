@@ -20,13 +20,11 @@ namespace loglib
 {
 
 /**
- * @brief Parsed Go-to-timestamp input.
+ * @brief A time the user typed, as UTC microseconds since the epoch.
  *
- * micros is epoch microseconds. isNaive is true when the
- * accepted format has no time-zone specifier and the input does not
- * end in an ISO 8601 Z, so the caller must shift through the
- * display zone before comparing stored UTC timestamps. Relative
- * shortcuts always set isNaive to false.
+ * isNaive is true when the text names no time zone, that is, the format has no zone and the text does not end in Z. The
+ * caller must then read the time as local time in the display zone before comparing it with stored UTC times. Relative
+ * times such as 5m are never naive.
  */
 struct UserTimestampParse
 {
@@ -35,39 +33,26 @@ struct UserTimestampParse
 };
 
 /**
- * @brief Returns whether @p format contains a zone specifier.
+ * @brief True if a date::parse format contains a zone specifier, so a parse with it gives UTC.
  *
- * Detects %z, %Z, %Ez, and %Oz. %% is a literal percent.
- * A malformed prefix such as %E%z still matches the inner %z.
- *
- * @param format date::parse format string.
- * @return true when a parse of this format yields UTC.
+ * The specifiers are %z, %Z, %Ez and %Oz. A %% is a literal percent sign. A malformed start such as %E%z still counts
+ * for its %z.
  */
 [[nodiscard]] bool FormatHasZoneSpecifier(std::string_view format) noexcept;
 
-/**
- * @brief Returns whether a parsed timestamp names no zone of its own.
- *
- * @param text Text that @p format parsed.
- * @param format date::parse format string.
- * @return true when neither @p format nor a trailing Z in @p text gives a zone.
- */
+/** @brief True if neither the format nor a trailing Z in the text that it parsed gives a zone. */
 [[nodiscard]] bool IsNaiveTimestamp(std::string_view text, std::string_view format) noexcept;
 
 /**
- * @brief Parses absolute or relative timestamp input.
+ * @brief Parses a time the user typed, either absolute or relative.
  *
- * Tries a relative shortcut [+-]?N[hm] (case-insensitive,
- * whitespace-tolerant; every sign means N units before @p now),
- * then each of @p columnParseFormats, then the ISO fallbacks
- * %FT%T and %F %T. Does not apply
- * LocalMicrosecondsSinceEpochToUtc; the caller does that when
- * isNaive is true.
+ * It tries a relative form first: an optional sign, a number, and h or m, in any case and with spaces allowed. Any sign
+ * means that many hours or minutes before now. Then it tries each of the column's formats, then %FT%T and %F %T. Spaces
+ * at both ends of the input are ignored. It does not convert a naive time to UTC, so the caller does that with
+ * LocalMicrosecondsSinceEpochToUtc.
  *
- * @param input UTF-8 text; leading and trailing ASCII whitespace is ignored.
- * @param columnParseFormats Column parseFormats tried before ISO fallbacks.
- * @param now Reference instant for relative shortcuts.
- * @return Parsed timestamp, or std::nullopt on failure or overflow.
+ * @param now The reference time for relative input.
+ * @return The parsed time, or nullopt if the text does not parse or the value overflows.
  */
 [[nodiscard]] std::optional<UserTimestampParse> ParseUserTimestamp(
     std::string_view input, std::span<const std::string> columnParseFormats, std::chrono::system_clock::time_point now

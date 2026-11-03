@@ -22,8 +22,8 @@ namespace loglib
 {
 
 /**
- * @brief Marks a theme as intended for a light or dark desktop palette.
- * Used by the app's auto-switch to pick a sensible default.
+ * @brief Says whether a theme is made for a light or a dark desktop. Applications use it to choose a theme that fits
+ * the system setting.
  */
 enum class ThemeKind : uint8_t
 {
@@ -32,9 +32,10 @@ enum class ThemeKind : uint8_t
 };
 
 /**
- * @brief Per-LogLevel row styling. All fields optional; missing colours
- * fall back to the active Qt palette. Colours are #RRGGBB (or
- * #AARRGGBB) strings to keep this header Qt-free.
+ * @brief How rows of one log level look.
+ *
+ * Every color is optional, and a missing one is taken from the application's palette. Colors are written as #RRGGBB or
+ * #AARRGGBB text, which keeps this header free of any GUI library.
  */
 struct LevelStyle
 {
@@ -47,16 +48,13 @@ struct LevelStyle
 };
 
 /**
- * @brief Table chrome: base/alternate/selection/header colours. All
- * optional; absent fields keep the Qt style defaults.
+ * @brief The colors of the table itself. Every color is optional, and a missing one keeps the style default.
  *
- * Set background whenever alternateRowBackground is set --
- * the toolkit base color does not change with the theme, so a partial
- * override yields mismatched light/dark rows.
+ * Set background whenever alternateRowBackground is set. The base color of the toolkit does not change with the theme,
+ * so overriding only one of them gives rows that do not match in light and dark themes.
  *
- * The main log table does not alternate rows, because per-level
- * colours already partition them; alternateRowBackground drives
- * secondary tables.
+ * The main log table does not alternate its rows, because the level colors already separate them. The alternating color
+ * is for other tables.
  */
 struct TableStyle
 {
@@ -71,14 +69,12 @@ struct TableStyle
 };
 
 /**
- * @brief Window-level chrome (background, text, buttons, tooltips).
- * All optional; absent fields fall back to per-ThemeKind
- * defaults tuned to match the built-in presets.
+ * @brief The colors of the window around the table: background, text, buttons and tooltips.
  *
- * For the Disabled colour group, each text role is blended
- * toward its backing surface (text toward background,
- * windowText toward window, etc.). Override both sides
- * together for predictable disabled-state colours.
+ * Every color is optional. A missing one gets a default for the theme kind that matches the built-in themes.
+ *
+ * For disabled controls each text color is blended toward the color behind it, for example text toward the background
+ * and window text toward the window. Override both colors of a pair together to get predictable disabled colors.
  */
 struct ChromeStyle
 {
@@ -95,12 +91,12 @@ struct ChromeStyle
 };
 
 /**
- * @brief App-wide style overrides. All optional; absent fields keep
- * the process defaults captured at startup.
+ * @brief Application-wide style settings. Every one is optional, and a missing one keeps what the application started
+ * with.
  */
 struct AppStyle
 {
-    /** @brief e.g. "fusion", "windows". Resolved via QStyleFactory::create. */
+    /** @brief The name of a widget style, such as fusion or windows. */
     std::optional<std::string> qtStyle;
     std::optional<std::string> fontFamily;
     std::optional<int> fontSize;
@@ -109,11 +105,8 @@ struct AppStyle
 };
 
 /**
- * @brief One entry in Theme::highlightPalette. Both fields optional
- * so a slot can pin one or both. Colours are #RRGGBB /
- * #AARRGGBB (Qt-free, like LevelStyle). Missing slots fall
- * back to the app's built-in palette in
- * ThemeControl::HighlightBrushFor.
+ * @brief One color pair of the highlight palette. Both colors are optional, so a slot can fix one or both. Colors are
+ * written as #RRGGBB or #AARRGGBB. A missing slot uses the application's built-in palette.
  */
 struct HighlightSlot
 {
@@ -124,56 +117,51 @@ struct HighlightSlot
 };
 
 /**
- * @brief Per-level icon + pill spec. All fields optional so a level can
- * be left at the defaults. Colours are #RRGGBB / #AARRGGBB
- * strings (kept Qt-free like LevelStyle).
+ * @brief How one level is drawn when the level column shows icons: an icon, and a rounded background behind it. Every
+ * field is optional. Colors are written as #RRGGBB or #AARRGGBB.
  */
 struct LevelDisplayOverride
 {
-    /** @brief :/... qrc path or relative-to-theme-dir. Absent = no icon. */
+    /** @brief The icon, as a resource path or a path relative to the theme folder. Without it the level has no icon. */
     std::optional<std::string> icon;
 
     /**
-     * @brief Rounded-rect pill background. Absent = no pill (icon
-     * paints over the row's BackgroundRole).
+     * @brief The color of the rounded background behind the icon. Without it there is none, and the icon is drawn over
+     * the row background.
      */
     std::optional<std::string> pillBackground;
 
-    /**
-     * @brief Tint for the icon glyph. Absent = fall back to
-     * LevelStyle::foreground then to palette WindowText.
-     */
+    /** @brief The color of the icon. Without it the level style foreground is used, and then the window text color. */
     std::optional<std::string> pillForeground;
 
     friend bool operator==(const LevelDisplayOverride &, const LevelDisplayOverride &) = default;
 };
 
 /**
- * @brief Opts a theme into icon-rendering for the level column.
- * Theme::levelColumnOverride.has_value() is the single switch
- * every consumer reads. All fields are additive: absent fields
- * fall back to today's Column::header / warning > funnel
- * header priority.
+ * @brief Switches the level column of a theme to icons.
+ *
+ * Whether Theme::levelColumnOverride has a value is the one switch every consumer reads. The fields only add to the
+ * normal behavior, and a missing field keeps the usual header of the column.
  */
 struct LevelColumnOverride
 {
     /**
-     * @brief Header text override. Set = use it ("" = blank text).
-     * Absent = fall back to Column::header.
+     * @brief The text of the column header. An empty string gives a blank header. Without a value the column's own
+     * header is used.
      */
     std::optional<std::string> header;
 
     /**
-     * @brief Header identity icon (qrc or relative-to-theme-dir).
-     * Warning + funnel still take precedence when firing.
+     * @brief An icon for the column header, as a resource path or a path relative to the theme folder. A warning icon
+     * or a filter icon takes precedence when one is shown.
      */
     std::optional<std::string> headerIcon;
 
     /**
-     * @brief Per-level icon + pill specs, keyed by canonical level name
-     * ("Trace".."Fatal", or "Unknown"). Missing keys = no
-     * icon for that level (cell shows blank). Non-canonical
-     * keys warn via WarnOnUnknownLevelKeys.
+     * @brief How each level is drawn, keyed by level name from Trace to Fatal, or Unknown.
+     *
+     * A level without an entry shows a blank cell. Keys that are not level names are reported by
+     * WarnOnUnknownLevelKeys.
      */
     std::map<std::string, LevelDisplayOverride> levels;
 
@@ -181,36 +169,30 @@ struct LevelColumnOverride
 };
 
 /**
- * @brief Self-contained theme bundle. JSON keys mirror the field names
- * (lowerCamelCase). levels keys must be canonical level names
- * (Trace..Fatal, or Unknown); other keys are ignored.
+ * @brief A complete theme: level styles, table and window colors, palettes and the level column.
+ *
+ * In the saved JSON the keys are the member names in lowerCamelCase. The keys of levels must be level names from Trace
+ * to Fatal, or Unknown, and other keys are ignored.
  */
 struct Theme
 {
     /**
-     * @brief Display name, e.g. "Dark". Case-sensitive identity; user
-     * themes whose name matches a built-in shadow the built-in.
+     * @brief The name of the theme, such as Dark. Names are case-sensitive, and a user theme with the name of a
+     * built-in one replaces it.
      */
     std::string name;
 
-    /**
-     * @brief Auto-switch hint. User themes pick one so the auto-picker
-     * knows which slot they belong to.
-     */
+    /** @brief Whether the theme is light or dark, so that automatic switching knows where it fits. */
     ThemeKind kind = ThemeKind::Light;
 
-    /**
-     * @brief Per-level row styles (subtle defaults). Keyed by canonical
-     * level name. Used when ui/highContrastLevels is off (the
-     * default); when on, levelsHighContrast overrides per-level.
-     */
+    /** @brief The row style of each level, keyed by level name. Used unless the user turned on high contrast levels. */
     std::map<std::string, LevelStyle> levels;
 
     /**
-     * @brief Loud overrides applied on top of levels when
-     * ui/highContrastLevels is on. Sparse: missing keys fall
-     * back to levels[key]. An empty map opts the theme out of
-     * the toggle (the Preferences checkbox greys out).
+     * @brief Stronger level styles for users who turn on high contrast levels.
+     *
+     * A level missing here uses its entry in levels. An empty map means the theme has no high contrast variant, and the
+     * option is shown as unavailable.
      */
     std::map<std::string, LevelStyle> levelsHighContrast;
 
@@ -219,68 +201,51 @@ struct Theme
     AppStyle app;
 
     /**
-     * @brief Up to ANCHOR_PALETTE_SIZE #RRGGBB entries for anchor
-     * rows. Missing slots fall back to the app's built-in palette
-     * in ThemeControl::AnchorBrushFor.
+     * @brief Up to ANCHOR_PALETTE_SIZE colors, written as #RRGGBB, for anchored rows. Missing slots use the
+     * application's built-in palette.
      */
     std::vector<std::string> anchorPalette;
 
     /**
-     * @brief Up to HIGHLIGHT_PALETTE_SIZE swatches for the highlight
-     * rules editor. Referenced 1-indexed by HighlightRule
-     * foregroundIndex / backgroundIndex (0 = inherit).
-     * Missing / empty slots fall back to the built-in palette.
+     * @brief Up to HIGHLIGHT_PALETTE_SIZE color pairs for highlight rules.
+     *
+     * HighlightRule refers to them by number starting at 1, and 0 means the normal color. Missing or empty slots use
+     * the built-in palette.
      */
     std::vector<HighlightSlot> highlightPalette;
 
     /**
-     * @brief nullopt = plain-text level column. Set = icon mode (also
-     * gated on the ui/showLevelIcons user pref). Cell + header
-     * resolution rules live in the application model.
+     * @brief Icon settings for the level column. Without a value the column shows plain text. A user setting for icons
+     * must also be on.
      */
     std::optional<LevelColumnOverride> levelColumnOverride;
 
     friend bool operator==(const Theme &, const Theme &) = default;
 };
 
-/**
- * @brief Number of anchor colour slots (matches the Ctrl+1..8 hotkey
- * block). Lives here so loglib_test can use it without Qt.
- */
+/** @brief The number of anchor colors. It is defined here so that tests that do not use Qt can use it. */
 inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 
 /**
- * @brief Highlight-palette slot count. Referenced 1-indexed by
- * HighlightRule::foregroundIndex / backgroundIndex
- * (0 = inherit).
+ * @brief The number of highlight color pairs. HighlightRule refers to them by number starting at 1, and 0 means no
+ * color is chosen.
  */
 inline constexpr std::size_t HIGHLIGHT_PALETTE_SIZE = 16;
 
-/**
- * @brief Returns the style for @p level, or a default-constructed
- * LevelStyle when the theme has no entry for it.
- */
+/** @brief The style of a level, or an empty style if the theme has none for it. */
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);
 
 /**
- * @brief When @p useHighContrast is true, look up @p level in
- * theme.levelsHighContrast first and fall back to
- * theme.levels if absent. Override is whole-LevelStyle
- * granular (fg, bg, bold, italic replace as a set) to avoid
- * surprising blends.
+ * @brief Like the first overload, but with useHighContrast set it looks in levelsHighContrast first and then in levels.
+ *
+ * A level style is taken as a whole from one of them, so foreground, background, bold and italic are never mixed.
  */
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContrast);
 
-/**
- * @brief Parse a theme from JSON. Throws std::runtime_error on any
- * parse error. kind must be "light" or "dark".
- */
+/** @brief Reads a theme from JSON. The kind must be light or dark. Throws std::runtime_error on any error. */
 [[nodiscard]] Theme ParseTheme(std::string_view content);
 
-/**
- * @brief Serialise @p theme to pretty-printed JSON. Throws
- * std::runtime_error on encode failure.
- */
+/** @brief Writes a theme as indented JSON. Throws std::runtime_error if encoding fails. */
 [[nodiscard]] std::string SerializeTheme(const Theme &theme);
 
 } // namespace loglib
