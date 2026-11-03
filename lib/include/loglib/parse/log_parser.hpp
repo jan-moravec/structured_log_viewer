@@ -34,21 +34,16 @@ struct ParseResult
 };
 
 /**
- * @brief Maximum bytes inspected during format detection.
- * Shared by file, stdin, and network probes so identical bytes
- * produce identical results.
+ * @brief How many bytes of a file or stream format detection looks at. Every kind of input uses the same budget, so
+ * the same bytes give the same result.
  */
 inline constexpr std::size_t PROBE_BYTES_BUDGET = 16 * 1024;
 
 /**
- * @brief Base class for log-format parsers. New formats implement the
- * byte-buffer IsValidBytes(std::string_view) and both ParseStreaming
- * overloads. The file-based IsValid is a
- * non-virtual shim that reads up to PROBE_BYTES_BUDGET bytes
- * and forwards to IsValidBytes.
+ * @brief Base class of the log format parsers.
  *
- * The synchronous "parse a file" helper is loglib::ParseFile
- * (see parse_file.hpp); production GUI code uses
+ * A new format implements IsValidBytes and both ParseStreaming overloads. IsValid for a path is not virtual. It reads
+ * the head of the file and calls IsValidBytes. To parse a whole file at once, see ParseFile. The application calls
  * ParseStreaming directly.
  */
 class LogParser
@@ -57,43 +52,36 @@ public:
     virtual ~LogParser() = default;
 
     /**
-     * @brief Byte-buffer probe: does @p sniffBuffer look like this
-     * parser's format? Implementations must not scan past the end
-     * of @p sniffBuffer, and should treat a partial trailing line
-     * (no terminating \n) the same as a complete line -- the
-     * buffer may have been truncated by the caller's probe budget.
-     * Used by IsValid(path), AutoDetectParser, and the shared
-     * format-detection functions. The distinct name prevents a
-     * std::string path from selecting this overload accidentally.
+     * @brief Says whether the sample looks like this parser's format.
+     *
+     * An implementation must stay inside the sample and treat a last line without a newline like a complete one,
+     * because the sample can be cut off by the probe budget. Detection and AutoDetectParser both call it. It has its
+     * own name so that a path cannot pick it by accident.
      */
     virtual bool IsValidBytes(std::string_view sniffBuffer) const = 0;
 
     /**
-     * @brief Read up to PROBE_BYTES_BUDGET bytes from @p file into a
-     * buffer and forward to IsValidBytes. Missing / unreadable
-     * files return false. Not virtual: every parser's probe
-     * logic lives in IsValidBytes.
+     * @brief Reads the head of a file, up to PROBE_BYTES_BUDGET bytes, and returns IsValidBytes for it. A file that is
+     * missing or unreadable gives false.
      */
     bool IsValid(const std::filesystem::path &file) const;
 
     /**
-     * @brief Static-file streaming entry. Emitted LogLines carry @p source
-     * and the line's 0-based file id.
+     * @brief Parses a static file and sends the result to the sink. Rows refer to source, and their line ids are
+     * zero-based line numbers of the file.
      */
     virtual void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /**
-     * @brief Live-tail streaming entry. Emitted LogLines carry @p source
-     * and the 1-based monotonic id assigned by AppendLine.
+     * @brief Parses a live stream until it ends or options.stopToken fires. Rows refer to source, and their line ids
+     * are the ones AppendLine assigned, starting at 1.
      */
     virtual void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 };
 
 /**
- * @brief Read at most @p budget bytes from the head of @p file into a
- * std::string. Empty result on missing / unreadable files.
- * Shared helper for LogParser::IsValid(path) and
- * DetectRegexTemplate(path).
+ * @brief Reads up to budget bytes from the start of a file. A file that is missing or unreadable gives an empty
+ * string.
  */
 [[nodiscard]] std::string ReadProbeHead(const std::filesystem::path &file, std::size_t budget = PROBE_BYTES_BUDGET);
 

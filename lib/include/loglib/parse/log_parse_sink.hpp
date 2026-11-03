@@ -53,19 +53,16 @@ struct StreamedBatch
 };
 
 /**
- * @brief Sink interface for the log parser. Methods are called from a single
- * serial-in-order worker, in this order:
- *   1. exactly one OnStarted(),
- *   2. **at least one** OnBatch(...) -- the parser *always* emits a
- *      terminal batch (possibly empty, with lines.empty() &&
- *      errors.empty() && newKeys.empty()) before OnFinished, so sinks
- *      that lazily initialise on first OnBatch work uniformly with
- *      empty-source / cancelled-before-Stage-A parses,
- *   3. exactly one OnFinished(cancelled) -- cancelled == true if the
- *      parse was stopped via the ParserOptions::stopToken.
+ * @brief Receives the output of a parser.
  *
- * The same interface serves both the synchronous static-file path
- * (BufferingSink) and live streaming, where a sink hands each batch to a consumer on another thread.
+ * One serial worker calls the sink, always in this order:
+ * 1. OnStarted, once.
+ * 2. OnBatch, at least once. The last batch can be empty, and a parse of an empty or cancelled source still sends one,
+ *    so a sink that sets itself up on the first batch behaves the same in every case.
+ * 3. OnFinished, once, with cancelled set when the parse was stopped through ParserOptions::stopToken.
+ *
+ * The same interface serves a synchronous parse of a static file and live streaming, where a sink hands each batch to
+ * a consumer on another thread.
  */
 class LogParseSink
 {
@@ -73,8 +70,8 @@ public:
     virtual ~LogParseSink() = default;
 
     /**
-     * @brief Canonical KeyIndex the parser interns keys into. Accessed concurrently
-     * from every worker; must remain stable between OnStarted and OnFinished.
+     * @brief The key index the parser adds keys to. Parser threads use it at the same time, and it must stay the same
+     * object from OnStarted to OnFinished.
      */
     virtual KeyIndex &Keys() = 0;
 

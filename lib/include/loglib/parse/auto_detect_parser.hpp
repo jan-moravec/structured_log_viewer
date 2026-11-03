@@ -26,78 +26,50 @@ class LogParseSink;
 class StreamLineSource;
 
 /**
- * @brief Adapter parser that drains a peek buffer from the producer,
- * runs the shared DetectFormatFromBytes probe, and delegates
- * to the resolved parser via ParserOptions::initialCarry so no
- * bytes are lost.
+ * @brief A parser for streams whose format is not known yet. It works out the format from the first bytes and then
+ * hands the stream to the matching parser.
  *
- * Purpose: the Network Stream dialog's Format::AutoDetect
- * option gets the same detection behaviour as static files. It is
- * also usable for other streaming inputs whose format is unknown.
+ * It reads a few bytes from the producer, runs the same detection as for static files, and passes the bytes it read to
+ * the chosen parser through ParserOptions::initialCarry, so none are lost. Use it for network streams and other live
+ * input of unknown format.
  *
- * On the file path (ParseStreaming(FileLineSource&, ...)) this
- * class detects via ReadProbeHead on the source's path and
- * delegates. It is not intended to be selected for static file
- * opens (callers use DetectFormatForPath directly); the
- * file overload exists purely to satisfy the LogParser
- * interface for completeness / tests.
+ * For a file source it detects from the head of the file and delegates. Static file opens use DetectFormatForPath
+ * directly, so that overload exists to satisfy the LogParser interface.
  */
 class AutoDetectParser : public LogParser
 {
 public:
     /**
-     * @brief Default wall-clock budget for the streaming peek, measured
-     * from the first byte the producer delivers.
+     * @brief The default time limit for reading the first bytes. It starts when the first byte arrives.
      *
-     * Matches StdinPeek's timeout so a bursty producer that has not
-     * yet delivered enough bytes to disambiguate its format still
-     * hands control to the resolved parser within a bounded interval.
-     * An idle producer (a listener with no sender yet) does not start
-     * the clock.
+     * A producer that delivers bytes slowly still gets its parser after this long. A producer that has not sent
+     * anything yet does not start the clock. The value is the same as the timeout of StdinPeek.
      */
     static constexpr auto DEFAULT_PEEK_TIMEOUT = std::chrono::milliseconds(500);
 
     /**
-     * @brief @param peekBytes    Number of bytes drained from the producer
-     *                     to run the probe. Defaults to
-     *                     PROBE_BYTES_BUDGET, matching every
-     *                     other detector.
-     * @param peekTimeout  Wall-clock deadline for the peek loop,
-     *                     counted from the first received byte.
-     *                     Zero or negative disables the deadline
-     *                     (used by tests that want to drain the
-     *                     full producer synchronously). Detection
-     *                     also short-circuits before the deadline
-     *                     once the buffer contains enough bytes
-     *                     for TryDetectFormatFromBytes to
-     *                     commit to a verdict.
+     * @param peekBytes How many bytes to read from the producer for detection. The default is the budget every other
+     * detector uses.
+     * @param peekTimeout The time limit for reading, counted from the first byte. Zero or less turns the limit off,
+     * which tests use to read the whole producer. Reading also stops early once the bytes are enough to decide.
      */
     explicit AutoDetectParser(
         std::size_t peekBytes = PROBE_BYTES_BUDGET, std::chrono::milliseconds peekTimeout = DEFAULT_PEEK_TIMEOUT
     ) noexcept;
 
-    /**
-     * @brief Always returns true; format selection happens in
-     * ParseStreaming, not in IsValidBytes.
-     */
+    /** @brief Always true. The format is chosen in ParseStreaming and not here. */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
-    /**
-     * @brief Detect the format from the file's head and delegate to the
-     * resolved parser. Sink starts under the resolved parser.
-     */
+    /** @brief Detects the format from the start of the file and lets the matching parser handle it. */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
-     * @brief Combine any existing options.initialCarry with up to
-     * peekBytes bytes from source.Producer(), detect the format,
-     * and pass that combined prefix to the resolved parser. The peek loop
-     * respects options.stopToken and honours the producer's
-     * WaitForBytes cadence, so it plays nicely with the
-     * existing streaming lifecycle. The loop waits for the first byte
-     * without a deadline; the peek timeout runs from that byte. If no
-     * bytes are available after stop or EOF, JsonParser preserves the
-     * sink lifecycle.
+     * @brief Detects the format of a stream and lets the matching parser handle it.
+     *
+     * The bytes in options.initialCarry and up to peekBytes bytes from the producer form the sample, and the matching
+     * parser starts with all of it. Reading follows the producer's WaitForBytes and stops when options.stopToken
+     * fires. It waits for the first byte without a time limit. If stop or the end of the stream leaves no bytes, the
+     * JSON parser runs, so the sink still gets its usual calls.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 

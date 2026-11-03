@@ -17,20 +17,17 @@ namespace loglib
 {
 
 /**
- * @brief Synchronous one-shot file parse. Drives @p parser into an internal
- * BufferingSink and materialises the full ParseResult. Used by
- * tests, log_generator, and any caller wanting LogData without
- * the streaming machinery. Interactive code instead feeds a LogTable
- * through LogTable::BeginStreaming.
+ * @brief Parses a whole file with the given parser and returns everything it found.
  *
- * Throws std::runtime_error if @p file does not exist or is empty.
+ * It is meant for tests, tools and anyone who wants the data without the streaming machinery. Interactive code feeds a
+ * LogTable through LogTable::BeginStreaming instead. Throws std::runtime_error if the file does not exist or is empty.
  */
 [[nodiscard]] ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file);
 
 /**
- * @brief Auto-detecting variant: probes the formats listed in
- * DetectFormatForPath and runs the first match.
- * Throws std::runtime_error if no parser claims the file.
+ * @brief Detects the format of a file as DetectFormatForPath does and parses it with the matching parser.
+ *
+ * Throws std::runtime_error if the file cannot be read, is empty, or no parser recognizes it.
  */
 [[nodiscard]] ParseResult ParseFile(const std::filesystem::path &file);
 

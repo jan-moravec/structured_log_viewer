@@ -21,25 +21,22 @@ namespace loglib
 {
 
 /**
- * @brief Default RegexTemplate::priority bucket for user templates: high
- * enough to always land after every shipped built-in (which live
- * between 10 and 30), leaving generous headroom on either side for
- * users who want to hand-order their own templates. Referenced by
- * the on-disk JSON schema default and by the app-side editor when
- * creating a fresh draft, so the two never drift.
+ * @brief The priority a user template gets when it does not set one.
+ *
+ * The built-in templates use priorities from 10 to 30, so a user template always probes after them and leaves room on
+ * both sides for users who want to order their own. The template file schema and the editor both use this value.
  */
 inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
 
 /**
- * @brief How a template identifies continuation lines.
+ * @brief How a template recognizes continuation lines.
  *
- *  - None: every line is parsed independently.
- *  - Indented: space- or tab-prefixed lines continue the prior record.
- *  - UntilNextHeader: lines failing the anchored header probe
- *    continue the prior record.
+ * - None: every line is parsed on its own.
+ * - Indented: lines that start with a space or tab continue the previous record.
+ * - UntilNextHeader: lines that do not match the header pattern continue the previous record.
  *
- * Non-None modes append continuation text to the pattern's final
- * source-order named capture, which must be string-typed.
+ * With any mode but None, the continuation text is appended to the last named capture of the pattern, which must be a
+ * string.
  */
 enum class ContinuationMode : uint8_t
 {
@@ -48,126 +45,104 @@ enum class ContinuationMode : uint8_t
     UntilNextHeader,
 };
 
-/** @brief Return the JSON spelling of @p mode. */
+/** @brief The name used for a mode in template JSON files. */
 [[nodiscard]] std::string_view ContinuationModeName(ContinuationMode mode) noexcept;
 
-/** @brief Parse a continuation mode's JSON spelling. */
+/** @brief Reads a mode from its JSON name. Returns nullopt for an unknown name. */
 [[nodiscard]] std::optional<ContinuationMode> ParseContinuationMode(std::string_view name) noexcept;
 
 /**
- * @brief A named PCRE2 pattern that splits one log line into columns via
- * named capture groups.
+ * @brief A named PCRE2 pattern that splits one log line into columns.
  *
- * Patterns use PCRE2 syntax with (?<Name>...) named groups.
- * Each named group becomes a Column whose
- * keys[0] is the group name; anonymous groups are ignored.
+ * The pattern uses PCRE2 syntax with named groups written as (?<Name>...). Each named group becomes a column whose key
+ * is the group name. Anonymous groups are ignored.
  *
- * sampleLines doubles as test fixture and auto-detection data:
- * RegexParser::IsValid matches each template's pattern against
- * the first few non-blank lines of the file, and the same lines
- * drive test_regex_parser.cpp to assert shipped templates parse
- * the formats they advertise.
+ * The sample lines serve two purposes. Format detection matches the pattern against the first lines of a file, and the
+ * regex parser tests check that every shipped template parses the lines it advertises.
  *
- * Templates live one-per-file under lib/data/regex_templates/
- * (embedded into the library at build time) and, for user
- * additions or shadows, under <AppDataLocation>/regex_templates/.
- * Adding a built-in template means dropping a new JSON in the
- * data directory and rebuilding; user templates require no build.
+ * Built-in templates are JSON files, one per template, under lib/data/regex_templates and embedded at build time.
+ * User templates are JSON files in the regex_templates folder of the application data directory. They need no build.
  */
 struct RegexTemplate
 {
     /**
-     * @brief Stable display name (e.g. "Syslog (RFC3164)") shown in the
-     * GUI picker. Two templates with the same name collide; a
-     * user template silently shadows a built-in of the same name
-     * (mirrors ThemeControl).
+     * @brief The name to show when listing templates. Names must be unique: a user template with the name of a built-in
+     * one replaces it.
      */
     std::string name;
+
     /**
-     * @brief PCRE2 pattern with (?<Name>...) named capture groups.
-     * Compiled once and shared read-only across Stage B workers;
-     * each worker owns its own pcre2_match_data (see
-     * lib/src/parse/parsers/regex_parser.cpp).
+     * @brief The PCRE2 pattern. It is compiled once and shared by all parser threads, and each thread keeps its own
+     * match data.
      */
     std::string pattern;
+
     /**
-     * @brief Representative lines the pattern is known to match. Used by
-     * IsValid when autoDetect is true, and by unit tests as
-     * canonical fixtures.
+     * @brief Lines the pattern is known to match. Detection uses them when autoDetect is true, and tests use them as
+     * fixtures.
      */
     std::vector<std::string> sampleLines;
+
     /**
-     * @brief Whether the template joins the auto-detection probe loop.
-     * true (default) means "probe this against unrecognised
-     * files"; false keeps it in the picker but skips detection.
-     * Defaulted to true in JSON so existing files without the
-     * field keep the old behaviour.
+     * @brief Whether detection tries this template on files it does not recognize.
+     *
+     * A template with this set to false is still offered for manual selection. It is true when a file does not say.
      */
     bool autoDetect = true;
+
     /**
-     * @brief Probe order; lower probes first. Built-ins curate priorities
-     * so more-specific patterns beat looser ones (Combined Log
-     * Format before Common Log Format, ...). User templates
-     * default to a bucket below built-ins so they never
-     * accidentally steal a match from a shipped template. Same
-     * priority retains document order. Defaulted in JSON to
-     * USER_TEMPLATE_DEFAULT_PRIORITY (the user bucket).
+     * @brief The order in which detection tries templates. Lower values go first, and equal values keep their file
+     * order.
+     *
+     * The built-in priorities put specific patterns before loose ones, so Combined Log Format is tried before Common
+     * Log Format. A file that does not set one gets USER_TEMPLATE_DEFAULT_PRIORITY.
      */
     int priority = USER_TEMPLATE_DEFAULT_PRIORITY;
+
     /**
-     * @brief Free-form description of the format the template parses:
-     * typically a sentence on the format (what emits it, column
-     * meanings, edge cases) and, for ports, an attribution line
-     * (e.g. Adapted from lnav src/formats/syslog_log.json
-     * (BSD-2-Clause)). Surfaced in the Regex templates editor
-     * and scanned by THIRD_PARTY_LICENSES.txt for recognisable
-     * licence citations. Empty for user templates that need
-     * neither.
+     * @brief A free-text description of the format: what writes it, what the columns mean, and edge cases.
+     *
+     * Templates ported from other projects also credit the source and its license here, and the third-party license
+     * file is checked against these credits. It may be empty.
      */
     std::string description;
-    /** @brief Multi-line handling. Missing JSON fields retain None. */
+
+    /** @brief How continuation lines are recognized. A template file that does not set it gets None. */
     ContinuationMode continuationMode = ContinuationMode::None;
+
     /**
-     * @brief Optional header probe for UntilNextHeader. An empty value
-     * reuses pattern; other modes ignore this field.
+     * @brief The pattern that recognizes a record's first line when continuationMode is UntilNextHeader. If empty,
+     * pattern is used. Other modes ignore it.
      */
     std::string headerAnchor;
 };
 
 /**
- * @brief Parse a single regex-template JSON document. Throws
- * std::runtime_error on parse failure (the message includes
- * glaze's position context). Missing fields keep their struct defaults.
+ * @brief Reads one template from its JSON text. Fields the text leaves out keep their default.
+ *
+ * Throws std::runtime_error if the text is invalid. The message includes the position of the problem.
  */
 [[nodiscard]] RegexTemplate ParseRegexTemplate(std::string_view content);
 
 /**
- * @brief Serialise @p tmpl to pretty-printed JSON. Throws
- * std::runtime_error on encode failure. Used by the GUI's
- * "Save as template..." to atomically write a user template into
- * <AppDataLocation>/regex_templates/.
+ * @brief Writes a template as indented JSON, as saved in a user template file. Throws std::runtime_error if encoding
+ * fails.
  */
 [[nodiscard]] std::string SerializeRegexTemplate(const RegexTemplate &tmpl);
 
 /**
- * @brief Built-in registry of regex templates for common log formats.
+ * @brief The templates that ship with the library, in the order detection tries them.
  *
- * Returned by reference so callers can hold a span for a whole
- * parse without copying. The registry is process-lifetime constant
- * and is parsed lazily on first call from JSON files embedded at
- * build time (lib/data/regex_templates/*.json).
- *
- * Per-template description strings double as upstream-source
- * citations for ports (lnav, logstash-patterns-core, vendor docs).
+ * They are read from the embedded JSON files on the first call and never change afterwards, so the returned span stays
+ * valid for the whole process. The description of a ported template names its source.
  */
 [[nodiscard]] std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept;
 
 /**
- * @brief A built-in template plus the slug printed by slp formats.
+ * @brief A built-in template together with its slug.
  *
- * slug is the data-file stem (apache_combined for
- * apache_combined.json) and stays stable when the display name
- * changes.
+ * The slug is the name of the template's data file without the extension, for example apache_combined. It stays the
+ * same when the display name changes, and slp formats prints it.
  */
 struct BuiltinRegexTemplateInfo
 {
@@ -176,56 +151,37 @@ struct BuiltinRegexTemplateInfo
 };
 
 /**
- * @brief Copies each built-in template with its data-file slug.
+ * @brief Returns a copy of every built-in template with its slug.
  *
- * Entries whose embedded JSON fails to parse are omitted. Order
- * matches BuiltinRegexTemplates(): lower priority first, and
- * filename order within one priority.
+ * Templates whose embedded JSON cannot be parsed are left out. The order is the same as BuiltinRegexTemplates.
  */
 [[nodiscard]] std::vector<BuiltinRegexTemplateInfo> BuiltinRegexTemplateCatalog();
 
 /**
- * @brief Register a snapshot of *extra* templates (user-supplied,
- * app-side) so RegexParser::IsValid / DetectRegexTemplate see
- * them in the merged probe loop. Replaces any previously
- * registered set (not additive). Pass an empty span to clear.
+ * @brief Registers the user's templates so format detection tries them as well as the built-in ones.
  *
- * The library copies @p extras into an internal vector, so the
- * caller's storage need not outlive the call. Safe to call
- * repeatedly (e.g. "Reload templates from disk"); changes take
- * effect on the next probe.
+ * Each call replaces the earlier set, and an empty span clears it. The templates are copied, so the caller's storage
+ * may go away. It is safe to call repeatedly, for example when templates are reloaded from disk; the change applies
+ * from the next probe.
  *
- * Built-ins always probe before user templates regardless of
- * priority, so a careless user priority can never steal a
- * match from a shipped template; within each tier the merged
- * list is stable-sorted by priority (lower probes first). The
- * parser-side compile cache preserves this two-tier ordering
- * verbatim — see CompiledProbeSnapshot in
- * lib/src/parse/parsers/regex_parser.cpp.
+ * Built-in templates are always tried before user templates, whatever their priority, so a user template cannot take
+ * over a match from a shipped one. Within each group the templates are ordered by priority.
  */
 void SetExtraRegexTemplates(std::span<const RegexTemplate> extras);
 
 /**
- * @brief Find a template (built-in or extra) whose pattern matches
- * @p pattern exactly. Used to look up the display name for a
- * persisted Source::regexPattern. Returns std::nullopt when
- * the pattern matches neither a built-in nor a registered user
- * template (i.e. it is custom and unsaved).
+ * @brief Finds the built-in or registered template whose pattern is exactly pattern.
  *
- * Returned by value (not by pointer into the registry) so a
- * concurrent SetExtraRegexTemplates call cannot invalidate the
- * caller's copy. RegexTemplate is a handful of short strings,
- * so the copy is negligible next to the linear scan.
+ * Use it to show the template name for a saved pattern. Returns nullopt if the pattern is custom and unsaved. The
+ * template is returned by value, so a later SetExtraRegexTemplates call cannot invalidate it.
  */
 [[nodiscard]] std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern);
 
 /**
- * @brief Templates loaded from *.json files in @p directory, plus per-file errors.
+ * @brief The result of loading a folder of templates.
  *
- * Files are read in filename order. A missing priority keeps
- * USER_TEMPLATE_DEFAULT_PRIORITY through ParseRegexTemplate. A file
- * that cannot be read or parsed is skipped; its message is appended to
- * errors and the walk continues.
+ * Files are read in file name order. A file that cannot be read or parsed is skipped, and a message about it is added
+ * to errors.
  */
 struct RegexTemplateLoadResult
 {
@@ -234,13 +190,9 @@ struct RegexTemplateLoadResult
 };
 
 /**
- * @brief Load every *.json regex template in @p directory.
+ * @brief Loads every JSON template file in a folder.
  *
- * A missing directory yields an empty result. The directory itself is
- * not created.
- *
- * @param directory Folder of user template JSON files.
- * @return Parsed templates and one error string per skipped file.
+ * A folder that does not exist gives an empty result and is not created. Each skipped file adds one entry to errors.
  */
 [[nodiscard]] RegexTemplateLoadResult LoadRegexTemplatesFromDirectory(const std::filesystem::path &directory);
 

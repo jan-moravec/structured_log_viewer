@@ -16,13 +16,11 @@ namespace loglib
 {
 
 /**
- * @brief Physical line span and body of one parse-error string.
+ * @brief The lines an error refers to, and the text of the error without its location.
  *
- * Parsers report errors as display strings. FormatLineError and
- * FormatLineRangeError write the location prefix; LocateParseError
- * reads it back. firstLine and lastLine are 1-based and both 0 when
- * the error has no location. message views the text after the prefix,
- * or the whole input when there is no prefix.
+ * Parsers report errors as text with a location prefix. FormatLineError and FormatLineRangeError write the prefix and
+ * LocateParseError reads it back. Line numbers start at 1, and both are 0 when the error has no location. The message
+ * is a view of the text after the prefix, or of the whole text when there is no prefix.
  */
 struct ParseErrorLocation
 {
@@ -31,32 +29,17 @@ struct ParseErrorLocation
     std::string_view message;
 };
 
-/**
- * @brief Formats an error located on one physical line.
- *
- * @param line 1-based line number.
- * @param message Error body.
- * @return Error on line <line>: <message>.
- */
+/** @brief Formats an error on one line, as "Error on line N: message". Line numbers start at 1. */
 [[nodiscard]] std::string FormatLineError(std::uint64_t line, std::string_view message);
 
-/**
- * @brief Formats an error that spans several physical lines.
- *
- * @param firstLine 1-based first line.
- * @param lastLine 1-based last line.
- * @param message Error body.
- * @return Error on lines <firstLine>-<lastLine>: <message>.
- */
+/** @brief Formats an error that spans several lines, as "Error on lines N-M: message". Line numbers start at 1. */
 [[nodiscard]] std::string FormatLineRangeError(
     std::uint64_t firstLine, std::uint64_t lastLine, std::string_view message
 );
 
 /**
- * @brief Reads the location prefix that the format functions write.
- *
- * @param text Parse-error string. The result views into it.
- * @return The line span and body, or a zero span and the whole text.
+ * @brief Reads the location back from an error text. Without a prefix the lines are 0 and the message is the whole
+ * text. The result views into text.
  */
 [[nodiscard]] ParseErrorLocation LocateParseError(std::string_view text) noexcept;
 

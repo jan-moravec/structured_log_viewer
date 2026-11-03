@@ -23,9 +23,8 @@ namespace loglib
 {
 
 /**
- * @brief Auto-detection result: the matched format and, for Regex, the
- * matched template's pattern (built-in or user). regexPattern
- * is empty for non-Regex formats and when no probe matched.
+ * @brief The detected format and, for a regex format, the pattern of the matching template. The pattern is empty for
+ * other formats and when nothing matched.
  */
 struct DetectedFormat
 {
@@ -34,55 +33,38 @@ struct DetectedFormat
 };
 
 /**
- * @brief Sniff @p sniffBuffer and return the first format whose parser
- * accepts it, mirroring TryDetectFormatFromBytes but folding the
- * "no probe matched" case into a defaulted {Format::Json, ""}
- * so callers that always need *some* parser (the streaming loop,
- * ParseFile(path)) can chain without an .value_or().
+ * @brief Detects the format of a sample by returning the first format whose parser accepts it.
  *
- * Prefer TryDetectFormatFromBytes when the caller can act on
- * "not yet confident" (e.g. keep peeking on a slow network
- * stream). This overload cannot distinguish "JSON was actually
- * claimed" from "nothing claimed, defaulting to JSON".
+ * When nothing matches, the result is JSON with an empty pattern, so callers that always need a parser can use it
+ * directly. For that reason it cannot tell a real JSON match from a fallback. A caller that can wait for more bytes,
+ * such as one reading a slow network stream, should use TryDetectFormatFromBytes instead.
  *
- * Used by file, stdin, and network detection so identical bytes
- * produce identical results.
+ * Files, standard input and network streams all use the same detection, so the same bytes give the same result.
  */
 [[nodiscard]] DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer);
 
 /**
- * @brief Like DetectFormatFromBytes, but returns std::nullopt when
- * no probe claimed the buffer (empty input, or content that no
- * parser recognises). Used by AutoDetectParser to short-circuit
- * the peek loop as soon as a definitive verdict is available:
- * DetectFormatFromBytes would report the fallback Json in
- * that case, which is indistinguishable from a real JSON hit and
- * would prematurely stop peeking on a bursty non-JSON producer
- * whose first few bytes hadn't yet formed a recognisable line.
+ * @brief Like DetectFormatFromBytes, but returns nullopt when no parser accepts the sample.
  *
- * The probe order matches DetectFormatFromBytes exactly: JSON,
- * logfmt, regex templates, CSV.
+ * That is the case for an empty sample or content no parser recognizes. A caller reading a stream can tell that it
+ * has not seen enough yet and read more, which the fallback to JSON in DetectFormatFromBytes would hide. The formats
+ * are tried in the same order: JSON, logfmt, regex templates, CSV.
  */
 [[nodiscard]] std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuffer);
 
 /**
- * @brief File-based convenience wrapper. Reads up to PROBE_BYTES_BUDGET
- * bytes from @p file via ReadProbeHead and forwards to
- * DetectFormatFromBytes. Missing / unreadable files return
- * {Format::Json, ""} — the same fallback the byte-buffer
- * version produces on empty input.
+ * @brief Detects the format of a file from its first PROBE_BYTES_BUDGET bytes.
+ *
+ * A file that is missing or cannot be read gives JSON with an empty pattern, the same as an empty sample.
  */
 [[nodiscard]] DetectedFormat DetectFormatForPath(const std::filesystem::path &file);
 
 /**
- * @brief Construct a parser for @p format. For Regex, @p regexPattern
- * is pinned on the parser instance directly rather than relying
- * on ParserOptions::configuration->source->regexPattern. An
- * empty @p regexPattern with Format::Regex builds a parser
- * that surfaces a single "empty pattern" error through the sink.
+ * @brief Creates a parser for a format.
  *
- * Kept in the library so AutoDetectParser can resolve formats
- * without depending on the app layer.
+ * For Format::Regex the parser uses regexPattern and ignores the pattern in ParserOptions. An empty pattern gives a
+ * parser that reports one error about the empty pattern through the sink. AutoDetectParser uses this to pick its
+ * parser without depending on the application.
  */
 [[nodiscard]] std::unique_ptr<LogParser> MakeParserForFormat(Source::Format format, std::string_view regexPattern = {});
 
