@@ -17,6 +17,7 @@
 
 #include "benchmark_common.hpp"
 #include "common.hpp"
+#include "table_fixture.hpp"
 
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -126,7 +127,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
         {
             batch.newKeys.emplace_back(columnKeyOwned);
         }
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
@@ -189,7 +190,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
         {
             batch.newKeys.emplace_back("level");
         }
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
@@ -252,7 +253,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
         {
             batch.newKeys.emplace_back("msg");
         }
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
     return {.table = std::move(table), .sourceOwner = nullptr};
 }

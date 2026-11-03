@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "table_fixture.hpp"
 
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -85,7 +86,7 @@ LogTable BuildEnumTable(
     {
         batch.newKeys.emplace_back(columnKey);
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
     return table;
 }
 
@@ -130,7 +131,7 @@ LogTable BuildStringTable(
     {
         batch.newKeys.emplace_back(columnKey);
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
     return table;
 }
 
@@ -171,7 +172,7 @@ LogTable BuildTimeTable(
     {
         batch.newKeys.emplace_back(columnKey);
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
     return table;
 }
 
@@ -292,7 +293,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
     StreamedBatch batch;
     batch.firstLineNumber = table.RowCount() + 1;
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -348,7 +349,7 @@ TEST_CASE(
     StreamedBatch batch;
     batch.firstLineNumber = table.RowCount() + 1;
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -441,7 +442,7 @@ TEST_CASE(
         StreamedBatch batch;
         batch.firstLineNumber = table.RowCount() + 1;
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
 
         const size_t debugRow = table.RowCount() - 1;
         const auto debugId = table.GetEnumValueId(debugRow, 0);
@@ -470,7 +471,7 @@ TEST_CASE(
         StreamedBatch batch;
         batch.firstLineNumber = table.RowCount() + 1;
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
 
         const size_t debugRow = table.RowCount() - 1;
         const auto debugId = table.GetEnumValueId(debugRow, 0);
@@ -585,7 +586,7 @@ LogTable BuildSingleColumnTable(
     {
         batch.newKeys.emplace_back(columnKey);
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
     return table;
 }
 
@@ -797,7 +798,7 @@ TEST_CASE(
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
     }
     batch.newKeys.emplace_back("level");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
     const auto *ranks = table.LevelRankCache(0);
@@ -1012,7 +1013,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("b")}, {"region", std::string("y")}}));
     batch.newKeys.emplace_back("category");
     batch.newKeys.emplace_back("region");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     std::vector<CompiledFilterExpression> children;
     children.push_back(MakeEnumLeaf(table, 0, {"a"}));
@@ -1107,7 +1108,7 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
     }
     batch.newKeys.emplace_back("category");
     batch.newKeys.emplace_back("region");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     // (category in {a,b}) AND NOT(region=y)
     std::vector<CompiledFilterExpression> orChildren;

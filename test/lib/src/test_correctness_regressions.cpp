@@ -1,3 +1,4 @@
+#include "table_fixture.hpp"
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/internal/stable_byte_arena.hpp>
@@ -19,6 +20,7 @@
 #include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
+
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/temp_dir.hpp>
@@ -455,7 +457,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
     // File line ids are far past anything the stream source has assigned.
     fileBatch.lines.push_back(makeLine(fileRef, 5000, "file-a"));
     fileBatch.lines.push_back(makeLine(fileRef, 5001, "file-b"));
-    table.AppendBatch(std::move(fileBatch));
+    AppendFixtureBatch(table, std::move(fileBatch));
 
     auto streamSource = std::make_unique<StreamLineSource>("<stream>", nullptr);
     StreamLineSource &streamRef = *streamSource;
@@ -466,7 +468,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
         const size_t lineId = streamRef.AppendLine(text, "");
         streamBatch.lines.push_back(makeLine(streamRef, lineId, text));
     }
-    table.AppendBatch(std::move(streamBatch));
+    AppendFixtureBatch(table, std::move(streamBatch));
 
     // The first survivor is a file row: stream rows must keep their bytes.
     table.EvictPrefixRows(1);

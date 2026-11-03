@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "table_fixture.hpp"
 
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -76,7 +77,7 @@ LogTable BuildSingleColumnTable(
     {
         batch.newKeys.emplace_back(columnKey);
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
     return table;
 }
 
@@ -232,7 +233,7 @@ TEST_CASE("RowOrdering Enumeration uses EnumDictRank and keeps input-index ties"
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
     batch.newKeys.emplace_back("category");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
@@ -288,7 +289,7 @@ TEST_CASE("RowOrdering Level uses canonical severity, not byte order", "[row_ord
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
     }
     batch.newKeys.emplace_back("level");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     const auto logRows = IotaRows(rowValues.size());
     const RowOrdering ascending(0, SortDirection::Ascending);
@@ -337,7 +338,7 @@ TEST_CASE("RowOrdering mixed-column table sorts the requested column only", "[ro
     }
     batch.newKeys.emplace_back("n");
     batch.newKeys.emplace_back("s");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     const auto logRows = IotaRows(rows.size());
     const RowOrdering byNumber(0, SortDirection::Ascending);

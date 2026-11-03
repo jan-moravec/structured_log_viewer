@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "table_fixture.hpp"
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/line_source.hpp>
@@ -105,7 +106,7 @@ struct TableSink : loglib::LogParseSink
     }
     void OnBatch(loglib::StreamedBatch batch) override
     {
-        table->AppendBatch(std::move(batch));
+        AppendFixtureBatch(*table, std::move(batch));
     }
     void OnFinished(bool /*cancelled*/) override
     {

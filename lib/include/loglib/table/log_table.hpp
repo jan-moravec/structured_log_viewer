@@ -94,24 +94,26 @@ public:
 
         /**
          * @brief Canonical KeyIds of columns the batch flipped to Type::Level. The bubble to
-         * CANONICAL_LEVEL_COLUMN_INDEX is left to the caller so a streaming consumer can wrap each move in
-         * begin/endMoveColumns. Re-resolve each KeyId to its current column index before moving, because earlier
-         * moves can shift later targets.
+         * CANONICAL_LEVEL_COLUMN_INDEX is left to the caller, which moves each column itself so a view can announce
+         * every move before it happens. Re-resolve each KeyId to its current column index before moving, because
+         * earlier moves can shift later targets.
          */
         std::vector<KeyId> levelBubbleKeys;
     };
 
     /**
-     * @brief Splice @p batch in, extending the configuration for any
-     * batch.newKeys and back-filling new Type::Time columns.
+     * @brief Adds a streamed batch of rows to the table.
      *
-     * @return The columns and keys the batch affected.
+     * New keys in the batch become new columns, and new time columns are filled in for the rows already in the table.
+     * The result lists what else changed: columns that must move and columns that stopped being enumerations. The
+     * caller must act on it.
      */
-    AppendBatchResult AppendBatch(StreamedBatch batch);
+    [[nodiscard]] AppendBatchResult AppendBatch(StreamedBatch batch);
 
     /**
-     * @brief Non-mutating preview of AppendBatch(batch)'s effect; lets the
-     * model call beginInsert{Rows,Columns} first.
+     * @brief Reports how many rows and columns AppendBatch would add, without changing the table.
+     *
+     * Use it to tell a view about the growth before calling AppendBatch.
      */
     struct AppendBatchPreview
     {
@@ -121,8 +123,9 @@ public:
     [[nodiscard]] AppendBatchPreview PreviewAppend(const StreamedBatch &batch) const;
 
     /**
-     * @brief Reorder column @p srcIndex to @p destIndex. Callers must wrap with
-     * beginMoveColumns/endMoveColumns.
+     * @brief Moves a column from srcIndex to destIndex.
+     *
+     * The table does not notify anyone. A view over the table must announce the move before calling this.
      */
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
@@ -152,7 +155,8 @@ public:
      */
     void AppendBatchArranged(StreamedBatch batch);
 
-    /** @brief Moves each column named in @p keys to CANONICAL_LEVEL_COLUMN_INDEX where ShouldBubbleLevelColumn allows.
+    /**
+     * @brief Moves each column named in keys to CANONICAL_LEVEL_COLUMN_INDEX where ShouldBubbleLevelColumn allows.
      */
     void BubbleLevelColumns(std::span<const KeyId> keys);
 
@@ -202,8 +206,9 @@ public:
     [[nodiscard]] LogData &Data() noexcept;
 
     /**
-     * @brief Drop the first @p count rows; callers wrap with
-     * beginRemoveRows/endRemoveRows.
+     * @brief Drops the first count rows.
+     *
+     * The table does not notify anyone. A view over the table must announce the removal before calling this.
      */
     void EvictPrefixRows(size_t count);
 
@@ -309,7 +314,7 @@ public:
         /** @brief Columns flipped to Type::Level, to bubble as described for AppendBatchResult. */
         std::vector<KeyId> levelBubbleKeys;
     };
-    FinalizeResult FinalizeAutoDetection();
+    [[nodiscard]] FinalizeResult FinalizeAutoDetection();
 
     /**
      * @brief Reconcile loaded rows with a user-driven type flip at

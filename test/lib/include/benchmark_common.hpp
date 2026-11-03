@@ -5,6 +5,7 @@
 // any parser's static `ParseStreaming` overload. See CONTRIBUTING.md
 // `## Benchmarking` for PR-process docs.
 
+#include "table_fixture.hpp"
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -13,6 +14,7 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/schema/log_configuration.hpp>
+
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/log_generator.hpp>
@@ -289,7 +291,7 @@ struct StreamSink : loglib::LogParseSink
     {
         const std::size_t lines = batch.lines.size();
         const auto start = std::chrono::steady_clock::now();
-        table->AppendBatch(std::move(batch));
+        AppendFixtureBatch(*table, std::move(batch));
         appendTotal += std::chrono::steady_clock::now() - start;
         ++appendBatches;
         appendLines += lines;

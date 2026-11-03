@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "table_fixture.hpp"
 
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
@@ -273,7 +274,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
     auto batchA =
         BuildStreamedBatch(keys, *sourcePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
-    table.AppendBatch(std::move(batchA));
+    AppendFixtureBatch(table, std::move(batchA));
 
     REQUIRE(table.RowCount() == 1);
     REQUIRE(table.ColumnCount() == 2);
@@ -284,7 +285,7 @@ TEST_CASE(
         keys, *sourcePtr, {{{"key1", std::string("v1b")}, {"key2", std::string("v2b")}}}, keys.Size(), 2
     );
     REQUIRE(batchB.newKeys.empty());
-    table.AppendBatch(std::move(batchB));
+    AppendFixtureBatch(table, std::move(batchB));
 
     CHECK(table.RowCount() == 2);
     CHECK(table.ColumnCount() == 2);
@@ -305,16 +306,19 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(
-        BuildStreamedBatch(keys, *sourcePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
+    AppendFixtureBatch(
+        table, BuildStreamedBatch(keys, *sourcePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
     );
     REQUIRE(table.ColumnCount() == 2);
     const std::string alphaHeader = table.GetHeader(0);
     const std::string betaHeader = table.GetHeader(1);
 
-    table.AppendBatch(BuildStreamedBatch(
-        keys, *sourcePtr, {{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}}, keys.Size() - 1, 2
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildStreamedBatch(
+            keys, *sourcePtr, {{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}}, keys.Size() - 1, 2
+        )
+    );
 
     REQUIRE(table.ColumnCount() == 3);
     CHECK(table.GetHeader(0) == alphaHeader); // unchanged position
@@ -426,55 +430,67 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     };
 
     // {alpha, beta}.
-    table.AppendBatch(BuildStreamedBatch(
-        keys,
-        *sourcePtr,
-        {
-            {{"alpha", std::string("a1")}, {"beta", std::string("b1")}},
-        },
-        0,
-        1
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildStreamedBatch(
+            keys,
+            *sourcePtr,
+            {
+                {{"alpha", std::string("a1")}, {"beta", std::string("b1")}},
+            },
+            0,
+            1
+        )
+    );
     REQUIRE(table.ColumnCount() == 2);
     pinAndCheck(table);
 
     // +gamma at index 2; alpha/beta stay put.
-    table.AppendBatch(BuildStreamedBatch(
-        keys,
-        *sourcePtr,
-        {
-            {{"alpha", std::string("a2")}, {"gamma", std::string("g1")}},
-        },
-        keys.Size() - 1,
-        2
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildStreamedBatch(
+            keys,
+            *sourcePtr,
+            {
+                {{"alpha", std::string("a2")}, {"gamma", std::string("g1")}},
+            },
+            keys.Size() - 1,
+            2
+        )
+    );
     REQUIRE(table.ColumnCount() == 3);
     CHECK(table.GetHeader(2) == "gamma");
     pinAndCheck(table);
 
     // No-new-keys batch leaves column count and positions unchanged.
-    table.AppendBatch(BuildStreamedBatch(
-        keys,
-        *sourcePtr,
-        {
-            {{"alpha", std::string("a3")}, {"beta", std::string("b3")}, {"gamma", std::string("g3")}},
-        },
-        keys.Size(),
-        3
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildStreamedBatch(
+            keys,
+            *sourcePtr,
+            {
+                {{"alpha", std::string("a3")}, {"beta", std::string("b3")}, {"gamma", std::string("g3")}},
+            },
+            keys.Size(),
+            3
+        )
+    );
     REQUIRE(table.ColumnCount() == 3);
     pinAndCheck(table);
 
     // Two new keys land at the end in observation order; existing positions stable.
-    table.AppendBatch(BuildStreamedBatch(
-        keys,
-        *sourcePtr,
-        {
-            {{"delta", std::string("d1")}, {"epsilon", std::string("e1")}},
-        },
-        keys.Size(),
-        4
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildStreamedBatch(
+            keys,
+            *sourcePtr,
+            {
+                {{"delta", std::string("d1")}, {"epsilon", std::string("e1")}},
+            },
+            keys.Size(),
+            4
+        )
+    );
     REQUIRE(table.ColumnCount() == 5);
     CHECK(table.GetHeader(3) == "delta");
     CHECK(table.GetHeader(4) == "epsilon");
@@ -572,16 +588,19 @@ TEST_CASE(
 
     KeyIndex &keys = table.Keys();
     // Batch 1: no timestamp column yet; rows carry only `msg`.
-    table.AppendBatch(BuildStreamedBatch(
-        keys,
-        *sourcePtr,
-        {
-            {{"msg", std::string("first")}},
-            {{"msg", std::string("second")}},
-        },
-        0,
-        1
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildStreamedBatch(
+            keys,
+            *sourcePtr,
+            {
+                {{"msg", std::string("first")}},
+                {{"msg", std::string("second")}},
+            },
+            0,
+            1
+        )
+    );
     REQUIRE(table.RowCount() == 2);
     REQUIRE(table.ColumnCount() == 1);
     // `msg` promotes to enum during this batch and legitimately back-fills
@@ -824,7 +843,7 @@ TEST_CASE(
         batch.firstLineNumber = static_cast<size_t>(static_cast<size_t>(batchIdx) + 1u);
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0", std::string("steady")}}));
         REQUIRE(batch.newKeys.empty());
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
 
     // On steady-state batches with empty `newKeys`, `AppendBatch` must not
@@ -911,7 +930,7 @@ TEST_CASE(
     batch.firstLineNumber = 1;
     batch.newKeys = {"k0_new"};
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0_new", std::string("hello")}}));
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     // Expected Find calls: exactly `Touched.keys.size() == 2` (one for "k0",
     // one for the freshly-arrived "k0_new"). The Untouched column contributes
@@ -1002,7 +1021,9 @@ TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", 
     for (size_t batchStart = 0; batchStart < TOTAL_LINES; batchStart += BATCH_SIZE)
     {
         const bool declareNewKey = (batchStart == 0);
-        table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, batchStart + 1, BATCH_SIZE, declareNewKey));
+        AppendFixtureBatch(
+            table, MakeStreamBatch(streamSourceRef, keys, valueKey, batchStart + 1, BATCH_SIZE, declareNewKey)
+        );
 
         // Mirror `LogModel::AppendBatch`'s post-append trim: any rows past
         // the cap are evicted in source order. Cap is checked *after*
@@ -1049,7 +1070,9 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
         streamSourceRef.AppendLine("dropped" + std::to_string(i + 1), std::string{});
     }
     streamSourceRef.EvictBefore(headDrop + 1);
-    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, CAP, /*declareNewKey=*/true));
+    AppendFixtureBatch(
+        table, MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, CAP, /*declareNewKey=*/true)
+    );
 
     REQUIRE(table.RowCount() == CAP);
     CHECK(std::cmp_equal(std::get<int64_t>(table.GetValue(0, 0)), headDrop + 1));
@@ -1068,7 +1091,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, keys, valueKey, 1, 5, /*declareNewKey=*/true));
     REQUIRE(table.RowCount() == 5);
 
     // count == 0: documented well-defined behaviour (no rows removed).
@@ -1084,7 +1107,7 @@ TEST_CASE(
     // After the prior `EvictPrefixRows(5)` the source has cleared lines 1..5,
     // so its next-to-publish lineId is 6 — match it here so `MakeStreamBatch`'s
     // `AppendLine`-publishes-monotonic invariant holds.
-    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, 6, 3, /*declareNewKey=*/false));
+    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, keys, valueKey, 6, 3, /*declareNewKey=*/false));
     REQUIRE(table.RowCount() == 3);
     table.EvictPrefixRows(99);
     CHECK(table.RowCount() == 0);
@@ -1124,7 +1147,7 @@ TEST_CASE(
     batchA.lines.push_back(MakeLine(keys, *sourceAPtr, {{"key1", std::string("a1")}, {"key2", std::string("a2")}}));
     batchA.newKeys.emplace_back("key1");
     batchA.newKeys.emplace_back("key2");
-    table.AppendBatch(std::move(batchA));
+    AppendFixtureBatch(table, std::move(batchA));
 
     const KeyId k1 = keys.Find(std::string("key1"));
     const KeyId k2 = keys.Find(std::string("key2"));
@@ -1162,7 +1185,7 @@ TEST_CASE(
     // The `LogFile` ctor seeds `mLineOffsets = [0]`, so any strictly
     // greater offset suffices to test routing.
     batchB.localLineOffsets = {6};
-    table.AppendBatch(std::move(batchB));
+    AppendFixtureBatch(table, std::move(batchB));
 
     CHECK(table.RowCount() == 2);
     CHECK(table.ColumnCount() == 2);
@@ -1231,7 +1254,7 @@ TEST_CASE(
 
     // Stream-mode threshold = 2: promote and back-fill every prior row.
     constexpr size_t FIRST_BATCH_ROWS = 8;
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, columnName, tiers, 1, FIRST_BATCH_ROWS, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, columnName, tiers, 1, FIRST_BATCH_ROWS, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 
@@ -1244,8 +1267,8 @@ TEST_CASE(
 
     // Subsequent batches encode incrementally; no back-fill or type change.
     constexpr size_t SECOND_BATCH_ROWS = 16;
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, columnName, tiers, FIRST_BATCH_ROWS + 1, SECOND_BATCH_ROWS, false)
+    AppendFixtureBatch(
+        table, BuildEnumBatch(keys, *sourcePtr, columnName, tiers, FIRST_BATCH_ROWS + 1, SECOND_BATCH_ROWS, false)
     );
 
     REQUIRE(table.RowCount() == FIRST_BATCH_ROWS + SECOND_BATCH_ROWS);
@@ -1299,7 +1322,7 @@ TEST_CASE(
     // Drive the tracker past the promotion threshold to exercise every
     // pre-promotion `Observe` call.
     constexpr size_t ROWS = 320;
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, ROWS, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, ROWS, true));
 
     REQUIRE(table.RowCount() == ROWS);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
@@ -1404,7 +1427,7 @@ TEST_CASE(
     {
         capValues.emplace_back("tag" + std::to_string(i));
     }
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", capValues, 1, TEST_CAP, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "tag", capValues, 1, TEST_CAP, true));
 
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
@@ -1474,7 +1497,9 @@ TEST_CASE(
     // Plenty of rows + low cardinality would normally promote, but the
     // user-locked `Type::Any` is terminal and skipped by the auto-detector.
     constexpr size_t ROWS = 320;
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "debug"}, 1, ROWS, false));
+    AppendFixtureBatch(
+        table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "debug"}, 1, ROWS, false)
+    );
 
     REQUIRE(table.RowCount() == ROWS);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
@@ -1523,7 +1548,7 @@ TEST_CASE(
     {
         overflowValues.emplace_back("sev-" + std::to_string(i));
     }
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "severity", overflowValues, 1, TEST_CAP + 1, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "severity", overflowValues, 1, TEST_CAP + 1, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     // Demote routes to terminal `Type::String`, blocking re-promotion.
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::String);
@@ -1532,9 +1557,12 @@ TEST_CASE(
     // Terminal `Type::String` blocks re-promotion.
     constexpr size_t MIN_ROWS_FOR_PROMOTION = 4096;
     const std::vector<std::string> fewLevelValues = {"info", "warn"};
-    table.AppendBatch(BuildEnumBatch(
-        keys, *sourcePtr, "level", fewLevelValues, TEST_CAP + 2, MIN_ROWS_FOR_PROMOTION + 1, /*announceNewKey=*/true
-    ));
+    AppendFixtureBatch(
+        table,
+        BuildEnumBatch(
+            keys, *sourcePtr, "level", fewLevelValues, TEST_CAP + 2, MIN_ROWS_FOR_PROMOTION + 1, /*announceNewKey=*/true
+        )
+    );
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
     const KeyId levelKey = keys.Find("level");
@@ -1569,7 +1597,7 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
     REQUIRE_FALSE(table.EnumDictionaries().Empty());
     {
         const KeyId categoryKid = table.Keys().Find("category");
@@ -1623,7 +1651,7 @@ TEST_CASE(
     {
         manyValues.emplace_back("level-" + std::to_string(i));
     }
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", manyValues, 1, MIN_ROWS_FOR_PROMOTION, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", manyValues, 1, MIN_ROWS_FOR_PROMOTION, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::String);
 
@@ -1634,7 +1662,8 @@ TEST_CASE(
     {
         fewValues.emplace_back("level-" + std::to_string(i));
     }
-    table.AppendBatch(
+    AppendFixtureBatch(
+        table,
         BuildEnumBatch(keys, *sourcePtr, "level", fewValues, MIN_ROWS_FOR_PROMOTION + 1, MIN_ROWS_FOR_PROMOTION, false)
     );
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
@@ -1679,7 +1708,7 @@ TEST_CASE(
     batch.lines.push_back(
         MakeLine(keys, *sourcePtr, {{"level", std::string("info")}, {"severity", std::string("warn")}})
     );
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.RowCount() == 1);
     const KeyId levelKey = keys.Find("level");
@@ -1764,7 +1793,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
     const KeyId levelKey = keys.Find("level");
@@ -1816,7 +1845,7 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
     KeyIndex &keys = table.Keys();
     // `announceNewKey=true` refreshes the column's KeyId cache after the
     // first batch (the column itself was loaded, not freshly added).
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "channel", {"alpha"}, 1, 4, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "channel", {"alpha"}, 1, 4, true));
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
@@ -1859,7 +1888,7 @@ TEST_CASE(
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", LogValue{value}}}));
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.RowCount() == 320);
     // Column promoted; the lone long line stays as `OwnedString`
@@ -1905,7 +1934,7 @@ TEST_CASE(
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", LogValue{value}}}));
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.RowCount() == 200);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
@@ -1942,7 +1971,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     const std::string longValue(80, 'q');
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {longValue, "short"}, 1, 4, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "tag", {longValue, "short"}, 1, 4, true));
 
     // Below the min-sample threshold: column stays.
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
@@ -2041,7 +2070,7 @@ TEST_CASE(
     {
         batch1.lines.push_back(MakeLine(keys, *sourcePtr, {{"unrelated", LogValue{static_cast<int64_t>(i)}}}));
     }
-    table.AppendBatch(std::move(batch1));
+    AppendFixtureBatch(table, std::move(batch1));
 
     {
         const auto &columns = table.Configuration().Configuration().columns;
@@ -2061,7 +2090,7 @@ TEST_CASE(
         const char *value = (i % 2 == 0) ? "info" : "warn";
         batch2.lines.push_back(MakeLine(keys, *sourcePtr, {{"feature", LogValue{std::string(value)}}}));
     }
-    table.AppendBatch(std::move(batch2));
+    AppendFixtureBatch(table, std::move(batch2));
 
     REQUIRE(table.RowCount() == 10);
     const auto &columns = table.Configuration().Configuration().columns;
@@ -2112,7 +2141,7 @@ TEST_CASE(
     // Plenty of rows would normally promote the column; the
     // user-locked `Type::Any` keeps it as text.
     constexpr size_t ROWS = 320;
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, ROWS, false));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, ROWS, false));
 
     REQUIRE(table.RowCount() == ROWS);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
@@ -2151,7 +2180,7 @@ TEST_CASE(
     LogTable table({}, std::move(mgr));
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 6, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 6, true));
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
@@ -2205,7 +2234,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     // 8 rows comfortably exceeds scanCap (4) so the bail fires.
-    table.AppendBatch(BuildNumericBatch<int64_t>(keys, *sourcePtr, "count", 42, 8, true));
+    AppendFixtureBatch(table, BuildNumericBatch<int64_t>(keys, *sourcePtr, "count", 42, 8, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Integer);
@@ -2224,7 +2253,7 @@ TEST_CASE(
     LogTable table;
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildNumericBatch<double>(keys, *sourcePtr, "ratio", 1.5, 8, true));
+    AppendFixtureBatch(table, BuildNumericBatch<double>(keys, *sourcePtr, "ratio", 1.5, 8, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Floating);
@@ -2259,7 +2288,7 @@ TEST_CASE(
             batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{2.5}}}));
         }
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Number);
@@ -2287,7 +2316,7 @@ TEST_CASE(
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"flag", LogValue{i % 2 == 0}}}));
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Boolean);
@@ -2322,7 +2351,7 @@ TEST_CASE(
             batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"flag", LogValue{static_cast<int64_t>(i)}}}));
         }
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
@@ -2545,7 +2574,7 @@ TEST_CASE(
         const std::string value = (i == 1) ? "short" : longValue;
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"message", LogValue{value}}}));
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     // Per-batch path leaves the column promoted: ratio is above the
     // budget but the 50-sample floor prevents a mid-batch demote.
@@ -2554,7 +2583,7 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 
     // End-of-parse sweep demotes via the relaxed health check.
-    table.FinalizeAutoDetection();
+    FinalizeFixture(table);
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
     const KeyId messageKey = keys.Find("message");
@@ -2585,11 +2614,11 @@ TEST_CASE(
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string(i % 2 == 0 ? "alpha" : "beta")}}));
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 
-    table.FinalizeAutoDetection();
+    FinalizeFixture(table);
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const KeyId tierKey = keys.Find("tier");
@@ -2638,11 +2667,11 @@ TEST_CASE(
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tag", LogValue{longValue}}}));
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 
-    table.FinalizeAutoDetection();
+    FinalizeFixture(table);
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
@@ -2664,7 +2693,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
@@ -2696,7 +2725,7 @@ TEST_CASE(
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
-    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].header == "body");
 
@@ -2741,7 +2770,7 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     firstRows.back().emplace_back("col_a", std::string("a"));
     firstRows.back().emplace_back("col_b", std::string("b"));
     firstRows.back().emplace_back("col_c", std::string("c"));
-    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
     REQUIRE(table.Configuration().Configuration().columns[0].header == "col_a");
     REQUIRE(table.Configuration().Configuration().columns[1].header == "col_b");
@@ -2797,7 +2826,7 @@ TEST_CASE(
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
-    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     const size_t keyCountBeforeLevelBatch = keys.Size();
     REQUIRE(keyCountBeforeLevelBatch == 1);
@@ -2867,7 +2896,7 @@ TEST_CASE(
     firstRows.back().emplace_back("col_a", std::string("a"));
     firstRows.back().emplace_back("col_b", std::string("b"));
     firstRows.back().emplace_back("col_c", std::string("c"));
-    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
     const auto appendResult10 =
@@ -2945,7 +2974,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tier", {"info", "warn", "error"}, 1, 6, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "tier", {"info", "warn", "error"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
@@ -2970,7 +2999,9 @@ TEST_CASE(
 
     // 5 distinct entries, only `info` is canonical: `4 * 4 = 16` > 1,
     // so promotion is blocked.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true));
+    AppendFixtureBatch(
+        table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true)
+    );
 
     REQUIRE(table.RowCount() == 10);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
@@ -3007,7 +3038,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "lvl", {"NOTICE", "PANIC", "info"}, 1, 6, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "lvl", {"NOTICE", "PANIC", "info"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
@@ -3040,8 +3071,8 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // 5 distinct values; only `"qux"` is non-canonical.
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
+    AppendFixtureBatch(
+        table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
     );
 
     REQUIRE(table.RowCount() == 10);
@@ -3076,7 +3107,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "l", {"i", "w", "e", "f"}, 1, 8, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "l", {"i", "w", "e", "f"}, 1, 8, true));
 
     REQUIRE(table.RowCount() == 8);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
@@ -3108,7 +3139,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // None of these resolve via `ParseLevelName` / built-in aliases.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "l", {"red", "green", "blue"}, 1, 6, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "l", {"red", "green", "blue"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
@@ -3157,7 +3188,7 @@ TEST_CASE(
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(30)}}}));
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("oops")}}}));
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"other", LogValue{static_cast<int64_t>(99)}}}));
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.RowCount() == 5);
 
@@ -3207,7 +3238,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("value");
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("x")}}}));
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(7)}}}));
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     const auto health = table.ComputeColumnTypeHealth(0);
     CHECK(health.totalSlots == 2);
@@ -3247,7 +3278,7 @@ TEST_CASE(
     // chosen so `IsLogLevelKey` does NOT match, otherwise the
     // promote path routes to `Type::Level` and our assertion below
     // has to special-case it.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"first"}, /*firstLineNumber*/ 1, 1, true));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"first"}, /*firstLineNumber*/ 1, 1, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
     REQUIRE(table.Configuration().Configuration().columns[0].autoDetect == true);
@@ -3257,7 +3288,7 @@ TEST_CASE(
 
     // Batch 2: a second present row pushes `presenceCount` to 2 and
     // promotion fires *only* if the tracker survived the rename.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"second"}, 2, 1, false));
+    AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"second"}, 2, 1, false));
 
     const auto &column = table.Configuration().Configuration().columns[0];
     CHECK(column.type == ColumnType::Enumeration);
@@ -3294,7 +3325,7 @@ TEST_CASE(
     batch.firstLineNumber = 1;
     batch.newKeys.emplace_back("value");
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("not a timestamp")}}}));
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     const auto originalType = table.Configuration().Configuration().columns[0].type;
