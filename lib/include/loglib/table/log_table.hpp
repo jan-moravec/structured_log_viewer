@@ -50,7 +50,7 @@ public:
 
     LogTable(LogData data, LogConfigurationManager configuration);
 
-    LogTable(LogTable &) = delete;
+    LogTable(const LogTable &) = delete;
     LogTable &operator=(const LogTable &) = delete;
 
     /** @brief Moves the table and points every owned LineSource at the moved enumeration dictionaries. */
