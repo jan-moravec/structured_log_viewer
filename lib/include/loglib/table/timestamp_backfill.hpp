@@ -22,27 +22,27 @@
 namespace loglib
 {
 
-/** @brief Promotes timestamp columns in @p logData; returns per-line failure messages. */
+/**
+ * @brief Converts the text of every Type::Time column in logData into timestamps. Returns one message per value that
+ * could not be parsed.
+ */
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 
 /**
- * @brief Promotes one configured Type::Time column over @p lines in place.
- * Caller must ensure column.type == Type::Time. Pass a sub-span to
- * restrict the back-fill to a slice of a larger vector (e.g. only the rows
- * just appended in a streaming batch). Returns per-line failure messages.
+ * @brief Converts the text of one time column into timestamps, in place.
+ *
+ * The column must have type Type::Time. Pass a sub-span of the rows to convert only a slice, for example the rows of a
+ * streamed batch. Returns one message per value that could not be parsed.
  */
 std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines);
 
-/**
- * @brief Tag selecting the void overload that skips per-line "Failed to parse"
- * formatting on the streaming hot path.
- */
+/** @brief Selects the overload that does not build error messages, which saves time when streaming. */
 enum class BackfillErrors : uint8_t
 {
     Discard,
 };
 
-/** @brief void overload of BackfillTimestampColumn that drops error messages. */
+/** @brief Same as BackfillTimestampColumn, but does not report which values failed to parse. */
 void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors);
 
 } // namespace loglib

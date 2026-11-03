@@ -19,26 +19,23 @@ namespace loglib
 {
 
 /**
- * @brief "Does this column's data match its configured Type?"
+ * @brief How well the data of one column fits the type configured for it.
  *
- * Computed on demand for the diagnostics UI; one column-walk per
- * call, no hot-path bookkeeping. Stateless: borrows row storage
- * and the column descriptor for the duration of
- * ComputeColumnTypeHealth.
+ * It is computed on request by walking the column once, so nothing is tracked while parsing.
  */
 struct ColumnTypeHealth
 {
     // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-    /** @brief Total rows in the table. */
+    /** @brief Number of rows in the table. */
     size_t totalSlots = 0;
-    /** @brief Rows where this column carries any (non-monostate) value. */
+    /** @brief Number of rows where the column has a value. */
     size_t presentSlots = 0;
     /**
-     * @brief Present slots whose variant matches the configured Type.
-     * Type::Any matches every present slot. For
-     * Enumeration / Level, DictRef slots match; unencoded
-     * raw-string slots count as present-but-not-matching (this
-     * is how user-pinned dict columns expose over-cap values).
+     * @brief Number of present values that fit the configured type.
+     *
+     * Type::Any accepts every present value. For Enumeration and Level columns only encoded values fit, so a value
+     * that is still plain text counts as present but not matching. That is how a column the user set to an enumeration
+     * shows values that were over the dictionary cap.
      */
     size_t matchingSlots = 0;
     // NOLINTEND(misc-non-private-member-variables-in-classes)
@@ -47,22 +44,19 @@ struct ColumnTypeHealth
 };
 
 /**
- * @brief Returns whether @p tag is a valid representation of @p declaredType.
+ * @brief Returns whether a cell of this kind is a valid value for a column of the declared type.
  *
- * Mirrors the variants accepted by the sort / filter comparators in
- * log_compare.cpp / log_filter.cpp. Monostate never matches.
+ * It follows what sorting and filtering accept for each type. An empty cell never matches.
  */
 [[nodiscard]] bool TagMatchesType(CompactTag tag, ColumnType declaredType) noexcept;
 
 /**
- * @brief Walks @p lines once and counts present vs type-matching slots for
- * @p column. Out-of-range or keyless columns yield zeros except
- * totalSlots (the line count) when @p column has no interned keys.
+ * @brief Counts the present and the type-matching values of a column by walking the rows once.
  *
- * @param lines Table rows to inspect; not retained.
- * @param keys Intern table used to resolve column.keys.
- * @param column Schema entry whose type and keys drive the walk.
- * @return Slot counts for diagnostics UI.
+ * A column none of whose keys is interned gives zero for both counts, with totalSlots set to the number of rows.
+ * The rows are not kept.
+ *
+ * @param keys The index used to look up the column's keys.
  */
 [[nodiscard]] ColumnTypeHealth ComputeColumnTypeHealth(
     std::span<const LogLine> lines, const KeyIndex &keys, const Column &column

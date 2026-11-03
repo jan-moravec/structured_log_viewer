@@ -33,48 +33,48 @@ struct LogConfiguration;
 class LogConfigurationManager;
 
 /**
- * Static-parse min rows before promoting Type::Any + autoDetect to enum.
- * Smaller files are caught at end-of-parse by EnumInference::Finalize.
+ * @brief Rows a loaded file needs before an undecided column can become an enumeration. Smaller files are decided when
+ * the parse ends.
  */
 inline constexpr size_t ENUM_PROMOTION_MIN_ROWS = 4096;
 
-/** Streaming promotion threshold; promote eagerly, dictionary/length caps guard. */
+/**
+ * @brief Rows a stream needs before an undecided column can become an enumeration. Streams promote early, and the
+ * value and length caps protect against bad guesses.
+ */
 inline constexpr size_t STREAM_PROMOTION_MIN_ROWS = 2;
 
-/** Static-mode cardinality bail: distinct/observed ratio limit. */
+/**
+ * @brief For a loaded file, the highest ratio of distinct values to observed rows that still looks like an
+ * enumeration.
+ */
 inline constexpr double ENUM_CARDINALITY_BAIL_RATIO = 0.05;
 
-/** Max fraction of over-cap-length or wrong-type observations before demotion. */
+/** @brief Share of values that may be too long or of the wrong type before an enumeration column is demoted. */
 inline constexpr double ENUM_HEALTH_TOLERANCE_RATIO = 0.01;
 
-/** Minimum samples before consulting the tolerance ratio. */
+/** @brief Number of values to see before the tolerance ratio is applied. */
 inline constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 50;
 
-/** Dict-weighted tolerance for MaybePromoteToLevel. */
+/** @brief For Level detection, how many times larger than the recognized level values the dictionary may be. */
 inline constexpr size_t LEVEL_DICT_TOLERANCE_RATIO = 4;
 
 /**
- * @brief Per-column tracker for enum auto-detection.
+ * @brief Collects the evidence for turning one undecided column into an enumeration.
  *
- * Holds up to cap distinct values (hard cap, no tolerance). Long
- * values accrue in longValueCount; numeric-tag counters route the
- * no-string bail to a numeric type rather than string.
- * presenceCount and rowsObserved are separate so sparse columns
- * aren't bailed before their first observation.
- *
- * Owned by EnumInference. Per-row Observe is a concrete method
- * (no virtual dispatch).
+ * It remembers up to cap distinct values, and is killed when a new value would exceed the cap. Values that are too
+ * long are only counted. The numeric and boolean counters let a column with no strings end up as a number or boolean
+ * type. A sparse column is not given up on before it has been seen at least once, which is why presenceCount and
+ * rowsObserved are kept apart. EnumInference owns the trackers.
  */
 struct EnumCandidateTracker
 {
     // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-    /** @brief Distinct values seen so far (insertion order, capped at cap). */
+    /** @brief The distinct values seen so far, in insertion order, up to the cap. */
     std::vector<std::string> values;
     /**
-     * @brief O(1) membership index over values. Transparent hashing
-     * avoids the per-row std::string materialisation a
-     * non-transparent unordered_set<string> would force on
-     * every string_view lookup.
+     * @brief Fast membership test for values. It hashes transparently so a string_view can be looked up without making
+     * a string.
      */
     std::unordered_set<std::string, TransparentStringHash, TransparentStringEqual> seen;
     uint32_t valueMaxLen = 0;
@@ -99,16 +99,15 @@ struct EnumCandidateTracker
     }
 
     /**
-     * @brief Caller has already incremented presenceCount. Updates
-     * state and flips killed on tolerance breach or hard-cap
-     * overflow.
+     * @brief Records one string value. The caller has already counted it in presenceCount. Sets killed when the cap is
+     * exceeded.
      */
     void Observe(std::string_view bytes);
 };
 
 /**
- * @brief Cumulative health for an active enum column; long values and
- * wrong-type slots share one budget.
+ * @brief Running count of how well an enumeration column keeps fitting. Values that are too long and values of the
+ * wrong type share one budget.
  */
 struct EnumColumnHealth
 {
@@ -122,38 +121,31 @@ struct EnumColumnHealth
 };
 
 /**
- * @brief Pick a terminal type from observed numeric / bool tag counts.
+ * @brief Chooses the type of a column that has no strings, from how many numbers and booleans it held.
  *
- *   - bools only         -> Boolean
- *   - integers / doubles -> Integer / Floating / Number
- *   - bool + numeric mix -> Any (no specialised widget)
- *   - nothing observed   -> Any (historical bail)
+ * - Only booleans gives Boolean.
+ * - Integers or doubles give Integer, Floating or Number.
+ * - A mix of booleans and numbers gives Any.
+ * - Nothing observed gives Any.
  *
- * An already-promoted enum that later sees bool slots demotes to
- * Type::String (via lumped wrongTypeSlots), not Boolean.
+ * A column that is already an enumeration and later sees booleans is demoted to String, not Boolean.
  */
 [[nodiscard]] ColumnType RouteNoStringBail(
     size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
 ) noexcept;
 
 /**
- * @brief Returns whether @p column participates in the enum encode / candidate
- * scan. Enumeration / Level always do; Any only when autoDetect.
+ * @brief True if the column takes part in enumeration encoding and detection: always for Enumeration and Level
+ * columns, and for Any only with auto-detect on.
  */
 [[nodiscard]] bool IsEnumPassEligible(const Column &column) noexcept;
 
 /**
- * @brief Type-inference and enum/level cache collaborator for LogTable.
+ * @brief Decides which columns are enumerations and keeps the dictionaries and level cache that follow from it.
  *
- * Owns dictionaries, candidate trackers, health budgets, the level
- * rank cache, and pending level-bubble keys. Borrows LogData and
- * LogConfigurationManager for each mutating pass; does not own
- * row storage. Callers construct one instance per table.
- *
- * Hot paths (Observe, EncodeColumnRange) are concrete member
- * functions. There is no per-row virtual dispatch and no extra
- * heap allocation beyond the dictionaries and trackers the table
- * already required.
+ * LogTable owns one. It owns the dictionaries, the candidate trackers, the health counts, the level rank cache and the
+ * level columns waiting to move. It borrows the LogData and the configuration for each pass and does not own any rows.
+ * Its hot paths are plain member functions, with no per-row virtual calls.
  */
 class EnumInference
 {
@@ -164,21 +156,20 @@ public:
     EnumInference &operator=(const EnumInference &) = delete;
 
     /**
-     * @brief Move rebinds no source registries; LogTable calls
-     * RewireSourceRegistries after moving because each
-     * LineSource caches a pointer to Dictionaries().
+     * @brief Moves the state. Line sources keep pointing at the old dictionaries, so the owner must point them at the
+     * new ones afterwards.
      */
     EnumInference(EnumInference &&) noexcept = default;
     EnumInference &operator=(EnumInference &&) noexcept = default;
 
     ~EnumInference() = default;
 
-    /** @brief Drops dictionaries, trackers, health, rank cache, and batch trails. */
+    /** @brief Drops the dictionaries, trackers, health counts, level cache and the batch records. */
     void Clear();
 
     /**
-     * @brief Clears inference caches and enables stream-mode thresholds
-     * (STREAM_PROMOTION_MIN_ROWS, no cardinality bail).
+     * @brief Clears the inference state and switches to the stream thresholds: promote after STREAM_PROMOTION_MIN_ROWS
+     * and skip the cardinality check.
      */
     void BeginStreaming();
 
@@ -193,9 +184,14 @@ public:
     [[nodiscard]] EnumDictionaryRegistry &Dictionaries() noexcept;
     [[nodiscard]] const EnumDictionaryRegistry &Dictionaries() const noexcept;
 
+    /**
+     * @brief Columns demoted from enumeration since the last ClearLastBatchDemotedKeys, including ones promoted and
+     * demoted again in between.
+     */
     [[nodiscard]] const std::vector<KeyId> &LastBatchDemotedKeys() const noexcept;
     void ClearLastBatchDemotedKeys() noexcept;
 
+    /** @brief Returns the columns that became Level columns and are waiting to move, and forgets them. */
     [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
 
     void EraseTracker(KeyId canonical);
@@ -203,16 +199,17 @@ public:
     void EraseHealthAndLevelCache(KeyId canonical);
 
     /**
-     * @brief Pre-create dictionaries for configured enum / level columns
-     * and seed the level rank cache. Idempotent. Clears the rank
-     * cache first so a freshly-loaded levelMapping is honoured.
+     * @brief Creates the dictionaries of the configured enumeration and Level columns and fills the level cache.
+     *
+     * The level cache is cleared first, so a newly loaded level mapping takes effect. Calling it again is harmless.
      */
     void RefreshSnapshot(LogData &data, const LogConfigurationManager &configuration);
 
     /**
-     * @brief Enum pass over [oldLineCount, Lines().size()): encode active
-     * columns, demote overflowing ones, auto-promote quiescent
-     * candidates. Extends @p firstBackfilled / @p lastBackfilled.
+     * @brief Runs the enumeration pass over the rows added since oldLineCount.
+     *
+     * It encodes the rows of enumeration columns, demotes columns that overflowed, and promotes candidates that look
+     * settled. The two back-fill parameters are widened to cover any column whose existing rows were re-encoded.
      */
     void RunPassForAppendBatch(
         LogData &data,
@@ -224,16 +221,12 @@ public:
     );
 
     /**
-     * @brief End-of-parse/end-of-stream auto-detection sweep. Idempotent.
-     * Returns true if at least one column was promoted to
-     * Type::Enumeration.
+     * @brief Finishes detection at the end of a parse or stream. Returns true if a column became an enumeration.
+     * Repeating it changes nothing.
      */
     bool Finalize(LogData &data, LogConfigurationManager &configuration);
 
-    /**
-     * @brief Re-run the detector over every existing row of @p columnIndex.
-     * Returns the post-rescan column type.
-     */
+    /** @brief Runs detection again over all existing rows of a column. Returns the column type afterwards. */
     ColumnType RescanColumn(
         LogData &data,
         LogConfigurationManager &configuration,
@@ -241,56 +234,45 @@ public:
         size_t columnIndex
     );
 
-    /**
-     * @brief Promote @p columnIndex to Type::Enumeration, encoding every
-     * existing row's slot as DictRef.
-     */
+    /** @brief Makes the column an enumeration and encodes every existing row's value as a DictRef cell. */
     void PromoteColumnToEnum(LogData &data, LogConfigurationManager &configuration, size_t columnIndex);
 
     /**
-     * @brief Demote @p columnIndex to Type::String, materialising every
-     * DictRef into OwnedString and dropping the dictionary.
+     * @brief Makes the column a String column again, turning every DictRef cell back into an owned string and dropping
+     * the dictionary.
      *
-     * @p recordForBatch records the demoted column in
-     * LastBatchDemotedKeys. The editor path passes false.
+     * With recordForBatch the key is added to LastBatchDemotedKeys. The column editor passes false.
      */
     void DemoteColumnFromEnum(
         LogData &data, LogConfigurationManager &configuration, size_t columnIndex, bool recordForBatch = true
     );
 
     /**
-     * @brief Promote @p columnIndex from Type::Enumeration to Type::Level
-     * when the key matches IsLogLevelKey and the dictionary
-     * satisfies LEVEL_DICT_TOLERANCE_RATIO. Queues a bubble
-     * KeyId; does not move columns.
+     * @brief Turns an enumeration column into a Level column if its key names a level and its values look like levels.
+     *
+     * The dictionary must not be larger than LEVEL_DICT_TOLERANCE_RATIO times its recognized values. The column is
+     * queued for TakePendingLevelBubbleKeys and is not moved here.
      */
     void MaybePromoteToLevel(LogData &data, LogConfigurationManager &configuration, size_t columnIndex);
 
-    /**
-     * @brief Rebuild / extend the EnumValueId -> LogLevel cache. No-op
-     * for non-Level columns.
-     */
+    /** @brief Builds or extends the level cache of a Level column. Other columns are ignored. */
     void RefreshLevelRankCache(const LogData &data, const LogConfiguration &configuration, size_t columnIndex);
 
     /**
-     * @brief Encode column slots in [rowBegin, rowEnd) as DictRef.
-     * Returns false on hard cap overflow; long/wrong-type slots
-     * accrue in @p health.
+     * @brief Encodes the values of a column in the given row range as DictRef cells.
+     *
+     * Returns false if the dictionary overflowed. Values that are too long or of the wrong type are counted in health.
      */
     bool EncodeColumnRange(
         LogData &data, std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
     );
 
-    /**
-     * @brief Shared encode entry that resolves @p column.keys to interned ids.
-     */
+    /** @brief Like EncodeColumnRange, but looks up the key ids from the column's key names. */
     bool EncodeColumnRangeAsEnum(
         LogData &data, const Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
     );
 
-    /**
-     * @brief Rank cache for a Type::Level column, or nullptr.
-     */
+    /** @brief The level cache of a Level column, or null for any other column. See LogTable::LevelRankCache. */
     [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(
         const LogData &data, const LogConfiguration &configuration, size_t columnIndex
     ) const noexcept;
