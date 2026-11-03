@@ -36,7 +36,7 @@ inline constexpr std::size_t DEFAULT_PARSE_BATCH_BYTES = std::size_t{1024} * 102
 struct ParserOptions
 {
     /** @brief Cancels the parse when its source requests a stop. */
-    StopToken stopToken{};
+    StopToken stopToken;
 
     /** @brief The configuration to parse with. May be null. */
     std::shared_ptr<const LogConfiguration> configuration;

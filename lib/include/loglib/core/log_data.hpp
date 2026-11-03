@@ -43,6 +43,7 @@ public:
     /** @brief Moves the data and points every line at the new KeyIndex. The sources stay at the same address. */
     LogData(LogData &&other) noexcept;
     LogData &operator=(LogData &&other) noexcept;
+    ~LogData() = default;
 
     /** @brief The sources in load order. The first one is the primary source. */
     [[nodiscard]] const std::vector<std::unique_ptr<LineSource>> &Sources() const noexcept;

@@ -56,6 +56,7 @@ public:
     /** @brief Moves the table and points every owned LineSource at the moved enumeration dictionaries. */
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
+    ~LogTable() = default;
 
     /** @brief Replaces the table's data with data, a freshly merged load. */
     void Update(LogData &&data);

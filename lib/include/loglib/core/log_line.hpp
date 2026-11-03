@@ -70,6 +70,7 @@ public:
 
     LogLine(LogLine &&) = default;
     LogLine &operator=(LogLine &&) = default;
+    ~LogLine() = default;
 
     /** @brief The value of a field, or std::monostate if the row has none. */
     LogValue GetValue(KeyId id) const;

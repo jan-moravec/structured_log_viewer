@@ -148,7 +148,7 @@ private:
      * @brief Maps the first line of each multi-line record to its last line. Held by pointer to keep the move cheap.
      */
     std::unique_ptr<std::unordered_map<size_t, size_t>> mMultiLineSpans{
-        std::make_unique<std::unordered_map<size_t, size_t>>()
+        std::make_unique<std::unordered_map<size_t, size_t>>(),
     };
 };
 
