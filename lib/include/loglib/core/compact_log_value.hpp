@@ -28,19 +28,18 @@ namespace loglib
 {
 
 /**
- * @brief Discriminator for CompactLogValue.
+ * @brief Says which kind of value a CompactLogValue holds.
  *
- * Mirrors LogValue's alternatives but stores strings as
- * (offset, length) pairs.
+ * The kinds match the alternatives of LogValue, except that strings are kept as an offset and a length.
  */
 enum class CompactTag : uint8_t
 {
     Monostate = 0,
-    /** @brief payload is an offset into ResolveMmapBytes; aux is the length. */
+    /** @brief The payload is an offset for ResolveMmapBytes and aux is the length. */
     MmapSlice,
-    /** @brief payload is an offset into ResolveOwnedBytes; aux is the length. */
+    /** @brief The payload is an offset for ResolveOwnedBytes and aux is the length. */
     OwnedString,
-    /** @brief payload is an EnumValueId; resolved via LineSource::EnumDictionaries. */
+    /** @brief The payload is an EnumValueId that the registry from LineSource::EnumDictionaries turns into text. */
     DictRef,
     Int64,
     Uint64,
@@ -50,10 +49,9 @@ enum class CompactTag : uint8_t
 };
 
 /**
- * @brief 16-byte tagged union for per-field storage.
+ * @brief The value of one field in 16 bytes.
  *
- * Layout is 8 bytes of payload, 4 bytes of aux, 1 byte of tag, and
- * padding. LogValue is materialised on demand.
+ * It holds an 8-byte payload, a 4-byte aux value, a tag and padding. A LogValue is built from it only when needed.
  */
 struct CompactLogValue
 {
@@ -75,16 +73,11 @@ struct CompactLogValue
     static CompactLogValue MakeTimestamp(TimeStamp value) noexcept;
 
     /**
-     * @brief Materialises this slot into a LogValue.
+     * @brief Builds the LogValue this cell stands for.
      *
-     * For DictRef, pass INVALID_KEY_ID to materialise as
-     * monostate. A null source is safe.
-     *
-     * @param source Line source used to resolve string and dictionary
-     *     payloads, or nullptr.
-     * @param lineId Line id within @p source.
-     * @param keyId Key used to resolve DictRef payloads.
-     * @return The materialised value.
+     * String and enumeration cells need the source and the line id to find their bytes. A DictRef cell also needs the
+     * key of its column; with INVALID_KEY_ID it gives std::monostate. With a null source, a MmapSlice cell gives
+     * std::monostate and an OwnedString cell gives an empty string.
      */
     LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };

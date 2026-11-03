@@ -23,21 +23,15 @@ namespace loglib
 class LogFile;
 
 /**
- * @brief LineSource over a memory-mapped, finite LogFile. Used by the
- * static File → Open… path: the TBB pipeline parses directly over
- * the mmap, and emitted LogLines use this source for MmapSlice /
- * OwnedString resolution.
+ * @brief LineSource for a memory-mapped file that has a fixed size.
  *
- * Owns the LogFile.
- * LineIds are 0-based file-line indices.
+ * Static parsing runs directly over the mapping, and the rows it produces resolve their MmapSlice and OwnedString cells
+ * through this source. It owns the LogFile. Line ids are zero-based line numbers of the file. It cannot evict lines.
  */
 class FileLineSource final : public LineSource
 {
 public:
-    /**
-     * @brief Takes ownership of @p file. Throws std::invalid_argument if
-     * @p file is null.
-     */
+    /** @brief Takes ownership of file. Throws std::invalid_argument if file is null. */
     explicit FileLineSource(std::unique_ptr<LogFile> file);
 
     ~FileLineSource() override;
@@ -68,10 +62,7 @@ public:
     void EvictBefore(size_t firstSurvivingLineId) override;
     [[nodiscard]] size_t FirstAvailableLineId() const noexcept override;
 
-    /**
-     * @brief Direct access to the LogFile. Used by the parser fast path
-     * and any code that needs file-level state.
-     */
+    /** @brief The file behind this source, for code that needs line offsets or the mapping itself. */
     [[nodiscard]] LogFile &File() noexcept;
     [[nodiscard]] const LogFile &File() const noexcept;
 

@@ -12,12 +12,7 @@
 namespace loglib
 {
 
-/**
- * @brief Project version of this loglib build.
- *
- * The string is the CMake PROJECT_VERSION baked in at compile
- * time. slp --version prints it beside the CLI version.
- */
+/** @brief The project version this library was built with, such as the version slp prints for --version. */
 [[nodiscard]] std::string_view Version() noexcept;
 
 } // namespace loglib

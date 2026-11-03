@@ -15,14 +15,10 @@ namespace loglib
 {
 
 /**
- * @brief Returns whether two views are equal ignoring 7-bit ASCII case.
+ * @brief Returns whether two views are equal when the letters A to Z are treated as a to z.
  *
- * The keys this folds ("level", "true", "false", ...) are ASCII, so
- * the comparison avoids a locale-aware allocation. Safe on hot paths.
- *
- * @param a First view.
- * @param b Second view.
- * @return true when the views match after folding A–Z to a–z.
+ * The words it compares, such as level names and true and false, are ASCII. Comparing bytes avoids the locale lookup
+ * and allocation of a locale-aware comparison, so it is cheap enough for hot paths.
  */
 [[nodiscard]] constexpr bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
 {

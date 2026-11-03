@@ -23,23 +23,17 @@
 namespace loglib
 {
 
-/**
- * @brief Dense integer id for a log field key. Ids are assigned monotonically from
- * 0 and never reused, so they double as indices into per-key arrays.
- */
+/** @brief Small integer id for a field key. Ids start at 0, are never reused, and can index arrays kept per key. */
 using KeyId = uint32_t;
 
 inline constexpr KeyId INVALID_KEY_ID = std::numeric_limits<KeyId>::max();
 
 /**
- * @brief Shared, lock-light, append-only dictionary mapping keys to dense ids.
+ * @brief Maps field keys to KeyIds. Keys are only ever added, and parser threads share one index.
  *
- * Thread-safety contract:
- * - GetOrInsert and Find are safe to call concurrently with overlapping
- *   key sets.
- * - The string_view returned by KeyOf is pointer-stable for the lifetime
- *   of the KeyIndex; concurrent inserts do not invalidate it.
- * - Size may grow between the call and the caller observing the value.
+ * - GetOrInsert and Find may be called from several threads at once, including for the same key.
+ * - A view returned by KeyOf stays valid for the life of the index, even while other threads insert.
+ * - Size may already be out of date when the caller reads it, because other threads can add keys.
  */
 class KeyIndex
 {
@@ -53,28 +47,21 @@ public:
     KeyIndex(KeyIndex &&) noexcept;
     KeyIndex &operator=(KeyIndex &&) noexcept;
 
-    /**
-     * @brief Returns the canonical id for @p key, allocating one if first-seen.
-     * Thread-safe; the input view's bytes are copied internally.
-     */
+    /** @brief The id of key, assigned on first sight. The index copies the key's bytes. */
     [[nodiscard]] KeyId GetOrInsert(std::string_view key);
 
-    /** @brief Returns INVALID_KEY_ID if @p key has not been inserted. Thread-safe. */
+    /** @brief The id of key, or INVALID_KEY_ID if it was never inserted. */
     [[nodiscard]] KeyId Find(std::string_view key) const;
 
-    /** @brief Stable for the lifetime of the KeyIndex. UB if @p id is out of range. */
+    /** @brief The key text for an id. The id must come from this index; anything else is undefined behavior. */
     [[nodiscard]] std::string_view KeyOf(KeyId id) const;
 
     [[nodiscard]] size_t Size() const noexcept;
 
-    /** @brief Cold-path snapshot under the internal lock. */
+    /** @brief All keys in sorted order. Takes the index's lock and builds a new list, so keep it off hot paths. */
     [[nodiscard]] std::vector<std::string> SortedKeys() const;
 
-    /**
-     * @brief Approximate heap bytes owned by the index (shard maps + reverse
-     * table). Used by the memory-footprint benchmark; not part of the
-     * parse hot path.
-     */
+    /** @brief Approximate heap bytes used by the index. For the memory benchmark. */
     [[nodiscard]] size_t EstimatedMemoryBytes() const;
 
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION

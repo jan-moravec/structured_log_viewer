@@ -26,29 +26,22 @@ namespace loglib
 class BytesProducer;
 
 /**
- * @brief LineSource over a live byte producer. Owns the bytes backing each
- * line in a pair of std::deque<std::string>s (raw text + per-line
- * owned arena). No session-global arena: eviction simply drops the
- * corresponding entries.
+ * @brief LineSource for a live stream, fed by a BytesProducer.
  *
- * - BytesAreStable() is false; the parser must emit
- *   OwnedString payloads (not MmapSlice).
- * - SupportsEviction() is true; EvictBefore is the retention
- *   hook used by LogTable.
- * - LineIds are 1-based monotonic, assigned by AppendLine.
- * - Thread-safe: a mutex guards all members. The parser worker
- *   appends; the GUI reads and may evict. std::deque push_back is
- *   reference-stable, so concurrent reads on existing entries are
- *   safe. string_views from ResolveOwnedBytes are invalidated by
- *   EvictBefore on that line id.
+ * It keeps the text of every line, and the decoded strings of that line, in memory. Eviction drops the entries of the
+ * oldest lines, which is how a streaming session stays within its retention limit.
+ *
+ * - Its bytes are not stable, so parsers must store decoded values as OwnedString cells and not as MmapSlice cells.
+ * - It supports eviction. Line ids start at 1, grow by one, and are assigned by AppendLine.
+ * - A mutex guards all state, so a parser thread can append while another thread reads or evicts. A view from
+ *   ResolveOwnedBytes is invalid once its line is evicted.
  */
 class StreamLineSource final : public LineSource
 {
 public:
     /**
-     * @brief @param displayName  GUI-facing identity (typically a file path).
-     * @param producer     Byte producer for this stream. May be null
-     *                     in tests that drive AppendLine directly.
+     * @param displayName Name to show for the source, usually a file path.
+     * @param producer Where the bytes come from. May be null for a source that is only filled through AppendLine.
      */
     StreamLineSource(std::filesystem::path displayName, std::unique_ptr<BytesProducer> producer);
 
@@ -80,27 +73,17 @@ public:
     void EvictBefore(size_t firstSurvivingLineId) override;
     [[nodiscard]] size_t FirstAvailableLineId() const noexcept override;
 
-    /**
-     * @brief Borrow the byte producer; ownership stays with the source.
-     * Returns nullptr if the source was constructed without one.
-     */
+    /** @brief The producer, which stays owned by the source. Null if the source was built without one. */
     [[nodiscard]] BytesProducer *Producer() noexcept;
     [[nodiscard]] const BytesProducer *Producer() const noexcept;
 
-    /**
-     * @brief Append @p rawLine and its escape-decoded byte arena. Returns
-     * the assigned 1-based monotonic lineId. ownedBytes may be
-     * empty if the line had no escape-decoded fields.
-     */
+    /** @brief Adds a line with its decoded strings, which may be empty, and returns the new line id. */
     size_t AppendLine(std::string rawLine, std::string ownedBytes);
 
-    /** @brief Number of lines currently held (post-eviction). */
+    /** @brief Number of lines held now, not counting evicted ones. */
     [[nodiscard]] size_t Size() const noexcept;
 
-    /**
-     * @brief Total bytes owned: line bytes + per-line owned arenas.
-     * Capacity-accurate; benchmark-only, not on the parse hot path.
-     */
+    /** @brief Heap bytes held by line text and decoded strings, counting capacity. For the memory benchmark. */
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
 private:
@@ -113,14 +96,10 @@ private:
     /** @brief Guards every member below. */
     mutable std::mutex mLock;
 
-    /**
-     * @brief Raw line text (no trailing \n / \r). std::deque push_back
-     * is reference-stable, so concurrent reads on existing entries
-     * remain valid.
-     */
+    /** @brief Line text without its line ending. Appending to a deque does not move existing entries. */
     std::deque<std::string> mLines;
 
-    /** @brief Per-line escape-decoded byte arena. Same indexing as mLines. */
+    /** @brief Decoded strings of each line, indexed like mLines. */
     std::deque<std::string> mLineOwnedBytes;
 
     size_t mFirstAvailableLineId = 1;

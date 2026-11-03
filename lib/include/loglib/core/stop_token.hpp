@@ -24,28 +24,24 @@ namespace loglib
 class StopSource;
 
 /**
- * @brief Cooperative cancellation token. API mirrors std::stop_token (the only
- * surface we use is StopRequested() / StopPossible()), so call sites
- * read identically to the standard.
+ * @brief Read side of a cancellation request. Hand it to an operation, which polls it.
  *
- * We ship our own type rather than depending on std::stop_token because
- * Apple's libc++ gates the standard type behind availability annotations on
- * some toolchain/SDK combinations (the type is removed from namespace std
- * entirely under _LIBCPP_AVAILABILITY_HAS_SYNC == 0), which produced hard
- * "no type named 'stop_token' in namespace 'std'" failures on the GitHub
- * Actions macOS runner. The implementation is a shared_ptr<atomic<bool>>
- * so a default-constructed token is unstoppable (matches std::stop_token).
+ * It mirrors std::stop_token for the two calls the library uses. It is a separate type because some Apple toolchains do
+ * not provide std::stop_token. A default-constructed token can never be stopped, so pass it where cancellation is not
+ * wanted.
  */
 class StopToken
 {
 public:
     StopToken() noexcept = default;
 
+    /** @brief True once the paired StopSource has requested a stop. */
     [[nodiscard]] bool StopRequested() const noexcept
     {
         return mState != nullptr && mState->load(std::memory_order_acquire);
     }
 
+    /** @brief False for a default-constructed token, which has no source and never stops. */
     [[nodiscard]] bool StopPossible() const noexcept
     {
         return mState != nullptr;
@@ -63,11 +59,11 @@ private:
 };
 
 /**
- * @brief Cooperative cancellation source paired with loglib::StopToken. API
- * mirrors std::stop_source for the methods we use (GetToken(),
- * RequestStop(), StopRequested()). Default construction creates an
- * active source with shared state, matching std::stop_source (rather than
- * the std::nostopstate overload).
+ * @brief Write side of a cancellation request. Keep it, give its tokens to the operation, and call RequestStop to
+ * cancel.
+ *
+ * It mirrors std::stop_source for the calls the library uses. A new source is ready to use. Its tokens share one flag,
+ * which is safe to read and set from any thread.
  */
 class StopSource
 {
@@ -77,15 +73,13 @@ public:
     {
     }
 
+    /** @brief Returns a token that observes this source. */
     [[nodiscard]] StopToken GetToken() const noexcept
     {
         return StopToken{mState};
     }
 
-    /**
-     * @brief Returns true if this call flipped the state from "no stop requested"
-     * to "stop requested" (matches std::stop_source::request_stop).
-     */
+    /** @brief Requests a stop. Returns true only for the call that actually changed the state. */
     bool RequestStop() noexcept
     {
         if (mState == nullptr)

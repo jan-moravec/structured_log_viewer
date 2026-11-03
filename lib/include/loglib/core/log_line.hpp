@@ -26,10 +26,7 @@ namespace loglib
 
 class LineSource;
 
-/**
- * @brief Inclusive span of a multi-line record. Both members are zero-based
- * absolute physical-line indices.
- */
+/** @brief The physical lines of one multi-line record, first and last included. Both are zero-based line numbers. */
 struct MultiLineRecordSpan
 {
     size_t headerLineId = 0;
@@ -37,24 +34,26 @@ struct MultiLineRecordSpan
 };
 
 /**
- * @brief One log record: a (KeyId, CompactLogValue) vector sorted by KeyId.
- * Strings are stored as (offset, length) resolved via the owning
- * LineSource. (LineSource*, lineId) is the row's session identity.
+ * @brief One log record, stored as key and value pairs sorted by key.
+ *
+ * Strings are kept as offset and length pairs that the row's LineSource resolves. The source pointer and the line id
+ * together identify the row.
  */
 class LogLine
 {
 public:
     /**
-     * @brief Cold path: convert variant values to compact storage. Views inside
-     * StableBytes() become MmapSlice; others are copied to the arena.
+     * @brief Builds a row from ordinary values, sorted by key. This is the slow path.
+     *
+     * A string view that points into the source's stable bytes is stored as a slice; other strings are copied.
      */
     LogLine(
         std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LineSource &source, size_t lineId
     );
 
     /**
-     * @brief Hot path: pre-built compact values, ascending on pair::first.
-     * OwnedString payloads must be arena-relative already.
+     * @brief Builds a row from values that are already compact and sorted by key. OwnedString offsets must already be
+     * relative to the source's arena. This is the fast path.
      */
     LogLine(
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
@@ -63,7 +62,7 @@ public:
         size_t lineId
     );
 
-    /** @brief Cold-path convenience ctor. */
+    /** @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests. */
     LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId);
 
     LogLine(const LogLine &) = delete;
@@ -72,79 +71,79 @@ public:
     LogLine(LogLine &&) = default;
     LogLine &operator=(LogLine &&) = default;
 
-    /** @brief Returns std::monostate if @p id is not present. */
+    /** @brief The value of a field, or std::monostate if the row has none. */
     LogValue GetValue(KeyId id) const;
     LogValue GetValue(const std::string &key) const;
 
-    /** @brief Debug builds assert @p value is not a string_view. */
+    /**
+     * @brief Sets a field. The value should not be a string_view, which could dangle: debug builds assert on it. Use
+     * the overload with the trust tag for views.
+     */
     void SetValue(KeyId id, const LogValue &value);
 
     /**
-     * @brief Caller promises any view in @p value outlives the LogLine. Views
-     * inside StableBytes() are stored zero-copy; others are copied.
+     * @brief Sets a field that may be a string_view, and promises that the view outlives the row.
+     *
+     * A view into the source's stable bytes is stored without copying; any other string is copied.
      */
     void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
-    /** @brief Throws if @p key is unknown. */
+    /** @brief Sets a field by key name. Throws if the key is unknown. */
     void SetValue(const std::string &key, const LogValue &value);
 
     std::vector<std::string> GetKeys() const;
 
-    /** @brief (KeyId, LogValue) pairs in ascending KeyId order. Cold path. */
+    /** @brief All fields as key and value pairs, sorted by key. Slow. */
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
 
-    /** @brief Span over the compact storage; for hot-path walkers. */
+    /** @brief The compact storage itself, for code that walks every field on a hot path. */
     std::span<const std::pair<KeyId, loglib::CompactLogValue>> CompactValues() const noexcept;
 
     LogMap Values() const;
 
-    /** @brief Used by LogData::Merge and LogData move-ops. */
+    /**
+     * @brief Points the row at a different KeyIndex, after the index moved or the rows were merged into another one.
+     */
     void RebindKeys(const KeyIndex &keys);
 
     const KeyIndex &Keys() const;
 
-    /** @brief The owning LineSource. Never null post-construction. */
+    /** @brief The source that holds this row's bytes. Never null. */
     [[nodiscard]] LineSource *Source() const noexcept;
 
-    /** @brief Line id within the source's id space. */
+    /** @brief The row's line id in its source. */
     [[nodiscard]] size_t LineId() const noexcept;
 
-    /** @brief Stage C shifts per-batch relative ids to absolute. */
+    /** @brief Adds delta to the line id. Used when batch-relative ids become absolute. */
     void ShiftLineId(size_t delta) noexcept;
 
-    /** @brief Heap bytes owned directly by this line (benchmark-only). */
+    /** @brief Heap bytes owned by this row alone. For the memory benchmark. */
     size_t OwnedMemoryBytes() const;
 
     size_t ValueCount() const noexcept;
 
-    /**
-     * @brief Add @p delta to every OwnedString payload after rebasing the
-     * source arena.
-     */
+    /** @brief Adds delta to every OwnedString offset, after the row's strings moved within the source's arena. */
     void RebaseOwnedStringOffsets(uint64_t delta) noexcept;
 
     bool IsDictRef(KeyId id) const noexcept;
 
-    /** @brief EnumValueId payload for a DictRef slot, else nullopt. */
+    /** @brief The enumeration value id if the field is a DictRef cell, otherwise nullopt. */
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(KeyId id) const noexcept;
 
-    /** @brief Linear scan over the sorted compact storage; nullptr if absent. */
+    /** @brief The compact cell for a key, or null if the row has none. Searches the row's fields one by one. */
     [[nodiscard]] const loglib::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
-    /** @brief Mutable counterpart; callers may overwrite *slot in place. */
+    /** @brief Like FindCompact, but the caller may overwrite the cell in place. */
     [[nodiscard]] loglib::CompactLogValue *FindCompactMutable(KeyId id) noexcept;
 
-    /**
-     * @brief Bytes for a MmapSlice / OwnedString slot; nullopt otherwise.
-     * Safe with a null source.
-     */
+    /** @brief The bytes of a string cell, or nullopt if the field is not a string or the row has no source. */
     [[nodiscard]] std::optional<std::string_view> PeekStringView(KeyId id) const noexcept;
 
-    /** @brief Slot-pointer overload (skips the linear scan). */
+    /** @brief Like the key overload, for a cell already found, which saves the search. */
     [[nodiscard]] std::optional<std::string_view> PeekStringView(const loglib::CompactLogValue &slot) const noexcept;
 
 private:
-    /** @brief Replace/insert the slot for @p id with @p compact; may allocate. */
+    /** @brief Replaces the cell for id, or inserts it. May allocate. */
     void SetCompact(KeyId id, loglib::CompactLogValue compact);
 
     loglib::CompactLineFields mValues;

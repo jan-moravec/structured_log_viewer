@@ -24,22 +24,20 @@ namespace loglib
 using TimeStamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>;
 
 /**
- * @brief One field's value. string_view aliases the memory-mapped log file
- * (which outlives every referencing LogLine); string covers values
- * that cannot live in the mmap (e.g. JSON-escape-decoded strings).
+ * @brief The value of one field.
  *
- * Adding new alternatives is safest at the end; consumers should switch
- * on the alternative type, not the index.
+ * A string_view points into the memory-mapped file, which outlives every row that uses it. A string holds a value that
+ * cannot stay in the file, such as a decoded JSON escape. Choose the alternative by its type and not by its index.
  */
 using LogValue =
     std::variant<std::string_view, std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
 
-/** @brief Cold-path key->value map for tests and debug dumps. */
+/** @brief A row as a map from key name to value. Slow, so use it for tests and debug output only. */
 using LogMap = std::unordered_map<std::string, LogValue>;
 
 /**
- * @brief Tag opting a SetValue caller into string_view storage. Use only when
- * the view's bytes outlive the LogLine (e.g. point into the mmap).
+ * @brief Passed to LogLine::SetValue to promise that a string_view value outlives the row, for example by pointing
+ * into the mapped file.
  */
 struct LogValueTrustView
 {
@@ -53,9 +51,9 @@ LogValue ToOwnedLogValue(const LogValue &value);
 bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs);
 
 /**
- * @brief Epoch microseconds for time-shaped slots (TimeStamp, int64_t, or
- * uint64_t <= int64_t::max); nullopt otherwise. Matches the slot
- * acceptance set of TimeRangeRowPredicate.
+ * @brief Returns the value as microseconds since the epoch if it can be a time, otherwise nullopt.
+ *
+ * A TimeStamp, an int64_t, and a uint64_t that fits in int64_t count as times. Time filters accept exactly these.
  */
 [[nodiscard]] std::optional<int64_t> AsEpochMicroseconds(const LogValue &value);
 

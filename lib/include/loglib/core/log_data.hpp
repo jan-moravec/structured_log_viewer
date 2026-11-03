@@ -23,60 +23,40 @@ namespace loglib
 {
 
 /**
- * @brief Log data loaded from one or more sources. Owns the canonical
- * KeyIndex; every LogLine resolves keys through it.
+ * @brief The rows, keys and sources of one log, loaded from one or more sources.
  *
- * The source list is heterogeneous: FileLineSources for static
- * opens, StreamLineSources for live-tail. Polymorphic access via
- * Sources(), typed access via FrontFileSource() for code that
- * still needs direct LogFile control.
+ * It owns the canonical KeyIndex, and every LogLine resolves its keys through it. The sources are FileLineSources for
+ * static files and StreamLineSources for live streams. Use Sources for generic access and the typed accessors when
+ * code needs the file or stream behind a row.
  */
 class LogData
 {
 public:
     LogData();
 
-    /**
-     * @brief Constructs a LogData from a single source and rebinds each
-     * line's KeyIndex back-pointer to @p keys.
-     */
+    /** @brief Builds a LogData from one source and its lines, and points every line at keys. */
     LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines, KeyIndex keys);
 
     LogData(const LogData &) = delete;
     LogData &operator=(const LogData &) = delete;
 
-    /**
-     * @brief Move ops rebind each line's KeyIndex back-pointer.
-     * LogLine::mSource survives the move because the underlying
-     * LineSource heap object stays put.
-     */
+    /** @brief Moves the data and points every line at the new KeyIndex. The sources stay at the same address. */
     LogData(LogData &&other) noexcept;
     LogData &operator=(LogData &&other) noexcept;
 
-    /** @brief Polymorphic source list. The front entry is the primary source. */
+    /** @brief The sources in load order. The first one is the primary source. */
     [[nodiscard]] const std::vector<std::unique_ptr<LineSource>> &Sources() const noexcept;
     [[nodiscard]] std::vector<std::unique_ptr<LineSource>> &Sources() noexcept;
 
-    /**
-     * @brief First source iff it is a FileLineSource, else nullptr. Used
-     * by static-file branches (e.g. LogTable::ReserveLineOffsets)
-     * that target the initial source.
-     */
+    /** @brief The first source if it is a FileLineSource, otherwise null. */
     [[nodiscard]] FileLineSource *FrontFileSource() noexcept;
     [[nodiscard]] const FileLineSource *FrontFileSource() const noexcept;
 
-    /**
-     * @brief Last FileLineSource in Sources(), or nullptr. Tracks the
-     * in-flight file for sequential multi-file streaming so
-     * AppendBatch routes line offsets to the right source.
-     */
+    /** @brief The last FileLineSource, or null. When files load one after another this is the one being filled. */
     [[nodiscard]] FileLineSource *BackFileSource() noexcept;
     [[nodiscard]] const FileLineSource *BackFileSource() const noexcept;
 
-    /**
-     * @brief Last StreamLineSource in Sources(), or nullptr. This may
-     * differ from the front source when file history precedes a live tail.
-     */
+    /** @brief The last StreamLineSource, or null. File history can come before it in Sources. */
     [[nodiscard]] StreamLineSource *BackStreamSource() noexcept;
     [[nodiscard]] const StreamLineSource *BackStreamSource() const noexcept;
 
@@ -86,27 +66,21 @@ public:
     const KeyIndex &Keys() const;
     KeyIndex &Keys();
 
-    /** @brief Sorted snapshot of the registered keys. Cold path. */
+    /** @brief The registered keys in sorted order. Builds a new list, so keep it off hot paths. */
     std::vector<std::string> SortedKeys() const;
 
-    /**
-     * @brief Whether Stage B already promoted timestamp columns in the parser, so
-     * LogTable::Update can skip the whole-data pass.
-     */
+    /** @brief True when the parser already converted the time columns, so LogTable can skip its own pass. */
     bool TimestampsAlreadyParsed() const;
     void MarkTimestampsParsed();
 
-    /**
-     * @brief Merges @p other in place, rewiring back-pointers and remapping KeyIds
-     * to this side's canonical KeyIndex.
-     */
+    /** @brief Moves all rows and sources of other into this one, mapping its keys onto this KeyIndex. */
     void Merge(LogData other);
 
     /**
-     * @brief Append a parsed batch. lineOffsets populates
-     * LogFile::mLineOffsets for file sources; the live-tail path
-     * passes an empty vector (the source owns its per-line storage).
-     * Registers @p multiLineSpans after their offsets are appended.
+     * @brief Appends a parsed batch of rows.
+     *
+     * For file sources lineOffsets extends the file's line offsets. A stream source keeps its own line storage, so a
+     * streaming caller passes an empty vector. The multi-line spans are registered after the offsets.
      */
     void AppendBatch(
         std::vector<LogLine> lines,

@@ -21,36 +21,25 @@ namespace loglib
 /** @brief Default for ParserOptions::maxLineBytes and the producers' line limits. */
 inline constexpr std::size_t DEFAULT_MAX_LINE_BYTES = std::size_t{64} * 1024 * 1024;
 
-/**
- * @brief Coarse state reported by a BytesProducer via SetStatusCallback,
- * surfaced to the GUI for the status-bar label.
- */
+/** @brief Coarse state a producer reports through SetStatusCallback, for a status display. */
 enum class SourceStatus
 {
-    /**
-     * @brief The producer can produce bytes; the default state finite
-     * producers never leave.
-     */
+    /** @brief The producer can produce bytes. Finite producers stay in this state. */
     Running,
 
     /**
-     * @brief Temporarily unable to produce bytes (typically the watched file
-     * disappeared during a delete-then-recreate rotation). The
-     * producer keeps retrying and re-emits Running when bytes flow
-     * again.
+     * @brief The producer cannot produce bytes for now, for example because a watched file was deleted and not yet
+     * recreated. It keeps retrying and reports Running again when bytes flow.
      */
     Waiting,
 };
 
 /**
- * @brief Abstract byte producer feeding the streaming pipeline via
- * StreamLineSource. Concrete implementations: TailingBytesProducer
- * (file tail), TcpServerProducer, UdpServerProducer.
+ * @brief Supplies bytes to the streaming pipeline through StreamLineSource.
  *
- * Deliberately a byte producer, not a parser orchestrator: the parser
- * drives, the producer supplies bytes. Has no knowledge of
- * LogParseSink or ParserOptions. The static-file path uses
- * FileLineSource directly and bypasses this abstraction.
+ * Implementations are TailingBytesProducer, TcpServerProducer, UdpServerProducer and StdinBytesProducer. The parser
+ * drives and the producer supplies bytes; a producer knows nothing about LogParseSink or ParserOptions. Static files do
+ * not use this interface. They go through FileLineSource.
  */
 class BytesProducer
 {
@@ -65,54 +54,45 @@ public:
     BytesProducer &operator=(BytesProducer &&) = delete;
 
     /**
-     * @brief Pull available bytes into @p buffer. Returns the number of
-     * bytes written. 0 indicates either transient EOF (live-tail; the
-     * caller can park on WaitForBytes and retry) or terminal EOF
-     * (IsClosed() flips to true). Empty @p buffer is well-defined
-     * and returns 0.
+     * @brief Copies available bytes into buffer and returns how many were copied.
+     *
+     * Zero means no bytes right now, or the end of the stream; IsClosed tells them apart. After zero on an open
+     * producer, call WaitForBytes and read again. An empty buffer returns zero.
      */
     virtual size_t Read(std::span<char> buffer) = 0;
 
     /**
-     * @brief Block until at least one byte is available, the deadline
-     * elapses, or Stop() is called. Spurious wakeups are allowed;
-     * callers must re-check via Read.
+     * @brief Blocks until a byte is available, the timeout passes, or Stop is called.
+     *
+     * It may return early, so always read again to find out whether bytes arrived.
      */
     virtual void WaitForBytes(std::chrono::milliseconds timeout) = 0;
 
     /**
-     * @brief Unblock any in-flight Read/WaitForBytes and cause subsequent
-     * calls to report terminal EOF. Safe from any thread (including
-     * the GUI thread during teardown). Idempotent. Distinct from
-     * ParserOptions::stopToken -- this releases I/O so the parser's
-     * hot loop can observe its own stop token at the next batch
-     * boundary.
+     * @brief Wakes any blocked Read or WaitForBytes and makes later calls report the end of the stream.
+     *
+     * Safe from any thread and safe to call twice. It releases the producer's I/O so the parser can reach its next
+     * batch boundary and see its own stop token; it does not replace that token.
      */
     virtual void Stop() noexcept = 0;
 
-    /**
-     * @brief Has the producer reached terminal EOF (natural exhaustion or
-     * Stop() observed)?
-     */
+    /** @brief True once the stream has ended, either because it ran out or because Stop was called. */
     [[nodiscard]] virtual bool IsClosed() const noexcept = 0;
 
-    /**
-     * @brief Human-readable name (e.g. the file path's basename), used by
-     * the GUI status bar.
-     */
+    /** @brief Short name of the source for display, such as the base name of a file. */
     [[nodiscard]] virtual std::string DisplayName() const = 0;
 
     /**
-     * @brief Rotation-event callback, invoked from the producer's worker
-     * thread on detected rotations. Default no-op for non-rotating
-     * producers; an empty callback clears any previous installation.
+     * @brief Installs a callback that the producer's worker thread calls when it detects a rotation of the source.
+     *
+     * Producers that cannot rotate ignore it. An empty callback removes the previous one.
      */
     virtual void SetRotationCallback(const std::function<void()> &callback);
 
     /**
-     * @brief Status-change callback, invoked on edge transitions between
-     * Running and Waiting. Default no-op; an empty callback
-     * clears any previous installation.
+     * @brief Installs a callback that is called when the status changes between Running and Waiting.
+     *
+     * Producers with a fixed status ignore it. An empty callback removes the previous one.
      */
     virtual void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
 };

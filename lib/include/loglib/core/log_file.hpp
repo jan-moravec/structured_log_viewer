@@ -27,65 +27,65 @@ class StableByteArena;
 }
 
 /**
- * @brief Memory-mapped log file. Owns the mapping so LogValue instances can
- * hold string_views into the content; move keeps the pointer stable.
- * Per-record addressing is FileLineSource's job; LogFile only
- * holds the bytes and arenas.
+ * @brief Owns the mapping of one log file, so string views into its content stay valid.
+ *
+ * LogFile only holds the bytes, the line offsets and the arenas. FileLineSource does the addressing of single records.
  */
 class LogFile
 {
 public:
-    /** @brief Throws std::runtime_error if the file cannot be opened or mapped. */
+    /** @brief Maps the file. Throws std::runtime_error if it cannot be opened or mapped. */
     explicit LogFile(const std::filesystem::path &filePath);
-    /** @brief Map @p storagePath while reporting @p logicalPath as the source. */
-    LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath);
 
     /**
-     * @brief Out-of-line so the mapping backend can be incomplete. Unmaps
-     * before releasing mLifetimeAnchor.
+     * @brief Maps storagePath but reports logicalPath as the source, for files that were unpacked to a temporary copy.
      */
+    LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath);
+
+    /** @brief Unmaps the file, then releases the lifetime anchors. */
     ~LogFile();
 
     LogFile(const LogFile &) = delete;
     LogFile &operator=(const LogFile &) = delete;
 
-    /**
-     * @brief Transfers the mapping without copying bytes. Views into Data()
-     * remain valid.
-     */
+    /** @brief Takes over the mapping without copying bytes, so views into Data stay valid. */
     LogFile(LogFile &&) noexcept;
-    /**
-     * @brief Deleted because member-wise assignment could release the temp
-     * file owner before replacing the active mapping.
-     */
+
+    /** @brief Deleted, because assignment could release the temporary file before the old mapping is replaced. */
     LogFile &operator=(LogFile &&) noexcept = delete;
 
+    /** @brief The path to report to the user, which can differ from the path that is mapped. */
     const std::filesystem::path &GetPath() const;
+
+    /** @brief Start of the mapped bytes, or null when nothing is mapped. */
     const char *Data() const;
+
     size_t Size() const;
 
-    /** @brief Trailing '\r' is trimmed. Throws std::out_of_range when out of range. */
+    /**
+     * @brief Returns the text of a line without its trailing carriage return.
+     *
+     * For the first line of a multi-line record the result covers the whole record. Throws std::out_of_range when
+     * lineNumber is past the last line.
+     */
     std::string GetLine(size_t lineNumber) const;
+
     size_t GetLineCount() const;
 
+    /** @brief Reserves room for count line offsets, to avoid regrowing while a parse appends them. */
     void ReserveLineOffsets(size_t count);
 
-    /**
-     * @brief Caller must ensure offsets are strictly increasing and start past the
-     * current last offset.
-     */
+    /** @brief Appends line start offsets. They must be strictly increasing and start after the last stored offset. */
     void AppendLineOffsets(const std::vector<uint64_t> &offsets);
 
-    /**
-     * @brief Heap bytes owned by mLineOffsets (capacity, not size). Used by the
-     * memory-footprint benchmark; not part of the parse hot path.
-     */
+    /** @brief Heap bytes held by the line offsets, counting capacity. Used by the memory benchmark. */
     size_t LineOffsetsMemoryBytes() const noexcept;
 
     /**
-     * @brief Register the inclusive physical-line span for a multi-line
-     * record. Indices are zero-based; lastLineId must exceed
-     * headerLineId. Single-line spans are ignored.
+     * @brief Records that the physical lines headerLineId to lastLineId form one record.
+     *
+     * Both are zero-based and inclusive, and lastLineId must be greater than headerLineId. A single-line span is
+     * ignored.
      */
     void RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId);
 
@@ -96,11 +96,10 @@ public:
     }
 
     /**
-     * @brief Resolves a range of the owned-string arena (escape-decoded values
-     * that cannot live in the mmap).
+     * @brief Returns bytes from the owned-string arena, which holds decoded values that cannot stay as views into the
+     * mapping.
      *
-     * Safe to call while another thread appends. The view stays valid for
-     * the lifetime of this file.
+     * Safe to call while another thread appends. The view stays valid for the lifetime of the file.
      *
      * @param offset Offset returned by AppendOwnedStrings.
      * @param length Number of bytes.
@@ -108,16 +107,13 @@ public:
      */
     [[nodiscard]] std::string_view OwnedString(uint64_t offset, uint64_t length) const noexcept;
 
-    /**
-     * @brief Appends @p bytes to the owned-string arena. Safe from any thread.
-     * @return The offset of the first appended byte.
-     */
+    /** @brief Appends bytes to the owned-string arena and returns the offset of the first one. Safe from any thread. */
     uint64_t AppendOwnedStrings(std::string_view bytes);
 
     /**
-     * @brief Grows the owned string at (@p offset, @p length) in place when it
-     * is the arena's most recent data.
-     * @return Whether @p bytes were added. Otherwise the caller appends a copy.
+     * @brief Adds bytes to the end of an owned string, in place, when that string is the newest data in the arena.
+     *
+     * Returns false when it is not, and then the caller must append a full copy instead.
      */
     bool TryExtendOwnedString(uint64_t offset, uint64_t length, std::string_view bytes);
 
@@ -125,8 +121,9 @@ public:
     size_t OwnedStringsMemoryBytes() const noexcept;
 
     /**
-     * @brief Keep @p anchor alive until after the mmap is released.
-     * Multiple anchors are composed in LIFO order.
+     * @brief Keeps anchor alive until after the file is unmapped, for example the owner of an unpacked temporary file.
+     *
+     * Anchors are released in the reverse order of attaching.
      */
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
@@ -136,24 +133,19 @@ private:
     std::filesystem::path mPath;
     std::filesystem::path mStoragePath;
 
-    /** @brief Declared before mMapping so reverse destruction unmaps first. */
+    /** @brief Declared before mMapping so that destruction unmaps first. */
     std::shared_ptr<void> mLifetimeAnchor;
 
     std::unique_ptr<Mapping> mMapping;
 
-    /** @brief Byte offsets of every line boundary plus a one-past-the-last sentinel. */
+    /** @brief Byte offsets of every line start, plus one past the end of the last line. */
     std::vector<uint64_t> mLineOffsets;
 
-    /**
-     * @brief Escape-decoded strings referenced by this file's LogLine values
-     * via (offset, length).
-     */
+    /** @brief Decoded strings that LogLine values refer to by offset and length. */
     std::unique_ptr<internal::StableByteArena> mOwnedStrings;
 
     /**
-     * @brief Maps each multi-line header to its final physical line.
-     * Held by unique_ptr so LogFile's defaulted move is noexcept;
-     * unordered_map's move constructor can throw.
+     * @brief Maps the first line of each multi-line record to its last line. Held by pointer to keep the move cheap.
      */
     std::unique_ptr<std::unordered_map<size_t, size_t>> mMultiLineSpans{
         std::make_unique<std::unordered_map<size_t, size_t>>()
