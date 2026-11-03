@@ -68,9 +68,7 @@ download_key() {
 check_url_once() {
     local url="$1"
     if command -v wget &>/dev/null; then
-        # structured_log_viewer: fall back to a plain GET, which apt.llvm.org answers when it refuses HEAD.
-        wget -q --method=HEAD --timeout=15 --tries=3 "$url" &>/dev/null ||
-            wget -q -O /dev/null --timeout=15 --tries=3 "$url" &>/dev/null
+        wget -q --method=HEAD --timeout=15 --tries=3 "$url" &>/dev/null
     elif command -v curl &>/dev/null; then
         curl --proto '=https' --tlsv1.2 -sSf --head --retry 2 "$url" >/dev/null 2>&1
     else
@@ -78,8 +76,8 @@ check_url_once() {
     fi
 }
 
-# structured_log_viewer: apt.llvm.org intermittently fails this probe from GitHub runners, and a failed probe is
-# reported as an unsupported distribution. Retry with a pause before giving up.
+# structured_log_viewer: the probe fails intermittently on GitHub runners, for example when the runner cannot resolve
+# apt.llvm.org for a while, and a failed probe is reported as an unsupported distribution. Retry with a pause.
 check_url() {
     local attempt
     for attempt in 1 2 3 4 5; do
@@ -89,7 +87,7 @@ check_url() {
         warn "probe of $1 failed (attempt ${attempt} of 5)"
         sleep $((attempt * 10))
     done
-    # Show the server's reply so a real outage can be told apart from a refused probe.
+    # Show why the last attempt failed, for example a name resolution error or an HTTP status.
     wget -S -O /dev/null --timeout=15 --tries=1 "$1" 2>&1 | head -n 20 || true
     return 1
 }
