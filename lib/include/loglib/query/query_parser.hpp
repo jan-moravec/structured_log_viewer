@@ -34,7 +34,7 @@ struct QueryParseError
 /**
  * @brief Parse @p input into a FilterExpression.
  *
- * Grammar (v1):
+ * Grammar:
  *
  *   query    := or_expr
  *   or_expr  := and_expr ( ('OR'|'or'|'||') and_expr )*

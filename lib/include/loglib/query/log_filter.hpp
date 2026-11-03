@@ -31,22 +31,24 @@ namespace loglib
 class LogTable;
 
 /**
- * @brief Multi-select equality predicate for Type::Enumeration columns.
+ * @brief Accepts rows whose value in an enumeration column is one of several selected values.
  *
- * Hot path: one GetEnumValueId + vector<bool> test. Rows whose
- * slot isn't a DictRef (column not promoted yet) fall back to a
- * transparent-hash string set. The bitset is a dictionary snapshot
- * from construction time; rebuild on enumColumnsChanged for
- * freshness. Stale predicates stay correct: ids past the bitset
- * end reject when mAllResolved, else use the string set.
+ * The fast path reads the cell's enumeration id and tests it in a bit set. A cell that is not encoded yet, because the
+ * column has not become an enumeration, is compared as text against the selected values. The bit set is a snapshot of
+ * the dictionary taken at construction, so build a new predicate when the dictionary changes. An old predicate still
+ * gives correct answers: an id beyond the snapshot is rejected if every selected value was resolved, and otherwise is
+ * compared as text.
  *
- * Threading: MatchesRow is stateless post-construction and safe
- * from tbb::parallel_for, even if a writer grows the dictionary
- * mid-evaluation (new ids go past the bitset; string set handles them).
+ * MatchesRow changes nothing after construction, so parallel threads may call it, even while a writer adds values to
+ * the dictionary.
  */
 class EnumRowPredicate
 {
 public:
+    /**
+     * @brief Builds the predicate for a column and the values to accept. The dictionary may be null if the column is
+     * not an enumeration yet.
+     */
     EnumRowPredicate(
         size_t columnIndex, std::span<const std::string_view> selectedValues, const EnumDictionary *dictionary
     );
@@ -59,13 +61,13 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in LogTable coords. */
+    /** @brief The column this predicate tests, as a LogTable column index. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
     }
 
-    /** @brief True iff the bitset has at least one armed bit. */
+    /** @brief True if at least one selected value was found in the dictionary, so the bit set test is used. */
     [[nodiscard]] bool IsFastPathArmed() const noexcept
     {
         return mFastPathArmed;
@@ -73,24 +75,27 @@ public:
 
 private:
     size_t mColumnIndex = 0;
-    /** @brief Indexed by EnumValueId. Empty when no dictionary was given. */
+
+    /** @brief One bit per enumeration id, set for selected values. Empty when there was no dictionary. */
     std::vector<bool> mSelectedIds;
+
     /**
-     * @brief Selected values that didn't resolve at construction (or all
-     * of them if no dictionary was given). Covers unpromoted slots
-     * and past-bitset hits from stale predicates.
+     * @brief The selected values that were not found in the dictionary, or all of them without a dictionary. Compared
+     * as text.
      */
     std::unordered_set<std::string, loglib::TransparentStringHash, loglib::TransparentStringEqual> mSelectedStrings;
     bool mFastPathArmed = false;
-    /** @brief Every selected value resolved to an id at construction time. */
+
+    /** @brief True if every selected value was found in the dictionary at construction. */
     bool mAllResolved = false;
-    /** @brief Empty selection sentinel; MatchesRow rejects every row. */
+
+    /** @brief True if no value was selected, so every row is rejected. */
     bool mEmptySelection = false;
 };
 
 /**
- * @brief Inclusive time-range predicate. Bounds are microseconds since the
- * UNIX epoch. An inverted range (begin > end) rejects every row.
+ * @brief Accepts rows whose time lies in a range. Both ends are included and are microseconds since the epoch. A range
+ * whose begin is after its end accepts nothing.
  */
 class TimeRangeRowPredicate
 {
@@ -105,7 +110,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in LogTable coords. */
+    /** @brief The column this predicate tests, as a LogTable column index. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -118,14 +123,11 @@ private:
 };
 
 /**
- * @brief Inclusive numeric range over int64_t / uint64_t / double
- * slots. Non-numeric slots reject; nullopt on a side means
- * unbounded.
+ * @brief Accepts rows whose number lies in a range. Both ends are included.
  *
- * Compares as double, so integer precision loss past 2^53 is
- * accepted (use TimeRangeRowPredicate for bit-exact int64).
- * NaN slots reject; NaN bounds collapse to unbounded; ±inf
- * bounds are honoured. The GUI rejects NaN/±inf upstream.
+ * Cells that are not numbers are rejected. A missing bound means no limit. Values are compared as doubles, so integers
+ * beyond 2^53 lose precision; use TimeRangeRowPredicate when exact 64-bit integers matter. A NaN cell is rejected, a
+ * NaN bound counts as no limit, and an infinite bound is honored.
  */
 class NumericRangeRowPredicate
 {
@@ -140,7 +142,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in LogTable coords. */
+    /** @brief The column this predicate tests, as a LogTable column index. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -153,9 +155,8 @@ private:
 };
 
 /**
- * @brief Two-state predicate for Type::Boolean. Neither side selected
- * = reject every row (like empty EnumRowPredicate). Non-bool
- * slots reject too.
+ * @brief Accepts rows whose boolean is true, false, or either, as selected. With neither selected every row is
+ * rejected, like an enumeration predicate with no values. Cells that are not booleans are rejected.
  */
 class BoolRowPredicate
 {
@@ -170,7 +171,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in LogTable coords. */
+    /** @brief The column this predicate tests, as a LogTable column index. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -193,11 +194,10 @@ private:
 };
 
 /**
- * @brief String predicate that defers to a caller-supplied callback.
+ * @brief Accepts rows whose text satisfies a function the caller supplies.
  *
- * MakeStringMatcher supplies the PCRE2 and wildcard callbacks.
- * The caller owns callback thread-safety; matchers used from filter
- * workers must be safe to copy and to call concurrently.
+ * MakeStringMatcher builds the functions for regular expressions and wildcards. Filtering calls the function from
+ * several threads, so it must be safe to copy and to call concurrently.
  */
 class CallbackStringRowPredicate
 {
@@ -214,7 +214,7 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
-    /** @brief Column index this predicate targets, in LogTable coords. */
+    /** @brief The column this predicate tests, as a LogTable column index. */
     [[nodiscard]] size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -226,9 +226,8 @@ private:
 };
 
 /**
- * @brief Closed union of concrete row predicates. Stored by value; the
- * per-row hot path pays no heap allocation or virtual dispatch.
- * Alternative order is stable on disk -- append only.
+ * @brief Any one of the row predicates. It is stored by value, so testing a row needs no allocation and no virtual
+ * call.
  */
 using RowPredicate = std::variant<
     EnumRowPredicate,
@@ -237,42 +236,31 @@ using RowPredicate = std::variant<
     BoolRowPredicate,
     CallbackStringRowPredicate>;
 
-/** @brief Visit-dispatch helpers; compile-time-resolved to the concrete leaf. */
+/** @brief Tests a row with whichever predicate the variant holds. */
 [[nodiscard]] inline bool MatchesRow(const RowPredicate &predicate, const LogTable &table, size_t row)
 {
     return std::visit([&table, row](const auto &concrete) { return concrete.MatchesRow(table, row); }, predicate);
 }
 
+/** @brief The column a predicate tests, as a LogTable column index. */
 [[nodiscard]] inline size_t RowPredicateColumn(const RowPredicate &predicate)
 {
     return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
 
 /**
- * @brief Relative cost weight for cheap-first child ordering in
- * And/Or. No unit; only the monotonic order matters.
- *   Bool     - 1  (alt-check on decoded slot)
- *   Enum     - 2  (id lookup + bitset test)
- *   Time     - 3  (int64 compare)
- *   Numeric  - 4  (double compare with type coercion)
- *   String   - 10 (regex / UTF-8 walk / callback)
+ * @brief A relative cost for testing one row with this predicate, used to try cheap tests first.
+ *
+ * The numbers have no unit and only their order matters: Boolean 1, Enumeration 2, Time 3, Numeric 4 and String 10.
  */
 [[nodiscard]] int EstimatedLeafCost(const RowPredicate &predicate) noexcept;
 
 /**
- * @brief Compiled mirror of FilterExpression. Leaves hold pre-built
- * RowPredicates; combinators own their children; each node
- * caches estimatedCost so children stay cheap-first from
- * CompileExpression.
+ * @brief A filter expression with its predicates already built, ready to test rows.
  *
- * Move-only in practice (EnumRowPredicate is move-only, so
- * callers move rather than copy). Evaluation is read-only, safe
- * from tbb::parallel_for in FilterAcceptedRows.
- *
- * clang-tidy suppression: misc-non-private-member-variables-in-classes
- * -- the alternatives are transparent data holders that the
- * evaluator, compiler, and tests read / write directly by field
- * name. Same treatment as FilterExpression.
+ * It mirrors FilterExpression. Leaves hold a row predicate, and And, Or and Not nodes own their children. Each node
+ * stores its estimated cost, and CompileExpression orders the children of And and Or cheapest first. It can be moved
+ * but not copied. Evaluating it changes nothing, so FilterAcceptedRows may use it from many threads.
  */
 // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
 struct CompiledFilterExpression
@@ -314,13 +302,12 @@ struct CompiledFilterExpression
 
     using Node = std::variant<Leaf, And, Or, Not>;
 
-    /** @brief Default = empty And (match-all). */
+    /** @brief The root of the expression. The default is an empty And, which matches every row. */
     Node node = And{};
 
     /**
-     * @brief Column indices referenced by leaves, sorted + deduped.
-     * LogFilterModel uses this to decide whether a source
-     * dataChanged requires a full rebuild.
+     * @brief The columns the leaves test, sorted and without duplicates. A view can use them to tell whether a change
+     * to a column affects the filter.
      */
     std::vector<size_t> referencedColumns;
 
@@ -336,34 +323,27 @@ struct CompiledFilterExpression
 // NOLINTEND(misc-non-private-member-variables-in-classes)
 
 /**
- * @brief Short-circuiting per-row evaluator. Empty And = true, empty
- * Or = false, Not inverts, And/Or stop at the first
- * decisive child. Cheap-first ordering is baked in by
- * CompileExpression.
+ * @brief Tests one row against an expression.
+ *
+ * An empty And accepts, an empty Or rejects, and Not inverts. And and Or stop at the first child that decides the
+ * result, and the children are already ordered cheapest first.
  */
 [[nodiscard]] bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row);
 
-/** @brief True iff @p expression is an empty And (match-all). */
+/** @brief True if the expression is an empty And, which accepts every row. */
 [[nodiscard]] bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept;
 
 /**
- * @brief Evaluate @p expression across every row of @p table in parallel
- * and return the accepted rows in ascending order.
+ * @brief Tests every row of the table in parallel and returns the accepted rows in ascending order.
  *
- * Picks one of two paths per rebuild:
+ * It uses one of two methods for each call:
  *
- * - **Visit path** (default): tbb::parallel_for over rows, each
- *   row calling EvaluateExpression. Same envelope as the old
- *   flat span<RowPredicate> for flat And trees.
- * - **Bitset materialisation path**: kicks in for trees with an
- *   OR/NOT and >=2 total leaves (or >=4 leaves overall), when
- *   row_count * unique_leaves / 8 <= 512 MiB. Flat And never
- *   qualifies (short-circuiting beats materialising). Each unique
- *   leaf's accept-set becomes a packed bitset (shared across
- *   repeats); the tree walks with word-parallel AND/OR/NOT.
+ * - Row by row, the default: worker threads call EvaluateExpression for their share of the rows.
+ * - Bit sets, for expressions with an Or or a Not and at least two leaves, or at least four leaves in all, as long as
+ *   the bit sets need at most 512 MiB. Each distinct leaf is evaluated once into a packed bit set, and the tree is
+ *   then combined with word-wide AND, OR and NOT. A flat And never uses it, because stopping early is cheaper.
  *
- * Threading: per-worker thread-local buckets/bitsets; the caller
- * coalesces and sorts. Every predicate is read-only-safe.
+ * Each worker collects its own results and the calls combine and sort them. Every predicate is only read.
  */
 [[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilterExpression &expression);
 

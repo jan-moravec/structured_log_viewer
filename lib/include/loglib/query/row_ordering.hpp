@@ -19,12 +19,7 @@ namespace loglib
 
 class LogTable;
 
-/**
- * @brief Sort direction for RowOrdering.
- *
- * Not a GUI type; applications convert their own sort order at the
- * boundary.
- */
+/** @brief The direction of a sort. An application that has its own sort order type converts it to this one. */
 enum class SortDirection
 {
     Ascending,
@@ -32,12 +27,11 @@ enum class SortDirection
 };
 
 /**
- * @brief Packages one-column compare and permute for a LogTable.
+ * @brief Bundles a column, a direction and optional enumeration ranks into one way of ordering the rows of a LogTable.
  *
- * Composes CompareRows, EnumDictRank, and
- * SortPermutationByColumn. Does not fork a second comparator.
- * Equal cells keep a caller-supplied tie key in ascending order,
- * matching SortPermutationByColumn's input-index tie-break.
+ * It compares and sorts through CompareRows and SortPermutationByColumn, so it always orders like they do. Rows whose
+ * cells are equal are ordered by a tie key from the caller, ascending, as SortPermutationByColumn orders them by their
+ * input position.
  */
 class RowOrdering
 {

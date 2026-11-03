@@ -27,20 +27,22 @@ class LogTable;
 static_assert(MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumDictRank stores per-id ranks in uint16_t");
 
 /**
- * @brief Precomputed alphabetic-rank table over an EnumDictionary.
- * CompareRows calls RankOf(id) to avoid per-compare string
- * compares. Byte-wise build keeps the sort deterministic across
- * locales (the picker keeps its own locale-aware order for display).
+ * @brief The alphabetical rank of every value in an enumeration dictionary.
  *
- * Ids past DictSize() (minted after the last rebuild) get rank
- * DictSize() so they sort after every known value.
+ * CompareRows looks up a rank with RankOf, which saves comparing strings for each comparison. Ranks are built from
+ * bytes, so the sort order is the same in every locale. Pickers that list the values for display may sort differently.
+ *
+ * An id created after the table was built gets the rank DictSize, so it sorts after all known values.
  */
 class EnumDictRank
 {
 public:
     EnumDictRank() = default;
 
-    /** @brief Build from @p dictionary's current values. Safe to repeat. */
+    /**
+     * @brief Builds the ranks from the current values of the dictionary. Building again after the dictionary changed
+     * is fine.
+     */
     explicit EnumDictRank(const EnumDictionary &dictionary);
 
     [[nodiscard]] uint16_t RankOf(EnumValueId id) const noexcept;
@@ -53,43 +55,31 @@ public:
     }
 
 private:
-    /** @brief mIdToRank[i] is the alphabetic rank of EnumValueId{i}. */
+    /** @brief The alphabetical rank of each enumeration id, indexed by id. */
     std::vector<uint16_t> mIdToRank;
 };
 
 /**
- * @brief Three-way row comparator over a single column (<0, 0, >0).
+ * @brief Compares two rows by one column. The result is negative, zero or positive.
  *
- * Dispatch by ColumnType:
- *   - Boolean              -- bool compare; false < true.
- *   - Integer              -- int64_t compare; uint64_t > INT64_MAX
- *                               clamps to INT64_MAX.
- *   - Floating / Number  -- double compare; NaN sinks to tail.
- *   - Time                 -- microseconds-since-epoch compare.
- *   - Enumeration          -- EnumDictRank lookup, byte-wise
- *                               string fallback when @p rankForEnumColumn
- *                               is null.
- *   - String / Any -- byte-wise string compare.
+ * How the values are compared depends on the column type:
+ * - Boolean: false before true.
+ * - Integer: as int64_t, and a uint64_t above INT64_MAX counts as INT64_MAX.
+ * - Floating and Number: as doubles.
+ * - Time: as microseconds since the epoch.
+ * - Enumeration: by the rank in rankForEnumColumn, or by bytes when that is null.
+ * - String and Any: by bytes.
  *
- * Tail-bucket invariant (ascending): every slot unrepresentable in
- * the column's logical type sorts strictly greater than every
- * representable slot and equal to every other unrepresentable slot.
- * Membership per type:
- *   - Boolean              -- monostate, non-bool slots.
- *   - Integer              -- monostate, NaN. ±inf / out-of-range
- *                               doubles clamp rather than joining.
- *   - Floating / Number  -- monostate, non-numeric slots.
- *   - Time                 -- monostate, non-microsecond slots.
- *   - Enumeration          -- every non-DictRef slot (monostate,
- *                               unpromoted-string, wrong-type,
- *                               over-cap-length). Matches
- *                               SortPermutationByColumn's rank-
- *                               sentinel collapse so the bulk re-sort
- *                               and the streaming comparator agree
- *                               on placement.
- *   - String types           -- just monostate.
- * Tail members compare equal pairwise. To put monostate at the head
- * instead, negate the return.
+ * Cells that do not fit the column's type sort after all cells that do, in ascending order, and are equal to one
+ * another. Negate the result to put them first. Which cells do not fit:
+ * - Boolean: empty cells and cells that are not booleans.
+ * - Integer: empty cells and NaN. Infinite and out-of-range doubles are clamped and still fit.
+ * - Floating and Number: empty cells and cells that are not numbers. NaN counts as not fitting.
+ * - Time: empty cells and cells that are not microsecond times.
+ * - Enumeration: every cell that is not encoded, which means empty cells, plain strings and values of the wrong type. A
+ *   bulk sort by SortPermutationByColumn puts them in the same place, so sorting in bulk and comparing while streaming
+ *   agree.
+ * - String types: empty cells only.
  */
 [[nodiscard]] int CompareRows(
     const LogTable &table,
@@ -100,25 +90,17 @@ private:
 );
 
 /**
- * @brief Sort permutation for @p logRows by their slot in @p columnIndex.
- * Returns a vector P of size logRows.size() such that
- * logRows[P[k]] is the row at rank k. Stable: ties resolve to
- * input-index order, so callers carrying parallel arrays (source
- * rows, view ranges) can reapply the permutation and keep
- * insertion-order tie-break.
+ * @brief Sorts rows by one column and returns the order as a permutation.
  *
- * Pass @p rankForEnumColumn when @p columnIndex is an Enumeration
- * column; the lib then pre-materialises a uint16_t rank per row in
- * parallel and the comparator collapses to a branch-free integer
- * compare. Without a rank the comparator dispatches through
- * CompareRows, paying the per-call slot resolution cost --
- * noticeably slower on enum columns but correct for the non-enum
- * types (Time, Integer, Floating, string).
+ * The result P has one entry per row, and logRows[P[k]] is the row at position k. The sort is stable: rows that compare
+ * equal keep their input order, so a caller with parallel arrays can apply the same permutation to them and keep the
+ * original order for ties.
  *
- * Threading: pre-materialisation runs under tbb::parallel_for, the
- * sort under tbb::parallel_sort. Both are read-only against
- * @p table; LogTable::GetEnumValueId and CompareRows must be
- * safe to call concurrently (today's implementations are).
+ * For an Enumeration column pass rankForEnumColumn. The ranks are then looked up once per row, in parallel, and the
+ * sort compares plain integers. Without a rank the sort calls CompareRows for every comparison, which is much slower on
+ * enumeration columns and correct for all other types.
+ *
+ * Lookups and the sort run on several threads, and the table is only read.
  */
 [[nodiscard]] std::vector<size_t> SortPermutationByColumn(
     const LogTable &table,

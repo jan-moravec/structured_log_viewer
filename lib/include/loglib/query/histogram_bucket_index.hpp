@@ -23,9 +23,8 @@ namespace loglib
 {
 
 /**
- * @brief Fixed-width bucket rungs on the auto-zoom ladder. Matches lnav's
- * z / Shift+Z set: 1 s, 10 s, 1 min, 10 min, 1 h, 1 d. Kept
- * small so a switch inlines to one divisor in the hot path.
+ * @brief The bucket widths a histogram can use, from 1 second to 1 day. The set is small so that picking a width
+ * compiles to one divisor on the hot path.
  */
 enum class HistogramBucketSize : uint8_t
 {
@@ -37,26 +36,22 @@ enum class HistogramBucketSize : uint8_t
     OneDay,
 };
 
-/** @brief Number of rungs on HistogramBucketSize (OneSecond..OneDay). */
+/** @brief Number of bucket widths in HistogramBucketSize. */
 inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
 
 /**
- * @brief Most buckets HistogramBucketIndex holds. A row that would need more
- * widens the buckets, so one outlier timestamp cannot exhaust memory.
+ * @brief The most buckets a HistogramBucketIndex holds. A row that would need more makes the buckets wider, so one
+ * stray timestamp cannot use up memory.
  */
 inline constexpr size_t HISTOGRAM_MAX_BUCKETS = size_t{1} << 20U;
 
-/**
- * @brief Named ladder step. TenSeconds / TenMinutes step by
- * TEN_UNITS_PER_STRIDE from their neighbours; OneDay groups
- * HOURS_PER_DAY hours. Pulled out so clang-tidy's
- * cppcoreguidelines-avoid-magic-numbers doesn't fire on the
- * switch below, and so the constants document intent inline.
- */
+/** @brief The step from one second to ten seconds and from one minute to ten minutes. */
 inline constexpr int TEN_UNITS_PER_STRIDE = 10;
+
+/** @brief The number of hours in the OneDay bucket. */
 inline constexpr int HOURS_PER_DAY = 24;
 
-/** @brief Microsecond width of one bucket at @p size. */
+/** @brief The width of one bucket of the given size. */
 [[nodiscard]] constexpr std::chrono::microseconds HistogramBucketWidth(HistogramBucketSize size) noexcept
 {
     using namespace std::chrono;
@@ -78,44 +73,32 @@ inline constexpr int HOURS_PER_DAY = 24;
     return microseconds{1};
 }
 
-/**
- * @brief Short human label, e.g. "1 s", "10 min", "1 h". Used in the
- * widget's details strip and by tests.
- */
+/** @brief A short label for display, such as "1 s", "10 min" or "1 h". */
 [[nodiscard]] std::string_view HistogramBucketSizeLabel(HistogramBucketSize size) noexcept;
 
 /**
- * @brief Per-bucket counts, one slot per canonical LogLevel. Slot 0
- * (Unknown) is included so unresolved-level rows still contribute
- * to the total. Aggregate by design so HistogramBucketIndex can
- * index into it directly; the public array is intentional.
+ * @brief The row counts of one bucket, with one count per level.
+ *
+ * Rows with an unknown level are counted too, so they still add to the total.
  */
 struct LevelBucket
 {
-    /**
-     * @brief Indexed by static_cast<size_t>(LogLevel); size is
-     * CANONICAL_LEVEL_COUNT + 1 (Unknown..Fatal). Public by
-     * design: LevelBucket is an aggregate and the array is the
-     * public interface. Same-line NOLINT keeps the suppression
-     * scope minimal.
-     */
+    /** @brief One count per level, indexed by the LogLevel value. Unknown is at index 0, followed by Trace to Fatal. */
     std::array<uint32_t, CANONICAL_LEVEL_COUNT + 1> counts{}; // NOLINT(misc-non-private-member-variables-in-classes)
 
     [[nodiscard]] uint32_t Total() const noexcept;
 };
 
 /**
- * @brief Dense time-bucket index over (TimeStamp, LogLevel) events. No Qt
- * dependency — feeds the GUI widget and headless consumers alike.
+ * @brief Counts rows per time bucket and per level, for a histogram of log activity.
  *
- * Buckets are indexed by microseconds since Origin(), truncated to
- * BucketWidth(). AddRow extends the vector on demand; timestamps
- * before the origin shift the vector once (O(N) in current bucket
- * count), which is fine in append-only streams but worth knowing for
- * sources that produce heavy backfill. A row outside the
- * HISTOGRAM_MAX_BUCKETS window moves the index to the first wider rung that
- * covers it, and BucketSize() reports the new rung. Past the widest rung the
- * row counts in the nearest bucket.
+ * It does not depend on Qt, so a graphical widget and command-line tools can both use it. Bucket i covers the time from
+ * Origin plus i widths, and each width is BucketWidth. AddRow grows the bucket list as needed. A timestamp before the
+ * origin shifts all buckets once, which is cheap for append-only streams but costly for sources that deliver old rows
+ * late.
+ *
+ * A row that would need more than HISTOGRAM_MAX_BUCKETS buckets makes the index switch to the next wider size that
+ * covers it, and BucketSize reports the new size. Beyond the widest size the row is counted in the nearest bucket.
  */
 class HistogramBucketIndex
 {
@@ -123,50 +106,41 @@ public:
     HistogramBucketIndex() = default;
 
     /**
-     * @brief Pin the bucket rung. Does not clear existing buckets; call
-     * Reset() first when changing zoom on a live index.
+     * @brief Creates an index with the given bucket width. Existing buckets are kept, so call Reset first when
+     * changing the width of an index that holds rows.
      */
     explicit HistogramBucketIndex(HistogramBucketSize size) noexcept;
 
-    /**
-     * @brief Contribute one row to the bucket containing @p ts. Unknown
-     * level goes to slot 0.
-     */
+    /** @brief Counts one row in the bucket that contains ts. A row with an unknown level goes in the Unknown count. */
     void AddRow(TimeStamp ts, LogLevel level);
 
-    /**
-     * @brief Drop all buckets, keep the bucket rung. The next AddRow
-     * re-anchors the origin.
-     */
+    /** @brief Removes all buckets but keeps the bucket width. The next AddRow sets the origin again. */
     void Reset() noexcept;
 
-    /**
-     * @brief Change the bucket rung. Also Reset()s; the caller is
-     * expected to re-feed rows.
-     */
+    /** @brief Changes the bucket width. A different width clears the buckets, so the caller must add the rows again. */
     void SetBucketSize(HistogramBucketSize size) noexcept;
 
     /**
-     * @brief Default column budget passed to AutoBucketSize from the
-     * widget. ~500 columns give a bar-per-pixel-ish density on a
-     * typical bottom-docked strip; tuned once and named here so the
-     * value doesn't reappear as a magic literal.
+     * @brief The number of buckets AutoBucketSize aims for by default. About 500 gives roughly one bar per pixel on a
+     * wide, short strip.
      */
     static constexpr int DEFAULT_VISIBLE_BUCKET_BUDGET = 500;
 
     /**
-     * @brief Coarsest rung whose bucket count over [min, max] stays under
-     * @p visibleBucketBudget. Returns OneSecond for a zero-width
-     * range and OneDay when even a day-wide rung would exceed the
-     * budget (caller decides how to render very wide ranges).
+     * @brief Picks the finest bucket size for which the range from min to max needs no more than visibleBucketBudget
+     * buckets.
+     *
+     * A range with no width gives OneSecond. If even OneDay needs more buckets than the budget, or the budget is not
+     * positive, the result is OneDay, and the caller decides how to show such a wide range. A min later than max is
+     * swapped.
      */
     [[nodiscard]] static HistogramBucketSize AutoBucketSize(
         TimeStamp min, TimeStamp max, int visibleBucketBudget = DEFAULT_VISIBLE_BUCKET_BUDGET
     ) noexcept;
 
     /**
-     * @brief Truncate @p ts down to a @p size bucket boundary. Public so
-     * the widget can align its axis labels.
+     * @brief Rounds ts down to the start of its bucket of the given size. Useful for placing axis labels on bucket
+     * edges.
      */
     [[nodiscard]] static TimeStamp TruncateToBucket(TimeStamp ts, HistogramBucketSize size) noexcept;
 
@@ -185,7 +159,7 @@ public:
         return {mBuckets.data(), mBuckets.size()};
     }
 
-    /** @brief Start of the first bucket. Only meaningful when !Empty(). */
+    /** @brief The start of the first bucket. Only valid when the index is not empty. */
     [[nodiscard]] TimeStamp Origin() const noexcept
     {
         return mOrigin;
@@ -196,35 +170,26 @@ public:
         return mBuckets.empty();
     }
 
-    /** @brief Total rows fed via AddRow (sum of all bucket totals). O(1). */
+    /** @brief The number of rows added, which is the sum of all buckets. Constant time. */
     [[nodiscard]] uint64_t TotalRowCount() const noexcept
     {
         return mTotalRowCount;
     }
 
-    /**
-     * @brief Bucket index containing @p ts, or nullopt when out of the
-     * current [Origin, Origin + N * width) range.
-     */
+    /** @brief The index of the bucket that contains ts, or nullopt if ts is outside the current buckets. */
     [[nodiscard]] std::optional<size_t> BucketOf(TimeStamp ts) const noexcept;
 
-    /**
-     * @brief Start (inclusive) of bucket @p index. UB when @p index is out
-     * of range.
-     */
+    /** @brief The start of a bucket, included in it. The index must be valid; anything else is undefined behavior. */
     [[nodiscard]] TimeStamp BucketStart(size_t index) const noexcept;
 
-    /**
-     * @brief End (exclusive) of bucket @p index. UB when @p index is out
-     * of range.
-     */
+    /** @brief The end of a bucket, not included in it. The index must be valid; anything else is undefined behavior. */
     [[nodiscard]] TimeStamp BucketEnd(size_t index) const noexcept;
 
     /**
-     * @brief Precise min / max timestamp observed via AddRow, tracked in
-     * O(1) per row. Distinct from BucketStart(0) / BucketEnd(last)
-     * (which snap to boundaries) so callers like AutoBucketSize
-     * see the true span, not one inflated by up to BucketWidth().
+     * @brief The earliest and the latest timestamp added so far, or nullopt while the index is empty.
+     *
+     * They are exact. The edges of the first and last bucket are rounded to bucket boundaries and can be up to one
+     * bucket width away, which would make AutoBucketSize see a wider span than the data has.
      */
     [[nodiscard]] std::optional<TimeStamp> MinTimestamp() const noexcept
     {
@@ -236,20 +201,17 @@ public:
     }
 
 private:
-    /** @brief Moves to the next wider rung, merging existing buckets. */
+    /** @brief Switches to the next wider bucket size and merges the existing buckets. */
     void WidenBuckets();
 
     HistogramBucketSize mBucketSize = HistogramBucketSize::OneMinute;
-    /**
-     * @brief Start of bucket 0; only meaningful when !mBuckets.empty().
-     * TimeStamp is a chrono time_point, which value-initialises
-     * to the epoch on default construction; the explicit brace
-     * initialiser was flagged as redundant by clang-tidy.
-     */
+
+    /** @brief The start of bucket 0. Only valid while there are buckets. */
     TimeStamp mOrigin;
     std::vector<LevelBucket> mBuckets;
     uint64_t mTotalRowCount = 0;
-    /** @brief Precise observed range; only meaningful when !mBuckets.empty(). */
+
+    /** @brief The exact range of the timestamps added. Only valid while there are buckets. */
     TimeStamp mMinTimestamp;
     TimeStamp mMaxTimestamp;
 };
