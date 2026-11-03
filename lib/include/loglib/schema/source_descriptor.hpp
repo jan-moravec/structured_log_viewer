@@ -33,13 +33,13 @@ struct SourceLocator
     SourceLocator() = default;
 
     /** @brief Builds a locator from a string literal, so that braces such as .locators = {"path"} compile. */
-    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions)
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions,misc-explicit-constructor)
     SourceLocator(const char *display)
         : displayPath(display != nullptr ? display : "")
     {
     }
 
-    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions)
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions,misc-explicit-constructor)
     SourceLocator(std::string display, std::string dedup = {})
         : displayPath(std::move(display)), dedupKey(std::move(dedup))
     {

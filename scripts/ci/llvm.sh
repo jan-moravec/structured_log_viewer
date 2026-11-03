@@ -65,7 +65,7 @@ download_key() {
     fi
 }
 
-check_url() {
+check_url_once() {
     local url="$1"
     if command -v wget &>/dev/null; then
         wget -q --method=HEAD --timeout=15 --tries=3 "$url" &>/dev/null
@@ -74,6 +74,20 @@ check_url() {
     else
         return 1
     fi
+}
+
+# structured_log_viewer: apt.llvm.org intermittently fails this probe from GitHub runners, and a failed probe is
+# reported as an unsupported distribution. Retry with a pause before giving up.
+check_url() {
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if check_url_once "$1"; then
+            return 0
+        fi
+        warn "probe of $1 failed (attempt ${attempt} of 5)"
+        sleep $((attempt * 10))
+    done
+    return 1
 }
 
 # Check if this is a new Debian distro
