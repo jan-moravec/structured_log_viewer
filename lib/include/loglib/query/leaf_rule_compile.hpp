@@ -25,79 +25,56 @@ namespace loglib
 class LogTable;
 
 /**
- * @brief Returns the first column whose keys are a superset of @p keys.
+ * @brief Finds the first column whose keys include all of the given keys. Filters and highlight rules both use it, so
+ * they find columns the same way.
  *
- * Shared by filter leaves and highlight rules so both bind identically.
- * An empty @p keys list matches nothing.
- *
- * @param keys Rule column keys. Empty yields -1.
- * @param columns Columns to search, in display order.
- * @return Column index, or -1 when no column matches.
+ * It returns -1 if no column matches, and for an empty list of keys.
  */
 [[nodiscard]] int ResolveLeafColumnByKeys(
     const std::vector<std::string> &keys, const std::vector<Column> &columns
 ) noexcept;
 
 /**
- * @brief Compiles @p rule to a row predicate.
+ * @brief Builds the row predicate for one leaf rule.
  *
- * Returns nullopt when the leaf is inert: unresolved column,
- * incomplete payload, or an enum/level rule against a column that
- * has no dictionary yet. CompileExpression treats an inert leaf as
- * match-all inside And and drops it inside Or.
+ * It returns nullopt when the leaf has no effect: the column was not found, the rule is incomplete, or an enumeration
+ * or level rule refers to a column that has no dictionary yet. CompileExpression treats such a leaf as match-all inside
+ * an And and drops it from an Or.
  *
- * Level columns expand to every raw dictionary alias via
- * LevelRankCache, so a rule saved as "Warn" also matches rows
- * parsed from WARN, warning, or a user-defined alias.
+ * For a Level column the rule is expanded to all raw values that map to the level, taken from LevelRankCache. A rule
+ * saved as Warn therefore also matches rows that say WARN, warning or a user-defined alias.
  *
- * @param rule Leaf to compile.
- * @param resolvedColumn Column index from ResolveLeafColumnByKeys, or -1.
- * @param columns Column list used for level-alias expansion.
- * @param table Table that owns enum dictionaries, or nullptr.
- * @return Predicate, or nullopt when the leaf carries no constraint.
+ * @param resolvedColumn The column found by ResolveLeafColumnByKeys, or -1.
+ * @param columns The columns, used to expand level aliases.
+ * @param table The table that owns the enumeration dictionaries. May be null.
  */
 [[nodiscard]] std::optional<RowPredicate> CompileLeaf(
     const LeafRule &rule, int resolvedColumn, const std::vector<Column> &columns, const LogTable *table
 );
 
 /**
- * @brief Copies the filter payload of @p rule into a LeafRule.
- *
- * Rendering fields stay on HighlightRule. Both kinds then share
- * CompileLeaf.
- *
- * @param rule Highlight rule to project.
- * @return Leaf with the same match payload.
+ * @brief Copies the matching part of a highlight rule into a LeafRule. The display settings stay behind, and
+ * CompileLeaf then handles both kinds of rule.
  */
 [[nodiscard]] LeafRule ToLeafRule(const HighlightRule &rule);
 
 /**
- * @brief Finds leaves of @p expression that can never work as written.
+ * @brief Lists the leaves of an expression that cannot work as written: columns that no column of the list has, and
+ * regular expressions that are invalid.
  *
- * Reports columns that no entry of @p columns carries and invalid regular
- * expressions. CompileExpression tolerates both, because a live source may
- * still gain the column. A host that has finished loading its rows should
- * report these instead of filtering with them.
- *
- * @param expression Expression to inspect.
- * @param columns Columns used to resolve leaf keys.
- * @return One message per problem; empty when the expression is sound.
+ * CompileExpression accepts both, because a live source may still get the column later. A caller that has finished
+ * loading should report these problems and not filter with them. The result has one message per problem and is empty
+ * when the expression is sound.
  */
 [[nodiscard]] std::vector<std::string> FindFilterProblems(
     const FilterExpression &expression, const std::vector<Column> &columns
 );
 
 /**
- * @brief Compiles @p expression into a CompiledFilterExpression.
+ * @brief Builds a CompiledFilterExpression from an expression.
  *
- * Every And / Or node's children are sorted cheap-first by
- * EstimatedCost so short-circuit evaluation tries the fastest
- * rejecting or accepting leaf first.
- *
- * @param expression Expression to compile.
- * @param columns Columns used to resolve leaf keys.
- * @param table Table passed through to CompileLeaf, or nullptr.
- * @return Compiled tree. An absent root becomes match-all.
+ * The children of every And and Or are ordered by estimated cost, cheapest first, so that stopping early skips the
+ * expensive tests. A missing root becomes match-all. The table is passed on to CompileLeaf and may be null.
  */
 [[nodiscard]] CompiledFilterExpression CompileExpression(
     const FilterExpression &expression, const std::vector<Column> &columns, const LogTable *table

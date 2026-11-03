@@ -21,15 +21,14 @@ namespace loglib
 {
 
 /**
- * @brief One unit of work handed from the parser to a LogParseSink. A
- * "rows-empty" batch with non-empty errors/newKeys is valid; the parser
- * always emits a final batch before OnFinished.
+ * @brief One batch of output that a parser hands to a LogParseSink.
  *
- * lines carries every parsed log row regardless of session type (static
- * file or live tail): each LogLine is tagged with its LineSource * so
- * resolution stays uniform. localLineOffsets is only populated by the
- * file-source pipeline and is forwarded to the LogFile's line-offset
- * table; the live-tail loop leaves it empty.
+ * A batch without rows is valid, even if it has errors or new keys. The parser always sends a last batch before
+ * OnFinished.
+ *
+ * lines holds the parsed rows, for static files and live streams alike. Each row knows its LineSource, so reading it is
+ * the same for both. localLineOffsets is filled only by the file pipeline, and is appended to the line offsets of the
+ * LogFile. The streaming loop leaves it empty.
  */
 struct StreamedBatch
 {
@@ -38,16 +37,16 @@ struct StreamedBatch
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;
     /**
-     * @brief File-backed multi-line spans. Consumers must append
-     * localLineOffsets before registering these on LogFile.
+     * @brief The line ranges of multi-line records in a file source. A consumer must append localLineOffsets before it
+     * registers these spans on the LogFile.
      */
     std::vector<MultiLineRecordSpan> multiLineSpans;
     /**
-     * @brief 1-based absolute line number of the batch's start cursor.
-     * - When lines is non-empty: matches the chunk start, not necessarily
-     *   the first parsed line (errors preceding it can push it lower).
-     * - When lines is empty: the line cursor at the time the batch was
-     *   sealed; not tied to any specific source line.
+     * @brief The line number, counting from 1, where the batch starts.
+     *
+     * For a batch with lines it is the start of the chunk, which can be lower than the first parsed line when errors
+     * come before it. For a batch without lines it is the position of the line counter when the batch was closed, and
+     * it does not refer to a particular line.
      */
     size_t firstLineNumber = 0;
 };

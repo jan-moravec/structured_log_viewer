@@ -22,8 +22,8 @@ namespace loglib
 inline constexpr std::size_t MAX_QUERY_NESTING = 64;
 
 /**
- * @brief Parse error surfaced by ParseQuery: a byte offset into the
- * input (clamped to input.size() at EOI) and a one-line message.
+ * @brief A syntax error from ParseQuery: the byte position in the input, which is the size of the input at its end,
+ * and a one-line message.
  */
 struct QueryParseError
 {
@@ -32,7 +32,7 @@ struct QueryParseError
 };
 
 /**
- * @brief Parse @p input into a FilterExpression.
+ * @brief Parses query text into a FilterExpression.
  *
  * Grammar:
  *
@@ -69,26 +69,21 @@ struct QueryParseError
  *
  * An ISO timestamp without Z or an offset is read in ProcessDefaultTimeZone().
  *
- * AND, OR, NOT, IN are case-insensitive; FormatExpression
- * canonicalises to uppercase. Column identity is captured
- * verbatim into LeafRule::columnKeys as a single element.
- * Empty / whitespace-only input returns match-all.
+ * AND, OR, NOT and IN can be written in any case, and FormatExpression writes them in upper case. The column name is
+ * stored as written, as the only element of LeafRule::columnKeys. Empty text, or text with only whitespace, gives a
+ * match-all expression.
  */
 [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view input);
 
 /**
- * @brief Render @p expression back to the query grammar. Round-trips
- * with ParseQuery for every tree the parser can produce.
+ * @brief Writes an expression as query text. ParseQuery reads back the same expression, for every tree it can produce.
  *
- * Notable rules:
- *   - Leaf: bareword tokens are quoted when they contain
- *     whitespace / operator chars or start with a digit; regex
- *     leaves always render as /.../.
- *   - Top-level empty And renders as the empty string. Nested
- *     empty And (never produced by the parser) debug-renders
- *     as *; empty Or debug-renders as ().
- *   - Or is parenthesised when nested under And or Not;
- *     Not parenthesises its child unless it's a leaf or Not.
+ * - A bareword is put in quotes when it contains whitespace or operator characters, or starts with a digit. A regular
+ *   expression is always written between slashes.
+ * - An empty And at the top gives empty text. An empty And deeper in the tree, which the parser never makes, is written
+ *   as * for debugging, and an empty Or as ().
+ * - An Or under an And or a Not gets parentheses. A Not gets parentheses around its child unless the child is a leaf or
+ *   another Not.
  */
 [[nodiscard]] std::string FormatExpression(const FilterExpression &expression);
 

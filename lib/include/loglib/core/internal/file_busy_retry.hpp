@@ -18,15 +18,12 @@ namespace loglib::internal
 {
 
 /**
- * @brief Runs a file operation, retrying while Windows reports the file as busy.
+ * @brief Runs a file operation again while Windows reports the file as busy.
  *
- * File scanners, indexers, and sync clients briefly open files that were
- * just written, which makes a rename fail with an access or sharing error.
- * Those errors are retried for up to one second. Every other result, and
- * every result on other platforms, returns at once.
- *
- * @param attempt Callable that performs the operation and returns its std::error_code.
- * @return The result of the last attempt.
+ * Virus scanners, search indexers and sync clients briefly open files that were just written, which makes a rename fail
+ * with an access or sharing error. Those two errors are retried for up to one second. Any other result returns at once,
+ * and so does every result on other platforms. The attempt is a callable that does the operation and returns its
+ * std::error_code. The result is the one from the last attempt.
  */
 template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(const Attempt &attempt)
 {
@@ -54,11 +51,8 @@ template <typename Attempt> [[nodiscard]] std::error_code RetryWhileFileBusy(con
 }
 
 /**
- * @brief Renames a file through RetryWhileFileBusy.
- *
- * @param from Existing path.
- * @param to New path, replaced when it already exists.
- * @return The result of the last attempt.
+ * @brief Renames a file, retrying while it is busy as RetryWhileFileBusy does. An existing file at the new path is
+ * replaced.
  */
 [[nodiscard]] inline std::error_code RenameRetryingWhileFileBusy(
     const std::filesystem::path &from, const std::filesystem::path &to

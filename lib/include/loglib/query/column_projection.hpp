@@ -19,33 +19,22 @@ namespace loglib
 {
 
 /**
- * @brief Visible column indices of a LogConfiguration, in display order.
+ * @brief The indices of the visible columns of a configuration, in display order.
  *
- * Reads Column::visible only. Hidden columns stay in the
- * configuration; they are omitted from the result. An all-hidden
- * configuration yields an empty index list.
+ * Only Column::visible matters. Hidden columns stay in the configuration and are left out of the result. If all columns
+ * are hidden, the list is empty.
  *
- * Missing keys on a row are not this type's concern. CSV and
- * Markdown still emit a projected column (empty / monostate cell).
- * JSON Lines omits keys that are absent from the row. When
- * includeAllFieldsForJson is true it emits every field present
- * on the row.
+ * A row that lacks a key is not handled here. CSV and Markdown output still write the column, with an empty cell. JSON
+ * Lines output leaves out keys that the row does not have, and with includeAllFieldsForJson it writes every field the
+ * row has.
  */
 class ColumnProjection
 {
 public:
-    /**
-     * @brief Projects @p columns to visible indices.
-     *
-     * @param columns Configuration columns in display order.
-     */
+    /** @brief Selects the visible columns from a list of columns. */
     explicit ColumnProjection(std::span<const Column> columns);
 
-    /**
-     * @brief Projects @p configuration.columns to visible indices.
-     *
-     * @param configuration Configuration whose columns to project.
-     */
+    /** @brief Selects the visible columns from the columns of a configuration. */
     explicit ColumnProjection(const LogConfiguration &configuration);
 
     /** @brief Returns visible column indices in display order. */

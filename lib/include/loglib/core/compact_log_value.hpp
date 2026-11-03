@@ -86,20 +86,14 @@ struct CompactLogValue
 inline constexpr size_t COMPACT_LOG_VALUE_EXPECTED_BYTES = 16;
 static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "CompactLogValue must stay 16 bytes");
 
-/**
- * @brief Adds @p delta to every OwnedString payload in @p values.
- * @param values Compact field pairs to rebase.
- * @param valueCount Number of pairs in @p values.
- * @param delta Offset applied to each OwnedString payload.
- */
+/** @brief Adds delta to the offset of every OwnedString value in the first valueCount pairs. */
 void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept;
 
 /**
- * @brief Per-line compact field storage.
+ * @brief The fields of one line as an array of key and value pairs sorted by key.
  *
- * Exact-fit heap array of (KeyId, CompactLogValue) pairs sorted by
- * KeyId. Pointer, size, and capacity occupy 16 bytes, avoiding
- * std::vector's reserve overhead on narrow rows.
+ * The array is exactly as large as needed. The pointer, the size and the capacity take 16 bytes, which avoids the extra
+ * reserve of a std::vector on short rows.
  */
 class CompactLineFields
 {
@@ -108,10 +102,7 @@ public:
 
     CompactLineFields() = default;
 
-    /**
-     * @brief Allocates @p initialCapacity slots without constructing them.
-     * @param initialCapacity Number of slots to reserve.
-     */
+    /** @brief Allocates room for initialCapacity pairs without constructing them. */
     explicit CompactLineFields(uint32_t initialCapacity);
 
     CompactLineFields(const CompactLineFields &) = delete;
@@ -171,47 +162,23 @@ public:
         return mData + mSize;
     }
 
-    /**
-     * @brief Grows capacity to at least @p capacity.
-     * @param capacity Requested slot count. No-op if already large enough.
-     */
+    /** @brief Makes room for at least capacity pairs. Does nothing if there is room already. */
     void Reserve(uint32_t capacity);
 
     /**
-     * @brief Replaces contents with @p values.
-     *
-     * Reuses the buffer when it is large enough; otherwise reallocates
-     * exact-fit.
-     *
-     * @param values Sorted field pairs.
-     * @param count Number of pairs in @p values.
+     * @brief Replaces the content with count pairs that are sorted by key. The buffer is reused if it is large enough,
+     * and otherwise replaced by one that fits exactly.
      */
     void AssignSorted(const value_type *values, uint32_t count);
     void AssignSorted(std::vector<value_type> &&values);
 
-    /**
-     * @brief Appends a pair at the end.
-     *
-     * The caller must keep the array sorted by KeyId.
-     *
-     * @param key Field key.
-     * @param value Compact field value.
-     */
+    /** @brief Adds a pair at the end. The caller keeps the array sorted by key. */
     void EmplaceBack(KeyId key, CompactLogValue value);
 
-    /**
-     * @brief Inserts a pair at @p position.
-     * @param position Insertion index; later slots shift by one.
-     * @param key Field key.
-     * @param value Compact field value.
-     */
+    /** @brief Inserts a pair at position, and the pairs after it move up by one. */
     void Insert(uint32_t position, KeyId key, CompactLogValue value);
 
-    /**
-     * @brief Replaces the value at @p position.
-     * @param position Slot index.
-     * @param value New compact value.
-     */
+    /** @brief Replaces the value at position. */
     void Set(uint32_t position, CompactLogValue value) noexcept;
 
     /** @brief Returns heap bytes owned by this array. */

@@ -20,37 +20,25 @@ namespace loglib
 {
 
 /**
- * @brief Builds a predicate for one string leaf.
+ * @brief Builds the text test for one string leaf.
  *
- * The haystack is compared after single-line whitespace normalisation:
- * ends are trimmed and each internal whitespace run becomes one space.
- * Exactly and Contains skip that work when both sides are already
- * canonical ASCII. Exactly and Wildcard patterns get the same
- * normalisation. Contains patterns also collapse whitespace runs but
- * keep one space at an end, so " foo " finds a whole word.
- * RegularExpression patterns are used as written.
+ * The text being tested is normalized first: spaces at both ends are removed and every run of whitespace inside becomes
+ * one space. Exactly and Contains skip that work when both texts are plain ASCII that is already in that form. The
+ * pattern of Exactly and Wildcard is normalized the same way. The pattern of Contains also has its runs of whitespace
+ * collapsed, but keeps a space at either end, so that " foo " finds a whole word. A regular expression is used as
+ * written.
  *
- * RegularExpression and Wildcard compile once, JIT-compile when the
- * platform allows, and prime the JIT. An invalid pattern matches
- * nothing. Wildcard escapes regex metacharacters, maps * to .*
- * and ? to ., copies [...] classes through, and anchors the
- * result to the whole haystack. * and ? match / and \.
+ * Regular expressions and wildcards are compiled once, JIT-compiled where the platform allows, and warmed up. An
+ * invalid pattern matches nothing. A wildcard is turned into a regular expression: special characters are escaped, *
+ * becomes
+ * .* and ? becomes a dot, [...] classes are kept, and the pattern must match the whole text. Both * and ? also match
+ * slashes and backslashes.
  *
- * The returned function is safe to call from several threads.
- *
- * @param pattern UTF-8 pattern.
- * @param match Comparison to perform.
- * @return Predicate over a UTF-8 haystack.
+ * The returned function can be called from several threads.
  */
 [[nodiscard]] CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, LeafRule::Match match);
 
-/**
- * @brief Explains why MakeStringMatcher would match nothing for @p pattern.
- *
- * @param pattern UTF-8 pattern.
- * @param match Comparison to perform.
- * @return A message for an invalid pattern, or std::nullopt when it compiles.
- */
+/** @brief Says why MakeStringMatcher would match nothing for this pattern. Returns nullopt if the pattern compiles. */
 [[nodiscard]] std::optional<std::string> StringPatternProblem(std::string_view pattern, LeafRule::Match match);
 
 } // namespace loglib
