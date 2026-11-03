@@ -210,7 +210,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 
 **Acceptance bar.** Every existing test still passes (Qt smoke tests, Catch2 unit tests, `clang-asan-ubsan`, `clang-tsan`, `clang-coverage`). Coverage of the extracted logic goes up under `clang-coverage`; each extracted `loglib` type has at least one dedicated Catch2 file. `app/` no longer contains files with `slv::` namespaces. `loglib` public headers stay Qt-free — an `rg '#include\s*<Q' lib/include/` returns zero matches, same as today.
 
-**Touches.** `lib/`: new `include/loglib/exports/`, `include/loglib/row_ordering.hpp`, `include/loglib/column_projection.hpp`, `include/loglib/user_timestamp.hpp` (or equivalent), plus a moved-in `library/src/exports/`. `app/`: include-path updates and thin adapters where Qt classes project onto the new `loglib` types (e.g. `LogFilterModel::lessThan` delegates to `loglib::RowOrdering`). `test/lib/`: new Catch2 tests per extracted piece. `test/app/`: unchanged expectations, adjust includes only if necessary.
+**Touches.** `lib/`: new `include/loglib/exports/`, `include/loglib/row_ordering.hpp`, `include/loglib/column_projection.hpp`, `include/loglib/user_timestamp.hpp` (or equivalent), plus a moved-in `src/exports/`. `app/`: include-path updates and thin adapters where Qt classes project onto the new `loglib` types (e.g. `LogFilterModel::lessThan` delegates to `loglib::RowOrdering`). `test/lib/`: new Catch2 tests per extracted piece. `test/app/`: unchanged expectations, adjust includes only if necessary.
 
 ## Tier 2 — `v1.x` strong differentiators
 
