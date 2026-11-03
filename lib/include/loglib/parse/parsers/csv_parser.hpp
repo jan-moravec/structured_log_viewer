@@ -24,57 +24,46 @@ class FileLineSource;
 class StreamLineSource;
 
 /**
- * @brief CSV parser, RFC 4180 strict (comma-only, "" quote escape, CRLF
- * or LF, UTF-8 BOM stripped on the header).
+ * @brief Parses CSV files and streams as RFC 4180 describes: commas only, a doubled quote for a quote, CRLF or LF line
+ * ends, and a UTF-8 byte order mark removed from the header.
  *
- * The first non-blank line is the header and names the columns;
- * IsValid also requires a second non-blank line with the same
- * cell count, so headerless files fall through to the next parser.
+ * The first non-blank line is the header and names the columns. Detection also requires a second non-blank line with
+ * the same number of cells, so a file without a header falls through to the next parser.
  *
- * Cell typing (bare cells only) is shared with LogfmtParser via
- * internal::ClassifyBareScalar: true/false -> bool, decimal
- * -> int64/uint64, with . or exponent -> double, else string.
- * Quoted cells always stay strings. Empty cells are omitted from
- * the row (lookup yields monostate anyway, and skipping saves 16 B
- * per empty cell on wide rows).
+ * Unquoted cells are typed by ClassifyBareScalar, as in LogfmtParser: true and false become booleans, decimals become
+ * integers, numbers with a dot or an exponent become doubles, and everything else is a string. Quoted cells always stay
+ * strings. Empty cells are left out of the row, which saves 16 bytes per cell on wide rows and reads as empty anyway.
  *
- * Known limits:
- * - Duplicate header columns are renamed <name>_2, <name>_3, ...
- *   so both slots remain addressable.
- * - Multi-line quoted cells (RFC 4180 quotes spanning newlines) are
- *   rejected as Unterminated quoted value..
- * - Stream Mode latches the schema once; on logrotate the new
- *   file's header is parsed as data (Stop + reopen to recover).
- * - Network Stream with multiple TCP clients: the first arriving
- *   line sets the schema for everyone (coordinate or restrict to a
- *   single producer).
+ * Limits:
+ * - Duplicate header names get a suffix, name_2, name_3 and so on, so each column stays addressable.
+ * - A quoted cell that runs over several lines is rejected as an unterminated quoted value.
+ * - A stream reads the header once. After a log rotation the new file's header is parsed as data, so stop and reopen to
+ *   recover.
+ * - With several TCP clients, the first line to arrive sets the columns for all of them. Use one sender, or agree on
+ * the header.
  *
- * Shares the static TBB pipeline (DecodeCsvBatch) and streaming
- * loop (CsvLineDecoder) with the other parsers.
+ * It uses the same parallel pipeline (DecodeCsvBatch) and streaming loop (CsvLineDecoder) as the other parsers.
  */
 class CsvParser : public LogParser
 {
 public:
     /**
-     * @brief Probe: @p sniffBuffer must contain a header line that looks
-     * like a CSV header (HeaderLineLooksLikeCsv) plus a second
-     * non-blank line with the same cell count. Bounded by
-     * PROBE_BYTES_BUDGET when called via the file shim.
+     * @brief Says whether the sample starts with a line that looks like a CSV header (HeaderLineLooksLikeCsv) and has a
+     * second non-blank line with the same number of cells.
+     *
+     * Called through the file overload, it only sees the first PROBE_BYTES_BUDGET bytes.
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /**
-     * @brief Static parse: eagerly parses the header to build the
-     * column -> KeyId map, then runs the TBB pipeline; Stage B
-     * records the header line's offset and skips emitting a row
-     * for it.
+     * @brief Parses a static file. The header is read first to map the columns to key ids, then the pipeline runs.
+     * Stage B records the offset of the header line and emits no row for it.
      */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
-     * @brief Live-tail parse. The first non-blank inbound line latches
-     * the header (returned as Skip, no row emitted); subsequent
-     * lines append as normal.
+     * @brief Parses a live stream. The first non-blank line is the header and produces no row. The lines after it
+     * become rows.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 };

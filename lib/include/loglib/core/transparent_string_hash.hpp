@@ -16,7 +16,10 @@
 namespace loglib
 {
 
-/** @brief Transparent hash for heterogeneous string / string_view lookup. */
+/**
+ * @brief A hash for string keys that lets a map be searched with a string_view or a C string, without building a
+ * std::string.
+ */
 struct TransparentStringHash
 {
     using is_transparent = void;
@@ -35,7 +38,7 @@ struct TransparentStringHash
     }
 };
 
-/** @brief Transparent equality companion for TransparentStringHash. */
+/** @brief The equality test to use with TransparentStringHash. */
 struct TransparentStringEqual
 {
     using is_transparent = void;

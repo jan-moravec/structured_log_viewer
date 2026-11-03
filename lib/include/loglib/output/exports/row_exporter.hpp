@@ -25,10 +25,7 @@ namespace loglib::exports
 {
 
 /**
- * @brief Supported row-export formats.
- *
- * New values append at the end so persisted integers
- * keep pointing at the same format across upgrades.
+ * @brief The formats rows can be exported in. The values are stored in saved settings, so new formats go at the end.
  */
 enum class ExportFormat : int
 {
@@ -38,86 +35,52 @@ enum class ExportFormat : int
     Markdown = 3,
 };
 
-/**
- * @brief Returns the preferred filename extension for @p format.
- *
- * The result has no leading dot ("jsonl", "csv", "log", "md").
- *
- * @param format Export format.
- * @return Extension without a leading dot.
- */
+/** @brief The usual file extension of a format, without the dot: jsonl, csv, log or md. */
 [[nodiscard]] const char *ExtensionFor(ExportFormat format) noexcept;
 
 /**
- * @brief Returns an untranslated English name for @p format.
- *
- * GUI labels go through tr(...) in app/. Tests use this helper
- * so format names cannot drift from ExtensionFor.
- *
- * @param format Export format.
- * @return English label such as "JSON Lines".
+ * @brief The English name of a format, such as JSON Lines. It is not translated, so an application translates its own
+ * labels. Tests use it so that format names stay in step with ExtensionFor.
  */
 [[nodiscard]] const char *LabelFor(ExportFormat format) noexcept;
 
 /**
- * @brief Read-only view over one row-export run.
+ * @brief A read-only description of the rows and columns of one export.
  *
- * The consumer treats this as a materialised snapshot: table and
- * the vectors behind the spans must outlive the export. Ownership
- * of those vectors lives on ExportPlan so an async worker gets a
- * self-contained bundle.
+ * It is a snapshot. The table, and the vectors that the spans point into, must stay alive for the whole export.
+ * ExportPlan owns those vectors so that a worker thread gets everything it needs in one object.
  */
 struct RowSource
 {
-    /**
-     * @brief Table to read cells from.
-     *
-     * Safe to read from a worker thread as long as no writer is
-     * running (the GUI-thread snapshot pattern).
-     */
+    /** @brief The table to read cells from. A worker thread may read it as long as nothing writes to it. */
     const loglib::LogTable *table = nullptr;
 
-    /**
-     * @brief LogTable row indices in display order.
-     *
-     * Filters and sort are already applied. The GUI converts
-     * int model rows at the ExportPlan boundary.
-     */
+    /** @brief The rows of the table to export, in display order. Filtering and sorting have already been applied. */
     std::span<const std::size_t> sourceRows;
 
     /**
-     * @brief Columns to emit for CSV / Markdown, in display order.
+     * @brief The columns to write for CSV and Markdown, as indices into LogConfiguration::columns, in display order.
      *
-     * Indices into LogConfiguration::columns. Unused when JSON
-     * Lines has includeAllFieldsForJson (every field on the row)
-     * and unused by Snapshot (row-shape format).
+     * JSON Lines ignores them when includeAllFieldsForJson is set, and the snapshot format does not use them.
      */
     std::span<const std::size_t> visibleColumns;
 
     /**
-     * @brief When true, JSON Lines emits every field on the row.
-     *
-     * Otherwise it would honour visibleColumns. Ignored by CSV,
-     * Markdown, and Snapshot.
+     * @brief With true, JSON Lines writes every field of the row. Otherwise it writes only the visible columns. CSV,
+     * Markdown and the snapshot format ignore it.
      */
     bool includeAllFieldsForJson = true;
 
-    /**
-     * @brief When true, CSV / Markdown emit a header row.
-     *
-     * Ignored by JSON Lines and Snapshot.
-     */
+    /** @brief With true, CSV and Markdown start with a header row. JSON Lines and the snapshot format ignore it. */
     bool includeHeaderRow = true;
 };
 
 /**
- * @brief Abstract row-oriented exporter. One instance per export run.
+ * @brief Writes rows in one format. Make one for each export run.
  *
- * Run walks RowSource::sourceRows in order and streams bytes to
- * the sink. It polls @p stopToken on a row batch cadence and throws
- * OperationCancelled on stop. Run does not call sink.Finish();
- * the caller must call it on the success path so a mid-run throw
- * unlinks the temp file via ~FileSink.
+ * Run goes through the rows of the RowSource in order and writes the bytes to the sink. It checks the stop token every
+ * few rows and throws OperationCancelled when a stop is requested. Run does not call Finish. The caller does that after
+ * a successful run, so that an exception during the run lets ~FileSink delete the temporary file.
  */
 class RowExporter
 {
@@ -131,12 +94,9 @@ public:
     RowExporter &operator=(RowExporter &&) = delete;
 
     /**
-     * @brief Emits @p source through @p sink.
+     * @brief Writes the rows of the source to the sink.
      *
-     * @param source Snapshot of rows and columns to write.
-     * @param sink Destination bytes.
-     * @param stopToken Cancellation token polled between row batches.
-     * @param progress Optional progress callback; may be empty.
+     * @param progress Called with the progress. May be empty.
      */
     virtual void Run(
         const RowSource &source,
@@ -146,63 +106,49 @@ public:
     ) = 0;
 };
 
-/**
- * @brief Returns a fresh exporter for @p format.
- *
- * @param format Format to emit.
- * @return Owning pointer, or nullptr for an unknown enumerator.
- */
+/** @brief Creates an exporter for a format. Returns null for a value that is not a format. */
 [[nodiscard]] std::unique_ptr<RowExporter> MakeExporter(ExportFormat format);
 
 /**
- * @brief Appends @p cell to @p out as one RFC 4180 CSV field.
+ * @brief Adds one field to a CSV line, as RFC 4180 describes.
  *
- * Quotes the field when it holds a comma, quote, or line break, and
- * doubles embedded quotes. A value that starts with = or @ is quoted
- * and prefixed with ' so spreadsheets do not run it as a formula.
- *
- * @param out Buffer to append to.
- * @param cell Field text.
+ * The field is put in quotes when it contains a comma, a quote or a line break, and quotes inside are doubled. A value
+ * that starts with = or @ is quoted and gets a ' in front, so that spreadsheets do not run it as a formula.
  */
 void AppendCsvField(std::string &out, std::string_view cell);
 
 /**
- * @brief Self-contained bundle handed off to an async worker.
+ * @brief Everything one export needs, in one object that can be handed to a worker thread.
  *
- * Owns the snapshot vectors backing RowSource's spans, so the
- * worker's lifetime is independent of GUI-thread state.
+ * It owns the vectors that the spans of RowSource point into, so the worker does not depend on the state of the thread
+ * that started it.
  */
 struct ExportPlan
 {
     ExportFormat format = ExportFormat::JsonLines;
 
-    /** @brief LogTable row indices in display order. */
+    /** @brief The rows of the table to export, in display order. */
     std::vector<std::size_t> sourceRows;
 
-    /** @brief Visible columns in display order. */
+    /** @brief The columns to write, in display order. */
     std::vector<std::size_t> visibleColumns;
 
     bool includeAllFieldsForJson = true;
     bool includeHeaderRow = true;
 
     /**
-     * @brief Borrowed table pointer.
-     *
-     * The caller guarantees LogTable (and its LogConfiguration)
-     * outlive the worker; the GUI thread quiesces every writer for
-     * the duration of the export.
+     * @brief The table, which is borrowed. The caller makes sure it and its configuration stay alive while the worker
+     * runs and that nothing changes them during the export.
      */
     const loglib::LogTable *table = nullptr;
 
     /**
-     * @brief Destination path.
-     *
-     * FileSink writes to <destination>.tmp and atomically
-     * renames on success.
+     * @brief The path of the output file. FileSink writes to a temporary file next to it and renames it when the
+     * export succeeds.
      */
     std::filesystem::path destination;
 
-    /** @brief Builds a RowSource view over this plan. */
+    /** @brief Returns a RowSource over the vectors of this plan. */
     [[nodiscard]] RowSource View() const noexcept
     {
         return RowSource{

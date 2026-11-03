@@ -24,41 +24,37 @@ class FileLineSource;
 class StreamLineSource;
 
 /**
- * @brief Newline-delimited logfmt parser (Heroku / kr/logfmt flavour).
+ * @brief Parses files and streams in the logfmt format, one record per line, as used by Heroku and the logfmt library.
  *
- * Records contain whitespace-separated key=value pairs and optional
- * double-quoted values with C-style escapes (\", \\, \n, \r,
- * \t). By default, indented lines continue the preceding record;
- * set ParserOptions::multilineLogfmt to false for line-per-record parsing.
+ * A record is a list of key=value pairs separated by whitespace. A value can be in double quotes with C-style escapes,
+ * such as an escaped quote, a backslash, \n, \r and \t. By default an indented line continues the previous record. Set
+ * ParserOptions::multilineLogfmt to false for one record per line.
  *
- * Bare values are typed: key= -> null, true/false -> bool,
- * decimal -> int64/uint64, decimal-with-point/exponent -> double,
- * else string. Quoted values stay strings even if numeric (so
- * pid="42" keeps the user's intent).
+ * Unquoted values are typed by ClassifyBareScalar: true and false become booleans, decimals become integers, numbers
+ * with a point or an exponent become doubles, and everything else is a string. Quoted values stay strings even when
+ * they look like numbers, so pid="42" keeps what the writer meant.
  *
- * Reuses the same TBB static pipeline and streaming loop as
- * JsonParser via internal::CompactLineDecoder.
+ * It uses the same parallel pipeline and streaming loop as JsonParser, through CompactLineDecoder.
  */
 class LogfmtParser : public LogParser
 {
 public:
     /**
-     * @brief Probe: the first non-blank line of @p sniffBuffer must look
-     * like key=value pairs (see LineLooksLikeLogfmt). Bounded
-     * by PROBE_BYTES_BUDGET when called via the file shim.
+     * @brief Says whether the first non-blank line of the sample looks like key=value pairs (LineLooksLikeLogfmt).
+     *
+     * Called through the file overload, it only sees the first PROBE_BYTES_BUDGET bytes.
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /**
-     * @brief Static parse over @p source's mmap. Each emitted LogLine
-     * carries &source and its 0-based file-line id.
+     * @brief Parses a static file. Every row refers to source and has the zero-based line number of the file as its
+     * id.
      */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
-     * @brief Live-tail parse. Each line from source.Producer() is
-     * appended via AppendLine and emitted as a LogLine
-     * carrying &source and the new 1-based id.
+     * @brief Parses a live stream. Every line from the producer is stored with AppendLine, and the row refers to
+     * source with the id AppendLine returned, counting from 1.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 };

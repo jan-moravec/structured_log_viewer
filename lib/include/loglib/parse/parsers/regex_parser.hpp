@@ -27,153 +27,108 @@ class FileLineSource;
 class StreamLineSource;
 
 /**
- * @brief Regex-template log parser, PCRE2-backed.
+ * @brief Parses lines with a PCRE2 pattern that has named groups. The group names become the column keys.
  *
- * One PCRE2 pattern with named capture groups splits each line
- * into columns; the group names become column keys. The pattern
- * is supplied externally (no header line as with CSV), via
- * ParserOptions::configuration->source->regexPattern. An empty
- * pattern is permitted only for auto-detection probes (IsValid),
- * which iterate the built-in registry; calling ParseStreaming
- * without one surfaces a single parse error.
+ * The pattern is not read from the file, as a CSV header is. It comes from
+ * ParserOptions::configuration->source->regexPattern or from the constructor. An empty pattern is allowed only for
+ * detection probes, which go through the registry of templates. Calling ParseStreaming without a pattern reports one
+ * parse error.
  *
- * The compiled pcre2_code* is shared read-only across Stage B
- * workers; each worker owns its own pcre2_match_data*.
- * pcre2_set_match_limit / pcre2_set_depth_limit contain
- * pathological backtracking on user-supplied patterns; over-limit
- * lines surface as parse errors and the parse keeps going.
+ * The compiled pattern is shared by all worker threads, and each thread has its own match data. Match and depth limits
+ * contain patterns that backtrack too much. A line that goes over a limit becomes a parse error and parsing goes on.
  *
- * Engine choice: PCRE2+JIT beats RE2 on capture-heavy patterns in
- * rebar's aggregate and runs the upstream lnav / logstash-grok
- * patterns we adopt verbatim. See CONTRIBUTING.md for the full
- * evaluation.
+ * PCRE2 with JIT was chosen over RE2 because it was faster on patterns with many captures and it runs the patterns of
+ * lnav and logstash-grok unchanged. CONTRIBUTING.md has the evaluation.
  *
- * Known limits:
- * - The pattern matches one physical line. Registered templates may
- *   fold additional lines according to continuationMode; unregistered
- *   patterns remain strictly line-oriented.
- * - The pattern is parser configuration, not file content, so
- *   IsValid only auto-detects files matching a template from
- *   the merged catalog (built-ins ∪ user templates registered
- *   via loglib::SetExtraRegexTemplates; see
- *   loglib::DetectRegexTemplate). Files needing a completely
- *   custom, unregistered pattern are reachable via
- *   File → Open Network Stream… (custom pattern field) or by
- *   restoring a session whose Source is
- *   already pinned to Regex + the desired pattern.
+ * Limits:
+ * - A pattern matches one physical line. A registered template can join more lines according to its continuationMode.
+ *   A pattern that is not registered stays line by line.
+ * - The pattern is configuration and not part of the file, so IsValid only detects files that match a template in the
+ *   catalog: the built-in templates plus those registered with SetExtraRegexTemplates, as DetectRegexTemplate finds
+ *   them. A file that needs a custom pattern that is not registered can be opened as a network stream with a custom
+ *   pattern, or by restoring a session whose source is already set to the regex format with that pattern.
  */
 class RegexParser : public LogParser
 {
 public:
     /**
-     * @brief Build a parser that takes its pattern from
-     * ParserOptions::configuration->source->regexPattern at parse
-     * time.
+     * @brief Creates a parser that takes its pattern from ParserOptions::configuration->source->regexPattern when it
+     * parses.
      */
     RegexParser() = default;
 
     /**
-     * @brief Build a parser pinned to @p pattern, ignoring any pattern
-     * on the configuration snapshot. Used by
-     * loglib::ParseFile(path) once auto-detection has picked a
-     * template, and by tests that drive a known pattern through
-     * the pipeline.
+     * @brief Creates a parser that always uses the given pattern and ignores the one in the configuration.
+     *
+     * ParseFile uses it after detection has chosen a template, and tests use it to run a known pattern.
      */
     explicit RegexParser(std::string pattern);
 
     /**
-     * @brief Probe @p sniffBuffer's first non-blank lines against every
-     * autoDetect=true entry in the merged registry (built-ins
-     * + user templates registered via SetExtraRegexTemplates).
-     * Returns true on the first template whose pattern matches
-     * enough sample lines. Built-ins probe before user templates
-     * so a careless user priority can't steal a match from a
-     * shipped template. Bounded by the caller's supplied buffer
-     * (PROBE_BYTES_BUDGET when called via the file shim), so we
-     * don't read large files just to refuse them. Custom patterns
-     * that aren't registered as a template are not auto-detectable
-     * here.
+     * @brief Says whether the first non-blank lines of the sample match a template with auto-detection turned on.
+     *
+     * The templates are tried in order, built-in ones first and then those registered with SetExtraRegexTemplates, so a
+     * user priority cannot take a match from a shipped template. The result is true for the first template whose
+     * pattern matches enough sample lines. Only the sample is read, up to PROBE_BYTES_BUDGET bytes through the file
+     * overload, so large files are not read just to be refused. A custom pattern that is not a registered template is
+     * not detected.
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /**
-     * @brief Static-file parse. Pattern is read from
-     * options.configuration->source->regexPattern unless the
-     * parser was pinned via the explicit-pattern constructor.
+     * @brief Parses a static file. The pattern comes from options.configuration->source->regexPattern, unless the
+     * parser was created with a pattern.
      */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /**
-     * @brief Live-tail parse. Same pattern resolution as the static
-     * overload.
-     */
+    /** @brief Parses a live stream. The pattern is chosen as for a static file. */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
 private:
-    /**
-     * @brief std::nullopt means "read pattern from options at parse
-     * time". A non-empty string pins the parser to a specific
-     * pattern.
-     */
+    /** @brief The pattern given to the constructor. Empty means the pattern is read from the options when parsing. */
     std::optional<std::string> mExplicitPattern;
 };
 
 /**
- * @brief Probe @p file against the merged auto-detect registry
- * (built-ins + user templates from SetExtraRegexTemplates) and
- * return the first matching template, or std::nullopt if none
- * match. Same probe RegexParser::IsValid runs; exposing it
- * separately lets callers (e.g. an application that persists the
- * pattern) capture *which* template matched so they can persist its
- * pattern on Source.
+ * @brief Finds the first template, built-in or registered, that matches the start of a file. Returns nullopt if none
+ * does.
  *
- * Returned by value (not by pointer into the registry) so callers
- * remain safe across a concurrent SetExtraRegexTemplates call. A
- * pointer into the registry could dangle if the snapshot it aliased
- * dropped its last reference.
+ * It is the same check RegexParser::IsValid runs. It is separate so that a caller which saves the pattern, with the
+ * source, can learn which template matched. The template is returned by value, so a concurrent call to
+ * SetExtraRegexTemplates cannot leave the caller with a dangling pointer.
  */
 [[nodiscard]] std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file);
 
 /**
- * @brief Byte-buffer variant used by AutoDetectParser (network
- * streams) and by stdin auto-detect. Same probe semantics as the
- * file overload. At most PROBE_BYTES_BUDGET bytes are scanned.
- * Named distinctly from DetectRegexTemplate so a std::string
- * argument never resolves here by accident.
+ * @brief Like DetectRegexTemplate, for a sample in memory. AutoDetectParser and the detection of standard input use it.
+ *
+ * At most PROBE_BYTES_BUDGET bytes are scanned. The name differs from DetectRegexTemplate so that a std::string
+ * argument cannot select this overload by accident.
  */
 [[nodiscard]] std::optional<RegexTemplate> DetectRegexTemplateFromBytes(std::string_view sniffBuffer);
 
 /**
- * @brief Compile-only validation for GUI surfaces (e.g. the Network
- * Stream dialog) to front-load pattern errors before they'd
- * otherwise surface as a single error on the first inbound line.
- * Returns true iff @p pattern is non-empty, compiles, *and*
- * contains at least one (?<Name>...) named capture group. On
- * failure, @p errorOut receives a user-facing message (matching
- * ParseStreaming's wording). The compiled PCRE2 state is
- * discarded immediately; this is a cheap pre-flight check, not
- * parse setup.
+ * @brief Checks a pattern without parsing anything, so a dialog can report errors early.
+ *
+ * It returns true if the pattern is not empty, compiles, and has at least one named group written as (?<Name>...).
+ * Otherwise errorOut gets a message worded like the one ParseStreaming gives. The compiled pattern is thrown away at
+ * once, so this is a cheap check and not a setup for parsing.
  */
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
 
 /**
- * @brief Validate a header probe. Empty reuses the main pattern; non-empty
- * probes need to compile but do not require named captures.
+ * @brief Checks the pattern that recognizes the first line of a record. An empty anchor means the main pattern is
+ * used. A non-empty one must compile but does not need named groups.
  */
 [[nodiscard]] bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut);
 
 /**
- * @brief True iff @p pattern compiles and matches @p line in full
- * (same PCRE2_ANCHORED | PCRE2_ENDANCHORED flags as the
- * auto-detect probe). "Matches" therefore means "a RegexParser
- * would emit a row for this line". Used by the regex-templates
- * editor to self-test a pattern against its sampleLines before
- * saving. Discards the compiled state immediately; intended for
- * one-off interactive checks, not parse hot paths.
+ * @brief True if the pattern compiles and matches the whole line, which means a RegexParser would produce a row for it.
  *
- * Returns false on compile failure, no-match, or PCRE2 limit
- * overruns. Callers needing the compile error text should call
- * ValidateRegexPattern first.
+ * It uses the same anchoring flags as detection. The regex template editor uses it to test a pattern against the sample
+ * lines before saving. The compiled pattern is discarded, so it is for one-off checks and not for parsing. It returns
+ * false for a pattern that does not compile, a line that does not match, and a match that goes over a PCRE2 limit.
+ * Call ValidateRegexPattern first to get the compile error.
  */
 [[nodiscard]] bool PatternMatchesLine(std::string_view pattern, std::string_view line);
 

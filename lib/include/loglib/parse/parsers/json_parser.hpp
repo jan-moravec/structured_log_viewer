@@ -22,28 +22,30 @@ namespace loglib
 class FileLineSource;
 class StreamLineSource;
 
-/** @brief Newline-delimited JSON parser, built on the shared TBB pipeline + simdjson. */
+/**
+ * @brief Parses files and streams with one JSON object per line.
+ *
+ * Static files go through the parallel pipeline, and live streams through the streaming loop. Decoding uses simdjson.
+ */
 class JsonParser : public LogParser
 {
 public:
     /**
-     * @brief Probe: the first non-blank line of @p sniffBuffer must parse
-     * as a JSON object. Shared by the file-based IsValid shim
-     * on the base class, by AutoDetectParser for network
-     * streams, and by stdin auto-detect.
+     * @brief Says whether the first non-blank line of the sample is a JSON object.
+     *
+     * The file overload of IsValid, AutoDetectParser and the detection of standard input all use this.
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /**
-     * @brief Static-file streaming parse over @p source's mmap. Each emitted
-     * LogLine carries &source and its 0-based file-line id.
+     * @brief Parses a static file. Every row refers to source and has the zero-based line number of the file as its
+     * id.
      */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
-     * @brief Live-tail streaming parse. Each line read from
-     * source.Producer() is appended via AppendLine and surfaced
-     * as a LogLine carrying &source and the new 1-based id.
+     * @brief Parses a live stream. Every line from the producer is stored with AppendLine, and the row refers to
+     * source with the id AppendLine returned, counting from 1.
      */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 };
