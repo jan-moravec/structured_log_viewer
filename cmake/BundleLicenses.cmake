@@ -89,7 +89,7 @@ function(bundle_third_party_licenses target_name)
         "asio:LICENSE_1_0.txt:Asio (BSL-1.0)"
         # PCRE2 ships its license as `LICENCE.md` (British spelling) at
         # the source root; it backs the regex-template log parser
-        # (`library/src/parsers/regex_parser.cpp`) and is statically
+        # (`lib/src/parse/parsers/regex_parser.cpp`) and is statically
         # linked whenever the parser is compiled in, so we always
         # attribute it.
         "pcre2:LICENCE.md:PCRE2 (BSD-3-Clause)"
@@ -149,7 +149,7 @@ function(bundle_third_party_licenses target_name)
     # lnav (BSD-2-Clause) and logstash-patterns-core (Apache-2.0) are
     # NOT linked into the binary; we only adopt several regex patterns
     # from their log-format definitions / grok library (see
-    # `library/src/regex_templates.cpp`). Both licenses still require
+    # `lib/src/parse/regex_templates.cpp`). Both licenses still require
     # attribution + license text when redistributing derivative
     # works, so their snippets ship alongside the linked-library
     # texts above.

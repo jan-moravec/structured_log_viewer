@@ -3,7 +3,7 @@
 #include "log_model.hpp"
 #include "theme_control.hpp"
 
-#include <loglib/log_level.hpp>
+#include <loglib/core/log_level.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>

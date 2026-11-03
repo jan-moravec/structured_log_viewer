@@ -9,7 +9,7 @@
 #include "uuid_utils.hpp"
 #include "workspace_persistence.hpp"
 
-#include <loglib/worker_threads.hpp>
+#include <loglib/parse/worker_threads.hpp>
 
 #include <QApplication>
 #include <QAtomicInt>

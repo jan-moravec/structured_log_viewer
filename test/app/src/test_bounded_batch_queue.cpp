@@ -5,7 +5,7 @@
 
 #include "bounded_batch_queue.hpp"
 
-#include <loglib/log_parse_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
 
 #include <QtTest/QtTest>
 

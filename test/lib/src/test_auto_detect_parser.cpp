@@ -1,15 +1,15 @@
-#include <loglib/auto_detect_parser.hpp>
-#include <loglib/bytes_producer.hpp>
-#include <loglib/format_detection.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tcp_server_producer.hpp>
-#include <loglib/udp_server_producer.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
+#include <loglib/ingest/udp_server_producer.hpp>
+#include <loglib/parse/auto_detect_parser.hpp>
+#include <loglib/parse/format_detection.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>
@@ -425,7 +425,7 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     CollectingSink sink;
     ParserOptions options;
     loglib::StopSource stopSource;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(30000));
     const auto startedAt = std::chrono::steady_clock::now();
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
@@ -438,7 +438,7 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     CHECK(sink.started.load());
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
 
-    stopSource.request_stop();
+    stopSource.RequestStop();
     if (worker.joinable())
     {
         worker.join();
@@ -467,7 +467,7 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     const auto startedAt = std::chrono::steady_clock::now();
     ParserOptions options;
     loglib::StopSource stopSource;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
     // Explicit 200 ms peek deadline -- shorter than the default
     // to keep the test snappy while still comfortably longer
     // than the chunk-arrival latency of the first release.
@@ -483,7 +483,7 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     // Allow startup slack beyond the 200 ms peek deadline.
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
 
-    stopSource.request_stop();
+    stopSource.RequestStop();
     if (worker.joinable())
     {
         worker.join();
@@ -508,7 +508,7 @@ void CheckDelayedSenderIsDetected(std::unique_ptr<Producer> producer, SendLines 
     CollectingSink sink;
     ParserOptions options;
     loglib::StopSource stopSource;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
     const AutoDetectParser parser;
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
@@ -522,7 +522,7 @@ void CheckDelayedSenderIsDetected(std::unique_ptr<Producer> producer, SendLines 
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
-    stopSource.request_stop();
+    stopSource.RequestStop();
     if (worker.joinable())
     {
         worker.join();
@@ -575,13 +575,13 @@ TEST_CASE("AutoDetectParser stop ends an idle network peek", "[AutoDetectParser]
     CollectingSink sink;
     ParserOptions options;
     loglib::StopSource stopSource;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
     const AutoDetectParser parser;
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
     std::this_thread::sleep_for(AutoDetectParser::DEFAULT_PEEK_TIMEOUT * 2);
     CHECK_FALSE(sink.finished.load());
-    stopSource.request_stop();
+    stopSource.RequestStop();
     worker.join();
     CHECK(sink.finished.load());
     CHECK(sink.rowCount.load() == 0);

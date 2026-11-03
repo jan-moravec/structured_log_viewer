@@ -1,8 +1,8 @@
 #include "regex_template_registry.hpp"
 #include "qstring_path.hpp"
 
-#include <loglib/regex_templates.hpp>
-#include <loglib/user_paths.hpp>
+#include <loglib/parse/regex_templates.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <QByteArray>
 #include <QChar>

@@ -1,7 +1,7 @@
 #include "slp_process.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_configuration.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 

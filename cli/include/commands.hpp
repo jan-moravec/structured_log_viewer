@@ -3,8 +3,8 @@
 #include "diagnostics.hpp"
 #include "options.hpp"
 
-#include <loglib/stop_token.hpp>
-#include <loglib/time_zone_context.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <cstdio>
 

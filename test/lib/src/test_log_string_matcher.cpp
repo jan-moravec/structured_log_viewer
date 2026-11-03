@@ -4,7 +4,7 @@
 
 #include "string_matcher_corpus.hpp"
 
-#include <loglib/log_string_matcher.hpp>
+#include <loglib/query/log_string_matcher.hpp>
 
 #include <catch2/catch_all.hpp>
 

@@ -9,9 +9,9 @@
 #include "overview_rail_widget.hpp"
 #include "row_order_proxy_model.hpp"
 
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/user_timestamp.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/time/time_zone_context.hpp>
+#include <loglib/time/user_timestamp.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>

@@ -1,25 +1,27 @@
-#include <loglib/bytes_producer.hpp>
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/internal/buffering_sink.hpp>
-#include <loglib/internal/stable_byte_arena.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tailing_bytes_producer.hpp>
+#include "table_fixture.hpp"
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/internal/stable_byte_arena.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/internal/buffering_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
+
+#include <loglib/table/log_table.hpp>
 
 #include <test_common/temp_dir.hpp>
 
@@ -116,7 +118,7 @@ ParseResult ParseText(const test_common::TempDir &dir, const LogParser &parser, 
 LogTable TableOf(LogData data)
 {
     LogConfigurationManager configuration;
-    configuration.Update(data);
+    configuration.Update(data.SortedKeys());
     return {std::move(data), std::move(configuration)};
 }
 
@@ -455,7 +457,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
     // File line ids are far past anything the stream source has assigned.
     fileBatch.lines.push_back(makeLine(fileRef, 5000, "file-a"));
     fileBatch.lines.push_back(makeLine(fileRef, 5001, "file-b"));
-    table.AppendBatch(std::move(fileBatch));
+    AppendFixtureBatch(table, std::move(fileBatch));
 
     auto streamSource = std::make_unique<StreamLineSource>("<stream>", nullptr);
     StreamLineSource &streamRef = *streamSource;
@@ -466,7 +468,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
         const size_t lineId = streamRef.AppendLine(text, "");
         streamBatch.lines.push_back(makeLine(streamRef, lineId, text));
     }
-    table.AppendBatch(std::move(streamBatch));
+    AppendFixtureBatch(table, std::move(streamBatch));
 
     // The first survivor is a file row: stream rows must keep their bytes.
     table.EvictPrefixRows(1);

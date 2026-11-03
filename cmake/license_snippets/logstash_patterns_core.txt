@@ -4,7 +4,7 @@ the Structured Log Viewer's regex parser are adapted from its grok patterns.
 Per Apache-2.0, attribution and a copy of the license are preserved here.
 
 The patterns adapted from logstash-patterns-core are in
-library/src/regex_templates.cpp (search for "grok"):
+lib/src/parse/regex_templates.cpp (search for "grok"):
   - Apache/nginx Common Log Format -- adapted from `COMMONAPACHELOG`
   - Apache/nginx Combined Log Format -- adapted from `COMBINEDAPACHELOG`
 

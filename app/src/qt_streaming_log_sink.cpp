@@ -2,7 +2,7 @@
 
 #include "log_model.hpp"
 
-#include <loglib/log_table.hpp>
+#include <loglib/table/log_table.hpp>
 #include <algorithm>
 
 #include <QMetaObject>
@@ -34,7 +34,7 @@ loglib::StopToken QtStreamingLogSink::Arm()
     mPaused.store(false, std::memory_order_release);
     mPausedDropCount.store(0, std::memory_order_release);
     mActive = true;
-    return mStopSource->get_token();
+    return mStopSource->GetToken();
 }
 
 void QtStreamingLogSink::RequestStop()
@@ -44,7 +44,7 @@ void QtStreamingLogSink::RequestStop()
     // `DropPendingBatches` after the worker has joined.
     if (mStopSource.has_value())
     {
-        mStopSource->request_stop();
+        mStopSource->RequestStop();
     }
     // Wake any worker parked inside `mPending.WaitEnqueue`. Without
     // this the worker could remain blocked indefinitely waiting for a

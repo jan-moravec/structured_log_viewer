@@ -1,4 +1,4 @@
-#include <loglib/key_index.hpp>
+#include <loglib/core/key_index.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <oneapi/tbb/parallel_for.h>

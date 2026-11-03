@@ -1,6 +1,6 @@
-#include <loglib/internal/column_key_id_cache.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/parse/internal/column_key_id_cache.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_all.hpp>
 

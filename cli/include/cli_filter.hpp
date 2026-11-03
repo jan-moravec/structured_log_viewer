@@ -3,9 +3,9 @@
 #include "commands.hpp"
 #include "diagnostics.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <expected>
 #include <optional>

@@ -5,15 +5,15 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/highlight_rule.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/query_parser.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/highlight_rule.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QAbstractItemModel>
 #include <QCoreApplication>

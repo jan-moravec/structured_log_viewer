@@ -13,8 +13,8 @@
 #include "session_history_manager.hpp"
 #include "theme_control.hpp"
 
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QAbstractItemModel>
 #include <QFileInfo>

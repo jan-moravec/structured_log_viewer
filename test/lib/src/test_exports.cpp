@@ -1,15 +1,15 @@
-#include <loglib/bytes_producer.hpp>
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -683,9 +683,9 @@ TEST_CASE("exports: sink write failures propagate from every format", "[exports]
         {
             exporter->Run(src, sink, loglib::StopToken{});
         }
-        catch (const loglib::exports::ExportCancelled &)
+        catch (const loglib::OperationCancelled &)
         {
-            FAIL("format " << loglib::exports::LabelFor(format) << " wrongly surfaced ExportCancelled");
+            FAIL("format " << loglib::exports::LabelFor(format) << " wrongly surfaced OperationCancelled");
         }
         catch (const std::runtime_error &)
         {
@@ -723,7 +723,7 @@ TEST_CASE("exports: cancel mid-export leaves no partial file", "[exports][row_ex
     const std::filesystem::path tempPath = destination.string() + ".tmp";
 
     loglib::StopSource stopSource;
-    stopSource.request_stop();
+    stopSource.RequestStop();
 
     {
         loglib::exports::FileSink sink(destination);
@@ -731,9 +731,9 @@ TEST_CASE("exports: cancel mid-export leaves no partial file", "[exports][row_ex
         bool threw = false;
         try
         {
-            exporter->Run(src, sink, stopSource.get_token());
+            exporter->Run(src, sink, stopSource.GetToken());
         }
-        catch (const loglib::exports::ExportCancelled &)
+        catch (const loglib::OperationCancelled &)
         {
             threw = true;
         }

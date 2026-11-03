@@ -1,12 +1,12 @@
 #include "common.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/internal/log_configuration_glaze_meta.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_line.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/temp_dir.hpp>
 
@@ -157,7 +157,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
     const size_t initialColumnCount = manager.Configuration().columns.size();
 
     const LogData emptyLogData;
-    manager.Update(emptyLogData);
+    manager.Update(emptyLogData.SortedKeys());
 
     CHECK(manager.Configuration().columns.size() == initialColumnCount);
     CHECK(manager.Configuration().columns[0].header == defaultColumn.header);
@@ -225,7 +225,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 3);
 
@@ -237,7 +237,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     CHECK(manager.Configuration().columns[0].printFormat == "%F %H:%M:%S");
     // Default seed keeps ISO 8601 first (fast path via
-    // `Iso8601_T` / `Iso8601_Space`) and appends non-ISO shapes
+    // `Iso8601T` / `Iso8601Space`) and appends non-ISO shapes
     // (Apache CLF at present) so shipped regex-template
     // timestamps promote without an editor round-trip. See
     // `DefaultTimeParseFormats` for the authoritative list.
@@ -286,7 +286,7 @@ TEST_CASE(
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
@@ -378,7 +378,7 @@ TEST_CASE(
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
@@ -469,7 +469,7 @@ TEST_CASE(
         const LogData logData(std::move(source), std::move(lines), std::move(keys));
 
         LogConfigurationManager manager;
-        manager.Update(logData);
+        manager.Update(logData.SortedKeys());
 
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
@@ -1327,7 +1327,7 @@ TEST_CASE(
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
     const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    manager.Update(logData);
+    manager.Update(logData.SortedKeys());
 
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
@@ -1348,7 +1348,18 @@ TEST_CASE(
     CHECK(LegacyColumnKeysToRow({"regular_b"}, manager.Configuration().columns) == 2);
 }
 
-TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
+namespace
+{
+void BubbleLevelColumnToCanonicalPosition(LogConfigurationManager &manager, size_t columnIndex)
+{
+    if (ShouldBubbleLevelColumn(manager.Configuration(), columnIndex))
+    {
+        manager.MoveColumn(columnIndex, CANONICAL_LEVEL_COLUMN_INDEX);
+    }
+}
+} // namespace
+
+TEST_CASE("Bubbling the Level column mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
 {
     // Manager-level coverage of the free helper. Catches rotation
     // regressions independent of `LogTable::MaybePromoteToLevel`

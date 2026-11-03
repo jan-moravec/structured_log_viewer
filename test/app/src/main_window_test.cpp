@@ -30,35 +30,34 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
-#include <loglib/compact_log_value.hpp>
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/rotation_siblings.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tailing_bytes_producer.hpp>
-#include <loglib/tcp_server_producer.hpp>
-#include <loglib/theme.hpp>
-#include <loglib/time_zone_context.hpp>
-#include <loglib/tzdata_search.hpp>
-#include <loglib/udp_server_producer.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/ingest/rotation_siblings.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
+#include <loglib/ingest/udp_server_producer.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/support/theme.hpp>
+#include <loglib/support/tzdata_search.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <test_common/network_log_client.hpp>
 
@@ -301,7 +300,7 @@ QString WriteBundleFixture(
     const TempJsonFile source(lines);
     loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(source.Path()));
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     loglib::LogTable table(std::move(parsed.data), std::move(manager));
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configure(configuration);
@@ -1415,7 +1414,7 @@ private slots:
         const loglib::StopToken stop = model.BeginStreaming(
             std::move(fileSource),
             [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](const loglib::StopToken &stopToken) {
-                while (!stopToken.stop_requested())
+                while (!stopToken.StopRequested())
                 {
                     std::this_thread::yield();
                 }
@@ -1497,7 +1496,7 @@ private slots:
         const loglib::StopToken stop = model.BeginStreaming(
             std::move(fileSource),
             [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](const loglib::StopToken &stopToken) {
-                while (!stopToken.stop_requested())
+                while (!stopToken.StopRequested())
                 {
                     std::this_thread::yield();
                 }
@@ -21459,7 +21458,7 @@ private slots:
 
     // Regression: a pre-existing enum column whose dict only grew in
     // a batch emits `Grew` exactly once and never `Promoted`.
-    // `LastBackfillRange` is a min/max over every back-filled
+    // the batch result backfill range is a min/max over every back-filled
     // column, so a grow-only column can fall inside it; the
     // back-fill loop must filter rather than firing `Promoted`
     // for every enum column in the range.
@@ -21530,7 +21529,7 @@ private slots:
         //   * `colA` promotes (presence count crosses 2): recordBackfill(0).
         //   * `colB` dict grows from 1 to 2 (`y` -> `y`, `w`): no back-fill.
         //   * `colC` promotes (2 same-value presences): recordBackfill(2).
-        // `LastBackfillRange` becomes `[0, 2]` with `colB` at column 1.
+        // the batch result backfill range becomes `[0, 2]` with `colB` at column 1.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;

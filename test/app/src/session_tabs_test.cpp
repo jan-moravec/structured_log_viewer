@@ -17,11 +17,11 @@
 #include "session_history_manager.hpp"
 #include "workspace_persistence.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/session_bundle.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <QAbstractItemModel>
 #include <QAction>
@@ -160,7 +160,7 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
     {
         loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(jsonlPath));
         loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data);
+        manager.Update(parsed.data.SortedKeys());
         loglib::LogTable table(std::move(parsed.data), std::move(manager));
         loglib::LogConfiguration configuration = table.Configuration().Configuration();
         if (configuration.columns.empty())
@@ -1725,14 +1725,14 @@ private slots:
         }
 
         // Precondition: neither stop source has been requested.
-        QVERIFY(!sessionA->DecompressionStopSource().stop_requested());
-        QVERIFY(!sessionB->DecompressionStopSource().stop_requested());
+        QVERIFY(!sessionA->DecompressionStopSource().StopRequested());
+        QVERIFY(!sessionB->DecompressionStopSource().StopRequested());
 
-        sessionA->MutableDecompressionStopSource().request_stop();
+        sessionA->MutableDecompressionStopSource().RequestStop();
 
-        QVERIFY(sessionA->DecompressionStopSource().stop_requested());
+        QVERIFY(sessionA->DecompressionStopSource().StopRequested());
         QVERIFY2(
-            !sessionB->DecompressionStopSource().stop_requested(),
+            !sessionB->DecompressionStopSource().StopRequested(),
             "Requesting stop on tab A's decompression source leaked into tab B."
         );
     }

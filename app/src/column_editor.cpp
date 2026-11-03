@@ -2,8 +2,8 @@
 
 #include "log_model.hpp"
 
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_table.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <QCheckBox>
 #include <QComboBox>

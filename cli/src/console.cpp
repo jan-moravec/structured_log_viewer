@@ -2,7 +2,7 @@
 
 #include "platform.hpp"
 
-#include <loglib/exports/export_sink.hpp>
+#include <loglib/output/exports/export_sink.hpp>
 
 #include <format>
 #include <stdexcept>

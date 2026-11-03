@@ -65,7 +65,7 @@ download_key() {
     fi
 }
 
-check_url() {
+check_url_once() {
     local url="$1"
     if command -v wget &>/dev/null; then
         wget -q --method=HEAD --timeout=15 --tries=3 "$url" &>/dev/null
@@ -74,6 +74,22 @@ check_url() {
     else
         return 1
     fi
+}
+
+# structured_log_viewer: the probe fails intermittently on GitHub runners, for example when the runner cannot resolve
+# apt.llvm.org for a while, and a failed probe is reported as an unsupported distribution. Retry with a pause.
+check_url() {
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if check_url_once "$1"; then
+            return 0
+        fi
+        warn "probe of $1 failed (attempt ${attempt} of 5)"
+        sleep $((attempt * 10))
+    done
+    # Show why the last attempt failed, for example a name resolution error or an HTTP status.
+    wget -S -O /dev/null --timeout=15 --tries=1 "$1" 2>&1 | head -n 20 || true
+    return 1
 }
 
 # Check if this is a new Debian distro
@@ -260,7 +276,7 @@ else
     add-apt-repository -y "${REPO_NAME}"
 fi
 
-apt-get update
+apt-get -o Acquire::Retries=5 update
 PKG="clang-$LLVM_VERSION lldb-$LLVM_VERSION lld-$LLVM_VERSION clangd-$LLVM_VERSION"
 if [[ $ALL -eq 1 ]]; then
     # same as in test-install.sh
@@ -270,4 +286,4 @@ if [[ $ALL -eq 1 ]]; then
         PKG="$PKG libclang-rt-$LLVM_VERSION-dev libpolly-$LLVM_VERSION-dev"
     fi
 fi
-apt-get install -y $PKG
+apt-get -o Acquire::Retries=5 install -y $PKG

@@ -1,6 +1,6 @@
 #include "anchor_manager.hpp"
 
-#include <loglib/theme.hpp>
+#include <loglib/support/theme.hpp>
 
 #include <algorithm>
 #include <cstdint>

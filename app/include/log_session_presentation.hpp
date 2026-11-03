@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/log_configuration.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QString>
 

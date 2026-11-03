@@ -4,29 +4,44 @@ This file is the binding, agent-facing summary. Read it before running a build o
 
 ## Comments and Doxygen
 
-Public and non-obvious C++ APIs use Doxygen. Match the style in
-[`app/include/histogram_model.hpp`](app/include/histogram_model.hpp).
+Public and non-obvious C++ APIs use Doxygen comments. These rules apply to `lib/` headers now and to the rest of the
+code when it is touched. Match the example below.
 
-- Use `/** … */`. Start with a one-sentence `@brief` in present tense.
-- Trivial members may be a single line: `/** @brief Clears the bucket-size pin and applies automatic sizing. */`
-- When the brief is not enough, add a blank line, then short paragraphs that describe **current** behavior only. Name other APIs in backticks.
-- Document parameters and results after another blank line with `@param name …` and `@return …`.
-- Keep comments easy to read. Do not mention tasks, PRDs, phases, review rounds, or previous/legacy behavior.
+1. Every header starts with a file comment, above `#pragma once`. It has a one-sentence `@brief` describing the header,
+   then a body saying what the unit is, why it exists, what it connects to, and where it sits in the library.
+1. No backticks in comments. Write LogTable, not the name in backticks. If a sentence would need code in it, rewrite the
+   sentence.
+1. Say why and how to use it. Do not restate the name: "Returns the row count" on RowCount adds nothing. Delete comments
+   that add nothing.
+1. Describe current behavior only. No history, no "previously", "no longer", "legacy", task numbers or PR numbers.
+1. Keep it short. Use short sentences. Do not name GUI classes in library comments, and do not explain clang-tidy
+   suppressions in API docs.
+1. Use `/** */` everywhere, including internal headers. Use `@param` and `@return` only when they add information the
+   name and type do not.
+1. Let clang-format wrap the text at the 120-column limit. Write each paragraph as one long line, then run clang-format.
+   Do not rejoin existing comment lines with a script, because that breaks lists, examples and tables. Rewrite each
+   comment by hand.
+1. Every comment must be true. Check what the code does before writing about it.
+
+`scripts/check-loglib-docs.py` checks rules 1 and 2, and that no `///` comment is used, for `lib/include` and fails on a violation.
 
 ```cpp
 /**
- * @brief Replaces the borrowed log and anchor sources.
+ * @brief Common interface to the bytes behind parsed log rows.
  *
- * Pending notification is canceled, old subscriptions are removed,
- * bucket state is reset, and new subscriptions are installed. A
- * deferred bind still refreshes column availability and accepts
- * incremental appends; `PumpDeferredBind()` completes the full pass.
+ * A LogLine stores offsets and lengths rather than text, so it needs something that can turn them back into bytes.
+ * LineSource is that link. FileLineSource serves bytes from a memory-mapped file and StreamLineSource serves them from
+ * lines held in memory, which lets the rest of the library treat a static file and a live stream the same way.
  *
- * @param logModel Log model to observe, or `nullptr`.
- * @param anchors Anchor manager to observe, or `nullptr`.
- * @param deferRebuild Whether to postpone the full rebuild and auto-size pass.
+ * This is part of the core module. It knows nothing about parsers or tables.
  */
-void BindSources(LogModel *logModel, AnchorManager *anchors, bool deferRebuild = false);
+#pragma once
+
+/**
+ * @brief Returns a cell as text, formatting it if it is not already a string.
+ *
+ * The result may point into buffer, so keep buffer alive while using it. A missing cell gives an empty result.
+ */
 ```
 
 ## Non-negotiable rules

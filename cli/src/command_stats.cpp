@@ -11,13 +11,13 @@
 #include "text_table.hpp"
 #include "text_util.hpp"
 
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <algorithm>
 #include <array>

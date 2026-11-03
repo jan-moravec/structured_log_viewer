@@ -1,9 +1,9 @@
 #include "common.hpp"
 
-#include <loglib/compact_log_value.hpp>
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_line.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -152,8 +152,8 @@ TEST_CASE("Set and update values", "[log_line]")
 // `AsStringView` / `HoldsString` / `ToOwnedLogValue` / `LogValueEquivalent`
 // are the public seam consumers use to read string-typed values without
 // caring whether the parser landed on the view or owned alternative. Pin
-// the contract so downstream code (e.g. `LogModel::data`,
-// `JsonParser::ToString`) keeps working as the parser shifts more values
+// the contract so downstream code (e.g. `LogModel::data`)
+// keeps working as the parser shifts more values
 // onto the fast path.
 TEST_CASE("AsStringView returns bytes for both string alternatives, nullopt for non-strings", "[log_line][helpers]")
 {
@@ -341,7 +341,8 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
 
     const KeyId messageKey = keys.GetOrInsert("message");
     LogLine line({}, keys, *source, 1);
-    line.SetOrReplaceEnumDictRef(levelKey, warnId);
+    line.SetValue(levelKey, LogValue{std::string("placeholder")});
+    *line.FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(warnId);
     line.SetValue(messageKey, LogValue{std::string("hello")});
 
     REQUIRE(line.IsDictRef(levelKey));
@@ -374,11 +375,12 @@ TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / Owned
     source->SetEnumDictionaries(&registry);
 
     LogLine line({}, keys, *source, 1);
-    line.SetOrReplaceEnumDictRef(enumKey, vid);
+    line.SetValue(enumKey, LogValue{std::string("placeholder")});
+    *line.FindCompactMutable(enumKey) = CompactLogValue::MakeDictRef(vid);
     line.SetValue(stringKey, LogValue{std::string("hello")});
 
     CHECK(line.IsDictRef(enumKey));
     CHECK_FALSE(line.IsDictRef(stringKey));
-    CHECK_FALSE(line.IsOwnedString(enumKey));
-    CHECK(line.IsOwnedString(stringKey));
+    CHECK(line.FindCompact(enumKey)->tag == CompactTag::DictRef);
+    CHECK(line.FindCompact(stringKey)->tag == CompactTag::OwnedString);
 }

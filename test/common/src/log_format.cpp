@@ -153,8 +153,8 @@ LogFormat Logfmt()
 namespace
 {
 
-// Duplicate of `loglib::BareCellIsSafe` so `test_common` stays
-// loglib-free; drift is caught by `[csv_parser][round_trip]` tests.
+// Keeps `test_common` loglib-free; `[csv_parser][round_trip]` tests check
+// that `CsvParser` reads these cells back.
 bool CsvCellIsBareSafe(std::string_view value) noexcept
 {
     return std::ranges::all_of(value, [](char c) { return c != ',' && c != '"' && c != '\r' && c != '\n'; });

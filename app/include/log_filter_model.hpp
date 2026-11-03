@@ -2,10 +2,10 @@
 
 #include "log_model.hpp"
 
-#include <loglib/key_index.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/row_ordering.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_ordering.hpp>
 
 #include <QAbstractProxyModel>
 #include <QList>

@@ -1,11 +1,11 @@
 #include "highlight_rule_set.hpp"
 
-#include <loglib/leaf_rule_compile.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_table.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <QDebug>
 

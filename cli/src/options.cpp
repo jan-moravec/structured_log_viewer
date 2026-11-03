@@ -4,10 +4,10 @@
 #include "text_util.hpp"
 #include "version.hpp"
 
-#include <loglib/line_source.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/user_paths.hpp>
-#include <loglib/version.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/version.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <CLI/CLI.hpp>
 

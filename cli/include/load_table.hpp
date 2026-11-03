@@ -4,12 +4,12 @@
 #include "diagnostics.hpp"
 #include "options.hpp"
 
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/format_detection.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/parse/format_detection.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <cstdint>
 #include <expected>

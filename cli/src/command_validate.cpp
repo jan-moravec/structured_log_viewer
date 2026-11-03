@@ -5,8 +5,8 @@
 #include "json_report.hpp"
 #include "load_table.hpp"
 
-#include <loglib/column_type_health.hpp>
-#include <loglib/parse_error_text.hpp>
+#include <loglib/parse/parse_error_text.hpp>
+#include <loglib/table/column_type_health.hpp>
 
 #include <algorithm>
 #include <cstdint>

@@ -1,4 +1,4 @@
-#include <loglib/rotation_siblings.hpp>
+#include <loglib/ingest/rotation_siblings.hpp>
 
 #include <test_common/temp_dir.hpp>
 

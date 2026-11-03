@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/filter_expression.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <QDialog>
 #include <QString>

@@ -13,12 +13,11 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/regex_parser.hpp>
-#include <loglib/regex_templates.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -84,11 +83,8 @@ void RunRegexTemplateBenchmark(
     configFile.Write(*configuration);
 
     const ParserStreamFn parserStream = [&pattern](
-                                            FileLineSource &source,
-                                            LogParseSink &sink,
-                                            const ParserOptions &options,
-                                            internal::AdvancedParserOptions advanced
-                                        ) { RegexParser::ParseStreaming(source, sink, options, advanced, pattern); };
+                                            FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                                        ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
 
     RunStreamingBenchmark(
         label,
@@ -295,11 +291,8 @@ TEST_CASE(
     configFile.Write(*configuration);
 
     const ParserStreamFn parserStream = [&pattern](
-                                            FileLineSource &source,
-                                            LogParseSink &sink,
-                                            const ParserOptions &options,
-                                            internal::AdvancedParserOptions advanced
-                                        ) { RegexParser::ParseStreaming(source, sink, options, advanced, pattern); };
+                                            FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                                        ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
 
     RunStreamingBenchmark(
         "Stream 1'000'000 Java multi-line (indented) records to LogTable",
@@ -365,11 +358,8 @@ TEST_CASE(
     configFile.Write(*configuration);
 
     const ParserStreamFn parserStream = [&pattern](
-                                            FileLineSource &source,
-                                            LogParseSink &sink,
-                                            const ParserOptions &options,
-                                            internal::AdvancedParserOptions advanced
-                                        ) { RegexParser::ParseStreaming(source, sink, options, advanced, pattern); };
+                                            FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                                        ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
 
     RunStreamingBenchmark(
         "Stream 1'000'000 Python traceback (UntilNextHeader) records to LogTable",
@@ -423,13 +413,8 @@ TEST_CASE(
         const std::vector<RegexTemplate> extras{extraNoAnchor};
         loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
         const ParserStreamFn parserStream = [&pattern](
-                                                FileLineSource &source,
-                                                LogParseSink &sink,
-                                                const ParserOptions &options,
-                                                internal::AdvancedParserOptions advanced
-                                            ) {
-            RegexParser::ParseStreaming(source, sink, options, advanced, pattern);
-        };
+                                                FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                                            ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
         const StreamingRunResult warmup =
             RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);
         REQUIRE(warmup.rowCount == testFile.RecordCount());
@@ -451,13 +436,8 @@ TEST_CASE(
         loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
 
         const ParserStreamFn parserStream = [&pattern](
-                                                FileLineSource &source,
-                                                LogParseSink &sink,
-                                                const ParserOptions &options,
-                                                internal::AdvancedParserOptions advanced
-                                            ) {
-            RegexParser::ParseStreaming(source, sink, options, advanced, pattern);
-        };
+                                                FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                                            ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
 
         const StreamingRunResult run =
             RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);

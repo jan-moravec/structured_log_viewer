@@ -3,11 +3,10 @@
 #include "histogram_model.hpp"
 #include "theme_control.hpp"
 
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/time_zone_context.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QBrush>
 #include <QColor>

@@ -1,7 +1,7 @@
 #include "slp_process.hpp"
 
-#include <loglib/tcp_server_producer.hpp>
-#include <loglib/udp_server_producer.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
+#include <loglib/ingest/udp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
 

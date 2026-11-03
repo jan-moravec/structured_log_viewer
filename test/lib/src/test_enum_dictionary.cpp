@@ -1,4 +1,4 @@
-#include <loglib/enum_dictionary.hpp>
+#include <loglib/core/enum_dictionary.hpp>
 
 #include <catch2/catch_all.hpp>
 

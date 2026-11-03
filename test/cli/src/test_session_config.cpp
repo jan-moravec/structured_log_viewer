@@ -5,14 +5,14 @@
 #include "options.hpp"
 #include "session_config.hpp"
 
-#include <loglib/filter_expression.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/session_bundle.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -65,7 +65,7 @@ constexpr std::string_view FOUR_ROWS =
     const loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     return manager.Configuration();
 }
 
@@ -282,7 +282,7 @@ TEST_CASE("slp query --config precedence over a bundle and under flags", "[cli][
         loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
         REQUIRE(parsed.errors.empty());
         loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data);
+        manager.Update(parsed.data.SortedKeys());
         const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
         loglib::WriteSessionBundle(table, bundled, bundlePath);
     }
@@ -523,7 +523,7 @@ TEST_CASE("slp stats honors a configuration expression", "[cli][session][e2e]")
     {
         loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
         loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data);
+        manager.Update(parsed.data.SortedKeys());
         const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
         loglib::WriteSessionBundle(table, configuration, bundlePath);
     }

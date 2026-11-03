@@ -1,10 +1,9 @@
 #include "common.hpp"
 
-#include <loglib/internal/log_configuration_glaze_meta.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/time_zone_context.hpp>
-#include <loglib/tzdata_search.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
+#include <loglib/support/tzdata_search.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <test_common/log_generator.hpp>
 #include <test_common/temp_dir.hpp>
@@ -230,18 +229,20 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
     // `fileSize + 1` as the virtual terminator (see LogFile::GetLine).
     char ch = '\0';
     std::size_t pos = 0;
+    std::vector<uint64_t> lineEnds;
     while (file.get(ch))
     {
         ++pos;
         if (ch == '\n')
         {
-            logFile->RegisterLineEnd(pos);
+            lineEnds.push_back(pos);
         }
     }
     if (pos > 0 && ch != '\n')
     {
-        logFile->RegisterLineEnd(pos + 1);
+        lineEnds.push_back(pos + 1);
     }
+    logFile->AppendLineOffsets(lineEnds);
 
     return logFile;
 }

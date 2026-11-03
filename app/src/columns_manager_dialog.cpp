@@ -5,7 +5,7 @@
 #include "log_session.hpp"
 #include "main_window.hpp"
 
-#include <loglib/log_configuration.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QApplication>
 #include <QDialog>

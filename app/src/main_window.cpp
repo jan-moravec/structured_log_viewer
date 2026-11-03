@@ -27,38 +27,37 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
-#include <loglib/ascii_case.hpp>
-#include <loglib/auto_detect_parser.hpp>
-#include <loglib/bytes_producer.hpp>
-#include <loglib/column_projection.hpp>
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/format_detection.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_factory.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/parsers/csv_parser.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/parsers/regex_parser.hpp>
-#include <loglib/regex_templates.hpp>
-#include <loglib/session_bundle.hpp>
-#include <loglib/source_plan.hpp>
-#include <loglib/stdin_bytes_producer.hpp>
-#include <loglib/stdin_peek.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tailing_bytes_producer.hpp>
-#include <loglib/tcp_server_producer.hpp>
-#include <loglib/theme.hpp>
-#include <loglib/tzdata_search.hpp>
-#include <loglib/udp_server_producer.hpp>
+#include <loglib/core/ascii_case.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/ingest/source_plan.hpp>
+#include <loglib/ingest/stdin_bytes_producer.hpp>
+#include <loglib/ingest/stdin_peek.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
+#include <loglib/ingest/udp_server_producer.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/auto_detect_parser.hpp>
+#include <loglib/parse/format_detection.hpp>
+#include <loglib/parse/parsers/csv_parser.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
+#include <loglib/query/column_projection.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/support/theme.hpp>
+#include <loglib/support/tzdata_search.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QAbstractProxyModel>
 #include <QAbstractSpinBox>
@@ -2039,11 +2038,11 @@ void MainWindow::InstallPerTabPersistentConnections(LogSession *session)
             }
             if (hosted->IsDecompressionInFlight())
             {
-                hosted->MutableDecompressionStopSource().request_stop();
+                hosted->MutableDecompressionStopSource().RequestStop();
             }
             if (hosted->IsExportInFlight())
             {
-                hosted->MutableExportStopSource().request_stop();
+                hosted->MutableExportStopSource().RequestStop();
             }
         });
     }
@@ -4829,7 +4828,7 @@ void MainWindow::BeginAsyncDecompression(
     // so both the future and any downstream `parseCallable` that pins
     // the temp file can share ownership. All captures are owned by
     // value: no MainWindow reference escapes.
-    const auto stopToken = origin->DecompressionStopSource().get_token();
+    const auto stopToken = origin->DecompressionStopSource().GetToken();
     auto *sharedBytesIn = &origin->MutableDecompressionBytesIn();
     auto *sharedTotal = &origin->MutableDecompressionTotalBytesIn();
 
@@ -4895,7 +4894,7 @@ void MainWindow::ShowDecompressionProgress()
             connect(mDecompressionProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
                 if (mSession != nullptr && mSession->IsDecompressionInFlight())
                 {
-                    mSession->MutableDecompressionStopSource().request_stop();
+                    mSession->MutableDecompressionStopSource().RequestStop();
                 }
             });
         }
@@ -5059,7 +5058,7 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
         return;
     }
 
-    origin->MutableDecompressionStopSource().request_stop();
+    origin->MutableDecompressionStopSource().RequestStop();
     origin->DrainDecompressionWatcher();
     origin->ClearDecompressionScratchPaths();
     origin->MutablePendingDecompressionErrors().clear();
@@ -5140,7 +5139,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     {
         dbs = watcher->result();
     }
-    catch (const loglib::DecompressionCancelled &)
+    catch (const loglib::OperationCancelled &)
     {
         cancelled = true;
     }
@@ -5580,7 +5579,7 @@ void MainWindow::BeginAsyncExport(
         return;
     }
 
-    const auto stopToken = mSession->ExportStopSource().get_token();
+    const auto stopToken = mSession->ExportStopSource().GetToken();
     auto *rowsWrittenAtomic = &mSession->MutableExportRowsWritten();
 
     // Worker: drive the exporter into the sink synchronously.
@@ -5595,13 +5594,10 @@ void MainWindow::BeginAsyncExport(
         {
             throw std::runtime_error("Unsupported export format");
         }
-        // Free-function callback: keeps the capture list empty
-        // and matches the C-style ProgressCallback signature.
-        auto progressCb = +[](void *userData, size_t rowsWritten, size_t /*total*/) {
-            auto *dst = static_cast<QAtomicInteger<qint64> *>(userData);
-            dst->storeRelaxed(static_cast<qint64>(rowsWritten));
+        const auto progressCb = [rowsWrittenAtomic](std::uint64_t rowsWritten, std::uint64_t /*total*/) {
+            rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(rowsWritten));
         };
-        exporter->Run(sharedPlan->View(), *sink, stopToken, progressCb, rowsWrittenAtomic);
+        exporter->Run(sharedPlan->View(), *sink, stopToken, progressCb);
         // `RowExporter::Run` never calls `Finish`, so a mid-run
         // throw unwinds through `~FileSink` and unlinks the temp
         // file. Success path is exactly one `Finish` after `Run`
@@ -5776,7 +5772,7 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
     }
     const loglib::LogTable *const tablePtr = &mModel->Table();
 
-    const auto stopToken = mSession->ExportStopSource().get_token();
+    const auto stopToken = mSession->ExportStopSource().GetToken();
     auto *rowsWrittenAtomic = &mSession->MutableExportRowsWritten();
 
     // Let worker exceptions propagate through the future.
@@ -5826,7 +5822,7 @@ void MainWindow::ShowExportProgress()
             connect(mExportProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
                 if (mSession != nullptr && mSession->IsExportInFlight())
                 {
-                    mSession->MutableExportStopSource().request_stop();
+                    mSession->MutableExportStopSource().RequestStop();
                 }
             });
         }
@@ -5969,7 +5965,7 @@ void MainWindow::CancelInFlightExportFor(LogSession *origin)
         UpdateExportProgressUi();
         return;
     }
-    origin->MutableExportStopSource().request_stop();
+    origin->MutableExportStopSource().RequestStop();
     try
     {
         watcher->waitForFinished();
@@ -6059,11 +6055,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
         // is the documented idiom.
         watcher->waitForFinished();
     }
-    catch (const loglib::exports::ExportCancelled &)
-    {
-        cancelled = true;
-    }
-    catch (const loglib::SessionBundleCancelled &)
+    catch (const loglib::OperationCancelled &)
     {
         cancelled = true;
     }
@@ -9178,8 +9170,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
         {
             continue;
         }
-        session->MutableDecompressionStopSource().request_stop();
-        session->MutableExportStopSource().request_stop();
+        session->MutableDecompressionStopSource().RequestStop();
+        session->MutableExportStopSource().RequestStop();
     }
 
     // Flush restorable static sessions into Recent Sessions, then

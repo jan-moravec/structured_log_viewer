@@ -9,25 +9,25 @@
 #include "session_config.hpp"
 #include "text_util.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/stdin_bytes_producer.hpp>
-#include <loglib/stdin_peek.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tailing_bytes_producer.hpp>
-#include <loglib/tcp_server_producer.hpp>
-#include <loglib/udp_server_producer.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/stdin_bytes_producer.hpp>
+#include <loglib/ingest/stdin_peek.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
+#include <loglib/ingest/tcp_server_producer.hpp>
+#include <loglib/ingest/udp_server_producer.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -178,13 +178,13 @@ private:
                     mTimedOut.store(true);
                     stopping = true;
                 }
-                else if (mExternal.stop_requested() || mLocal.stop_requested())
+                else if (mExternal.StopRequested() || mLocal.StopRequested())
                 {
                     stopping = true;
                 }
                 if (stopping)
                 {
-                    mLocal.request_stop();
+                    mLocal.RequestStop();
                 }
             }
             if (stopping)
@@ -453,8 +453,7 @@ public:
         }
         if (mNextRow < mTable->RowCount())
         {
-            (void)mTable->FinalizeAutoDetection();
-            mTable->ApplyPendingLevelBubbles();
+            mTable->BubbleLevelColumns(mTable->FinalizeAutoDetection().levelBubbleKeys);
             Process(true);
         }
     }
@@ -523,7 +522,7 @@ private:
     void Fail(slp::Failure failure)
     {
         mFailure = std::move(failure);
-        mStop->request_stop();
+        mStop->RequestStop();
     }
 
     void Process(bool final)
@@ -583,7 +582,7 @@ private:
         if (mOptions->maxRows && mEmitted >= *mOptions->maxRows)
         {
             mDone = true;
-            mStop->request_stop();
+            mStop->RequestStop();
         }
     }
 
@@ -875,7 +874,7 @@ ExitCode RunTail(
     StopWatcher watcher(runtime.stop, stop, options.duration);
     watcher.Attach(producer);
 
-    parser.value()->ParseStreaming(*rawSource, sink, MakeParserOptions(global, options.input, stop.get_token()));
+    parser.value()->ParseStreaming(*rawSource, sink, MakeParserOptions(global, options.input, stop.GetToken()));
     sink.Finish();
 
     if (sink.Failed())

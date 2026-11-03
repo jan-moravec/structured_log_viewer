@@ -1,20 +1,19 @@
 #include "common.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/internal/buffering_sink.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/internal/buffering_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
@@ -39,40 +38,32 @@ namespace
 constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
 
 // Drives a synchronous parse against the streaming pipeline for tests that
-// need to dial advanced tuning knobs but still consume a `ParseResult`.
-loglib::ParseResult ParseWithSink(
-    const std::filesystem::path &path,
-    const loglib::ParserOptions &options = {},
-    const loglib::internal::AdvancedParserOptions &advanced = {}
-)
+// need to dial tuning knobs but still consume a `ParseResult`.
+loglib::ParseResult ParseWithSink(const std::filesystem::path &path, const loglib::ParserOptions &options = {})
 {
     auto logFile = std::make_unique<loglib::LogFile>(path);
     auto source = std::make_unique<loglib::FileLineSource>(std::move(logFile));
     loglib::FileLineSource *sourcePtr = source.get();
     loglib::internal::BufferingSink sink(std::move(source));
-    loglib::JsonParser::ParseStreaming(*sourcePtr, sink, options, advanced);
+    loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
     loglib::LogData data = sink.TakeData();
     std::vector<std::string> errors = sink.TakeErrors();
     return loglib::ParseResult{.data = std::move(data), .errors = std::move(errors)};
 }
 } // namespace
 
-TEST_CASE(
-    "ParserOptions{} + AdvancedParserOptions{} reproduces the legacy default-options behaviour",
-    "[json_parser][parser_options][defaults]"
-)
+TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[json_parser][parser_options][defaults]")
 {
     using namespace loglib;
 
     const ParserOptions defaults;
-    CHECK_FALSE(defaults.stopToken.stop_possible());
+    CHECK_FALSE(defaults.stopToken.StopPossible());
     CHECK(defaults.configuration == nullptr);
 
-    const internal::AdvancedParserOptions advanced;
-    CHECK(advanced.threads == 0u);
-    CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES);
-    CHECK(internal::AdvancedParserOptions::DEFAULT_MAX_THREADS == 8u);
-    CHECK(internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES == 1024u * 1024u);
+    CHECK(defaults.threads == 0u);
+    CHECK(defaults.batchSizeBytes == 0u);
+    CHECK(DEFAULT_MAX_PARSE_THREADS == 8u);
+    CHECK(DEFAULT_PARSE_BATCH_BYTES == 1024u * 1024u);
 }
 
 TEST_CASE("Validate non-existent file", "[json_parser]")
@@ -244,12 +235,11 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
 
     // Force several Stage A batches by capping `batchSizeBytes` well below
     // the file size; the INVALID_LINE_NUMBER_A line therefore lands in batch 2+.
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 8 * 1024;
-    advanced.threads = 1;
+    loglib::ParserOptions options;
+    options.batchSizeBytes = 8 * 1024;
+    options.threads = 1;
 
-    auto result = ParseWithSink(testFile.GetFilePath(), options, advanced);
+    auto result = ParseWithSink(testFile.GetFilePath(), options);
 
     REQUIRE(result.errors.size() == 2);
     const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
@@ -615,72 +605,6 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
     CHECK(result.data.FrontFileSource()->File().GetLine(3) == "invalid json 2");
 }
 
-TEST_CASE("Convert empty values to string", "[json_parser]")
-{
-    const loglib::JsonParser parser;
-    const loglib::LogMap values;
-    CHECK(parser.ToString(values) == "{}");
-}
-
-TEST_CASE("Convert one value to string", "[json_parser]")
-{
-    const loglib::JsonParser parser;
-
-    SECTION("Null")
-    {
-        const loglib::LogMap values{{"key", std::monostate()}};
-        CHECK(parser.ToString(values) == R"({"key":null})");
-    }
-
-    SECTION("String")
-    {
-        const loglib::LogMap values{{"key", std::string("value")}};
-        CHECK(parser.ToString(values) == R"({"key":"value"})");
-    }
-
-    SECTION("Unsigned integer")
-    {
-        const loglib::LogMap values{{"key", static_cast<uint64_t>(42)}};
-        CHECK(parser.ToString(values) == R"({"key":42})");
-    }
-
-    SECTION("Integer")
-    {
-        const loglib::LogMap values{{"key", static_cast<int64_t>(-12)}};
-        CHECK(parser.ToString(values) == R"({"key":-12})");
-    }
-
-    SECTION("Double")
-    {
-        const loglib::LogMap values{{"key", 3.14}};
-        CHECK(parser.ToString(values) == R"({"key":3.14})");
-    }
-
-    SECTION("Boolean")
-    {
-        const loglib::LogMap values{{"key", true}};
-        CHECK(parser.ToString(values) == R"({"key":true})");
-    }
-}
-
-TEST_CASE("Convert all possible values to string", "[json_parser]")
-{
-    const loglib::JsonParser parser;
-    const loglib::LogMap values{
-        {"null", std::monostate()},
-        {"string", std::string("value")},
-        {"uinteger", static_cast<uint64_t>(42)},
-        {"integer", static_cast<int64_t>(-12)},
-        {"double", 3.14},
-        {"boolean", true}
-    };
-
-    CHECK(
-        parser.ToString(values) ==
-        R"({"boolean":true,"double":3.14,"integer":-12,"null":null,"string":"value","uinteger":42})"
-    );
-}
-
 TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
 {
     // Drives the same fixture through the streaming pipeline twice — once with
@@ -715,15 +639,14 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     }
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
-    const ParserOptions opts;
-    internal::AdvancedParserOptions singleThread;
+    ParserOptions singleThread;
     singleThread.threads = 1;
 
-    internal::AdvancedParserOptions multiThread;
+    ParserOptions multiThread;
     multiThread.threads = std::max(2u, std::thread::hardware_concurrency());
 
-    auto singleResult = ParseWithSink(testFile.GetFilePath(), opts, singleThread);
-    auto multiResult = ParseWithSink(testFile.GetFilePath(), opts, multiThread);
+    auto singleResult = ParseWithSink(testFile.GetFilePath(), singleThread);
+    auto multiResult = ParseWithSink(testFile.GetFilePath(), multiThread);
 
     REQUIRE(singleResult.errors.empty());
     REQUIRE(multiResult.errors.empty());
@@ -784,12 +707,11 @@ TEST_CASE(
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     const JsonParser parser;
-    const ParserOptions opts;
-    internal::AdvancedParserOptions advanced;
-    advanced.threads = THREADS;
+    ParserOptions opts;
+    opts.threads = THREADS;
 
     KeyIndex::ResetInstrumentationCounters();
-    const auto cachedResult = ParseWithSink(testFile.GetFilePath(), opts, advanced);
+    const auto cachedResult = ParseWithSink(testFile.GetFilePath(), opts);
     const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
 
     REQUIRE(cachedResult.errors.empty());
@@ -811,9 +733,9 @@ namespace
 {
 
 // Local replicas of the transparent-hash adapters from
-// `loglib/transparent_string_hash.hpp` so the move-survival test can stand up the
+// `loglib/core/transparent_string_hash.hpp` so the move-survival test can stand up the
 // exact `tsl::robin_map<std::string, KeyId, ..., ...>` instantiation that backs
-// `loglib::internal::PerWorkerKeyCache` (defined in `loglib/internal/parse_runtime.hpp`).
+// `loglib::internal::PerWorkerKeyCache` (defined in `loglib/parse/internal/parse_runtime.hpp`).
 // The wrapper struct adds nothing beyond the map field, so its compiler-generated move
 // constructor delegates straight through to the map's move constructor — exactly what we
 // exercise here.

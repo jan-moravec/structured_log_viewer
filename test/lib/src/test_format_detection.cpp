@@ -1,6 +1,6 @@
-#include <loglib/format_detection.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_parser.hpp>
+#include <loglib/parse/format_detection.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/temp_dir.hpp>
 

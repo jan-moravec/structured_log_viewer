@@ -92,4 +92,10 @@ repos:
         language: python
         entry: python scripts/check-loglib-internal-includes.py
         pass_filenames: false
-        files: '^(app|test/app|library/include)/.*\.(h|hpp|cpp)$'
+        files: '^(app|test/app|lib)/.*\.(h|hpp|cpp)$'
+      - id: loglib-docs
+        name: Check loglib header comments
+        language: python
+        entry: python scripts/check-loglib-docs.py
+        pass_filenames: false
+        files: '^(lib/include/.*\.hpp|scripts/check-loglib-docs\.py)$'

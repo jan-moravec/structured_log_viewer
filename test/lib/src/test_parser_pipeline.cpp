@@ -1,18 +1,17 @@
 #include "common.hpp"
 
-#include <loglib/compact_log_value.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/internal/static_parser_pipeline.hpp>
-#include <loglib/internal/streaming_parse_loop.hpp>
-#include <loglib/internal/timestamp_promotion.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/compact_log_value.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/internal/static_parser_pipeline.hpp>
+#include <loglib/parse/internal/streaming_parse_loop.hpp>
+#include <loglib/parse/internal/timestamp_promotion.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -59,20 +58,14 @@ public:
     {
     };
 
-    static void ParseStreaming(
-        FileLineSource &source,
-        LogParseSink &sink,
-        const loglib::ParserOptions &options,
-        const loglib::internal::AdvancedParserOptions &advanced
-    )
+    static void ParseStreaming(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
     {
         FileLineSource *sourcePtr = &source;
         LogFile &file = source.File();
         const char *fileBegin = file.Data();
         const char *fileEnd = (fileBegin != nullptr) ? fileBegin + file.Size() : nullptr;
-        const size_t batchBytes = advanced.batchSizeBytes != 0
-                                      ? advanced.batchSizeBytes
-                                      : loglib::internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
+        const size_t batchBytes =
+            options.batchSizeBytes != 0 ? options.batchSizeBytes : loglib::DEFAULT_PARSE_BATCH_BYTES;
         const char *cursor = fileBegin;
 
         auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
@@ -217,9 +210,7 @@ public:
             parsed.totalLineCount = relativeLineNumber - 1;
         };
 
-        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(
-            source, sink, options, advanced, stageA, stageB
-        );
+        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(source, sink, options, stageA, stageB);
     }
 };
 
@@ -236,20 +227,14 @@ public:
     {
     };
 
-    static void ParseStreaming(
-        FileLineSource &source,
-        LogParseSink &sink,
-        const loglib::ParserOptions &options,
-        const loglib::internal::AdvancedParserOptions &advanced
-    )
+    static void ParseStreaming(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
     {
         FileLineSource *sourcePtr = &source;
         LogFile &file = source.File();
         const char *fileBegin = file.Data();
         const char *fileEnd = (fileBegin != nullptr) ? fileBegin + file.Size() : nullptr;
-        const size_t batchBytes = advanced.batchSizeBytes != 0
-                                      ? advanced.batchSizeBytes
-                                      : loglib::internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
+        const size_t batchBytes =
+            options.batchSizeBytes != 0 ? options.batchSizeBytes : loglib::DEFAULT_PARSE_BATCH_BYTES;
         const char *cursor = fileBegin;
 
         auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
@@ -476,9 +461,7 @@ public:
             }
         };
 
-        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(
-            source, sink, options, advanced, stageA, stageB
-        );
+        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(source, sink, options, stageA, stageB);
     }
 };
 
@@ -569,14 +552,13 @@ std::string GenerateRecords(size_t count)
 TEST_CASE("Mock parser: single sub-batchSize file does not overshoot fileEnd", "[mock_parser]")
 {
     const TempTextFile fixture("level=info msg=tiny\n", "test_kv_tiny.log");
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = 4 * 1024 * 1024; // larger than the file
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = 4 * 1024 * 1024; // larger than the file
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -587,20 +569,19 @@ TEST_CASE("Mock parser: single sub-batchSize file does not overshoot fileEnd", "
 
 // Regression for #5: the sink contract states the harness always emits at
 // least one `OnBatch` (possibly empty) before `OnFinished`. The early-exit
-// paths (empty file / `stop_requested` before Stage A starts) used to skip
+// paths (empty file / `StopRequested` before Stage A starts) used to skip
 // `OnBatch` entirely. The two sub-cases below exercise both paths.
 TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", "[mock_parser]")
 {
     SECTION("Empty file")
     {
         const TempTextFile fixture(std::string{}, "test_kv_empty.log");
-        const loglib::ParserOptions options;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        loglib::ParserOptions options;
+        options.threads = 1;
 
         CollectingSink sink;
         FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-        KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+        KeyValueLineParser::ParseStreaming(source, sink, options);
 
         CHECK(sink.startedCount == 1);
         CHECK(sink.finishedCount == 1);
@@ -614,15 +595,14 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
     {
         const TempTextFile fixture("level=info msg=hi\n", "test_kv_stop_before.log");
         loglib::StopSource stopSource;
-        stopSource.request_stop();
+        stopSource.RequestStop();
         loglib::ParserOptions options;
-        options.stopToken = stopSource.get_token();
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.stopToken = stopSource.GetToken();
+        options.threads = 1;
 
         CollectingSink sink;
         FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-        KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+        KeyValueLineParser::ParseStreaming(source, sink, options);
 
         CHECK(sink.startedCount == 1);
         CHECK(sink.finishedCount == 1);
@@ -652,14 +632,13 @@ TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[
     }
 
     const TempTextFile fixture(content, "test_kv_empty_primed.log");
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = errorBlockBytes - 1;
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = errorBlockBytes - 1;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(!sink.batches.empty());
@@ -681,14 +660,13 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
 {
     constexpr size_t RECORD_COUNT = 5'000;
     const TempTextFile fixture(GenerateRecords(RECORD_COUNT));
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 8 * 1024;
-    advanced.threads = 2;
+    loglib::ParserOptions options;
+    options.batchSizeBytes = 8 * 1024;
+    options.threads = 2;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -723,14 +701,13 @@ TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors"
     content += "!second_error\n";
 
     const TempTextFile fixture(content);
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = 1024 * 1024;
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = 1024 * 1024;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -778,14 +755,13 @@ TEST_CASE(
     }
 
     const TempTextFile fixture(content, "test_kv_multi_batch_errors.log");
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = 4 * 1024;
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = 4 * 1024;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(!sink.batches.empty());
@@ -815,9 +791,8 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     constexpr unsigned int THREADS = 4;
 
     loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = BATCH_BYTES;
-    advanced.threads = THREADS;
+    options.batchSizeBytes = BATCH_BYTES;
+    options.threads = THREADS;
 
     struct CancellingSink : CollectingSink
     {
@@ -830,10 +805,10 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
         {
             CollectingSink::OnBatch(std::move(batch));
             ++batchCount;
-            if (batchCount == 1 && !stop.stop_requested())
+            if (batchCount == 1 && !stop.StopRequested())
             {
                 requestedAt = std::chrono::steady_clock::now();
-                stop.request_stop();
+                stop.RequestStop();
             }
         }
         void OnFinished(bool wasCancelled) override
@@ -844,10 +819,10 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     };
 
     CancellingSink sink;
-    options.stopToken = sink.stop.get_token();
+    options.stopToken = sink.stop.GetToken();
 
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE(sink.cancelled);
     const auto latency = sink.finishedAt - sink.requestedAt;
@@ -883,12 +858,11 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
 
     loglib::ParserOptions options;
     options.configuration = configuration;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
+    options.threads = 1;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    KeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    KeyValueLineParser::ParseStreaming(source, sink, options);
 
     size_t promoted = 0;
     size_t totalLines = 0;
@@ -925,14 +899,13 @@ TEST_CASE(
 
     const size_t firstThreeLineBytes = std::string_view("level=info msg=first\n\tframe A1\n\tframe A2\n").size();
 
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = firstThreeLineBytes;
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = firstThreeLineBytes;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(!sink.batches.empty());
@@ -985,14 +958,13 @@ TEST_CASE(
 
     const TempTextFile fixture(content, "test_kv_multiline_leading_cont.log");
 
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = std::string_view("level=error msg=first\n").size();
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = std::string_view("level=error msg=first\n").size();
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -1036,14 +1008,13 @@ TEST_CASE(
 
     const TempTextFile fixture(content, "test_kv_orphan_continuation.log");
 
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = 1024 * 1024;
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = 1024 * 1024;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -1072,14 +1043,13 @@ TEST_CASE("Mock parser (multiline): final multi-line record commits at EOF", "[m
 
     const TempTextFile fixture(content, "test_kv_multiline_eof.log");
 
-    const loglib::ParserOptions options;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    advanced.batchSizeBytes = 1024 * 1024;
+    loglib::ParserOptions options;
+    options.threads = 1;
+    options.batchSizeBytes = 1024 * 1024;
 
     CollectingSink sink;
     FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 

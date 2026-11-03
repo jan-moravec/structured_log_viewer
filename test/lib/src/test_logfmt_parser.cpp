@@ -1,17 +1,16 @@
 #include "common.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/internal/buffering_sink.hpp>
-#include <loglib/log_data.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_data.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/internal/buffering_sink.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -254,7 +253,7 @@ TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_p
     REQUIRE(result.data.Lines().size() == 2);
 }
 
-TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parser]")
+TEST_CASE("Parses bare and quoted values [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
     const TestLogFile file;
@@ -264,30 +263,11 @@ TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parse
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const std::string out = parser.ToString(result.data.Lines()[0]);
-    // IndexedValues are KeyId-ordered (insertion order via `KeyIndex`).
-    CHECK(out.contains("level=info"));
-    CHECK(out.contains("msg=\"hello world\""));
-    CHECK(out.contains("code=42"));
-    CHECK(out.contains("ratio=3.14"));
-}
-
-TEST_CASE("ToString quotes values with whitespace and special bytes [logfmt]", "[logfmt_parser]")
-{
-    using namespace loglib;
-    const std::string emitted = LogfmtParser::ToString(
-        LogMap{
-            {"safe", LogValue{std::string_view{"value"}}},
-            {"spaced", LogValue{std::string_view{"hello world"}}},
-            {"with_quote", LogValue{std::string_view{"a\"b"}}},
-            {"with_newline", LogValue{std::string_view{"line1\nline2"}}}
-        }
-    );
-
-    CHECK(emitted.contains("safe=value"));
-    CHECK(emitted.contains("spaced=\"hello world\""));
-    CHECK(emitted.contains("with_quote=\"a\\\"b\""));
-    CHECK(emitted.contains("with_newline=\"line1\\nline2\""));
+    const auto &line = result.data.Lines()[0];
+    CHECK(loglib::AsStringView(line.GetValue("level")) == std::string_view{"info"});
+    CHECK(loglib::AsStringView(line.GetValue("msg")) == std::string_view{"hello world"});
+    CHECK(std::get<uint64_t>(line.GetValue("code")) == 42);
+    CHECK(std::get<double>(line.GetValue("ratio")) == 3.14);
 }
 
 TEST_CASE("Parse file via FactoryParser auto-detect [logfmt]", "[logfmt_parser]")
@@ -753,8 +733,8 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 24; // Force a cross-batch continuation.
+    ParserOptions options;
+    options.batchSizeBytes = 24; // Force a cross-batch continuation.
 
     const TestLogFile file{"logfmt_static_crossbatch.log"};
     file.Write(
@@ -770,7 +750,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
+    LogfmtParser{}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -815,8 +795,8 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 24;
+    ParserOptions options;
+    options.batchSizeBytes = 24;
 
     const TestLogFile file{"logfmt_static_crossbatch_blank.log"};
     file.Write(
@@ -831,7 +811,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
+    LogfmtParser{}.ParseStreaming(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();

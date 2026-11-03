@@ -1,7 +1,7 @@
 #pragma once
 
-#include <loglib/stop_token.hpp>
-#include <loglib/time_zone_context.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <atomic>
 #include <cstdio>

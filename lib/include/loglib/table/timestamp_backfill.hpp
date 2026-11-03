@@ -1,0 +1,48 @@
+/**
+ * @brief Parses timestamp columns after the rows already exist.
+ *
+ * When a column becomes a time column after its rows were parsed, for example because the user changed its type, these
+ * functions parse its text and replace it with timestamps. ParseTimestamps does this for every time column of a
+ * LogData, and BackfillTimestampColumn does it for one column over a range of rows. The version taking
+ * BackfillErrors::Discard skips building error messages, which keeps the streaming path cheap.
+ *
+ * This is part of the table module.
+ */
+#pragma once
+
+#include "loglib/core/log_data.hpp"
+#include "loglib/core/log_line.hpp"
+#include "loglib/schema/log_configuration.hpp"
+
+#include <cstdint>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace loglib
+{
+
+/**
+ * @brief Converts the text of every Type::Time column in logData into timestamps. Returns one message per value that
+ * could not be parsed.
+ */
+std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
+
+/**
+ * @brief Converts the text of one time column into timestamps, in place.
+ *
+ * The column must have type Type::Time. Pass a sub-span of the rows to convert only a slice, for example the rows of a
+ * streamed batch. Returns one message per value that could not be parsed.
+ */
+std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines);
+
+/** @brief Selects the overload that does not build error messages, which saves time when streaming. */
+enum class BackfillErrors : uint8_t
+{
+    Discard,
+};
+
+/** @brief Same as BackfillTimestampColumn, but does not report which values failed to parse. */
+void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors);
+
+} // namespace loglib

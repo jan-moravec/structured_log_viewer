@@ -1,4 +1,4 @@
-#include <loglib/stdin_bytes_producer.hpp>
+#include <loglib/ingest/stdin_bytes_producer.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/pipe.hpp>

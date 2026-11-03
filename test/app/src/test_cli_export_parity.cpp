@@ -1,17 +1,17 @@
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
 
-#include <loglib/exports/export_sink.hpp>
-#include <loglib/exports/row_exporter.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/leaf_rule_compile.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/row_ordering.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/query/row_ordering.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <QProcess>
 #include <QSignalSpy>

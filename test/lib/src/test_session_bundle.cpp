@@ -1,11 +1,11 @@
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/internal/path_encoding.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/session_bundle.hpp>
+#include <loglib/core/internal/path_encoding.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
+#include <loglib/table/timestamp_backfill.hpp>
 
 #include <test_common/temp_dir.hpp>
 
@@ -142,7 +142,7 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
     loglib::ParseResult parsed = loglib::ParseFile(path);
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     return {std::move(parsed.data), std::move(manager)};
 }
 
@@ -152,7 +152,7 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
     loglib::ParseResult parsed = loglib::ParseFile(path);
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data);
+    manager.Update(parsed.data.SortedKeys());
     loglib::ParseTimestamps(parsed.data, manager.Configuration());
     return {std::move(parsed.data), std::move(manager)};
 }
@@ -422,7 +422,7 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
     REQUIRE(parsedB.errors.empty());
     parsedA.data.Merge(std::move(parsedB.data));
     loglib::LogConfigurationManager manager;
-    manager.Update(parsedA.data);
+    manager.Update(parsedA.data.SortedKeys());
     loglib::LogTable table(std::move(parsedA.data), std::move(manager));
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
@@ -523,7 +523,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
     REQUIRE(parsedB.errors.empty());
     parsedA.data.Merge(std::move(parsedB.data));
     loglib::LogConfigurationManager manager;
-    manager.Update(parsedA.data);
+    manager.Update(parsedA.data.SortedKeys());
     loglib::LogTable table(std::move(parsedA.data), std::move(manager));
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
@@ -624,12 +624,12 @@ TEST_CASE("session bundle cancellation before write preserves destination and le
     loglib::LogTable table = ParseTable(source.Path());
 
     loglib::StopSource stop;
-    stop.request_stop();
+    stop.RequestStop();
     loglib::SessionBundleWriteOptions options;
-    options.stopToken = stop.get_token();
+    options.stopToken = stop.GetToken();
     CHECK_THROWS_AS(
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
-        loglib::SessionBundleCancelled
+        loglib::OperationCancelled
     );
     CHECK(Read(bundle.Path()) == "existing destination");
     CHECK_FALSE(bundle.HasStagingFiles());
@@ -651,16 +651,16 @@ TEST_CASE("session bundle cancellation from progress preserves destination and r
 
     loglib::StopSource stop;
     loglib::SessionBundleWriteOptions options;
-    options.stopToken = stop.get_token();
+    options.stopToken = stop.GetToken();
     options.progress = [&stop](std::uint64_t written, std::uint64_t) {
         if (written == 4096)
         {
-            stop.request_stop();
+            stop.RequestStop();
         }
     };
     CHECK_THROWS_AS(
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
-        loglib::SessionBundleCancelled
+        loglib::OperationCancelled
     );
     CHECK(Read(bundle.Path()) == "existing destination");
     CHECK_FALSE(bundle.HasStagingFiles());

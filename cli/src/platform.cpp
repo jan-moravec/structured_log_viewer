@@ -2,7 +2,7 @@
 
 #include "diagnostics.hpp"
 
-#include <loglib/user_paths.hpp>
+#include <loglib/support/user_paths.hpp>
 
 #include <cstdint>
 #include <cstdlib>
@@ -166,7 +166,7 @@ void RestoreConsoleOutput() noexcept
 CancelStep AdvanceCancel(loglib::StopSource &source, std::atomic<int> &signals) noexcept
 {
     const int seen = signals.fetch_add(1, std::memory_order_acq_rel);
-    source.request_stop();
+    source.RequestStop();
     return seen == 0 ? CancelStep::Stop : CancelStep::Terminate;
 }
 

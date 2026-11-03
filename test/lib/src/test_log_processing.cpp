@@ -1,13 +1,14 @@
 #include "common.hpp"
 
-#include <loglib/column_schema.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/filter_expression.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/query_parser.hpp>
-#include <loglib/time_zone_context.hpp>
-#include <loglib/user_timestamp.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/column_schema.hpp>
+#include <loglib/schema/filter_expression.hpp>
+#include <loglib/table/timestamp_backfill.hpp>
+#include <loglib/time/time_zone_context.hpp>
+#include <loglib/time/timestamp_parsing.hpp>
+#include <loglib/time/user_timestamp.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
@@ -107,8 +108,8 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 
 TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")
 {
-    CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601_T);
-    CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601_Space);
+    CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601T);
+    CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601Space);
     CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Iso8601TOffset);
     CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Iso8601SpaceOffset);
     CHECK(ClassifyTimestampFormat("") == TimestampFormatKind::Generic);
@@ -540,15 +541,15 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     TimestampParseScratch scratch;
     TimeStamp out{};
 
-    SECTION("Iso8601_T routes to fast path")
+    SECTION("Iso8601T routes to fast path")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601_T, scratch, out));
+        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, out));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 
-    SECTION("Iso8601_Space routes to fast path")
+    SECTION("Iso8601Space routes to fast path")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601_Space, scratch, out));
+        REQUIRE(TryParseTimestamp("2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, out));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 
@@ -591,28 +592,6 @@ TEST_CASE("Default parse formats accept Apache error log timestamps", "[log_proc
         REQUIRE(parsed.has_value());
         CHECK(parsed->time_since_epoch().count() == expectedUs);
     }
-}
-
-TEST_CASE("TimeStampToLocalMillisecondsSinceEpoch", "[log_processing]")
-{
-    InitializeTimezoneData();
-
-    // 2023-01-01 00:00:00 UTC.
-    auto utcMicroseconds = date::sys_days{date::year{2023} / 1 / 1}.time_since_epoch();
-    const TimeStamp timestamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
-        std::chrono::duration_cast<std::chrono::microseconds>(utcMicroseconds)
-    };
-
-    const int64_t localMilliseconds = TimeStampToLocalMillisecondsSinceEpoch(timestamp);
-
-    static const auto *tz = date::current_zone();
-    auto info = tz->get_info(timestamp);
-    const int64_t expectedOffset = std::chrono::duration_cast<std::chrono::milliseconds>(info.offset).count();
-
-    const int64_t utcMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(utcMicroseconds).count();
-    const int64_t expectedMilliseconds = utcMilliseconds + expectedOffset;
-
-    CHECK(localMilliseconds == expectedMilliseconds);
 }
 
 TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
@@ -658,7 +637,7 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 
     for (const auto &originalTimestamp : testTimestamps)
     {
-        const int64_t localMilliseconds = TimeStampToLocalMillisecondsSinceEpoch(originalTimestamp);
+        const int64_t localMilliseconds = ProcessDefaultTimeZone().ToLocalMilliseconds(originalTimestamp);
         const TimeStamp convertedTimestamp = LocalMillisecondsSinceEpochToTimeStamp(localMilliseconds);
 
         const int64_t originalMs =
@@ -835,34 +814,6 @@ TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
     std::string expectedDate = date::format("%F %T", localTime);
 
     CHECK(formattedDate == expectedDate);
-}
-
-TEST_CASE("TimeStampToDateTimeString", "[log_processing]")
-{
-    InitializeTimezoneData();
-
-    // 1900-01-01 00:00:00 UTC (~70y before Unix epoch).
-    const TimeStamp pastDate{std::chrono::microseconds{-2208988800000000}};
-    std::string pastFormatted = TimeStampToDateTimeString(pastDate);
-
-    const std::regex dateTimePattern(R"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.000)");
-    CHECK(std::regex_match(pastFormatted, dateTimePattern));
-
-    // 2100-01-01 00:00:00 UTC (~130y after Unix epoch).
-    const TimeStamp futureDate{std::chrono::microseconds{4102444800000000}};
-    const std::string futureFormatted = TimeStampToDateTimeString(futureDate);
-
-    CHECK(std::regex_match(futureFormatted, dateTimePattern));
-
-    static const auto *tz = date::current_zone();
-
-    const date::zoned_time pastLocalTime{tz, std::chrono::round<std::chrono::milliseconds>(pastDate)};
-    std::string expectedPastDate = date::format("%F %T", pastLocalTime);
-    CHECK(pastFormatted == expectedPastDate);
-
-    const date::zoned_time futureLocalTime{tz, std::chrono::round<std::chrono::milliseconds>(futureDate)};
-    const std::string expectedFutureDate = date::format("%F %T", futureLocalTime);
-    CHECK(futureFormatted == expectedFutureDate);
 }
 
 namespace

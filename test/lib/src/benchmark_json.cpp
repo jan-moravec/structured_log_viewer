@@ -6,19 +6,18 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parser.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parse_file.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <test_common/log_generator.hpp>
 
@@ -46,11 +45,9 @@ namespace
 // A free function rather than a `bench::ParserStreamFn` global to avoid
 // `bugprone-throwing-static-initialization` (the `std::function` ctor is
 // not `noexcept`).
-void JsonStream(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
-)
+void JsonStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    JsonParser::ParseStreaming(source, sink, options, advanced);
+    JsonParser{}.ParseStreaming(source, sink, options);
 }
 
 } // namespace
@@ -250,7 +247,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         std::vector<LogLine> &mutLines = mutableData.Lines();
         for (auto &[rowIdx, vid] : rowDictRefs)
         {
-            mutLines[rowIdx].SetOrReplaceEnumDictRef(levelKey, vid);
+            *mutLines[rowIdx].FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(vid);
         }
 
         RunTimedSamples("LogLine::GetValue(KeyId) — DictRef path", 11, [&]() {
@@ -289,8 +286,8 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
 
     // Phase 1 changed the per-field representation from a 48 B
     // `std::variant` to a 16 B `CompactLogValue` whose tags are the new
-    // ground truth for "fast path vs slow path". `IsMmapSlice` /
-    // `IsOwnedString` inspect the tag without materialising a `LogValue`
+    // ground truth for "fast path vs slow path". the compact slot's
+    // tag is inspected without materialising a `LogValue`
     // (which would always allocate a `std::string` for the slow path),
     // so the per-value cost of this benchmark stays representative of
     // the parse hot path.
@@ -304,8 +301,9 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
         for (size_t i = 0; i < result.data.Keys().Size(); ++i)
         {
             const auto id = static_cast<KeyId>(i);
-            const bool mmap = line.IsMmapSlice(id);
-            const bool owned = line.IsOwnedString(id);
+            const CompactLogValue *compact = line.FindCompact(id);
+            const bool mmap = compact != nullptr && compact->tag == CompactTag::MmapSlice;
+            const bool owned = compact != nullptr && compact->tag == CompactTag::OwnedString;
             const bool dict = line.IsDictRef(id);
             if (mmap)
             {
@@ -376,7 +374,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     ParserOptions opts;
     opts.configuration = std::move(configuration);
 
-    JsonParser::ParseStreaming(*parseSource, sink, opts, internal::AdvancedParserOptions{});
+    JsonParser{}.ParseStreaming(*parseSource, sink, opts);
 
     REQUIRE(table.RowCount() == testFile.RecordCount());
 
@@ -418,7 +416,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
 }
 
 // Cancellation-latency benchmark. Asks for a stop after the first batch
-// arrives and times the gap between `request_stop()` and
+// arrives and times the gap between `RequestStop()` and
 // `OnFinished(cancelled=true)`. Validates the
 // `ntokens * batchSizeBytes` upper bound on cancellation latency.
 TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
@@ -454,10 +452,10 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         void OnBatch(StreamedBatch /*batch*/) override
         {
             ++batches;
-            if (batches == 1 && !stop.stop_requested())
+            if (batches == 1 && !stop.StopRequested())
             {
                 requestedAt = std::chrono::steady_clock::now();
-                stop.request_stop();
+                stop.RequestStop();
             }
         }
         void OnFinished(bool wasCancelled) override
@@ -476,7 +474,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         FileLineSource source(std::make_unique<LogFile>(testFile.GetFilePath()));
         LatencySink sink;
         ParserOptions opts;
-        opts.stopToken = sink.stop.get_token();
+        opts.stopToken = sink.stop.GetToken();
         parser.ParseStreaming(source, sink, opts);
         REQUIRE(sink.cancelled);
         REQUIRE(sink.requestedAt.time_since_epoch().count() != 0);

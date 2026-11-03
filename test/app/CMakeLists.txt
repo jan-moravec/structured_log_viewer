@@ -36,7 +36,7 @@ endif()
 # tests focus on the MainWindow orchestration, which is codec-agnostic.
 target_link_libraries(apptest PRIVATE Qt6::Test logapp test_common ZLIB::ZLIB)
 
-target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 # Expose the test-only accessors on `logapp` classes (cache-size
 # probes, column-move helpers, session-mode shims) while we're
@@ -65,7 +65,7 @@ qt_add_executable(apptest_bench src/benchmark_main_window.cpp)
 
 target_link_libraries(apptest_bench PRIVATE Qt6::Test logapp test_common)
 
-target_include_directories(apptest_bench PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_bench PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(NAME apptest_bench COMMAND apptest_bench WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_bench>)
 set_tests_properties(apptest_bench PROPERTIES LABELS "benchmark")
@@ -76,7 +76,7 @@ qt_add_executable(apptest_session_tabs_bench src/benchmark_session_tabs.cpp)
 
 target_link_libraries(apptest_session_tabs_bench PRIVATE Qt6::Test logapp test_common)
 
-target_include_directories(apptest_session_tabs_bench PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_session_tabs_bench PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(
     NAME apptest_session_tabs_bench
@@ -94,7 +94,7 @@ qt_add_executable(apptest_queue src/test_bounded_batch_queue.cpp)
 
 target_link_libraries(apptest_queue PRIVATE Qt6::Test logapp)
 
-target_include_directories(apptest_queue PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_queue PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(NAME apptest_queue COMMAND apptest_queue WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_queue>)
 
@@ -106,7 +106,7 @@ qt_add_executable(apptest_theme src/test_theme_control.cpp ${THEME_RESOURCES})
 
 target_link_libraries(apptest_theme PRIVATE Qt6::Test Qt6::Widgets logapp)
 
-target_include_directories(apptest_theme PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_theme PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(NAME apptest_theme COMMAND apptest_theme WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_theme>)
 
@@ -117,7 +117,7 @@ qt_add_executable(apptest_histogram src/test_histogram_dock.cpp)
 
 target_link_libraries(apptest_histogram PRIVATE Qt6::Test Qt6::Widgets logapp)
 
-target_include_directories(apptest_histogram PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_histogram PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_histogram>)
 
@@ -135,7 +135,7 @@ qt_add_executable(apptest_overview_rail src/test_overview_rail.cpp ${RAIL_TEST_R
 
 target_link_libraries(apptest_overview_rail PRIVATE Qt6::Test Qt6::Widgets logapp)
 
-target_include_directories(apptest_overview_rail PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_overview_rail PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(
     NAME apptest_overview_rail
@@ -151,7 +151,7 @@ qt_add_executable(apptest_highlight_rules src/test_highlight_rule_set.cpp)
 
 target_link_libraries(apptest_highlight_rules PRIVATE Qt6::Test Qt6::Widgets logapp)
 
-target_include_directories(apptest_highlight_rules PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_highlight_rules PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(
     NAME apptest_highlight_rules
@@ -168,7 +168,7 @@ target_link_libraries(apptest_log_string_matcher PRIVATE Qt6::Test loglib)
 
 target_include_directories(
     apptest_log_string_matcher
-    PRIVATE ${CMAKE_SOURCE_DIR}/library/include ${CMAKE_SOURCE_DIR}/test/lib/include
+    PRIVATE ${CMAKE_SOURCE_DIR}/lib/include ${CMAKE_SOURCE_DIR}/test/lib/include
 )
 
 add_test(
@@ -183,7 +183,7 @@ qt_add_executable(apptest_scoped_connections src/test_scoped_connections.cpp)
 
 target_link_libraries(apptest_scoped_connections PRIVATE Qt6::Test logapp)
 
-target_include_directories(apptest_scoped_connections PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_scoped_connections PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(
     NAME apptest_scoped_connections
@@ -195,7 +195,7 @@ qt_add_executable(apptest_session_history_lock src/test_session_history_lock.cpp
 
 target_link_libraries(apptest_session_history_lock PRIVATE Qt6::Test logapp)
 
-target_include_directories(apptest_session_history_lock PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_session_history_lock PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
 add_test(
     NAME apptest_session_history_lock
@@ -212,7 +212,7 @@ add_test(
 # the monolithic `main_window_test.cpp`.
 qt_add_executable(apptest_log_session_lifecycle src/log_session_lifecycle_test.cpp)
 target_link_libraries(apptest_log_session_lifecycle PRIVATE Qt6::Test Qt6::Widgets logapp)
-target_include_directories(apptest_log_session_lifecycle PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_log_session_lifecycle PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_log_session_lifecycle
     COMMAND apptest_log_session_lifecycle
@@ -221,12 +221,12 @@ add_test(
 
 qt_add_executable(apptest_log_session src/log_session_test.cpp)
 target_link_libraries(apptest_log_session PRIVATE Qt6::Test Qt6::Widgets logapp)
-target_include_directories(apptest_log_session PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_log_session PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(NAME apptest_log_session COMMAND apptest_log_session WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_log_session>)
 
 qt_add_executable(apptest_log_session_view src/log_session_view_test.cpp)
 target_link_libraries(apptest_log_session_view PRIVATE Qt6::Test Qt6::Widgets logapp)
-target_include_directories(apptest_log_session_view PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_log_session_view PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_log_session_view
     COMMAND apptest_log_session_view
@@ -235,7 +235,7 @@ add_test(
 
 qt_add_executable(apptest_dock_binding src/dock_binding_test.cpp)
 target_link_libraries(apptest_dock_binding PRIVATE Qt6::Test Qt6::Widgets logapp)
-target_include_directories(apptest_dock_binding PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_dock_binding PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_dock_binding
     COMMAND apptest_dock_binding
@@ -244,7 +244,7 @@ add_test(
 
 qt_add_executable(apptest_session_tabs src/session_tabs_test.cpp)
 target_link_libraries(apptest_session_tabs PRIVATE Qt6::Test Qt6::Widgets logapp ZLIB::ZLIB)
-target_include_directories(apptest_session_tabs PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_session_tabs PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_session_tabs
     COMMAND apptest_session_tabs
@@ -253,7 +253,7 @@ add_test(
 
 qt_add_executable(apptest_user_data_directory src/test_user_data_directory.cpp)
 target_link_libraries(apptest_user_data_directory PRIVATE Qt6::Test loglib)
-target_include_directories(apptest_user_data_directory PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_user_data_directory PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_user_data_directory
     COMMAND apptest_user_data_directory
@@ -266,7 +266,7 @@ add_test(
 if(SLV_BUILD_CLI)
     qt_add_executable(apptest_cli_export_parity src/test_cli_export_parity.cpp)
     target_link_libraries(apptest_cli_export_parity PRIVATE Qt6::Test Qt6::Widgets logapp)
-    target_include_directories(apptest_cli_export_parity PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+    target_include_directories(apptest_cli_export_parity PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
     add_dependencies(apptest_cli_export_parity slp)
     target_compile_definitions(
         apptest_cli_export_parity
@@ -284,7 +284,7 @@ if(SLV_BUILD_CLI)
     qt_add_resources(SESSION_ROUNDTRIP_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
     qt_add_executable(apptest_cli_session_roundtrip src/test_cli_session_roundtrip.cpp ${SESSION_ROUNDTRIP_RESOURCES})
     target_link_libraries(apptest_cli_session_roundtrip PRIVATE Qt6::Test Qt6::Widgets logapp)
-    target_include_directories(apptest_cli_session_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+    target_include_directories(apptest_cli_session_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
     add_dependencies(apptest_cli_session_roundtrip slp)
     target_compile_definitions(
         apptest_cli_session_roundtrip
@@ -302,7 +302,7 @@ endif()
 
 qt_add_executable(apptest_workspace_persistence src/workspace_persistence_test.cpp)
 target_link_libraries(apptest_workspace_persistence PRIVATE Qt6::Test Qt6::Widgets logapp)
-target_include_directories(apptest_workspace_persistence PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+target_include_directories(apptest_workspace_persistence PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_workspace_persistence
     COMMAND apptest_workspace_persistence

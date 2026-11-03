@@ -1,4 +1,4 @@
-#include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 

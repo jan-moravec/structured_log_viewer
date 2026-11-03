@@ -1,14 +1,15 @@
 #include "common.hpp"
+#include "table_fixture.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -81,7 +82,7 @@ LogTable BuildSingleColumnTable(
     {
         batch.newKeys.emplace_back(columnKey);
     }
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
     return table;
 }
 
@@ -351,7 +352,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
     batch.newKeys.emplace_back("category");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
@@ -397,7 +398,7 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {}));
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("warn")}}));
     batch.newKeys.emplace_back("level");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     // monostate sits at the tail of ascending order.
     CHECK(SignOf(CompareRows(table, 0, 1, 0, /*rankForEnumColumn=*/nullptr)) == -1); // info < monostate
@@ -451,7 +452,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     // refuses to dict-encode it, leaving the slot as Int64 -> non-DictRef.
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", LogValue(int64_t{42})}}));
     batch.newKeys.emplace_back("category");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
@@ -528,7 +529,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
     batch.newKeys.emplace_back("category");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     // Compare resolved bytes directly. error < info < warn.
     CHECK(SignOf(CompareRows(table, 2, 1, 0, /*rankForEnumColumn=*/nullptr)) == -1); // error < info
@@ -627,7 +628,7 @@ TEST_CASE(
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
     }
     batch.newKeys.emplace_back("level");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
     // Info(1) < Warn(0) < Error(2) < Fatal(3); the qux row joins the tail.
@@ -679,7 +680,7 @@ TEST_CASE(
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
     }
     batch.newKeys.emplace_back("level");
-    table.AppendBatch(std::move(batch));
+    AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
 

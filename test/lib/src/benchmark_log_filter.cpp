@@ -17,19 +17,20 @@
 
 #include "benchmark_common.hpp"
 #include "common.hpp"
+#include "table_fixture.hpp"
 
-#include <loglib/enum_dictionary.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/key_index.hpp>
-#include <loglib/log_compare.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_filter.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_table.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_file.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/query/log_compare.hpp>
+#include <loglib/query/log_filter.hpp>
+#include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -126,7 +127,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
         {
             batch.newKeys.emplace_back(columnKeyOwned);
         }
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
@@ -189,7 +190,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
         {
             batch.newKeys.emplace_back("level");
         }
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
@@ -252,7 +253,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
         {
             batch.newKeys.emplace_back("msg");
         }
-        table.AppendBatch(std::move(batch));
+        AppendFixtureBatch(table, std::move(batch));
     }
     return {.table = std::move(table), .sourceOwner = nullptr};
 }

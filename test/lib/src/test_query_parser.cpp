@@ -1,5 +1,5 @@
-#include <loglib/filter_expression.hpp>
-#include <loglib/query_parser.hpp>
+#include <loglib/query/query_parser.hpp>
+#include <loglib/schema/filter_expression.hpp>
 
 #include <catch2/catch_all.hpp>
 

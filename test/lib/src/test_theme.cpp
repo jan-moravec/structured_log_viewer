@@ -1,5 +1,5 @@
-#include <loglib/log_level.hpp>
-#include <loglib/theme.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/support/theme.hpp>
 
 #include <catch2/catch_all.hpp>
 

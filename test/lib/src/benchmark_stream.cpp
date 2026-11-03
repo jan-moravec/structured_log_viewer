@@ -10,14 +10,14 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/key_index.hpp>
-#include <loglib/log_line.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stop_token.hpp>
-#include <loglib/stream_line_source.hpp>
-#include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/core/key_index.hpp>
+#include <loglib/core/log_line.hpp>
+#include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
 
 #include <memory>
 
@@ -222,7 +222,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     LatencyMeasuringSink sink;
     StopSource stopSource;
     ParserOptions options;
-    options.stopToken = stopSource.get_token();
+    options.stopToken = stopSource.GetToken();
 
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
@@ -277,7 +277,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     }
 
     producerPtr->Stop();
-    stopSource.request_stop();
+    stopSource.RequestStop();
     worker.join();
 
     REQUIRE(sink.finished.load(std::memory_order_acquire));

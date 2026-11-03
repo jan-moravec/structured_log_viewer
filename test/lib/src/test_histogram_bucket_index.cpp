@@ -1,6 +1,6 @@
-#include <loglib/histogram_bucket_index.hpp>
-#include <loglib/log_level.hpp>
-#include <loglib/log_value.hpp>
+#include <loglib/core/log_level.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/query/histogram_bucket_index.hpp>
 
 #include <catch2/catch_all.hpp>
 

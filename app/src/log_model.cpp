@@ -9,16 +9,15 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
-#include <loglib/bytes_producer.hpp>
-#include <loglib/file_line_source.hpp>
-#include <loglib/line_source.hpp>
-#include <loglib/log_configuration.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/log_processing.hpp>
-#include <loglib/log_value.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
-#include <loglib/stream_line_source.hpp>
+#include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/core/line_source.hpp>
+#include <loglib/core/log_value.hpp>
+#include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/schema/log_configuration.hpp>
 
 #include <QApplication>
 #include <QBrush>
@@ -707,7 +706,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    mLogTable.AppendBatch(std::move(batch));
+    const loglib::LogTable::AppendBatchResult appendResult = mLogTable.AppendBatch(std::move(batch));
 
     // Monotonicity guard for the Goto Timestamp fast path. Cheap
     // (piggybacks on the O(N_batch) append) and no-op once the
@@ -794,8 +793,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
     // Same-batch `Unknown -> Enumeration -> String` isn't visible to
     // the snapshot diff (column wasn't enum at snapshot time). Use
-    // `LastBatchDemotedKeys()` and de-dupe against snapshot demotes.
-    for (const loglib::KeyId kid : mLogTable.LastBatchDemotedKeys())
+    // the batch result and de-dupe against snapshot demotes.
+    for (const loglib::KeyId kid : appendResult.demotedKeys)
     {
         const int columnIndex = mLogTable.FindColumnIndexByKey(kid);
         if (columnIndex < 0)
@@ -810,7 +809,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, columnIndex);
     }
 
-    if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
+    if (const auto &range = appendResult.backfilledColumns; range.has_value() && newRowCount > 0)
     {
         const int firstColumn = static_cast<int>(range->first);
         const int lastColumn = static_cast<int>(range->second);
@@ -872,7 +871,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // `MoveColumn` here emits `columnsMoved` so Qt's section-keyed
     // state (widths, hidden flags, filter rows) follows the column.
     // Re-resolve per iteration: an earlier move shifts later targets.
-    for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
+    for (const loglib::KeyId kid : appendResult.levelBubbleKeys)
     {
         const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
         if (srcIndex < 0)
@@ -956,9 +955,9 @@ void LogModel::EndStreaming(bool cancelled)
         // Drop per-batch demote translations; finalize repopulates.
         mLastBatchLevelDemoteMapping.clear();
 
-        // The bool return only reports promotions; the diff loop
-        // below is the source of truth for both promote and demote.
-        (void)mLogTable.FinalizeAutoDetection();
+        // The result only reports promotions and level bubbles; the diff
+        // loop below is the source of truth for both promote and demote.
+        const loglib::LogTable::FinalizeResult finalized = mLogTable.FinalizeAutoDetection();
 
         const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
         const size_t commonCount = std::min(typesBefore.size(), columnsAfter.size());
@@ -1009,9 +1008,9 @@ void LogModel::EndStreaming(bool cancelled)
             }
         }
 
-        // Drain Level bubbles queued by `FinalizeAutoDetection`.
+        // Bubble the Level columns reported by `FinalizeAutoDetection`.
         // Same rationale as the `AppendBatch` drain above.
-        for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
+        for (const loglib::KeyId kid : finalized.levelBubbleKeys)
         {
             const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
             if (srcIndex < 0)

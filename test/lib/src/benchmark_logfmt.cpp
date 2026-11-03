@@ -7,11 +7,10 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/file_line_source.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/log_parse_sink.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/parsers/logfmt_parser.hpp>
+#include <loglib/core/file_line_source.hpp>
+#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/logfmt_parser.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -31,11 +30,9 @@ namespace
 // `LogfmtParser::ParseStreaming` adapter for `bench::RunStreamingBenchmark`.
 // Free function (rather than a `bench::ParserStreamFn` global) to avoid
 // `bugprone-throwing-static-initialization` from `std::function`'s ctor.
-void LogfmtStream(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
-)
+void LogfmtStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    LogfmtParser::ParseStreaming(source, sink, options, advanced);
+    LogfmtParser{}.ParseStreaming(source, sink, options);
 }
 
 } // namespace
