@@ -19,3 +19,8 @@
 # mutex orders the allocation before the dispatch. CMakePresets.json documents
 # this false positive for the Qt suites excluded from clang-tsan.
 race:QtPrivate::QCallableObject<QtStreamingLogSink::*
+
+# A finished QFuture's internal QWaitCondition is destroyed on the GUI thread after the pool thread woke it. Qt orders
+# the two through its own futex-based mutex and reference count, which TSan cannot see because Qt is not instrumented.
+# Our code never uses QWaitCondition directly, so this only hides reports inside Qt. See issue #114.
+race:QWaitCondition::~QWaitCondition
