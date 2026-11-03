@@ -68,7 +68,9 @@ download_key() {
 check_url_once() {
     local url="$1"
     if command -v wget &>/dev/null; then
-        wget -q --method=HEAD --timeout=15 --tries=3 "$url" &>/dev/null
+        # structured_log_viewer: fall back to a plain GET, which apt.llvm.org answers when it refuses HEAD.
+        wget -q --method=HEAD --timeout=15 --tries=3 "$url" &>/dev/null ||
+            wget -q -O /dev/null --timeout=15 --tries=3 "$url" &>/dev/null
     elif command -v curl &>/dev/null; then
         curl --proto '=https' --tlsv1.2 -sSf --head --retry 2 "$url" >/dev/null 2>&1
     else
@@ -87,6 +89,8 @@ check_url() {
         warn "probe of $1 failed (attempt ${attempt} of 5)"
         sleep $((attempt * 10))
     done
+    # Show the server's reply so a real outage can be told apart from a refused probe.
+    wget -S -O /dev/null --timeout=15 --tries=1 "$1" 2>&1 | head -n 20 || true
     return 1
 }
 
@@ -274,7 +278,7 @@ else
     add-apt-repository -y "${REPO_NAME}"
 fi
 
-apt-get update
+apt-get -o Acquire::Retries=5 update
 PKG="clang-$LLVM_VERSION lldb-$LLVM_VERSION lld-$LLVM_VERSION clangd-$LLVM_VERSION"
 if [[ $ALL -eq 1 ]]; then
     # same as in test-install.sh
@@ -284,4 +288,4 @@ if [[ $ALL -eq 1 ]]; then
         PKG="$PKG libclang-rt-$LLVM_VERSION-dev libpolly-$LLVM_VERSION-dev"
     fi
 fi
-apt-get install -y $PKG
+apt-get -o Acquire::Retries=5 install -y $PKG
