@@ -51,6 +51,7 @@ public:
     static constexpr size_t DEFAULT_MAX_QUEUED_BYTES = size_t{64} * 1024 * 1024;
 
     /** @brief Settings. Tests on slow machines shorten the intervals and turn the native watcher off. */
+    // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
     struct Options
     {
         /** @brief How often the worker checks the file when the operating system reports nothing. */
@@ -94,6 +95,7 @@ public:
          */
         size_t maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES;
     };
+    // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
     /**
      * @brief Starts the worker thread.

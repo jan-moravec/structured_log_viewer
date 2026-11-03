@@ -74,6 +74,7 @@ public:
         bool requireClientCertificate = false;
     };
 
+    // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
     struct Options
     {
         /**
@@ -116,6 +117,7 @@ public:
         /** @brief TLS settings. Leave empty for plain TCP. A build without LOGLIB_NETWORK_TLS throws if this is set. */
         std::optional<TlsOptions> tls;
     };
+    // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
     /**
      * @brief Binds the port, sets up TLS if requested, and starts the I/O thread.

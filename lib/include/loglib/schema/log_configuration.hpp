@@ -98,7 +98,7 @@ enum class SaveScope
     /** @brief Columns and highlight rules only, so the file can be used with other logs. */
     ColumnsOnly,
     /** @brief Everything: columns, filter, sort, source, anchors and highlight rules. */
-    Full
+    Full,
 };
 
 /** @brief Holds a LogConfiguration and loads, saves and updates it. */

@@ -71,10 +71,10 @@ public:
     using ProgressCallback = std::function<void(const Progress &)>;
 
     /** @brief The default cap on decompressed output, 32 GiB. */
-    static constexpr std::size_t DEFAULT_MAX_DECOMPRESSED_BYTES = std::size_t{32} << 30;
+    static constexpr std::size_t DEFAULT_MAX_DECOMPRESSED_BYTES = std::size_t{32} << 30U;
 
     /** @brief The default cap on the size of the discarded first line, 64 MiB. */
-    static constexpr std::size_t DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES = std::size_t{64} << 20;
+    static constexpr std::size_t DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES = std::size_t{64} << 20U;
 
     struct Options
     {
@@ -101,7 +101,7 @@ public:
      *
      * Progress and the stop token are checked between input chunks. A stop throws OperationCancelled.
      */
-    DecompressingByteSource(
+    explicit DecompressingByteSource(
         std::filesystem::path input, const ProgressCallback &progress = {}, const StopToken &stopToken = {}
     );
 

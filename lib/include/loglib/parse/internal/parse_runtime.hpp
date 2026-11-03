@@ -95,7 +95,7 @@ inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCach
     {
         return keys.GetOrInsert(key);
     }
-    if (auto it = cache->map.find(key); it != cache->map.end())
+    if (const auto it = cache->map.find(key); it != cache->map.end())
     {
         return it->second;
     }

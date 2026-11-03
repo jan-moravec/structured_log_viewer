@@ -41,6 +41,7 @@ class UdpServerProducerImpl; // pimpl forward decl
 class UdpServerProducer final : public BytesProducer
 {
 public:
+    // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
     struct Options
     {
         /**
@@ -68,6 +69,7 @@ public:
          */
         size_t maxQueueBytes = 16 * 1024 * 1024;
     };
+    // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
     /**
      * @brief Binds the socket and starts the I/O thread. Throws std::system_error if the address cannot be parsed or

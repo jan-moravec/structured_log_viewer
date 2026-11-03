@@ -33,11 +33,13 @@ struct SourceLocator
     SourceLocator() = default;
 
     /** @brief Builds a locator from a string literal, so that braces such as .locators = {"path"} compile. */
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions)
     SourceLocator(const char *display)
         : displayPath(display != nullptr ? display : "")
     {
     }
 
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions)
     SourceLocator(std::string display, std::string dedup = {})
         : displayPath(std::move(display)), dedupKey(std::move(dedup))
     {
@@ -66,7 +68,7 @@ struct Source
          * @brief Standard input from a pipe. It is used once per session and is not reopened automatically, so
          * applications do not save such a session. Its locator is the name <stdin>.
          */
-        Stdin
+        Stdin,
     };
 
     /**
@@ -82,7 +84,7 @@ struct Source
         Logfmt,
         Csv,
         /** @brief The regex parser. It needs regexPattern and refuses to run without one. */
-        Regex
+        Regex,
     };
 
     Kind kind = Kind::File;
