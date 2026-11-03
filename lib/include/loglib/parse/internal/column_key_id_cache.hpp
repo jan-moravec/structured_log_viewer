@@ -19,29 +19,20 @@ namespace loglib::internal
 {
 
 /**
- * @brief Rebuilds the per-column KeyId cache from @p configuration.
+ * @brief Rebuilds the list of key ids of every column.
  *
- * Stateless service. The cache lives on LogTable; this helper
- * only writes @p cache. Each inner vector follows Column::keys
- * order, including INVALID_KEY_ID for keys not yet interned.
- *
- * @param cache Destination; replaced entirely.
- * @param configuration Column schema to resolve.
- * @param keys Intern table used for Find.
+ * The cache belongs to LogTable, and this function only fills it. Each inner list follows the order of Column::keys,
+ * with INVALID_KEY_ID for a key that is not interned yet. The old content of cache is replaced.
  */
 void RefreshColumnKeyIds(
     std::vector<std::vector<KeyId>> &cache, const LogConfiguration &configuration, const KeyIndex &keys
 );
 
 /**
- * @brief Resolves only columns affected by @p newKeys, and resizes
- * @p cache to configuration.columns.size() so a shrinking Load
- * cannot leave orphan entries.
+ * @brief Looks up the key ids again only for columns that use one of the new keys.
  *
- * @param cache Per-column KeyId lists owned by LogTable.
- * @param configuration Column schema after AppendKeys / Load.
- * @param keys Intern table used for Find.
- * @param newKeys Keys that landed in this batch (or empty to only resize).
+ * The cache is also resized to the number of columns, so a load that leaves fewer columns cannot leave extra entries.
+ * With no new keys it only resizes.
  */
 void RefreshColumnKeyIdsForKeys(
     std::vector<std::vector<KeyId>> &cache,
@@ -51,12 +42,8 @@ void RefreshColumnKeyIdsForKeys(
 );
 
 /**
- * @brief Rotates the cache entry at @p srcIndex to @p destIndex.
- * No-op when either index is out of range or they are equal.
- *
- * @param cache Per-column KeyId lists owned by LogTable.
- * @param srcIndex Source column index.
- * @param destIndex Destination column index.
+ * @brief Moves the entry of one column to another position, like moving the column. Does nothing if either index is
+ * out of range or they are equal.
  */
 void MoveColumnKeyIds(std::vector<std::vector<KeyId>> &cache, size_t srcIndex, size_t destIndex);
 

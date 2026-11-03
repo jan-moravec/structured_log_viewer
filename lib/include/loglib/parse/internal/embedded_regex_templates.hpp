@@ -15,19 +15,14 @@ namespace loglib::internal
 {
 
 /**
- * One built-in regex template embedded into the library at build
- * time. source is a short identifier (the JSON file's basename,
- * used only in diagnostics if the embedded bytes fail to parse);
- * json is the verbatim file contents.
+ * @brief One built-in regex template that is compiled into the library.
  *
- * The data lives in a CMake-generated TU
- * (lib/regex_templates_embedded.cpp in the build tree) emitted from
- * lib/data/regex_templates/*.json at configure time. The
- * generator is intentionally trivial — one entry per file, in
- * alphabetical-by-slug order — so adding or removing a built-in
- * only touches the data directory and the build glue. The parse
- * and probe paths in regex_templates.cpp and
- * parsers/regex_parser.cpp stay unchanged.
+ * The source is a short name, the file name of the template, used only in messages if the embedded text cannot be
+ * parsed. The json is the content of the file as it is.
+ *
+ * The data comes from a source file that CMake generates from lib/data/regex_templates/*.json when it configures the
+ * build, with one entry per file ordered by file name. Adding or removing a built-in template therefore only touches
+ * that folder.
  */
 struct EmbeddedRegexTemplate
 {
@@ -35,10 +30,7 @@ struct EmbeddedRegexTemplate
     std::string_view json;
 };
 
-/**
- * Returns the embedded built-in catalog. Defined in the
- * CMake-generated regex_templates_embedded.cpp.
- */
+/** @brief Returns all embedded templates. The function is defined in the generated source file. */
 [[nodiscard]] std::span<const EmbeddedRegexTemplate> EmbeddedBuiltinRegexTemplates() noexcept;
 
 } // namespace loglib::internal

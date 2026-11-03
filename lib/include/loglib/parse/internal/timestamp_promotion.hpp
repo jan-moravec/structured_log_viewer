@@ -25,8 +25,8 @@ namespace loglib::internal
 {
 
 /**
- * Per-worker per-time-column same-bytes short-circuit, exploiting the common
- * case of consecutive lines sharing a timestamp.
+ * @brief The last timestamp text a worker parsed for a time column and its result. Consecutive lines often share a
+ * timestamp, so equal text skips parsing.
  */
 struct LastTimestampBytesHit
 {
@@ -34,39 +34,32 @@ struct LastTimestampBytesHit
     std::string bytes;
     TimeStamp parsed;
     bool valid = false;
-    /** Last zone offset used for a value with no zone of its own. */
+    /** @brief The offset window last used for a value that names no zone. */
     LocalOffsetWindow offsetWindow;
 };
 
-/**
- * Pre-resolved view of one configured Type::Time column: keys resolved to
- * KeyIds, formats pre-classified.
- */
+/** @brief A Time column prepared for parsing: its keys as ids and its formats already classified. */
 struct TimeColumnSpec
 {
     std::vector<KeyId> keyIds;
     std::vector<std::string> parseFormats;
     std::vector<TimestampFormatKind> formatKinds;
-    /** Zone in which values with no zone of their own are read. */
+    /** @brief The zone in which values that name no zone are read. */
     TimeZoneContext timeZone;
 };
 
 /**
- * Builds one TimeColumnSpec per Type::Time column. Returns empty when
- * @p configuration is null.
+ * @brief Builds a TimeColumnSpec for each Time column of the configuration. A null configuration gives an empty list.
  */
 std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
 
 /**
- * Promotes one line's Type::Time columns in place. Returns true iff at
- * least one column was promoted on this line. Lines that don't match any
- * (KeyId, format) pair are left untouched — the LogTable mid-stream
- * back-fill picks them up.
+ * @brief Converts the time columns of one line to timestamps, in place. Returns true if at least one column was
+ * converted.
  *
- * @p ownedArena is the byte buffer that any OwnedString compact values
- * on @p line currently reference: during Stage B that's the per-batch
- * staging buffer (ParsedPipelineBatch::ownedStringsArena); empty means
- * the payloads resolve through the line's LineSource.
+ * A line that matches none of the keys and formats is left alone, and LogTable converts it later. ownedArena holds the
+ * bytes behind the line's OwnedString values: while parsing a batch it is the batch's staging buffer, and an empty one
+ * means the line's source resolves them.
  */
 bool PromoteLineTimestamps(
     LogLine &line,

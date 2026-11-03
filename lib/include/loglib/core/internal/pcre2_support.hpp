@@ -23,6 +23,7 @@
 namespace loglib::internal
 {
 
+/** @brief Frees a compiled PCRE2 pattern, so it can be held in a unique_ptr. */
 struct Pcre2CodeDeleter
 {
     void operator()(pcre2_code *code) const noexcept
@@ -35,6 +36,7 @@ struct Pcre2CodeDeleter
 };
 using Pcre2CodePtr = std::unique_ptr<pcre2_code, Pcre2CodeDeleter>;
 
+/** @brief Frees PCRE2 match data, so it can be held in a unique_ptr. */
 struct Pcre2MatchDataDeleter
 {
     void operator()(pcre2_match_data *matchData) const noexcept
@@ -47,6 +49,7 @@ struct Pcre2MatchDataDeleter
 };
 using Pcre2MatchDataPtr = std::unique_ptr<pcre2_match_data, Pcre2MatchDataDeleter>;
 
+/** @brief Frees a PCRE2 match context, so it can be held in a unique_ptr. */
 struct Pcre2MatchContextDeleter
 {
     void operator()(pcre2_match_context *context) const noexcept
@@ -59,11 +62,7 @@ struct Pcre2MatchContextDeleter
 };
 using Pcre2MatchContextPtr = std::unique_ptr<pcre2_match_context, Pcre2MatchContextDeleter>;
 
-/**
- * @brief Describes a PCRE2 error code in a short message.
- *
- * @param errcode Code returned by a PCRE2 call.
- */
+/** @brief Describes a PCRE2 error code in a short message. */
 [[nodiscard]] inline std::string FormatPcre2Error(int errcode)
 {
     constexpr std::size_t ERROR_BUFFER_SIZE = 256;
@@ -77,13 +76,10 @@ using Pcre2MatchContextPtr = std::unique_ptr<pcre2_match_context, Pcre2MatchCont
 }
 
 /**
- * @brief Compiles @p pattern.
+ * @brief Compiles a pattern with the given PCRE2 options, for example PCRE2_UTF.
  *
- * @param pattern Pattern text.
- * @param options PCRE2 compile options, for example PCRE2_UTF.
- * @param errcode Receives the PCRE2 error code when compiling fails.
- * @param erroffset Receives the offset of the error in the pattern when compiling fails.
- * @return The compiled code, or null when the pattern is invalid.
+ * Returns null if the pattern is invalid. Then errcode holds the PCRE2 error code and erroffset the position of the
+ * error in the pattern.
  */
 [[nodiscard]] inline Pcre2CodePtr CompilePcre2(
     std::string_view pattern, std::uint32_t options, int &errcode, PCRE2_SIZE &erroffset

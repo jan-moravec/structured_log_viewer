@@ -45,14 +45,13 @@
 namespace loglib::internal
 {
 
-/** Coalescing thresholds for the static TBB pipeline. */
+/** @brief When the static pipeline sends a batch on: after this many lines, or after this much time. */
 constexpr size_t STATIC_BATCH_FLUSH_LINES = 1000;
 constexpr auto STATIC_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(50);
 
 /**
- * Stage B per-line error. relativeLine is 1-based within the batch;
- * Stage C composes the absolute "Error on line N: ..." wrapper using
- * its running line-number cursor.
+ * @brief An error from decoding one line. relativeLine counts from 1 inside the batch, and Stage C turns it into
+ * "Error on line N: ..." with the absolute line number.
  */
 struct ParsedLineError
 {
@@ -60,7 +59,9 @@ struct ParsedLineError
     std::string body;
 };
 
-/** Stage B output. Stage C re-asserts ordering before the sink sees it. */
+/**
+ * @brief What Stage B produces for one batch. Stage C puts the batches back in file order before the sink sees them.
+ */
 struct ParsedPipelineBatch
 {
     uint64_t batchIndex = 0;
@@ -68,45 +69,40 @@ struct ParsedPipelineBatch
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
     /**
-     * Per-batch owned-string staging. Stage B appends escape-decoded
-     * bytes; Stage C concatenates into the LogFile arena and
-     * rebases the offsets on lines in one pass.
+     * @brief Staging area for the decoded strings of the batch. Stage C appends it to the file's arena and shifts the
+     * offsets of the lines in one pass.
      */
     std::string ownedStringsArena;
     /**
-     * Source lines consumed (parsed + errors + skipped empties);
-     * advances Stage C's line-number cursor across batches.
+     * @brief The number of source lines used by the batch: parsed lines, errors and skipped blank lines. It moves
+     * Stage C's line counter on.
      */
     size_t totalLineCount = 0;
     /**
-     * Newline-separated continuation bytes at the start of this
-     * batch, to be spliced into the preceding batch's held record.
+     * @brief Continuation text at the start of the batch, separated by newlines. Stage C adds it to the record held
+     * from the previous batch.
      */
     std::string leadingContinuationBytes;
     /**
-     * Number of physical lines through the last leading continuation.
-     * Includes preceding/interspersed blanks, but excludes blanks
-     * between the last continuation and the next header.
+     * @brief The number of physical lines up to the last leading continuation, counting blank lines before or between
+     * them but not blank lines between the last continuation and the next header.
      */
     size_t leadingContinuationLineCount = 0;
-    /**
-     * Whether Stage C must hold the final record for possible
-     * continuations from the next batch.
-     */
+    /** @brief True when Stage C must hold the last record, because the next batch may continue it. */
     bool lastRecordOpenForContinuation = false;
-    /** String field extended on the held final record. */
+    /** @brief The string field of the held record that continuation text is added to. */
     KeyId continuationTargetKeyId = INVALID_KEY_ID;
     /**
-     * Batch-relative physical index of the held record's last
-     * content line. Valid only when lastRecordOpenForContinuation.
+     * @brief The line, counted inside the batch, where the held record's content ends. Only valid when
+     * lastRecordOpenForContinuation is set.
      */
     size_t tailRecordLastPhysicalLine = 0;
-    /** Batch-relative physical index of the held record's header. */
+    /** @brief The line, counted inside the batch, where the held record starts. */
     size_t tailRecordHeaderPhysicalLine = 0;
 
     /**
-     * Batch-relative spans for multi-line records sealed within this
-     * batch. Stage C converts them to absolute indices.
+     * @brief The line ranges of multi-line records that are complete inside this batch, counted inside the batch.
+     * Stage C turns them into absolute line numbers.
      */
     struct MultiLineSpan
     {
@@ -116,7 +112,7 @@ struct ParsedPipelineBatch
     std::vector<MultiLineSpan> completedMultiLineSpans;
 };
 
-/** Resolved defaults for effectiveThreads and ntokens. Both >= 1. */
+/** @brief The number of threads and of batches in flight after applying defaults. Both are at least 1. */
 struct ResolvedPipelineSettings
 {
     unsigned int effectiveThreads = 1;
@@ -172,9 +168,10 @@ inline auto MakeLineAlignedBatcher(const char *fileBegin, const char *fileEnd, s
 ResolvedPipelineSettings ResolvePipelineSettings(const ParserOptions &options);
 
 /**
- * Append @p leadingContinuationBytes to @p heldLine's targetKey.
- * Arena-tail values extend in place to keep records spanning many
- * batches linear; other values are copied and rebased at the tail.
+ * @brief Adds continuation text from the next batch to a field of the held record.
+ *
+ * A value at the end of the arena is extended in place, which keeps the cost linear for records that span many batches.
+ * Any other value is copied to the end of the arena and then extended.
  */
 inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     LogLine &heldLine, LogFile &file, KeyId targetKey, std::string_view leadingContinuationBytes
@@ -241,23 +238,19 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
 }
 
 /**
- * Static-file TBB pipeline. Stage A (serial_in_order) drives
- * tokens; Stage B (parallel) decodes; Stage C (serial_in_order)
- * rebases per-batch arenas into source.File()'s session-global
- * arena, coalesces, diffs new keys, runs inline timestamp promotion,
- * and honours stop_token. Stage B stamps each emitted LogLine with
- * &source and its absolute lineId.
+ * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
  *
- * @p newKeyBaseline forwards to BatchCoalescer (see its docstring);
- * parsers that intern their schema before the pipeline pass the
- * pre-intern key count. Defaults to the index's current size.
+ * - Stage A runs in order and cuts the file into batches.
+ * - Stage B runs in parallel and decodes the batches. It gives every row its source and absolute line id.
+ * - Stage C runs in order. It appends each batch's strings to the arena of the file, coalesces batches, finds the new
+ *   keys, converts time columns, and stops when the stop token fires.
+ *
+ * newKeyBaseline is passed to BatchCoalescer. A parser that adds its keys before the pipeline starts passes the key
+ * count from before. By default it is the current size of the index.
  */
-// stageADriver / stageBDecoder are forwarding refs to keep both
-// lvalue and rvalue callables callable without an explicit std::move
-// at the call site, but they are captured by the inner [&] lambdas
-// and invoked many times by TBB's pipeline. std::forward<...> would
-// be UB on the second invocation when the original argument was an
-// rvalue, so we deliberately do not forward and silence the warnings.
+// The two callables are taken as forwarding references so that lvalues and rvalues both work without a move at the call
+// site. They are used many times inside the pipeline, so they are deliberately not forwarded, because forwarding an
+// rvalue more than once would be undefined behavior. The related warnings are suppressed below.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunStaticParserPipeline(
     FileLineSource &source,

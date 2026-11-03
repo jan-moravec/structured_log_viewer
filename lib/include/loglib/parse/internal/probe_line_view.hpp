@@ -14,41 +14,31 @@
 namespace loglib::internal
 {
 
-/** One probe line extracted from a byte buffer. */
+/** @brief One line taken from a byte buffer for format detection. */
 struct ProbeLine
 {
     /**
-     * Contents of the line with any trailing \r stripped. Empty
-     * for a bare \n in the input (the caller decides whether to
-     * skip blank lines).
+     * @brief The text of the line without a trailing carriage return. It is empty for a bare newline, and the caller
+     * decides whether to skip blank lines.
      */
     std::string_view line;
 
-    /**
-     * Cumulative bytes consumed from the input, including the
-     * terminating \n if one was found.
-     */
+    /** @brief The number of bytes this line used, including its newline if it had one. */
     std::size_t bytesConsumed = 0;
 
-    /**
-     * Position of the first byte *after* this line in the input,
-     * used to advance the cursor for the next call.
-     */
+    /** @brief The position of the first byte after this line, where the next call starts. */
     std::size_t nextOffset = 0;
 
     /**
-     * True iff the line ended with \n in the input. A final
-     * unterminated line (buffer truncated by the probe budget) is
-     * still returned so callers can inspect the partial content;
-     * they must decide whether a partial line is meaningful.
+     * @brief True if the line ended with a newline. A last line without one is still returned, because the buffer may
+     * be cut off by the probe budget. The caller decides whether such a partial line is useful.
      */
     bool terminated = false;
 };
 
 /**
- * Extract the line at @p offset from @p bytes. At end-of-buffer,
- * returns an empty ProbeLine with nextOffset == bytes.size().
- * Trailing \r is stripped from the returned view.
+ * @brief Returns the line that starts at offset, without a trailing carriage return. At the end of the buffer it
+ * returns an empty line with nextOffset set to the size of the buffer.
  */
 [[nodiscard]] inline ProbeLine NextProbeLine(std::string_view bytes, std::size_t offset)
 {

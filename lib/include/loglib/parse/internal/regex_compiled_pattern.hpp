@@ -24,39 +24,29 @@ namespace loglib::internal
 {
 
 /**
- * UTF-8 BOM. Some editors (Notepad, older PowerShell) prepend it
- * to text files; with the BOM intact the ^date / ^IP / ^[
- * anchors in the built-in templates can't bind to position 0 and
- * auto-detect silently refuses every file. Stripped from the first
- * probe line only, leaving the rest of the byte stream untouched.
+ * @brief The UTF-8 byte order mark. Some editors put it at the start of a text file. With the mark in place, anchors
+ * such as ^date in the built-in templates cannot match at the first byte, and detection would refuse the file. It is
+ * removed from the first probe line only.
  */
 inline constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
 /**
- * PCRE2 backtracking limits applied to every match. The defaults
- * (10M / 10M) are too permissive for untrusted patterns —
- * something like .*.*.* against a long line could otherwise
- * stall the parse for seconds. These values leave well-behaved
- * patterns (lnav / grok) untouched and surface a ParsedLineError
- * on pathological inputs.
+ * @brief The limits on PCRE2 backtracking that apply to every match.
+ *
+ * The defaults of 10 million are too generous for patterns from users. A pattern such as .*.*.* on a long line could
+ * stall a parse for seconds. These limits leave well-behaved patterns alone and make a pathological line fail with a
+ * parse error.
  */
 inline constexpr uint32_t PCRE2_MATCH_LIMIT = 100'000;
 inline constexpr uint32_t PCRE2_DEPTH_LIMIT = 1'000;
 
-// ---------------------------------------------------------------------
-// CompiledPattern: shared compiled state for one PCRE2 pattern.
-
 /**
- * Schema of a compiled pattern: every named capture group, sorted
- * by groupIndex so the schema reads in pattern-source order
- * (PCRE2 returns them alphabetically via
- * pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)). The KeyId at
- * [i] is keys.GetOrInsert(groupNames[i]); workers index into
- * the ovector at groupIndices[i] * 2. Source order is
- * consumer-visible: column order in LogTable follows KeyId
- * allocation, so columns appear left-to-right as the user wrote
- * them (e.g. CLF: clientip ident auth timestamp verb ..., not
- * alphabetical auth bytes clientip ...).
+ * @brief The named groups of a compiled pattern, in the order they appear in the pattern.
+ *
+ * PCRE2 lists the groups alphabetically, so they are sorted by group index. The key id at position i is the id of
+ * groupNames[i], and a worker finds that group in the match vector at groupIndices[i] times 2. The order is visible to
+ * users: columns follow the order in which key ids were created, so the columns of a pattern appear left to right as
+ * written, for example clientip, ident, auth, timestamp for the common log format, and not alphabetically.
  */
 struct PatternSchema
 {
@@ -64,18 +54,21 @@ struct PatternSchema
     std::vector<uint32_t> groupIndices;
 };
 
+/**
+ * @brief A compiled PCRE2 pattern with its match limits and group schema. It is built once and shared, read-only, by
+ * all worker threads.
+ */
 class CompiledPattern
 {
 public:
     CompiledPattern() = default;
 
     /**
-     * Returns true on success. On failure, populates @p errorOut
-     * with a human-readable message (used in parse-time error
-     * reporting). On success the pattern is fully ready:
-     * JIT-compiled where the platform allows (silently falls back
-     * to the interpreted matcher otherwise), with a match context
-     * carrying the project's match/depth limits.
+     * @brief Compiles the pattern. Returns true on success. Otherwise errorOut gets a message for the parse error
+     * report.
+     *
+     * A compiled pattern is ready to use. It is JIT-compiled where the platform allows and otherwise uses the
+     * interpreter, and it has a match context with the match and depth limits.
      */
     bool Compile(std::string_view pattern, std::string &errorOut)
     {
@@ -135,13 +128,10 @@ public:
     }
 
     /**
-     * The match context is set up once during Compile() (its
-     * limits never change afterwards) and PCRE2's pcre2_match
-     * requires a non-const context. Exposing a single method
-     * returning pcre2_match_context * even from a logically
-     * const CompiledPattern avoids sprinkling const_cast
-     * throughout the parser; unique_ptr::get() const already
-     * returns the mutable pointer type.
+     * @brief The match context. It is set up once by Compile and does not change afterwards.
+     *
+     * pcre2_match needs a non-const context, so this const function returns a non-const pointer. That avoids casts in
+     * the parser.
      */
     [[nodiscard]] pcre2_match_context *Context() const noexcept
     {
@@ -164,10 +154,8 @@ public:
     }
 
     /**
-     * Allocate per-worker match data sized to this pattern's
-     * capture count. PCRE2 documents
-     * pcre2_match_data_create_from_pattern as the canonical
-     * sizing call. Caller owns the returned handle.
+     * @brief Creates match data of the right size for this pattern. Each worker needs its own. The caller owns the
+     * result.
      */
     [[nodiscard]] Pcre2MatchDataPtr NewMatchData() const
     {

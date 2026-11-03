@@ -39,28 +39,29 @@ namespace loglib::internal
 {
 
 /**
- * Coalescing thresholds for the live-tail loop. Tighter than the
- * static pipeline because we optimise for latency, not throughput.
+ * @brief When the streaming loop sends a batch on: after this many lines, or after this much time. They are smaller
+ * than for the static pipeline, because a stream is tuned for delay and not for throughput.
  */
 constexpr size_t STREAMING_BATCH_FLUSH_LINES = 250;
 constexpr auto STREAMING_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(100);
 
 /**
- * Maximum time a multi-line record may remain invisible while
- * waiting for another header or EOF.
+ * @brief How long a multi-line record may stay hidden while the loop waits for the next header or the end of the
+ * stream.
  */
 constexpr auto STREAMING_PENDING_RECORD_MAX_AGE = std::chrono::milliseconds(500);
 
 /**
- * Read buffer size for the live-tail loop. Matches TailingBytesProducer's
- * pre-fill chunk; small enough that each Read returns promptly.
+ * @brief The size of one read from the producer. It equals the read-back chunk of TailingBytesProducer and is small
+ * enough for a read to return promptly.
  */
 constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 
 /**
- * Extend @p targetKey with separator-prefixed continuation bytes.
- * Mmap-backed values require @p mmapBytes and are materialised into
- * @p ownedArena. A bare key= is promoted without a leading separator.
+ * @brief Adds continuation text, with a separator in front, to a field of a record.
+ *
+ * A value that lives in the mapped file needs mmapBytes and is first copied into ownedArena. A field that has no text
+ * yet, such as a bare key=, gets the text without a separator.
  */
 inline ContinuationSpliceOutcome ExtendContinuationTarget(
     std::vector<std::pair<KeyId, CompactLogValue>> &values,
@@ -156,27 +157,23 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
 }
 
 /**
- * Format-agnostic live-tail entry point. Drains source.Producer()
- * line-by-line, hands each non-blank line to @p decoder (must
- * satisfy CompactLineDecoder), commits (rawText, ownedArena) to
- * @p source, and emits LogLines into batches throttled by
- * STREAMING_BATCH_FLUSH_*.
+ * @brief Parses a live stream line by line for any format.
  *
- * Single-threaded: the target is thousands of lines/s, so TBB
- * overhead is not warranted. source is mutated on the parser
- * thread and read concurrently by the GUI; StreamLineSource's
- * internal mutex + deque storage make that safe.
+ * The loop reads lines from source.Producer() and hands each non-blank line to the decoder, which must satisfy
+ * CompactLineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
+ * which are sent on after STREAMING_BATCH_FLUSH_LINES lines or STREAMING_BATCH_FLUSH_INTERVAL.
  *
- * A Continue result extends the pending record's raw text and the
- * field selected by decoder.LastContinuationTarget(). Pending
- * records commit on Emit, EOF, or the maximum pending age.
- * @p newKeyBaseline forwards to BatchCoalescer. Parsers that
- * pre-intern keys into the sink's KeyIndex before calling here
- * (e.g. RegexParser, whose schema comes from the pattern's
- * named capture groups) pass the snapshot taken *before* the
- * intern step, so eagerly-interned columns still surface as
- * newKeys on the first emitted batch. Parsers that add keys
- * lazily (JSON, logfmt, CSV) leave this std::nullopt.
+ * It runs on one thread, because a stream delivers thousands of lines per second and a thread pool would not pay off.
+ * The source is changed on the parser thread and read by other threads at the same time, and the mutex and deque
+ * storage of StreamLineSource make that safe.
+ *
+ * A Continue result adds the line to the raw text of the pending record and to the field that
+ * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
+ * waited STREAMING_PENDING_RECORD_MAX_AGE.
+ *
+ * newKeyBaseline is passed to BatchCoalescer. A parser that adds keys to the index before calling, as the regex parser
+ * does for the groups of its pattern, passes the key count from before, so those columns still appear as new keys in
+ * the first batch. Parsers that add keys while parsing, such as JSON, logfmt and CSV, leave it empty.
  */
 template <class Decoder>
 void RunStreamingParseLoop(
@@ -229,8 +226,8 @@ void RunStreamingParseLoop(
     std::string lineError;
 
     /**
-     * Mutable record held outside the coalescer until AppendLine
-     * assigns its stable line ID.
+     * @brief A record kept outside the coalescer until AppendLine gives it its final line id. It can still change
+     * while continuation lines arrive.
      */
     struct PendingRecord
     {
@@ -239,21 +236,22 @@ void RunStreamingParseLoop(
         std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
         size_t startLineNumber = 0;
         KeyId continuationTarget = INVALID_KEY_ID;
-        // Separator-prefixed continuation content for the target field.
-        // Blank physical lines are intentionally excluded.
+        // The continuation text for the target field, each part with a separator in front. Blank lines are left out.
         std::string continuationBytes;
-        // Raw record suffix; unlike the field value, this preserves
-        // blank physical lines between continuations.
+        // The raw text that follows the record. Unlike the field value it keeps blank lines between continuations.
         std::string rawTextAppendix;
         // Blanks become record content only if another continuation follows.
         size_t pendingBlanks = 0;
         std::chrono::steady_clock::time_point openedAt;
         /**
-         * Whether continuation bytes can be buffered safely. Invalid
-         * targets are counted and dropped to bound memory use.
+         * @brief True when continuation text can be buffered. For an invalid target the lines are counted and dropped,
+         * so memory stays bounded.
          */
         bool continuationAcceptsText = false;
-        /** Invalid-target continuations summarized at commit. */
+        /**
+         * @brief The number of continuation lines dropped because of an invalid target, reported in one summary when
+         * the record is committed.
+         */
         size_t droppedContinuationLines = 0;
     };
     std::optional<PendingRecord> pending;

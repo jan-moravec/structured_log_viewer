@@ -32,17 +32,10 @@
 namespace loglib::internal::query
 {
 
-// ---- ISO-8601 / calendar-arithmetic constants -----------------------------
-//
-// Extracted so the surrounding parse / format helpers stop
-// tripping cppcoreguidelines-avoid-magic-numbers on every digit
-// position, month index, or scale factor. Grouped by the concept
-// they describe rather than by the literal value.
+// The constants below name the digit positions, ranges and scale factors of ISO 8601 timestamps, so the parsing code
+// reads without bare numbers. They are grouped by what they describe.
 
-/**
- * Length of the bare YYYY-MM-DD prefix and character positions
- * of the mandatory separators / digit fields inside it.
- */
+/** @brief The length of a date written as YYYY-MM-DD, and the positions of its digits and separators. */
 inline constexpr std::size_t ISO_DATE_LEN = 10;
 inline constexpr std::size_t ISO_YEAR_LEN = 4;
 inline constexpr std::size_t ISO_MONTH_DIGIT_POS = 5;
@@ -50,13 +43,10 @@ inline constexpr std::size_t ISO_MONTH_LAST_DIGIT_POS = 6;
 inline constexpr std::size_t ISO_MONTH_DAY_DASH_POS = 7;
 inline constexpr std::size_t ISO_DAY_DIGIT_POS = 8;
 inline constexpr std::size_t ISO_DAY_LAST_DIGIT_POS = 9;
-/**
- * Length of HH:MM -- the minimum shape of a time-of-day tail
- * after the T/space separator.
- */
+/** @brief The length of HH:MM, the shortest time of day that may follow the date. */
 inline constexpr std::size_t ISO_TIME_HHMM_LEN = 5;
 
-/** Calendar / clock ranges (upper bound is inclusive unless noted). */
+/** @brief Limits of calendar and clock fields. An upper limit is included unless noted. */
 inline constexpr int MONTHS_PER_YEAR = 12;
 inline constexpr int FEB_DAYS_LEAP = 29;
 inline constexpr int FEB_DAYS_NORMAL = 28;
@@ -65,15 +55,14 @@ inline constexpr int MINUTE_MAX_INCLUSIVE = 59;
 inline constexpr int SECOND_MAX_INCLUSIVE = 60; // ISO leap second :60
 inline constexpr int TZ_HOUR_MAX_INCLUSIVE = 23;
 
-/** Time-unit conversions and civil-date arithmetic. */
+/** @brief Factors for converting time units and for calendar arithmetic. */
 inline constexpr int DECIMAL_BASE = 10;
 inline constexpr int SECONDS_PER_MINUTE = 60;
 inline constexpr int SECONDS_PER_HOUR = 3600;
 inline constexpr std::int64_t MICROS_PER_SECOND = 1'000'000;
 /**
- * Upper bound on the fractional-seconds denom accumulator; once
- * crossed we've already captured >= microsecond precision and any
- * further digits are dropped without changing the result.
+ * @brief The largest denominator kept while reading a fraction of a second. Past it, the value already has microsecond
+ * precision and further digits change nothing.
  */
 inline constexpr std::int64_t MICROS_DENOM_CAP = 10'000'000;
 
@@ -116,15 +105,15 @@ enum class TokenKind : std::uint8_t
 struct Token
 {
     TokenKind kind = TokenKind::End;
-    /** Decoded text (Ident/Quoted/Regex/Number). */
+    /** @brief The text of an Ident, Quoted, Regex or Number token, with quotes and escapes decoded. */
     std::string text;
-    /** Byte offset into the input; used for error reporting. */
+    /** @brief The byte position of the token in the input, used in error messages. */
     std::size_t offset = 0;
 };
 
 /**
- * Ident-body character set; excludes operator/bracket chars so
- * the lexer never needs to backtrack.
+ * @brief True for characters that may continue a bareword. Operator and bracket characters are excluded, so the lexer
+ * never has to go back.
  */
 [[nodiscard]] inline bool IsIdentChar(char ch) noexcept
 {
@@ -136,6 +125,7 @@ struct Token
     return (std::isalpha(static_cast<unsigned char>(ch)) != 0) || ch == '_';
 }
 
+/** @brief Splits query text into tokens, one at a time. */
 class Lexer
 {
 public:
@@ -145,8 +135,8 @@ public:
     }
 
     /**
-     * Consume the next token; keeps returning End past EOI so
-     * callers can peek without special-casing.
+     * @brief Returns the next token. After the end of the input it keeps returning End, so a caller can look ahead
+     * without special cases.
      */
     [[nodiscard]] std::expected<Token, QueryParseError> Next()
     {
@@ -293,9 +283,8 @@ public:
     }
 
     /**
-     * Dedicated entry called after the parser sees a ~. Keeps
-     * / free to mean "regex delimiter" here and stay a syntax
-     * error everywhere else.
+     * @brief Returns the next token as a slash-delimited regular expression. The parser calls it after a tilde, which
+     * keeps the slash an error everywhere else.
      */
     [[nodiscard]] std::expected<Token, QueryParseError> NextRegex()
     {
@@ -414,16 +403,11 @@ private:
     }
 
     /**
-     * Try to consume an ISO-8601 timestamp as a single Ident token.
-     * Same shape family as ParseIsoTimestamp (bare date,
-     * date+T+time, optional fraction / TZ). Returns nullopt when
-     * no match, so the caller falls back to LexNumber.
+     * @brief Reads an ISO 8601 timestamp as one Ident token.
      *
-     * Not noexcept: the successful path constructs a
-     * std::string from the matched substring, which can throw
-     * bad_alloc. Caller (NextToken) is not noexcept either,
-     * so the exception propagates naturally to the parser's
-     * error surface.
+     * It accepts the same shapes as ParseIsoTimestamp: a date alone, or a date and time, with an optional fraction and
+     * zone. It returns nullopt if the text is not one, and the caller then tries a number. It can throw, because it
+     * builds a string, and the exception reaches the parser like any other error.
      */
     [[nodiscard]] std::optional<Token> TryLexIsoTimestamp()
     {
@@ -630,15 +614,12 @@ private:
 };
 
 /**
- * Parse @p text as a numeric range bound. nullopt when malformed;
- * the range-parser then re-tries the bound as an ISO timestamp.
+ * @brief Reads text as a number for a range bound. Returns nullopt if it is not one, and the range parser then tries
+ * an ISO timestamp.
  *
- * Uses std::strtod (not std::from_chars(double)) because Apple
- * Clang's libc++ does not implement the floating-point overload of
- * std::from_chars yet. std::strtod accepts C locale-independent
- * leading whitespace / signs / hex; we reject leading whitespace
- * and hex prefixes up front so the grammar stays what the parser
- * tests pin (col > 42, col = -1.5, col IN [1e3..2e3]).
+ * It uses strtod because some standard libraries do not implement from_chars for doubles. strtod accepts more than the
+ * query grammar allows, so leading spaces and hexadecimal prefixes are rejected first. That keeps forms such as col >
+ * 42, col = -1.5 and col IN [1e3..2e3] valid and nothing else.
  */
 [[nodiscard]] inline std::optional<double> ParseDouble(std::string_view text)
 {
@@ -681,7 +662,7 @@ private:
     return value;
 }
 
-/** True iff @p text starts with four ASCII digits (an ISO year). */
+/** @brief True if the text starts with four ASCII digits, as an ISO year does. */
 [[nodiscard]] inline bool StartsWithDigitYear(std::string_view text) noexcept
 {
     if (text.size() < 4)
@@ -698,7 +679,7 @@ private:
     return true;
 }
 
-/** Proleptic-Gregorian length of @p month (1-based) in @p year. */
+/** @brief The number of days in a month of a year (month 1 to 12), by the Gregorian calendar. */
 [[nodiscard]] inline int DaysInMonth(int year, int month) noexcept
 {
     // Days per month for the non-February cases; February varies
@@ -721,9 +702,9 @@ private:
 }
 
 /**
- * Parse an ISO-8601 timestamp (optional fraction and TZ) into
- * microseconds since the UNIX epoch. Strict on shape and calendar
- * ranges so typos surface as parse errors, not rolled-over dates.
+ * @brief Reads an ISO 8601 timestamp, with an optional fraction and zone, as microseconds since the epoch.
+ *
+ * The shape and the calendar ranges are checked strictly, so a typo gives an error and not a date that rolled over.
  */
 [[nodiscard]] inline std::optional<std::int64_t> ParseIsoTimestamp(std::string_view text)
 {

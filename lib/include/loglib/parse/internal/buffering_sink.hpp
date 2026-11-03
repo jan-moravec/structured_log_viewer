@@ -21,16 +21,15 @@ namespace loglib::internal
 {
 
 /**
- * LogParseSink adapter behind the synchronous LogParser::Parse(path)
- * overload: accumulates every batch into a single LogData. One sink per parse.
+ * @brief A sink that collects every batch of one parse into a single LogData. Use one sink for each parse. ParseFile
+ * uses it.
  */
 class BufferingSink : public LogParseSink
 {
 public:
     /**
-     * Takes ownership of @p source. The source's LogFile is the
-     * arena for OwnedString payload concatenation; line offsets are
-     * pushed in via OnBatch.
+     * @brief Takes ownership of the source. Its LogFile holds the decoded strings, and the line offsets arrive with
+     * the batches.
      */
     explicit BufferingSink(std::unique_ptr<FileLineSource> source);
 
@@ -40,8 +39,9 @@ public:
     void OnBatch(StreamedBatch batch) override;
     void OnFinished(bool cancelled) override;
 
-    /** Call exactly once after OnFinished. */
+    /** @brief Returns the collected data. Call it once, after OnFinished. */
     LogData TakeData();
+    /** @brief Returns the collected error messages. */
     std::vector<std::string> TakeErrors();
 
 private:

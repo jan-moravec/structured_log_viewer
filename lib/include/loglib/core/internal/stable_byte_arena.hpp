@@ -22,12 +22,11 @@ namespace loglib::internal
 {
 
 /**
- * @brief Append-only byte store whose bytes never move.
+ * @brief A store of bytes that only grows and never moves what it has stored.
  *
- * Writers serialise on an internal mutex. View takes no lock and may run
- * concurrently with writers: a returned view stays valid for the arena's
- * lifetime. Offsets address a sparse logical space and are only meaningful
- * when they come from Append.
+ * Writers take an internal mutex. View takes no lock and may run at the same time as writers, and a view it returns
+ * stays valid until the arena is destroyed. Offsets belong to a sparse logical address space, and only values returned
+ * by Append are meaningful.
  */
 class StableByteArena
 {
@@ -42,38 +41,27 @@ public:
     ~StableByteArena() = default;
 
     /**
-     * @brief Copies @p bytes into contiguous storage.
-     *
-     * @param bytes Bytes to store.
-     * @return Offset of the first stored byte.
-     * @throws std::length_error when the logical space is exhausted.
+     * @brief Copies bytes into the arena and returns the offset of the first one. Throws std::length_error when the
+     * address space is used up.
      */
     uint64_t Append(std::string_view bytes);
 
     /**
-     * @brief Grows the range at (@p offset, @p length) in place.
+     * @brief Adds bytes after a stored range, in place.
      *
-     * Succeeds only when the range ends at the arena's tail and @p bytes fit
-     * in the current block. Other readers never see a partial extension,
-     * because they only read lengths they were given.
-     *
-     * @param offset Start of the range.
-     * @param length Current length of the range.
-     * @param bytes Bytes to add after the range.
-     * @return Whether the range was extended.
+     * It works only if the range ends at the end of the arena and the bytes fit in the current block. Readers never see
+     * a half-extended range, because they read only the lengths they were given. Returns whether the range was
+     * extended.
      */
     bool TryExtend(uint64_t offset, uint64_t length, std::string_view bytes);
 
     /**
-     * @brief Resolves a stored range.
-     *
-     * @param offset Offset returned by Append.
-     * @param length Number of bytes.
-     * @return The bytes, or an empty view when the range was never stored.
+     * @brief Returns the bytes of a stored range, or an empty view if the range was never stored. The offset must come
+     * from Append.
      */
     [[nodiscard]] std::string_view View(uint64_t offset, uint64_t length) const noexcept;
 
-    /** @brief Returns the heap bytes reserved for stored data. */
+    /** @brief The heap bytes reserved for stored data. */
     [[nodiscard]] size_t CapacityBytes() const noexcept;
 
 private:
@@ -93,7 +81,7 @@ private:
     uint64_t mTail = 0;
     /** @brief Logical end of the current block. Guarded by mWriteLock. */
     uint64_t mBlockEnd = 0;
-    /** @brief Logical address of the next free byte inside the current block's memory. */
+    /** @brief The memory address of the next free byte in the current block. */
     char *mTailBytes = nullptr;
     std::atomic<size_t> mCapacityBytes{0};
     /** @brief Readers reject ranges past this value. */

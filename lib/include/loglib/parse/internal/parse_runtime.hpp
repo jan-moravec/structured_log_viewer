@@ -27,8 +27,8 @@ namespace loglib::internal
 {
 
 /**
- * Per-worker key-string -> KeyId cache. Hit: alloc-free find. Miss:
- * one KeyIndex::GetOrInsert + write-back.
+ * @brief Each worker's own map from key text to key id. A hit needs no allocation, and a miss asks the shared index
+ * once and stores the answer.
  */
 struct PerWorkerKeyCache
 {
@@ -36,9 +36,10 @@ struct PerWorkerKeyCache
 };
 
 /**
- * Per-worker scratch shared by the static TBB pipeline and the
- * live-tail loop: key cache + per-time-column carry-over for inline
- * timestamp promotion.
+ * @brief Scratch data that each worker keeps, used by both the static pipeline and the streaming loop.
+ *
+ * It holds the key cache and, for each time column, what the last successful parse was, so time columns can be
+ * converted while parsing.
  */
 struct WorkerScratchBase
 {
@@ -60,11 +61,10 @@ struct WorkerScratchBase
     }
 
     /**
-     * Promote Type::Time columns of @p line in place. @p ownedArena
-     * is the buffer backing any OwnedString payloads on @p line:
-     * the TBB pipeline passes its per-batch staging buffer; the
-     * live-tail loop passes empty (resolution falls through to the
-     * line's LineSource *).
+     * @brief Converts the time columns of a line to timestamps, in place.
+     *
+     * ownedArena holds the bytes behind the line's OwnedString values. The static pipeline passes its staging buffer
+     * for the batch, and the streaming loop passes an empty one, because the line's source resolves them.
      */
     void PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena)
     {
@@ -77,8 +77,8 @@ struct WorkerScratchBase
 };
 
 /**
- * Adds format-specific scratch (e.g. simdjson parser + padded
- * buffer) on top of the shared base. Used by the TBB pipeline.
+ * @brief The shared scratch plus scratch for one format, such as a simdjson parser and its padded buffer. The static
+ * pipeline uses it.
  */
 template <class UserState> struct WorkerScratch : WorkerScratchBase
 {
@@ -86,8 +86,8 @@ template <class UserState> struct WorkerScratch : WorkerScratchBase
 };
 
 /**
- * Look up @p key through @p cache. View bytes must outlive the cache
- * entry on miss. cache == nullptr falls through to KeyIndex.
+ * @brief Returns the id of a key through the worker's cache, or straight from the index if cache is null. On a miss
+ * the key's bytes are copied into the cache.
  */
 inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache)
 {

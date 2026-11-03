@@ -18,27 +18,20 @@ namespace loglib::internal
 {
 
 /**
- * Snapshot of the merged regex-template registry (built-ins,
- * then extras), each tier stable-sorted by priority ascending.
- * The same ordering the GUI picker uses, surfaced here so the
- * auto-detect probe in parsers/regex_parser.cpp can see
- * user-registered extras without reaching into
- * regex_templates.cpp.
+ * @brief Returns the built-in templates followed by the registered extra templates, each group sorted by priority.
  *
- * Returned as a shared_ptr so the parser's compiled cache can
- * pin the snapshot for as long as it references the underlying
- * RegexTemplate storage. Pointer identity changes (in lockstep
- * with TemplatesGeneration()) whenever SetExtraRegexTemplates
- * swaps in a new extras set.
+ * It is the order the template list uses, and the detection in the regex parser needs it to see the user's templates
+ * without reaching into regex_templates.cpp. The result is shared, so a parser can keep it for as long as it refers to
+ * the templates. Its pointer changes, together with TemplatesGeneration, whenever SetExtraRegexTemplates replaces the
+ * extras.
  */
 [[nodiscard]] std::shared_ptr<const std::vector<RegexTemplate>> MergedRegexTemplates();
 
 /**
- * Monotonic counter bumped on every SetExtraRegexTemplates call
- * (including the implicit initial build). Cheap enough for the
- * probe hot path — the parser keeps a last_seen value and only
- * re-acquires MergedRegexTemplates() when the counter advances,
- * so per-probe cost is one atomic load in the steady state.
+ * @brief A counter that goes up each time the extra templates are replaced, including the first build.
+ *
+ * It is cheap enough for the detection hot path. A parser remembers the last value it saw and asks for
+ * MergedRegexTemplates again only when the counter has moved, so the usual cost is one atomic load.
  */
 [[nodiscard]] uint64_t TemplatesGeneration() noexcept;
 

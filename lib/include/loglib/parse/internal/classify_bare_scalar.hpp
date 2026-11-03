@@ -22,8 +22,8 @@
 #include <string_view>
 #include <system_error>
 
-// libc++ (LLVM 18 / Xcode 16) lacks std::from_chars for floating
-// point; fall back to a locale-safe strtod on that branch only.
+// Some standard libraries, such as the libc++ that ships with Xcode 16, have no from_chars for floating point numbers.
+// They use a strtod fallback that first checks the text for a strict number.
 #if !defined(__cpp_lib_to_chars) || __cpp_lib_to_chars < 201611L || defined(_LIBCPP_VERSION)
 #include <array>
 #include <cerrno>
@@ -34,11 +34,11 @@ namespace loglib::internal
 {
 
 /**
- * Parse @p raw as a finite double. Uses std::from_chars where
- * available; the libc++ fallback validates a strict C float literal
- * first so the locale-driven decimal separator in strtod cannot
- * reinterpret the bytes. Inline to keep within-TU inlining in the
- * logfmt / CSV hot paths.
+ * @brief Reads text as a finite double. Returns false for anything else, including infinity and NaN.
+ *
+ * It uses from_chars where the library has it. Otherwise it checks that the text is a plain C floating-point number
+ * before calling strtod, so the decimal separator of the current locale cannot change what the bytes mean. It is inline
+ * so the logfmt and CSV hot paths can inline it.
  */
 inline bool TryParseFiniteDouble(std::string_view raw, double &outValue)
 {
@@ -48,8 +48,7 @@ inline bool TryParseFiniteDouble(std::string_view raw, double &outValue)
     const auto res = std::from_chars(first, last, outValue);
     return res.ec == std::errc{} && res.ptr == last && std::isfinite(outValue);
 #else
-    // Any IEEE 754 double round-trips well below 64 bytes; longer
-    // inputs are rejected rather than allocated.
+    // Every IEEE 754 double fits in well under 64 bytes of text, so longer input is rejected and nothing is allocated.
     constexpr size_t DOUBLE_PARSE_BUFFER_SIZE = 64;
 
     if (raw.empty() || raw.size() >= DOUBLE_PARSE_BUFFER_SIZE)
@@ -125,12 +124,11 @@ inline bool TryParseFiniteDouble(std::string_view raw, double &outValue)
 }
 
 /**
- * Promote @p sv to a compact value: MmapSlice (zero copy) when it
- * lies inside [fileBegin, fileBegin + fileSize), otherwise copy
- * into @p ownedArena as OwnedString. Streaming callers pass
- * fileBegin == nullptr to disable the range check (comparing
- * pointers across unrelated objects is UB). Inline for hot-path
- * inlining.
+ * @brief Turns text into a compact string value.
+ *
+ * Text inside the file range becomes a MmapSlice and costs no copy. Other text is copied into ownedArena as an
+ * OwnedString. A streaming caller passes a null fileBegin to skip the range check, because comparing pointers of
+ * unrelated objects is undefined. It is inline for hot paths.
  */
 inline CompactLogValue MakeStringCompact(
     std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
@@ -147,14 +145,17 @@ inline CompactLogValue MakeStringCompact(
 }
 
 /**
- * Type an unquoted scalar (used by logfmt bare values and CSV bare
- * cells; quoted values bypass this and stay strings). Returns:
- * monostate for empty, bool for true/false, uint64 then
- * int64 for decimals, finite double for sign/dot/exponent forms,
- * else string. Trailing junk (42abc) falls through to string. Values
- * that a number cannot represent stay strings: a leading zero (007)
- * and an integer past 64 bits are identifiers, not quantities.
- * Inline for hot-path inlining.
+ * @brief Chooses the type of an unquoted value, as found in logfmt and CSV. Quoted values skip this and stay strings.
+ *
+ * The result is:
+ * - empty for empty text,
+ * - a boolean for true and false,
+ * - an unsigned integer, or else a signed one, for decimal digits,
+ * - a finite double for forms with a sign, a dot or an exponent,
+ * - a string for everything else, including text with trailing junk such as 42abc.
+ *
+ * Numbers that cannot stand for a quantity stay strings: values with a leading zero such as 007, and integers that do
+ * not fit in 64 bits, which are identifiers. It is inline for hot paths.
  */
 inline CompactLogValue ClassifyBareScalar(
     std::string_view raw, const char *fileBegin, size_t fileSize, std::string &ownedArena

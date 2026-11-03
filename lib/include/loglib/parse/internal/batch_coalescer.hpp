@@ -24,23 +24,21 @@ namespace loglib::internal
 {
 
 /**
- * Shared GUI-batch coalescer for both the static TBB pipeline and the
- * live-tail streaming loop. Holds the in-flight StreamedBatch, the
- * KeyIndex cursor for per-batch new-key diffs, and the
- * (flushLines, flushInterval) throttle. Pipelines push content into
- * Pending() and call TryFlush(false) to flush on threshold.
- * Finish always emits a final batch — possibly empty — and forwards
- * OnFinished, so the sink contract holds even on early-exit paths.
+ * @brief Collects parsed lines into batches and sends them to a sink when enough have piled up or enough time has
+ * passed.
+ *
+ * Both the static pipeline and the streaming loop use it. It holds the batch being built and remembers how many keys
+ * the sink has already been told about, so each batch can list only the new keys. A pipeline adds content through
+ * Pending and calls TryFlush with false to send a batch when a threshold is reached. Finish always sends a last batch,
+ * which can be empty, and then calls OnFinished, so the sink gets its usual calls even when a parse ends early.
  */
 class BatchCoalescer
 {
 public:
     /**
-     * @p newKeyBaseline overrides the starting KeyIndex cursor for
-     * the per-batch new-key diff. Defaults to the index's current
-     * size. Parsers that intern keys before the pipeline starts
-     * (e.g. CsvParser, which parses its header up front) pass the
-     * pre-intern count so those columns still surface as newKeys.
+     * @param newKeyBaseline The key count to start counting new keys from. By default it is the current size of the
+     * index. A parser that adds keys before the pipeline starts, such as the CSV parser with its header, passes the
+     * count from before, so those columns still appear as new keys.
      */
     BatchCoalescer(
         LogParseSink &sink,
@@ -56,18 +54,15 @@ public:
     BatchCoalescer &operator=(BatchCoalescer &&) = delete;
     ~BatchCoalescer() = default;
 
-    /**
-     * In-flight batch. Callers append lines, errors, and
-     * (static path only) localLineOffsets directly.
-     */
+    /** @brief The batch being built. Callers add lines and errors to it, and the static path also adds line offsets. */
     [[nodiscard]] StreamedBatch &Pending() noexcept
     {
         return mPending;
     }
 
     /**
-     * Sets Pending().firstLineNumber once; subsequent calls are
-     * no-ops so the line number stays anchored to the first line.
+     * @brief Sets the first line number of the pending batch. Only the first call has an effect, so the number stays
+     * that of the first line.
      */
     void Prime(size_t firstLineNumber) noexcept;
 
@@ -76,22 +71,20 @@ public:
         return mPrimed;
     }
 
-    /**
-     * Append the keys added since the last drain into @p out and
-     * advance the cursor.
-     */
+    /** @brief Appends the keys added since the last call to out, and remembers that they were reported. */
     void DrainNewKeysInto(StreamedBatch &out);
 
     /**
-     * Flush if either threshold is met, or unconditionally if
-     * @p force. Returns true if a batch was emitted. Empty
-     * threshold-triggered flushes are skipped (but lastFlush ticks).
+     * @brief Sends the pending batch if a threshold was reached, or always when force is set. Returns true if a batch
+     * was sent.
+     *
+     * An empty batch is not sent for a threshold, but the time of the last flush is still updated.
      */
     bool TryFlush(bool force);
 
     /**
-     * Emit a final batch (empty if nothing buffered, primed at
-     * @p fallbackLineNumber) and forward OnFinished(@p wasCancelled).
+     * @brief Sends a last batch, which is empty if nothing is pending, and then calls OnFinished with wasCancelled. An
+     * empty batch gets fallbackLineNumber as its first line.
      */
     void Finish(size_t fallbackLineNumber, bool wasCancelled);
 

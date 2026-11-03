@@ -16,10 +16,10 @@ namespace loglib::internal
 {
 
 /**
- * One cell from a CSV record.
+ * @brief One cell of a CSV record.
  *
- * Quoted cells remain strings. fromScratch means value points
- * into the caller's unescape buffer and must be copied before reuse.
+ * A quoted cell stays a string. When fromScratch is set, the value points into the caller's unescape buffer and must be
+ * copied before that buffer is reused.
  */
 struct CsvCell
 {
@@ -29,15 +29,18 @@ struct CsvCell
 };
 
 /**
- * Tokenize one CSV record using RFC 4180 quoting with lax recovery.
- * Calls @p emit per cell and rejects unterminated quoted cells.
+ * @brief Splits one CSV record into cells, following RFC 4180 quoting but recovering from small errors.
  *
- * Grammar: cells separated by ,; a leading " opens a quoted cell
- * closed by an unescaped ", with "" decoded to a literal "; an
- * unquoted cell ends at the next , or EOL; a trailing , emits one
- * final empty cell.
+ * emit is called once for each cell. The function returns false for a quoted cell that is not closed, which includes a
+ * cell that runs over several lines, because those are not supported.
  *
- * @p quotedScratch stores unescaped quoted cells.
+ * - Cells are separated by commas.
+ * - A cell that starts with a quote ends at the next quote that is not doubled, and a doubled quote stands for one
+ *   quote.
+ * - An unquoted cell ends at the next comma or at the end of the line.
+ * - A comma at the end of the line gives one more, empty cell.
+ *
+ * Unescaped quoted cells are built in quotedScratch.
  */
 template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emit)
 {
@@ -70,7 +73,7 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
             }
             if (!terminated)
             {
-                // Includes multi-line cells (unsupported in v1).
+                // This also covers cells that continue on the next line, which are not supported.
                 return false;
             }
 

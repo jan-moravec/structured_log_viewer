@@ -13,19 +13,15 @@
 #include <glaze/glaze.hpp>
 #include <array>
 
-// Glaze meta-specialisation for loglib::RegexTemplate. Kept out
-// of the public header so consumers don't pull in
-// <glaze/glaze.hpp>. Mirrors theme_glaze_meta.hpp.
-//
-// value is a slot name required by Glaze reflection, so keeps
-// its lowercase name.
+// JSON field names for RegexTemplate, like theme_glaze_meta.hpp does for Theme. They live in this header so the public
+// header does not include the JSON library. The name value is required by the library's reflection, so the naming check
+// is turned off here.
 // NOLINTBEGIN(readability-identifier-naming)
 
 template <> struct glz::meta<loglib::ContinuationMode>
 {
     using enum loglib::ContinuationMode;
-    // Keys pair positionally with values and preserve case-sensitive
-    // wire spellings.
+    // The names pair with the values by position. Their case is part of the saved format.
     static constexpr std::array keys{"none", "indented", "untilNextHeader"};
     static constexpr std::array value{None, Indented, UntilNextHeader};
 };
@@ -33,7 +29,7 @@ template <> struct glz::meta<loglib::ContinuationMode>
 template <> struct glz::meta<loglib::RegexTemplate>
 {
     using T = loglib::RegexTemplate;
-    // Missing fields retain the defaults declared on RegexTemplate.
+    // A field missing from the file keeps the default that RegexTemplate declares.
     static constexpr auto value = object(
         "name",
         &T::name,

@@ -16,20 +16,16 @@ namespace loglib::internal
 {
 
 /**
- * Shared glaze options for LogConfiguration read/write.
+ * @brief The JSON options used to read and write a LogConfiguration.
  *
- * Pinned behaviours:
- * 1. prettify = true + 4-space indent so session JSON is
- *    human-inspectable (the recents store is a debugging surface).
- * 2. error_on_unknown_keys = false so unknown fields, such as those
- *    written by a newer build, load instead of throwing. This backs
- *    the promise that a failed source rebind is non-fatal.
+ * Output is indented with 4 spaces, so a saved configuration is easy to inspect. Unknown fields are ignored on reading,
+ * so a file written by a newer build still loads. That is also what lets a failed source rebind be non-fatal.
  */
 struct LogConfigOpts : glz::opts
 {
     uint8_t indentation_width = 4; // NOLINT(readability-identifier-naming)
 };
-// MSVC enforces member-declaration order in designated init.
+// MSVC requires designated initializers to follow the declaration order of the members.
 constexpr LogConfigOpts LOG_CONFIG_OPTS{{.error_on_unknown_keys = false, .prettify = true}};
 
 } // namespace loglib::internal
