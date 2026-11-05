@@ -11,8 +11,10 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace loglib::exports
 {
@@ -93,7 +95,7 @@ void JsonLinesExporter::Run(
     const auto &table = *source.table;
     const auto &data = table.Data();
     const auto &lines = data.Lines();
-    const auto &keys = data.Keys();
+    loglib::internal::NormalizedJsonRowWriter writer(table);
 
     std::string scratch;
     scratch.reserve(ROW_SCRATCH_RESERVE);
@@ -101,7 +103,7 @@ void JsonLinesExporter::Run(
     ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
         const auto &line = lines[sourceRow];
         scratch.clear();
-        loglib::internal::SerializeNormalizedJsonRow(line, keys, scratch);
+        writer.Append(line, scratch);
         scratch.push_back('\n');
         sink.Write(scratch);
     });

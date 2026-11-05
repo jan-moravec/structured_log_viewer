@@ -105,7 +105,7 @@ Several helpers live under `lib/include/loglib/<module>/internal/` and are inten
 - `loglib::detail::FileIdentity` (`file_identity.hpp`) — POSIX `(st_dev, st_ino)` / Windows `GetFileInformationByHandle` helper used by `TailingBytesProducer` for rotation detection.
 - `CompactLineDecoder` (`line_decoder.hpp`) — the per-physical-line decoder concept. `LineDecodeResult` has four outcomes: `Emit`, `Skip`, `Error`, and `Continue`. CSV uses `Skip` for its header; logfmt and regex templates can use `Continue`; JSON and CSV never do. Regex workers share immutable compiled code and match limits but own their `pcre2_match_data`.
 - `ClassifyBareScalar` (`classify_bare_scalar.hpp`) — shared inline header with `TryParseFiniteDouble`, `MakeStringCompact`, and `ClassifyBareScalar`. Both `LogfmtParser` and `CsvParser` use it to type unquoted values; inline (not a separate TU) so each parser keeps within-TU inlining regardless of LTO.
-- `SerializeNormalizedJsonRow` (`normalized_json_row.hpp`) — shared typed JSON-object serializer used by JSON Lines row export and session-bundle export so booleans, numbers, timestamps, strings, and missing values have one wire representation.
+- `NormalizedJsonRowWriter` (`normalized_json_row.hpp`) — shared typed JSON-object serializer used by JSON Lines row export and session-bundle export so booleans, numbers, timestamps, strings, and missing values have one wire representation. Fields follow the display order of the table's columns, and a field without a column goes last, ordered by key text.
 - The shared scratch types both pipelines use live in `parse_runtime.hpp`; `timestamp_promotion.hpp` rounds out the set. Pipeline tuning is `ParserOptions::threads` / `batchSizeBytes`.
 
 #### Error handling
