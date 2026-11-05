@@ -6446,7 +6446,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)]() {
+    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
         return MakeParserForFormat(format, formatOptions);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
@@ -6582,7 +6582,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)]() {
+    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
         return MakeParserForFormat(format, formatOptions);
     };
     // The rescue path may have no initialized stream to append to.
@@ -6746,7 +6746,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
     // Give the peeked bytes back to the source so the stream is delivered in full (peek + subsequent bytes).
     streamSource->UnreadBytes(std::move(peek));
-    auto parserFactory = [format, formatOptions = detected.Options()]() {
+    auto parserFactory = [format, formatOptions = detected.Options()] {
         return loglib::MakeParserForFormat(format, formatOptions);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
@@ -6888,11 +6888,14 @@ void MainWindow::OpenNetworkStream()
     };
     // The dialog gives only a pattern. If it is a known template, keep the template's continuation settings with the
     // source, so the saved session parses multi-line records the same way after the template is deleted.
-    if (const auto tmpl = loglib::FindTemplateByPattern(mSession->MutableCurrentSource()->regexPattern);
-        tmpl.has_value() && mSession->MutableCurrentSource()->format == loglib::Source::Format::Regex)
+    if (auto &networkSource = mSession->MutableCurrentSource();
+        networkSource.has_value() && networkSource->format == loglib::Source::Format::Regex)
     {
-        mSession->MutableCurrentSource()->regexContinuationMode = tmpl->continuationMode;
-        mSession->MutableCurrentSource()->regexHeaderAnchor = tmpl->headerAnchor;
+        if (const auto tmpl = loglib::FindTemplateByPattern(networkSource->regexPattern); tmpl.has_value())
+        {
+            networkSource->regexContinuationMode = tmpl->continuationMode;
+            networkSource->regexHeaderAnchor = tmpl->headerAnchor;
+        }
     }
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6921,7 +6924,7 @@ void MainWindow::OpenNetworkStream()
     }
     const auto &currentSource = mSession->CurrentSource();
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)]() {
+    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
         return MakeParserForFormat(format, formatOptions);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));

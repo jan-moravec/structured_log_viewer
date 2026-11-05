@@ -249,7 +249,7 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
         return LogTable(std::move(data), std::move(manager));
     };
 
-    LogTable utcTable = makeTable();
+    const LogTable utcTable = makeTable();
     LogTable berlinTable = makeTable();
     LogTable newYorkTable = makeTable();
     berlinTable.SetDisplayTimeZone(berlin);
@@ -283,7 +283,7 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
 
     SECTION("A new table is UTC whatever the process zone is")
     {
-        LogTable fresh;
+        const LogTable fresh{};
         CHECK(fresh.DisplayTimeZone().IanaName() == TimeZoneContext{}.IanaName());
         CHECK(fresh.DefaultSourceTimeZone().IanaName() == TimeZoneContext{}.IanaName());
     }

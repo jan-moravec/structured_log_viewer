@@ -29,9 +29,10 @@ using namespace loglib;
 namespace
 {
 /** @brief A fixed "now" for formats without a year, so the assumed year does not depend on the day the test runs. */
-const std::chrono::system_clock::time_point REFERENCE_NOW{
-    std::chrono::sys_days{std::chrono::year{2025} / std::chrono::June / 15} + std::chrono::hours{12}
-};
+std::chrono::system_clock::time_point ReferenceNow()
+{
+    return std::chrono::sys_days{std::chrono::year{2025} / std::chrono::June / 15} + std::chrono::hours{12};
+}
 } // namespace
 
 TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_processing]")
@@ -69,11 +70,11 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     column.keys = {"key2"};
     configuration.columns.push_back(column);
 
-    auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, REFERENCE_NOW);
+    auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
     CHECK(errors.empty());
 
     configuration.columns[0].type = ColumnType::Time;
-    errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, REFERENCE_NOW);
+    errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
 
     CHECK(errors.size() == logData.Lines().size());
 }
@@ -101,7 +102,7 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 
-    auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, REFERENCE_NOW);
+    const auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
 
     CHECK(errors.empty());
     REQUIRE(logData.Lines().size() == 4);
@@ -134,7 +135,7 @@ TEST_CASE(
         for (const std::string &format : DefaultTimeParseFormats())
         {
             TimeStamp out{};
-            if (TryParseTimestamp(text, format, ClassifyTimestampFormat(format), scratch, REFERENCE_NOW, out))
+            if (TryParseTimestamp(text, format, ClassifyTimestampFormat(format), scratch, ReferenceNow(), out))
             {
                 return out;
             }
@@ -392,7 +393,7 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
     // The parser injects the year via the "if parsed month is later
     // than the reference month, use the previous year" heuristic. A fixed
     // reference time makes the year the same on every day the test runs.
-    const auto today = date::floor<date::days>(REFERENCE_NOW);
+    const auto today = date::floor<date::days>(ReferenceNow());
     const date::year_month_day nowYmd{today};
     const unsigned nowMonth = static_cast<unsigned>(nowYmd.month());
 
@@ -415,21 +416,21 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
     SECTION("Space-padded single-digit day (`%e` shape, canonical RFC 3164)")
     {
         TimeStamp out{};
-        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37", out, REFERENCE_NOW));
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37", out, ReferenceNow()));
         CHECK(out == expected(8, 8, 13, 25, 37));
     }
 
     SECTION("Zero-padded single-digit day (`%d` shape emitted by some senders)")
     {
         TimeStamp out{};
-        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug 08 13:25:37", out, REFERENCE_NOW));
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug 08 13:25:37", out, ReferenceNow()));
         CHECK(out == expected(8, 8, 13, 25, 37));
     }
 
     SECTION("Two-digit day")
     {
         TimeStamp out{};
-        REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, REFERENCE_NOW));
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, ReferenceNow()));
         CHECK(out == expected(12, 31, 23, 59, 59));
     }
 
@@ -453,7 +454,7 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
         {
             CAPTURE(STAMPS[i]);
             TimeStamp out{};
-            REQUIRE(TryParseSyslogRfc3164Timestamp(STAMPS[i], out, REFERENCE_NOW));
+            REQUIRE(TryParseSyslogRfc3164Timestamp(STAMPS[i], out, ReferenceNow()));
             CHECK(out == expected(i + 1, 1, 0, 0, 0));
         }
     }
@@ -465,42 +466,42 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp rejects malformed inputs", "[log_proce
 
     SECTION("Empty and too-short strings")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("", out, REFERENCE_NOW));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25", out, ReferenceNow()));
     }
 
     SECTION("Unknown month abbreviation")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Xyz  8 13:25:37", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Xyz  8 13:25:37", out, ReferenceNow()));
         // Case-sensitive on purpose -- RFC 3164 §4.1.2 pins the canonical spelling.
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("aug  8 13:25:37", out, REFERENCE_NOW));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("AUG  8 13:25:37", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("aug  8 13:25:37", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("AUG  8 13:25:37", out, ReferenceNow()));
     }
 
     SECTION("Invalid day-of-month")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Feb 30 12:00:00", out, REFERENCE_NOW));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan  0 12:00:00", out, REFERENCE_NOW));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan 32 12:00:00", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Feb 30 12:00:00", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan  0 12:00:00", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan 32 12:00:00", out, ReferenceNow()));
     }
 
     SECTION("Invalid hour / minute")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 24:00:00", out, REFERENCE_NOW));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 12:60:00", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 24:00:00", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 12:60:00", out, ReferenceNow()));
     }
 
     SECTION("Trailing garbage after the seconds field")
     {
         // The parser accepts only the exact header; the caller is
         // expected to strip surrounding record framing.
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37 host", out, REFERENCE_NOW));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37Z", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37 host", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37Z", out, ReferenceNow()));
     }
 
     SECTION("Missing separator space after month")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug08 13:25:37", out, REFERENCE_NOW));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug08 13:25:37", out, ReferenceNow()));
     }
 }
 
@@ -550,7 +551,7 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     SECTION("Iso8601T routes to fast path")
     {
         REQUIRE(TryParseTimestamp(
-            "2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, REFERENCE_NOW, out
+            "2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, ReferenceNow(), out
         ));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
@@ -558,7 +559,7 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     SECTION("Iso8601Space routes to fast path")
     {
         REQUIRE(TryParseTimestamp(
-            "2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, REFERENCE_NOW, out
+            "2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, ReferenceNow(), out
         ));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
@@ -566,7 +567,7 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     SECTION("Generic routes to date::parse")
     {
         REQUIRE(TryParseTimestamp(
-            "2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, REFERENCE_NOW, out
+            "2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, ReferenceNow(), out
         ));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
@@ -574,7 +575,7 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
     SECTION("Generic rejects malformed input")
     {
         CHECK_FALSE(
-            TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, REFERENCE_NOW, out)
+            TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, ReferenceNow(), out)
         );
     }
 }
@@ -597,7 +598,7 @@ TEST_CASE("Default parse formats accept Apache error log timestamps", "[log_proc
         for (const std::string &format : loglib::DefaultTimeParseFormats())
         {
             TimeStamp out{};
-            if (TryParseTimestamp(input, format, ClassifyTimestampFormat(format), scratch, REFERENCE_NOW, out))
+            if (TryParseTimestamp(input, format, ClassifyTimestampFormat(format), scratch, ReferenceNow(), out))
             {
                 parsed = out;
                 break;

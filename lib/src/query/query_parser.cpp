@@ -41,8 +41,8 @@ using namespace internal::query;
 class Parser
 {
 public:
-    Parser(std::string_view input, const TimeZoneContext &timeZone)
-        : mLexer(input), mInput(input), mTimeZone(timeZone)
+    Parser(std::string_view input, TimeZoneContext timeZone)
+        : mLexer(input), mInput(input), mTimeZone(std::move(timeZone))
     {
     }
 

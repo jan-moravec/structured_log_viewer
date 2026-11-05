@@ -344,6 +344,7 @@ namespace
  */
 bool PrintFormatIsUsable(const std::string &format)
 {
+    constexpr double SAMPLE_DOUBLE = 1.5;
     const auto accepts = [&format](const auto &sample) {
         try
         {
@@ -355,7 +356,7 @@ bool PrintFormatIsUsable(const std::string &format)
             return false;
         }
     };
-    return accepts(std::int64_t{1}) || accepts(std::uint64_t{1}) || accepts(1.5) || accepts(true);
+    return accepts(std::int64_t{1}) || accepts(std::uint64_t{1}) || accepts(SAMPLE_DOUBLE) || accepts(true);
 }
 
 } // namespace
