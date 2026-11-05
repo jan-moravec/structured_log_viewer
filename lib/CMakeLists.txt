@@ -156,7 +156,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/tcp_server_producer.hpp
     include/loglib/support/theme.hpp
     include/loglib/time/time_zone_context.hpp
-    include/loglib/table/timestamp_backfill.hpp
     include/loglib/time/timestamp_parsing.hpp
     include/loglib/core/transparent_string_hash.hpp
     include/loglib/ingest/udp_server_producer.hpp

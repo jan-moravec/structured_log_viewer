@@ -5,7 +5,7 @@
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/filter_expression.hpp>
-#include <loglib/table/timestamp_backfill.hpp>
+#include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/time/time_zone_context.hpp>
 #include <loglib/time/timestamp_parsing.hpp>
 #include <loglib/time/user_timestamp.hpp>

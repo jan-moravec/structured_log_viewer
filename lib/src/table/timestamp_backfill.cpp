@@ -1,4 +1,4 @@
-#include "loglib/table/timestamp_backfill.hpp"
+#include "loglib/table/internal/timestamp_backfill.hpp"
 
 #include "loglib/time/internal/timestamp_promotion.hpp"
 #include "loglib/time/timestamp_parsing.hpp"
