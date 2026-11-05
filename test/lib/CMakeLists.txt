@@ -131,3 +131,17 @@ endif()
 # to filter.
 catch_discover_tests(tests TEST_SPEC "~[benchmark]")
 catch_discover_tests(tests TEST_SPEC "[benchmark]" PROPERTIES LABELS "benchmark")
+
+# Installs the loglib component and compiles a consumer that includes every installed header. Skipped for sanitizer
+# and coverage builds, because the consumer is built without their flags.
+if(NOT CMAKE_CXX_FLAGS MATCHES "-fsanitize|-fprofile")
+    add_test(
+        NAME loglib_install_consumer
+        COMMAND
+            ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR} -DGENERATOR=${CMAKE_GENERATOR}
+            -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/install_check -P
+            ${PROJECT_SOURCE_DIR}/scripts/check-loglib-install.cmake
+    )
+    set_tests_properties(loglib_install_consumer PROPERTIES LABELS "install")
+endif()
