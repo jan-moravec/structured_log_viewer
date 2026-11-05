@@ -17,10 +17,10 @@
 #include "loglib/parse/internal/batch_coalescer.hpp"
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
-#include "loglib/parse/internal/timestamp_promotion.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
 #include "loglib/parse/parse_error_text.hpp"
 #include "loglib/parse/parser_options.hpp"
+#include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <fmt/format.h>
 

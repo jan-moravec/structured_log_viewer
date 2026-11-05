@@ -42,13 +42,14 @@ add_library(
     src/ingest/tailing_bytes_producer.cpp
     src/ingest/tcp_server_producer.cpp
     src/ingest/udp_server_producer.cpp
-    src/parse/timestamp_promotion.cpp
+    src/time/timestamp_promotion.cpp
+    src/parse/parse_runtime.cpp
     src/schema/log_configuration.cpp
     src/query/column_projection.cpp
-    src/parse/column_key_id_cache.cpp
+    src/table/column_key_id_cache.cpp
     src/table/column_type_health.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
-    src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
+    src/clang_tidy_stubs/glaze_options.cpp
     src/query/log_compare.cpp
     src/core/log_data.cpp
     src/core/log_file.cpp
@@ -126,6 +127,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/query/log_filter.hpp
     include/loglib/core/log_level.hpp
     include/loglib/core/log_line.hpp
+    include/loglib/core/row_batch.hpp
     include/loglib/parse/log_parse_sink.hpp
     include/loglib/parse/log_parser.hpp
     include/loglib/query/log_string_matcher.hpp
@@ -154,7 +156,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/tcp_server_producer.hpp
     include/loglib/support/theme.hpp
     include/loglib/time/time_zone_context.hpp
-    include/loglib/table/timestamp_backfill.hpp
     include/loglib/time/timestamp_parsing.hpp
     include/loglib/core/transparent_string_hash.hpp
     include/loglib/ingest/udp_server_producer.hpp

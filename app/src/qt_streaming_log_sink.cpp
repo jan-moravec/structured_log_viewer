@@ -91,7 +91,7 @@ void QtStreamingLogSink::Resume()
     // ownership of, or sees the cleared flag and posts via
     // QueuedConnection — which lands after the synchronous AppendBatch
     // below, preserving FIFO order.
-    std::vector<loglib::StreamedBatch> drained;
+    std::vector<loglib::RowBatch> drained;
     {
         const std::scoped_lock lock(mPausedMutex);
         if (!mPaused.load(std::memory_order_acquire))
@@ -166,9 +166,9 @@ void QtStreamingLogSink::TrimPausedBufferTo(size_t maxBufferedLines)
     }
 }
 
-std::optional<loglib::StreamedBatch> QtStreamingLogSink::TakePausedBuffer()
+std::optional<loglib::RowBatch> QtStreamingLogSink::TakePausedBuffer()
 {
-    std::vector<loglib::StreamedBatch> drained;
+    std::vector<loglib::RowBatch> drained;
     {
         const std::scoped_lock lock(mPausedMutex);
         drained.swap(mPausedBatches);
@@ -191,7 +191,7 @@ void QtStreamingLogSink::OnStarted()
     // `LogModel::BeginStreaming` before the worker is spawned.
 }
 
-void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
+void QtStreamingLogSink::OnBatch(loglib::RowBatch batch)
 {
     // While paused, route batches into the paused buffer instead of
     // posting them across threads, so the Qt event queue does not
@@ -326,9 +326,9 @@ std::size_t QtStreamingLogSink::BatchesDroppedDuringShutdown() const noexcept
     return mPending.BatchesDroppedDuringShutdown();
 }
 
-loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::StreamedBatch> batches)
+loglib::RowBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::RowBatch> batches)
 {
-    loglib::StreamedBatch out;
+    loglib::RowBatch out;
     if (batches.empty())
     {
         return out;

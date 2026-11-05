@@ -6,6 +6,11 @@
  * lines held in memory, which lets the rest of the library treat a static file and a live stream the same way. The
  * header also holds the retention limits for streamed lines.
  *
+ * A row's line id means something different for each source, and the row's source pointer tells which one applies. For
+ * a FileLineSource it is the zero-based physical line of the first line of the record. For a StreamLineSource it is a
+ * one-based number that AppendLine gives to each record, and a record that spans several lines gets one id. An id is
+ * therefore a key for RawLine, not a line count. Do not turn ids into line counts.
+ *
  * This is part of the core module.
  */
 #pragma once
@@ -35,8 +40,7 @@ inline constexpr size_t MAX_RETENTION_LINES = 1'000'000;
  * @brief Owns the bytes behind log lines and turns offsets and lengths back into text.
  *
  * A LogLine does not hold text. It holds a pointer to its LineSource and offsets, which keeps rows small and lets a
- * memory-mapped file and a live stream look the same. Line ids mean whatever the source says, and a row's source
- * pointer tells which source an id belongs to. A resolved view stays valid until its line is evicted.
+ * memory-mapped file and a live stream look the same. A resolved view stays valid until its line is evicted.
  */
 class LineSource
 {

@@ -4,8 +4,8 @@
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/parse_file.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
-#include <loglib/table/timestamp_backfill.hpp>
 
 #include <test_common/temp_dir.hpp>
 

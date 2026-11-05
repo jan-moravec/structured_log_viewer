@@ -140,7 +140,7 @@ Each of the ten items below either closes a competitor-gap reviewers and first-t
 
 ### 6. ~~Multi-line records (stack traces and continuation lines)~~
 
-**Status: shipped.** Static files, live tail, and network streams now share a continuation-aware decoder contract. `LineDecodeResult::Continue` extends the pending row instead of emitting another row. The streaming loop defers a row for at most 500 ms; static Stage C holds batch tails and stitches cross-batch continuations. Static raw-byte lookup uses `StreamedBatch::multiLineSpans` and `LogFile::RegisterMultiLineRecord`.
+**Status: shipped.** Static files, live tail, and network streams now share a continuation-aware decoder contract. `LineDecodeResult::Continue` extends the pending row instead of emitting another row. The streaming loop defers a row for at most 500 ms; static Stage C holds batch tails and stitches cross-batch continuations. Static raw-byte lookup uses `RowBatch::multiLineSpans` and `LogFile::RegisterMultiLineRecord`.
 
 **Parser coverage.**
 

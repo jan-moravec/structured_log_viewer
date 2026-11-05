@@ -287,7 +287,7 @@ struct StreamSink : loglib::LogParseSink
     void OnStarted() override
     {
     }
-    void OnBatch(loglib::StreamedBatch batch) override
+    void OnBatch(loglib::RowBatch batch) override
     {
         const std::size_t lines = batch.lines.size();
         const auto start = std::chrono::steady_clock::now();

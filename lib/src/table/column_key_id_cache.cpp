@@ -1,4 +1,4 @@
-#include "loglib/parse/internal/column_key_id_cache.hpp"
+#include "loglib/table/internal/column_key_id_cache.hpp"
 
 #include <algorithm>
 #include <iterator>

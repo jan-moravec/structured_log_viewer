@@ -1,4 +1,4 @@
-#include "loglib/parse/internal/timestamp_promotion.hpp"
+#include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/line_source.hpp"
@@ -19,21 +19,13 @@ namespace loglib::internal
 namespace
 {
 
-/// Lookup the compact value for @p keyId on @p line and return its
-/// underlying string bytes when the value is a string-shaped tag
-/// (`MmapSlice` or `OwnedString`).
-///
-/// `MmapSlice` is always resolved through `LineSource::ResolveMmapBytes`
-/// (file sources only; stream sources never produce this tag).
-///
-/// `OwnedString` resolution depends on @p ownedArena:
-///   * Empty (post-pipeline backfill, stream-loop): the line's
-///     payloads are already relative to the source's canonical arena,
-///     so we resolve via `LineSource::ResolveOwnedBytes`.
-///   * Non-empty (Stage B inline promotion): payloads are relative to
-///     the per-batch staging buffer the caller passes in; we read
-///     directly from it because Stage C has not yet rebased them onto
-///     the canonical arena.
+/**
+ * @brief Returns the bytes of a string value of the line, or nothing if the key is missing or not a string.
+ *
+ * A file slice is resolved through the line's source. For a copied string, a non-empty ownedArena is the per-batch
+ * staging buffer that the value still points into, because its offsets are not yet rebased onto the source's arena. An
+ * empty ownedArena means the offsets already refer to the source, so the source resolves them.
+ */
 std::optional<std::string_view> ExtractStringBytes(
     const LogLine &line, KeyId keyId, std::string_view ownedArena
 ) noexcept
@@ -90,8 +82,10 @@ std::optional<std::string_view> ExtractStringBytes(
     return std::nullopt;
 }
 
-/// Converts a wall clock to UTC. A zone lookup is slow, so @p window keeps
-/// the last offset, and the full lookup runs only next to a transition.
+/**
+ * @brief Converts a wall clock to UTC. A zone lookup is slow, so window keeps the last offset and the full lookup runs
+ * only next to a transition.
+ */
 std::int64_t LocalToUtc(std::int64_t localMicros, const TimeZoneContext &timeZone, LocalOffsetWindow &window)
 {
     if (!window.Contains(localMicros))
@@ -106,38 +100,6 @@ std::int64_t LocalToUtc(std::int64_t localMicros, const TimeZoneContext &timeZon
 }
 
 } // namespace
-
-std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration)
-{
-    std::vector<TimeColumnSpec> result;
-    if (configuration == nullptr)
-    {
-        return result;
-    }
-    const TimeZoneContext timeZone = ProcessDefaultTimeZone();
-    for (const Column &column : configuration->columns)
-    {
-        if (column.type != ColumnType::Time)
-        {
-            continue;
-        }
-        TimeColumnSpec spec;
-        spec.timeZone = timeZone;
-        spec.keyIds.reserve(column.keys.size());
-        for (const std::string &key : column.keys)
-        {
-            spec.keyIds.push_back(keys.GetOrInsert(key));
-        }
-        spec.parseFormats = column.parseFormats;
-        spec.formatKinds.reserve(spec.parseFormats.size());
-        for (const std::string &format : spec.parseFormats)
-        {
-            spec.formatKinds.push_back(ClassifyTimestampFormat(format));
-        }
-        result.push_back(std::move(spec));
-    }
-    return result;
-}
 
 bool PromoteLineTimestamps(
     LogLine &line,

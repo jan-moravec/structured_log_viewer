@@ -5,8 +5,8 @@
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_level.hpp>
+#include <loglib/core/row_batch.hpp>
 #include <loglib/core/stop_token.hpp>
-#include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/table/log_table.hpp>
@@ -195,7 +195,7 @@ public:
     /// `RetentionCap()` is set, FIFO-evict the visible prefix before
     /// insertion; over-cap batches are head-trimmed so per-batch
     /// eviction stays O(cap).
-    void AppendBatch(loglib::StreamedBatch batch);
+    void AppendBatch(loglib::RowBatch batch);
 
     /// Finalise the streaming parse and emit `streamingFinished`.
     void EndStreaming(bool cancelled);

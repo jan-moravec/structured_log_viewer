@@ -22,7 +22,7 @@ void BufferingSink::OnStarted()
     mFinished = false;
 }
 
-void BufferingSink::OnBatch(StreamedBatch batch)
+void BufferingSink::OnBatch(RowBatch batch)
 {
     // Avoid `reserve(size + n)`: some STL impls take it as exact and
     // make this O(N^2/B). `insert` grows geometrically.

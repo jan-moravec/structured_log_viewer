@@ -9,8 +9,8 @@
 #include "loglib/parse/internal/probe_line_view.hpp"
 #include "loglib/parse/internal/static_parser_pipeline.hpp"
 #include "loglib/parse/internal/streaming_parse_loop.hpp"
-#include "loglib/parse/internal/timestamp_promotion.hpp"
 #include "loglib/parse/log_parser.hpp"
+#include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <date/date.h>
 #include <fmt/format.h>

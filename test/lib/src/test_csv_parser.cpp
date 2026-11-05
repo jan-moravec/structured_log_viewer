@@ -92,7 +92,7 @@ TEST_CASE("Validate file with mismatched cell count [csv]", "[csv_parser]")
 namespace
 {
 // Forwards batches into a `LogTable`, mirroring the GUI sink path.
-// Exercises column creation via `StreamedBatch::newKeys` (which the
+// Exercises column creation via `RowBatch::newKeys` (which the
 // value-only `BufferingSink` from `ParseFile` does not).
 struct TableSink : loglib::LogParseSink
 {
@@ -104,7 +104,7 @@ struct TableSink : loglib::LogParseSink
     void OnStarted() override
     {
     }
-    void OnBatch(loglib::StreamedBatch batch) override
+    void OnBatch(loglib::RowBatch batch) override
     {
         AppendFixtureBatch(*table, std::move(batch));
     }

@@ -18,12 +18,12 @@
 namespace
 {
 
-// Helper: build a `StreamedBatch` whose `firstLineNumber` doubles as a
+// Helper: build a `RowBatch` whose `firstLineNumber` doubles as a
 // payload id so test assertions can verify FIFO ordering without
 // touching the move-only `lines` vector.
-loglib::StreamedBatch MakeBatch(std::size_t id)
+loglib::RowBatch MakeBatch(std::size_t id)
 {
-    loglib::StreamedBatch batch;
+    loglib::RowBatch batch;
     batch.firstLineNumber = id;
     return batch;
 }

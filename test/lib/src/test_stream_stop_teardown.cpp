@@ -34,8 +34,8 @@ using loglib::JsonParser;
 using loglib::KeyIndex;
 using loglib::LogParseSink;
 using loglib::ParserOptions;
+using loglib::RowBatch;
 using loglib::StopSource;
-using loglib::StreamedBatch;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
 using loglib_test::ScaledMs;
@@ -103,7 +103,7 @@ struct CountingSink final : LogParseSink
     void OnStarted() override
     {
     }
-    void OnBatch(StreamedBatch batch) override
+    void OnBatch(RowBatch batch) override
     {
         rowCount.fetch_add(batch.lines.size(), std::memory_order_relaxed);
         batchCount.fetch_add(1, std::memory_order_relaxed);

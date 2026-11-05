@@ -2,8 +2,8 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/parse/internal/column_key_id_cache.hpp"
-#include "loglib/table/timestamp_backfill.hpp"
+#include "loglib/table/internal/column_key_id_cache.hpp"
+#include "loglib/table/internal/timestamp_backfill.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <fmt/format.h>
@@ -136,7 +136,7 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
     mData.Sources().push_back(std::move(source));
 }
 
-LogTable::AppendBatchResult LogTable::AppendBatch(StreamedBatch batch)
+LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 {
     mEnum.ClearLastBatchDemotedKeys();
     (void)mEnum.TakePendingLevelBubbleKeys();
@@ -242,7 +242,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(StreamedBatch batch)
     return result;
 }
 
-LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch) const
+LogTable::AppendBatchPreview LogTable::PreviewAppend(const RowBatch &batch) const
 {
     AppendBatchPreview preview;
     preview.newRowCount = mData.Lines().size() + batch.lines.size();
@@ -690,7 +690,7 @@ std::vector<size_t> LogTable::TimeColumnsToFront(size_t firstColumn) const
     return moves;
 }
 
-void LogTable::AppendBatchArranged(StreamedBatch batch)
+void LogTable::AppendBatchArranged(RowBatch batch)
 {
     const size_t oldColumnCount = ColumnCount();
     const AppendBatchResult result = AppendBatch(std::move(batch));

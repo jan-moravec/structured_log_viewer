@@ -13,8 +13,8 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
-#include <loglib/table/timestamp_backfill.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -229,8 +229,8 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
     return {std::move(sorted), keys, source, 0};
 }
 
-// Helper that snapshots a column → KeyId range from a given KeyIndex into a StreamedBatch::newKeys.
-StreamedBatch BuildStreamedBatch(
+// Helper that snapshots a column → KeyId range from a given KeyIndex into a RowBatch::newKeys.
+RowBatch BuildRowBatch(
     KeyIndex &keys,
     LineSource &source,
     const std::vector<std::vector<std::pair<std::string, LogValue>>> &lines,
@@ -238,7 +238,7 @@ StreamedBatch BuildStreamedBatch(
     size_t firstLineNumber
 )
 {
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = firstLineNumber;
     batch.lines.reserve(lines.size());
     for (const auto &fields : lines)
@@ -272,8 +272,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    auto batchA =
-        BuildStreamedBatch(keys, *sourcePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
+    auto batchA = BuildRowBatch(keys, *sourcePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
     AppendFixtureBatch(table, std::move(batchA));
 
     REQUIRE(table.RowCount() == 1);
@@ -281,9 +280,8 @@ TEST_CASE(
     const std::string firstHeader = table.GetHeader(0);
     const std::string secondHeader = table.GetHeader(1);
 
-    auto batchB = BuildStreamedBatch(
-        keys, *sourcePtr, {{{"key1", std::string("v1b")}, {"key2", std::string("v2b")}}}, keys.Size(), 2
-    );
+    auto batchB =
+        BuildRowBatch(keys, *sourcePtr, {{{"key1", std::string("v1b")}, {"key2", std::string("v2b")}}}, keys.Size(), 2);
     REQUIRE(batchB.newKeys.empty());
     AppendFixtureBatch(table, std::move(batchB));
 
@@ -307,7 +305,7 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
 
     KeyIndex &keys = table.Keys();
     AppendFixtureBatch(
-        table, BuildStreamedBatch(keys, *sourcePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
+        table, BuildRowBatch(keys, *sourcePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
     );
     REQUIRE(table.ColumnCount() == 2);
     const std::string alphaHeader = table.GetHeader(0);
@@ -315,7 +313,7 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
 
     AppendFixtureBatch(
         table,
-        BuildStreamedBatch(
+        BuildRowBatch(
             keys, *sourcePtr, {{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}}, keys.Size() - 1, 2
         )
     );
@@ -341,7 +339,7 @@ TEST_CASE("LogTable::AppendBatchArranged moves a new time column to the front", 
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    table.AppendBatchArranged(BuildStreamedBatch(keys, *sourcePtr, {{{"msg", std::string("first")}}}, 0, 1));
+    table.AppendBatchArranged(BuildRowBatch(keys, *sourcePtr, {{{"msg", std::string("first")}}}, 0, 1));
     REQUIRE(table.ColumnCount() == 1);
     CHECK(table.TimeColumnsToFront(0).empty());
 
@@ -349,7 +347,7 @@ TEST_CASE("LogTable::AppendBatchArranged moves a new time column to the front", 
         std::chrono::sys_days{std::chrono::year{2024} / std::chrono::January / 15}
     );
     table.AppendBatchArranged(
-        BuildStreamedBatch(keys, *sourcePtr, {{{"msg", std::string("second")}, {"timestamp", ts}}}, keys.Size(), 2)
+        BuildRowBatch(keys, *sourcePtr, {{{"msg", std::string("second")}, {"timestamp", ts}}}, keys.Size(), 2)
     );
 
     REQUIRE(table.ColumnCount() == 2);
@@ -367,7 +365,7 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
     LogTable table;
     table.BeginStreaming(std::move(source));
 
-    StreamedBatch errorOnly;
+    RowBatch errorOnly;
     errorOnly.firstLineNumber = 1;
     errorOnly.errors.emplace_back("Something went wrong on line 1");
     LogTable::AppendBatchResult appendResult1;
@@ -376,7 +374,7 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
     CHECK(table.RowCount() == 0);
     CHECK(!appendResult1.backfilledColumns.has_value());
 
-    StreamedBatch newKeysOnly;
+    RowBatch newKeysOnly;
     newKeysOnly.firstLineNumber = 1;
     newKeysOnly.newKeys.emplace_back("future_key");
     REQUIRE_NOTHROW(table.AppendBatch(std::move(newKeysOnly)));
@@ -385,7 +383,7 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
     CHECK(table.ColumnCount() == 1);
     CHECK(table.GetHeader(0) == "future_key");
 
-    StreamedBatch entirelyEmpty;
+    RowBatch entirelyEmpty;
     entirelyEmpty.firstLineNumber = 1;
     REQUIRE_NOTHROW(table.AppendBatch(std::move(entirelyEmpty)));
     CHECK(table.RowCount() == 0);
@@ -432,7 +430,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // {alpha, beta}.
     AppendFixtureBatch(
         table,
-        BuildStreamedBatch(
+        BuildRowBatch(
             keys,
             *sourcePtr,
             {
@@ -448,7 +446,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // +gamma at index 2; alpha/beta stay put.
     AppendFixtureBatch(
         table,
-        BuildStreamedBatch(
+        BuildRowBatch(
             keys,
             *sourcePtr,
             {
@@ -465,7 +463,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // No-new-keys batch leaves column count and positions unchanged.
     AppendFixtureBatch(
         table,
-        BuildStreamedBatch(
+        BuildRowBatch(
             keys,
             *sourcePtr,
             {
@@ -481,7 +479,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // Two new keys land at the end in observation order; existing positions stable.
     AppendFixtureBatch(
         table,
-        BuildStreamedBatch(
+        BuildRowBatch(
             keys,
             *sourcePtr,
             {
@@ -590,7 +588,7 @@ TEST_CASE(
     // Batch 1: no timestamp column yet; rows carry only `msg`.
     AppendFixtureBatch(
         table,
-        BuildStreamedBatch(
+        BuildRowBatch(
             keys,
             *sourcePtr,
             {
@@ -612,7 +610,7 @@ TEST_CASE(
     // column. The two already-appended rows did not see Stage B's timestamp pass (their
     // batch did not even contain the key) so AppendBatch must back-fill them — the new row
     // also gets parsed by the same back-fill (because its KeyId is not yet in the snapshot).
-    const auto appendResult2 = table.AppendBatch(BuildStreamedBatch(
+    const auto appendResult2 = table.AppendBatch(BuildRowBatch(
         keys,
         *sourcePtr,
         {
@@ -650,7 +648,7 @@ TEST_CASE(
     // to fire `beginInsertRows` in `LogModel::AppendBatch`, we deliberately do *not* set
     // the batch result backfill range (which would emit a redundant `dataChanged` over rows that are
     // simultaneously being inserted into the view).
-    const auto appendResult3 = table.AppendBatch(BuildStreamedBatch(
+    const auto appendResult3 = table.AppendBatch(BuildRowBatch(
         keys,
         *sourcePtr,
         {{{"msg", std::string("fourth")}, {"timestamp", std::string("2024-01-15T12:34:57")}}},
@@ -663,7 +661,7 @@ TEST_CASE(
 
     // A second post-snapshot batch with multiple new rows confirms the slice back-fill
     // keeps running on every batch (not just the immediate batch after first observation).
-    const auto appendResult4 = table.AppendBatch(BuildStreamedBatch(
+    const auto appendResult4 = table.AppendBatch(BuildRowBatch(
         keys,
         *sourcePtr,
         {
@@ -735,7 +733,7 @@ TEST_CASE(
         std::chrono::minutes{34} + std::chrono::seconds{56}
     );
 
-    StreamedBatch batch = BuildStreamedBatch(
+    RowBatch batch = BuildRowBatch(
         keys,
         *sourcePtr,
         {
@@ -769,7 +767,7 @@ TEST_CASE(
     // A subsequent steady-state batch must also leave the time column alone:
     // the slice back-fill path is just as wasteful as the first-observation
     // path when Stage B already did the work.
-    StreamedBatch batch2 = BuildStreamedBatch(
+    RowBatch batch2 = BuildRowBatch(
         keys,
         *sourcePtr,
         {
@@ -839,7 +837,7 @@ TEST_CASE(
 
     for (int batchIdx = 0; batchIdx < BATCHES; ++batchIdx)
     {
-        StreamedBatch batch;
+        RowBatch batch;
         batch.firstLineNumber = static_cast<size_t>(static_cast<size_t>(batchIdx) + 1u);
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0", std::string("steady")}}));
         REQUIRE(batch.newKeys.empty());
@@ -926,7 +924,7 @@ TEST_CASE(
     // RefreshColumnKeyIdsForKeys must skip its 50-key Find loop entirely.
     KeyIndex::ResetInstrumentationCounters();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"k0_new"};
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0_new", std::string("hello")}}));
@@ -949,7 +947,7 @@ TEST_CASE(
 namespace
 {
 
-/// Build a `StreamedBatch` of @p count synthetic `LogLine` rows
+/// Build a `RowBatch` of @p count synthetic `LogLine` rows
 /// referencing @p streamSource and numbered
 /// `[firstLineId, firstLineId + count)`, each carrying a single
 /// `value` field equal to its line id. The first batch in a sequence
@@ -961,11 +959,11 @@ namespace
 /// Each row is also published into @p streamSource via `AppendLine`
 /// so `LineSource::RawLine` round-trips. Tests expect the source's
 /// next-line id to track @p firstLineId.
-StreamedBatch MakeStreamBatch(
+RowBatch MakeStreamBatch(
     StreamLineSource &streamSource, KeyIndex &keys, KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey
 )
 {
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = firstLineId;
     if (declareNewKey)
     {
@@ -1142,7 +1140,7 @@ TEST_CASE(
     // First file's batch: one row, two new keys. We don't push any
     // `localLineOffsets` here -- this test focuses on `AppendStreaming`'s
     // routing of the *next* batch's offsets, not on first-file accounting.
-    StreamedBatch batchA;
+    RowBatch batchA;
     batchA.firstLineNumber = 1;
     batchA.lines.push_back(MakeLine(keys, *sourceAPtr, {{"key1", std::string("a1")}, {"key2", std::string("a2")}}));
     batchA.newKeys.emplace_back("key1");
@@ -1179,7 +1177,7 @@ TEST_CASE(
 
     // Second file's batch: one row using the existing keys (no newKeys)
     // plus a per-line offset that must land in fileB, not fileA.
-    StreamedBatch batchB;
+    RowBatch batchB;
     batchB.firstLineNumber = 1;
     batchB.lines.push_back(MakeLine(keys, *sourceBPtr, {{"key1", std::string("b1")}, {"key2", std::string("b2")}}));
     // The `LogFile` ctor seeds `mLineOffsets = [0]`, so any strictly
@@ -1207,7 +1205,7 @@ namespace
 
 /// Append `enoughRows` rows alternating between `values` so the per-column
 /// tracker crosses the promotion threshold.
-StreamedBatch BuildEnumBatch(
+RowBatch BuildEnumBatch(
     KeyIndex &keys,
     LineSource &source,
     const std::string &columnKey,
@@ -1223,7 +1221,7 @@ StreamedBatch BuildEnumBatch(
     {
         rows.push_back({{columnKey, std::string(values[i % values.size()])}});
     }
-    StreamedBatch batch = BuildStreamedBatch(keys, source, rows, announceNewKey ? 0 : keys.Size(), firstLineNumber);
+    RowBatch batch = BuildRowBatch(keys, source, rows, announceNewKey ? 0 : keys.Size(), firstLineNumber);
     if (!announceNewKey)
     {
         batch.newKeys.clear();
@@ -1702,7 +1700,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"level", "severity"};
     batch.lines.push_back(
@@ -1881,7 +1879,7 @@ TEST_CASE(
     {
         values.emplace_back((i % 2) == 0 ? "alpha" : "beta");
     }
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"tier"};
     for (const std::string &value : values)
@@ -1927,7 +1925,7 @@ TEST_CASE(
         // Every 10th row is over-cap.
         values.push_back((i % 10 == 0) ? longValue : "alpha");
     }
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"tier"};
     for (const std::string &value : values)
@@ -2020,7 +2018,7 @@ TEST_CASE(
         // 10% long values: above the 1% tolerance, past the 50-sample min.
         values.push_back((i % 10 == 0) ? longValue : "short");
     }
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"tag"};
     for (const std::string &value : values)
@@ -2063,7 +2061,7 @@ TEST_CASE(
     // Batch 1: 6 rows where `feature` is absent. The candidate scan walks
     // the first `scanCap = 4` rows, sees no presence, and resets
     // `rowsObserved` instead of routing to a terminal type.
-    StreamedBatch batch1;
+    RowBatch batch1;
     batch1.firstLineNumber = 1;
     batch1.newKeys = {"unrelated", "feature"};
     for (size_t i = 0; i < 6; ++i)
@@ -2083,7 +2081,7 @@ TEST_CASE(
 
     // Batch 2: the column finally appears; the candidate scan sees two
     // presences and promotes via the stream-mode threshold.
-    StreamedBatch batch2;
+    RowBatch batch2;
     batch2.firstLineNumber = 7;
     for (size_t i = 0; i < 4; ++i)
     {
@@ -2198,7 +2196,7 @@ namespace
 /// Build a batch where every row carries the same numeric kind under
 /// `columnKey`. Used by the no-string-bail routing tests.
 template <typename T>
-StreamedBatch BuildNumericBatch(
+RowBatch BuildNumericBatch(
     KeyIndex &keys, LineSource &source, const std::string &columnKey, T value, size_t rowCount, bool announceNewKey
 )
 {
@@ -2208,7 +2206,7 @@ StreamedBatch BuildNumericBatch(
     {
         rows.push_back({{columnKey, LogValue{value}}});
     }
-    StreamedBatch batch = BuildStreamedBatch(keys, source, rows, announceNewKey ? 0 : keys.Size(), 1);
+    RowBatch batch = BuildRowBatch(keys, source, rows, announceNewKey ? 0 : keys.Size(), 1);
     if (!announceNewKey)
     {
         batch.newKeys.clear();
@@ -2274,7 +2272,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"value"};
     for (size_t i = 0; i < 8; ++i)
@@ -2309,7 +2307,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"flag"};
     for (size_t i = 0; i < 8; ++i)
@@ -2337,7 +2335,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"flag"};
     for (size_t i = 0; i < 8; ++i)
@@ -2564,7 +2562,7 @@ TEST_CASE(
 
     KeyIndex &keys = table.Keys();
     const std::string longValue(80, 'q');
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"message"};
     for (size_t i = 0; i < 30; ++i)
@@ -2607,7 +2605,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"tier"};
     for (size_t i = 0; i < 30; ++i)
@@ -2658,7 +2656,7 @@ TEST_CASE(
 
     KeyIndex &keys = table.Keys();
     const std::string longValue(80, 'q');
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"tag"};
     // All over-cap: would demote an autoDetect column at finalize,
@@ -2725,7 +2723,7 @@ TEST_CASE(
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
-    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].header == "body");
 
@@ -2770,7 +2768,7 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     firstRows.back().emplace_back("col_a", std::string("a"));
     firstRows.back().emplace_back("col_b", std::string("b"));
     firstRows.back().emplace_back("col_c", std::string("c"));
-    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
     REQUIRE(table.Configuration().Configuration().columns[0].header == "col_a");
     REQUIRE(table.Configuration().Configuration().columns[1].header == "col_b");
@@ -2826,7 +2824,7 @@ TEST_CASE(
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
-    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     const size_t keyCountBeforeLevelBatch = keys.Size();
     REQUIRE(keyCountBeforeLevelBatch == 1);
@@ -2845,7 +2843,7 @@ TEST_CASE(
     // land in `newKeys`; hard-pinning would silently drop one if
     // the fixture later grows an extra pre-existing column.
     const auto appendResult103 =
-        table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, levelRows, keyCountBeforeLevelBatch, 2));
+        table.AppendBatch(BuildRowBatch(keys, *sourcePtr, levelRows, keyCountBeforeLevelBatch, 2));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
@@ -2896,7 +2894,7 @@ TEST_CASE(
     firstRows.back().emplace_back("col_a", std::string("a"));
     firstRows.back().emplace_back("col_b", std::string("b"));
     firstRows.back().emplace_back("col_c", std::string("c"));
-    AppendFixtureBatch(table, BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
     const auto appendResult10 =
@@ -2935,7 +2933,7 @@ TEST_CASE(
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
-    const auto appendResult104 = table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    const auto appendResult104 = table.AppendBatch(BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
 
     const auto appendResult11 =
         table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
@@ -3180,7 +3178,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // 5 rows total: 3 int slots, 1 string slot, 1 absent (monostate).
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys.emplace_back("value");
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(10)}}}));
@@ -3233,7 +3231,7 @@ TEST_CASE(
     LogTable table({}, std::move(mgr));
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys.emplace_back("value");
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("x")}}}));
@@ -3321,7 +3319,7 @@ TEST_CASE(
 
     // Bootstrap a single-column session and pin it to Time so the
     // back-fill seeds the default strftime formats.
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys.emplace_back("value");
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("not a timestamp")}}}));
@@ -3384,7 +3382,7 @@ TEST_CASE(
     table.Configuration().SetColumnTypePair(0, ColumnType::String, false);
     table.OnUserChangedColumnType(0, ColumnType::Enumeration);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
-    CHECK(table.AppendBatch(StreamedBatch{}).demotedKeys.empty());
+    CHECK(table.AppendBatch(RowBatch{}).demotedKeys.empty());
 }
 
 TEST_CASE(

@@ -1266,12 +1266,12 @@ private:
 
 /// Captures `OnBatch` deliveries for the streaming-parser unit test
 /// without depending on Qt. Owns the `KeyIndex` (parser interns keys
-/// here) and the move-collected `StreamedBatch`es so the test can
+/// here) and the move-collected `RowBatch`es so the test can
 /// inspect emitted `LogLine`s after `OnFinished`.
 struct CollectingStreamSink final : loglib::LogParseSink
 {
     loglib::KeyIndex keys;
-    std::vector<loglib::StreamedBatch> batches;
+    std::vector<loglib::RowBatch> batches;
     bool finished = false;
     bool finishedCancelled = false;
 
@@ -1282,7 +1282,7 @@ struct CollectingStreamSink final : loglib::LogParseSink
     void OnStarted() override
     {
     }
-    void OnBatch(loglib::StreamedBatch batch) override
+    void OnBatch(loglib::RowBatch batch) override
     {
         batches.push_back(std::move(batch));
     }

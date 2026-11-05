@@ -5,6 +5,10 @@
  * memory. It can drop old lines, which lets a live tail run for days with bounded memory. The parser must store owned
  * strings for it, because there is no stable file to point into.
  *
+ * The line id of a row is a one-based number that AppendLine gives to each record, and it grows by one per record. A
+ * record that spans several lines gets one id. An id counts the records appended so far, not physical lines, and
+ * eviction does not renumber the records that remain.
+ *
  * This is part of the core module.
  */
 #pragma once
@@ -32,7 +36,7 @@ class BytesProducer;
  * oldest lines, which is how a streaming session stays within its retention limit.
  *
  * - Its bytes are not stable, so parsers must store decoded values as OwnedString cells and not as MmapSlice cells.
- * - It supports eviction. Line ids start at 1, grow by one, and are assigned by AppendLine.
+ * - It supports eviction.
  * - A mutex guards all state, so a parser thread can append while another thread reads or evicts. A view from
  *   ResolveOwnedBytes is invalid once its line is evicted.
  */

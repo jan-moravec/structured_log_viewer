@@ -73,7 +73,7 @@ LogTable BuildEnumTable(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.lines.reserve(rowCount);
     for (size_t i = 0; i < rowCount; ++i)
@@ -120,7 +120,7 @@ LogTable BuildStringTable(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.lines.reserve(perRowValues.size());
     for (const auto &v : perRowValues)
@@ -160,7 +160,7 @@ LogTable BuildTimeTable(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.lines.reserve(microsSinceEpoch.size());
     for (const int64_t us : microsSinceEpoch)
@@ -290,7 +290,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
     table.AppendStreaming(std::move(source));
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = table.RowCount() + 1;
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
     AppendFixtureBatch(table, std::move(batch));
@@ -346,7 +346,7 @@ TEST_CASE(
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
     table.AppendStreaming(std::move(source));
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = table.RowCount() + 1;
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
     AppendFixtureBatch(table, std::move(batch));
@@ -439,7 +439,7 @@ TEST_CASE(
         auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
         FileLineSource *sourcePtr = source.get();
         table.AppendStreaming(std::move(source));
-        StreamedBatch batch;
+        RowBatch batch;
         batch.firstLineNumber = table.RowCount() + 1;
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
         AppendFixtureBatch(table, std::move(batch));
@@ -468,7 +468,7 @@ TEST_CASE(
         auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
         FileLineSource *sourcePtr = source.get();
         table.AppendStreaming(std::move(source));
-        StreamedBatch batch;
+        RowBatch batch;
         batch.firstLineNumber = table.RowCount() + 1;
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
         AppendFixtureBatch(table, std::move(batch));
@@ -575,7 +575,7 @@ LogTable BuildSingleColumnTable(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.lines.reserve(perRowValues.size());
     for (const auto &v : perRowValues)
@@ -790,7 +790,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     const std::vector<std::string> rowValues = {"info", "WARN", "error", "qux", "Warning"};
     for (const auto &v : rowValues)
@@ -1004,7 +1004,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     // 4 rows: (a,x) (a,y) (b,x) (b,y). Only row 0 satisfies both leaves.
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("a")}, {"region", std::string("x")}}));
@@ -1094,7 +1094,7 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     // (a,x), (a,y), (b,x), (b,y), (c,x), (c,y).
     for (const auto *cat : {"a", "b", "c"})

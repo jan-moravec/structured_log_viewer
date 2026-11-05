@@ -105,7 +105,7 @@ public:
     /// `LogModel`'s teardown to flush already-parsed rows into the
     /// visible model before tear-down. Empty optional iff the buffer was
     /// already empty.
-    std::optional<loglib::StreamedBatch> TakePausedBuffer();
+    std::optional<loglib::RowBatch> TakePausedBuffer();
 
     /// GUI-thread fallback used by `LogModel`'s teardown. Drains the
     /// bounded queue and applies any rows under the still-valid
@@ -129,14 +129,14 @@ public:
     loglib::KeyIndex &Keys() override;
 
     void OnStarted() override;
-    void OnBatch(loglib::StreamedBatch batch) override;
+    void OnBatch(loglib::RowBatch batch) override;
     void OnFinished(bool cancelled) override;
 
 private:
     /// Concatenates the batches into one. The first batch's
     /// `firstLineNumber` is preserved; all other vectors are appended.
     /// Used by `Resume()`, `TakePausedBuffer()`, and `DrainGeneration`.
-    static loglib::StreamedBatch CoalesceLocked(std::vector<loglib::StreamedBatch> batches);
+    static loglib::RowBatch CoalesceLocked(std::vector<loglib::RowBatch> batches);
 
     /// Total row count across `mPausedBatches`. Caller must hold
     /// `mPausedMutex`.
@@ -165,7 +165,7 @@ private:
     /// Guards `mPausedBatches`. Worker appends/trims; GUI reads size for
     /// the status bar and drains on Resume.
     mutable std::mutex mPausedMutex;
-    std::vector<loglib::StreamedBatch> mPausedBatches;
+    std::vector<loglib::RowBatch> mPausedBatches;
 
     /// Bounded SPSC queue between worker `OnBatch` and the GUI drain.
     /// Producer blocks once full; consumer never blocks.

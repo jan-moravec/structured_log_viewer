@@ -55,7 +55,7 @@ public:
     ~BatchCoalescer() = default;
 
     /** @brief The batch being built. Callers add lines and errors to it, and the static path also adds line offsets. */
-    [[nodiscard]] StreamedBatch &Pending() noexcept
+    [[nodiscard]] RowBatch &Pending() noexcept
     {
         return mPending;
     }
@@ -72,7 +72,7 @@ public:
     }
 
     /** @brief Appends the keys added since the last call to out, and remembers that they were reported. */
-    void DrainNewKeysInto(StreamedBatch &out);
+    void DrainNewKeysInto(RowBatch &out);
 
     /**
      * @brief Sends the pending batch if a threshold was reached, or always when force is set. Returns true if a batch
@@ -91,7 +91,7 @@ public:
 private:
     LogParseSink &mSink;
     KeyIndex &mKeys;
-    StreamedBatch mPending;
+    RowBatch mPending;
     bool mPrimed = false;
     size_t mPrevKeyCount;
     size_t mFlushLines;

@@ -1798,7 +1798,7 @@ TEST_CASE("ResolveLevel honours per-column alias overrides", "[log_level]")
 
 // -----------------------------------------------------------------------------
 // Schema back/forward-compat tests pinning `error_on_unknown_keys=false`
-// (configured in `log_configuration_glaze_opts.hpp`). Without that
+// (configured in glaze_options.hpp). Without that
 // option every pre-widening session JSON (using the old `"locator"`
 // field) would throw on load.
 // -----------------------------------------------------------------------------
