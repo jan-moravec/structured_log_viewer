@@ -4,7 +4,10 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/row_batch.hpp>
+#include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/output/exports/export_sink.hpp>
+#include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -24,6 +27,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -693,5 +697,140 @@ TEST_CASE("A JSON number's type follows the value's own text", "[batch_contract]
         RecordingSink sink;
         ParseAsStream(JsonParser{}, bytes, 5, sink);
         CHECK(DescribeRows(sink) == expected);
+    }
+}
+
+namespace
+{
+
+/** Collects what an export writes. */
+class StringExportSink final : public exports::ExportSink
+{
+public:
+    void Write(std::string_view bytes) override
+    {
+        text.append(bytes);
+    }
+    void Finish() override
+    {
+    }
+
+    std::string text;
+};
+
+/**
+ * Sixteen keys, each first seen in its own block of rows, so the order of the columns depends on which worker meets a
+ * key first. The numeric key mixes 5 and 5.5 across and inside blocks, so its cell types depend on the cache of the
+ * worker that parses a row. A block ends with a block of rows that hold every key.
+ */
+[[nodiscard]] std::string DeterminismInput()
+{
+    constexpr int KEY_COUNT = 16;
+    constexpr int ROWS_PER_BLOCK = 400;
+    std::string bytes;
+    for (int block = 0; block <= KEY_COUNT; ++block)
+    {
+        const int keysInBlock = std::min(block + 1, KEY_COUNT);
+        for (int row = 0; row < ROWS_PER_BLOCK; ++row)
+        {
+            bytes += "{\"id\":" + std::to_string((block * ROWS_PER_BLOCK) + row);
+            bytes += (row % 3 == block % 2) ? ",\"num\":5" : ",\"num\":5.5";
+            // Several keys start in the same block, in an order that differs from the order of their key text.
+            for (int k = 0; k < keysInBlock; ++k)
+            {
+                const int key = (KEY_COUNT - 1) - k;
+                bytes +=
+                    ",\"key_" + std::to_string(key) + "\":\"value of the key in block " + std::to_string(block) + "\"";
+            }
+            bytes += "}\n";
+        }
+    }
+    return bytes;
+}
+
+/** What a parse leaves in a table: the column order, the type of every cell, and the JSON Lines export. */
+struct TableFacts
+{
+    std::vector<std::string> headers;
+    std::vector<std::vector<std::size_t>> cellTypes;
+    std::string jsonLines;
+};
+
+[[nodiscard]] TableFacts ParseIntoTable(const std::string &bytes, unsigned int threads, std::size_t batchSizeBytes)
+{
+    const TestLogFile file("batch_contract_determinism_" + std::to_string(threads) + ".jsonl");
+    file.Write(bytes);
+    auto source = file.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    ParserOptions options;
+    options.threads = threads;
+    options.batchSizeBytes = batchSizeBytes;
+    AppendingSink sink(table);
+    JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
+
+    TableFacts facts;
+    const std::size_t columns = table.ColumnCount();
+    for (std::size_t column = 0; column < columns; ++column)
+    {
+        facts.headers.push_back(table.GetHeader(column));
+        std::vector<std::size_t> types;
+        types.reserve(table.RowCount());
+        for (std::size_t row = 0; row < table.RowCount(); ++row)
+        {
+            types.push_back(table.GetValue(row, column).index());
+        }
+        facts.cellTypes.push_back(std::move(types));
+    }
+
+    std::vector<std::size_t> rows(table.RowCount());
+    std::iota(rows.begin(), rows.end(), std::size_t{0});
+    std::vector<std::size_t> allColumns(columns);
+    std::iota(allColumns.begin(), allColumns.end(), std::size_t{0});
+    const exports::RowSource rowSource{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = allColumns,
+        .includeAllFieldsForJson = true,
+        .includeHeaderRow = false,
+    };
+    StringExportSink exportSink;
+    exports::MakeExporter(exports::ExportFormat::JsonLines)->Run(rowSource, exportSink, StopToken{});
+    facts.jsonLines = std::move(exportSink.text);
+    return facts;
+}
+
+} // namespace
+
+TEST_CASE(
+    "The same file gives the same columns, cell types and export for every thread count and batch size",
+    "[batch_contract][determinism]"
+)
+{
+    const std::string bytes = DeterminismInput();
+    const TableFacts expected = ParseIntoTable(bytes, 1, 1024 * 1024);
+    REQUIRE(expected.headers.size() == 18);
+    REQUIRE_FALSE(expected.jsonLines.empty());
+
+    // The first row of the first block decides the order of the keys it holds, and a later key follows in input order.
+    CHECK(expected.headers[0] == "id");
+    CHECK(expected.headers[1] == "num");
+    CHECK(expected.headers[2] == "key_15");
+
+    for (const unsigned int threads : {1U, 2U, 8U})
+    {
+        for (const std::size_t batchSize : {std::size_t{64} * 1024, std::size_t{1024} * 1024})
+        {
+            for (int run = 0; run < 5; ++run)
+            {
+                const TableFacts actual = ParseIntoTable(bytes, threads, batchSize);
+                INFO("threads " << threads << ", batch size " << batchSize << ", run " << run);
+                CHECK(actual.headers == expected.headers);
+                CHECK(actual.cellTypes == expected.cellTypes);
+                CHECK(actual.jsonLines == expected.jsonLines);
+            }
+        }
     }
 }
