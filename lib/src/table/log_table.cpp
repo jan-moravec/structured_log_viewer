@@ -2,7 +2,7 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/parse/internal/column_key_id_cache.hpp"
+#include "loglib/table/internal/column_key_id_cache.hpp"
 #include "loglib/table/timestamp_backfill.hpp"
 #include "loglib/time/time_zone_context.hpp"
 

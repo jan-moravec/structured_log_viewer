@@ -4,7 +4,7 @@
  * A column may show several log keys. LogTable keeps their ids in a cache, and these functions rebuild it, extend it
  * for new keys or reorder it when a column moves.
  *
- * This is part of the parse module.
+ * This is part of the table module.
  */
 #pragma once
 

@@ -45,7 +45,7 @@ add_library(
     src/parse/timestamp_promotion.cpp
     src/schema/log_configuration.cpp
     src/query/column_projection.cpp
-    src/parse/column_key_id_cache.cpp
+    src/table/column_key_id_cache.cpp
     src/table/column_type_health.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
