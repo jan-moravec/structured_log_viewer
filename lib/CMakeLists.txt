@@ -127,6 +127,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/query/log_filter.hpp
     include/loglib/core/log_level.hpp
     include/loglib/core/log_line.hpp
+    include/loglib/core/row_batch.hpp
     include/loglib/parse/log_parse_sink.hpp
     include/loglib/parse/log_parser.hpp
     include/loglib/query/log_string_matcher.hpp

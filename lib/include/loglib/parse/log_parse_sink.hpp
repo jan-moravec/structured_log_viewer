@@ -10,46 +10,10 @@
 #pragma once
 
 #include "loglib/core/key_index.hpp"
-#include "loglib/core/log_line.hpp"
-
-#include <cstddef>
-#include <cstdint>
-#include <string>
-#include <vector>
+#include "loglib/core/row_batch.hpp"
 
 namespace loglib
 {
-
-/**
- * @brief One batch of output that a parser hands to a LogParseSink.
- *
- * A batch without rows is valid, even if it has errors or new keys. The parser always sends a last batch before
- * OnFinished.
- *
- * lines holds the parsed rows, for static files and live streams alike. Each row knows its LineSource, so reading it is
- * the same for both. localLineOffsets is filled only by the file pipeline, and is appended to the line offsets of the
- * LogFile. The streaming loop leaves it empty.
- */
-struct StreamedBatch
-{
-    std::vector<LogLine> lines;
-    std::vector<uint64_t> localLineOffsets;
-    std::vector<std::string> errors;
-    std::vector<std::string> newKeys;
-    /**
-     * @brief The line ranges of multi-line records in a file source. A consumer must append localLineOffsets before it
-     * registers these spans on the LogFile.
-     */
-    std::vector<MultiLineRecordSpan> multiLineSpans;
-    /**
-     * @brief The line number, counting from 1, where the batch starts.
-     *
-     * For a batch with lines it is the start of the chunk, which can be lower than the first parsed line when errors
-     * come before it. For a batch without lines it is the position of the line counter when the batch was closed, and
-     * it does not refer to a particular line.
-     */
-    size_t firstLineNumber = 0;
-};
 
 /**
  * @brief Receives the output of a parser.

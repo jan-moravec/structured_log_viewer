@@ -6,7 +6,7 @@
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/stop_token.hpp>
-#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/core/row_batch.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/table/log_table.hpp>

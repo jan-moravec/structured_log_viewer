@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/core/row_batch.hpp>
 
 #include <atomic>
 #include <condition_variable>
