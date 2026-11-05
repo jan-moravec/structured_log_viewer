@@ -354,8 +354,11 @@ loglib::RowBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::RowBatch
     out.multiLineSpans.reserve(multiLineSpanCount);
     out.firstLineNumber = batches.front().firstLineNumber;
     out.lastLineNumber = batches.back().lastLineNumber;
+    // Every batch of one parse carries the same converted time keys.
+    out.convertedTimeKeys = batches.front().convertedTimeKeys;
     for (auto &batch : batches)
     {
+        Q_ASSERT(batch.convertedTimeKeys == out.convertedTimeKeys);
         std::ranges::move(batch.lines, std::back_inserter(out.lines));
         std::ranges::move(batch.localLineOffsets, std::back_inserter(out.localLineOffsets));
         std::ranges::move(batch.errors, std::back_inserter(out.errors));

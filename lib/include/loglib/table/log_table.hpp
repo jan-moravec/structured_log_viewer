@@ -375,7 +375,6 @@ private:
 
     void RefreshColumnKeyIds();
     void RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys);
-    void RefreshSnapshotTimeKeys();
 
     /** @brief Points every owned LineSource at the enumeration dictionaries. */
     void RewireSourceRegistries();
@@ -391,11 +390,11 @@ private:
     /** @brief The key ids of each column, indexed by column. */
     std::vector<std::vector<KeyId>> mColumnKeyIds;
 
-    /** @brief Time keys that existed when streaming began. The parser already converts these inline. */
-    std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
-
-    /** @brief Time keys found after streaming began. The table converts these when it appends a batch. */
-    std::unordered_set<KeyId> mPostSnapshotTimeKeys;
+    /**
+     * @brief The time keys that the table converts itself, because the parser did not. The table has converted the rows
+     * it already held once, and converts each later batch as it arrives.
+     */
+    std::unordered_set<KeyId> mTableConvertedTimeKeys;
 
     /**
      * @brief Type inference, enumeration encoding and the level cache. It owns the dictionaries, which LineSources

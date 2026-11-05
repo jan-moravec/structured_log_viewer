@@ -451,7 +451,7 @@ private:
     template <typename Source>
     void Parse(const loglib::DetectedFormat &format, Source &source, loglib::ParserOptions parserOptions)
     {
-        // The table skips columns it expects the parser to have converted, so the parser gets the table's Time columns.
+        // The parser converts the table's Time columns on its worker threads, which is faster than the table doing it.
         parserOptions.timeColumns = loglib::TimeColumnsOf(mLoaded.table.Configuration().Configuration());
         parserOptions.defaultSourceTimeZone = mLoaded.table.DefaultSourceTimeZone();
         const auto parser = loglib::MakeParserForFormat(format.format, format.Options(!mInput->noMultilineLogfmt));

@@ -70,6 +70,7 @@ bool BatchCoalescer::TryFlush(bool force, size_t lastLineNumber)
 
     DrainNewKeysInto(mPending);
     mPending.lastLineNumber = lastLineNumber;
+    mPending.convertedTimeKeys = mConvertedTimeKeys;
     mSink.OnBatch(std::move(mPending));
     mPending = RowBatch{};
     mPrimed = false;
@@ -89,6 +90,7 @@ void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
         }
         DrainNewKeysInto(mPending);
         mPending.lastLineNumber = lastLineNumber;
+        mPending.convertedTimeKeys = mConvertedTimeKeys;
         mSink.OnBatch(std::move(mPending));
         mPending = RowBatch{};
         mPrimed = false;
@@ -98,6 +100,7 @@ void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
         RowBatch tail;
         tail.firstLineNumber = lastLineNumber + 1;
         tail.lastLineNumber = lastLineNumber;
+        tail.convertedTimeKeys = mConvertedTimeKeys;
         DrainNewKeysInto(tail);
         mSink.OnBatch(std::move(tail));
     }

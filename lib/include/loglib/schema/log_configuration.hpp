@@ -90,8 +90,9 @@ struct LogConfiguration
 [[nodiscard]] int FirstTimeColumnIndex(const LogConfiguration &configuration);
 
 /**
- * @brief The columns of type Time, in column order. A parser gets these as ParserOptions::timeColumns, so it converts
- * the same columns that the table treats as time.
+ * @brief The columns of type Time, in column order. A parser gets these as ParserOptions::timeColumns and converts them
+ * on its worker threads, which is faster than the table converting them. A caller that passes none still gets correct
+ * rows, because the table converts the columns the batch does not list as converted.
  */
 [[nodiscard]] std::vector<Column> TimeColumnsOf(const LogConfiguration &configuration);
 

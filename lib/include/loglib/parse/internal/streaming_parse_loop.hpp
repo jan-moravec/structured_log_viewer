@@ -188,6 +188,15 @@ void RunStreamingParseLoop(
     KeyIndex &keys = sink.Keys();
     BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL, newKeyBaseline);
 
+    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
+        keys,
+        options.timeColumns,
+        options.defaultSourceTimeZone,
+        options.referenceTime.value_or(std::chrono::system_clock::now())
+    );
+    std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
+    coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumnsSpan));
+
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)
     {
@@ -198,14 +207,6 @@ void RunStreamingParseLoop(
     }
 
     const StopToken stopToken = options.stopToken;
-
-    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
-        keys,
-        options.timeColumns,
-        options.defaultSourceTimeZone,
-        options.referenceTime.value_or(std::chrono::system_clock::now())
-    );
-    std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
     WorkerScratchBase promoteScratch;
     promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());

@@ -79,6 +79,12 @@ struct RowBatch
      * same for a file and for a stream.
      */
     size_t lastLineNumber = 0;
+    /**
+     * @brief The key ids of the time columns the parser converted, sorted and without duplicates.
+     *
+     * It is the same for every batch of one parse. The table converts the other time columns itself.
+     */
+    std::vector<KeyId> convertedTimeKeys;
 };
 
 } // namespace loglib

@@ -270,6 +270,15 @@ void RunStaticParserPipeline(
     KeyIndex &keys = sink.Keys();
     BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline);
 
+    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
+        keys,
+        options.timeColumns,
+        options.defaultSourceTimeZone,
+        options.referenceTime.value_or(std::chrono::system_clock::now())
+    );
+
+    coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumns));
+
     // Sink contract: at least one OnBatch before OnFinished on
     // every early-exit path.
     if (options.stopToken.StopRequested())
@@ -286,13 +295,6 @@ void RunStaticParserPipeline(
 
     const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
     file.ReserveLineOffsets(file.Size() / 100);
-
-    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
-        keys,
-        options.timeColumns,
-        options.defaultSourceTimeZone,
-        options.referenceTime.value_or(std::chrono::system_clock::now())
-    );
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 

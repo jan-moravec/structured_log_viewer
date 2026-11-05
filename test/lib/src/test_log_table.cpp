@@ -676,13 +676,13 @@ TEST_CASE(
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(5, 1)));
 }
 
-// Mirrors the JSON parser flow: the configuration handed to the parser
-// AppendBatch must recognise Stage-B-handled time columns (via
-// `mStageBSnapshotTimeKeys`) and skip `BackfillTimestampColumn`; otherwise
-// it walks every batch and allocates discarded `fmt::format` error strings.
+// Mirrors the JSON parser flow: a batch lists the time keys the parser converted
+// (convertedTimeKeys), and AppendBatch must skip `BackfillTimestampColumn` for
+// those columns; otherwise it walks every batch and allocates discarded
+// `fmt::format` error strings.
 TEST_CASE(
-    "LogTable::AppendBatch -- Stage B inline promotion of configured time columns is not re-back-filled",
-    "[log_table][append_batch][snapshot_time_keys]"
+    "LogTable::AppendBatch -- time columns the parser converted are not re-back-filled",
+    "[log_table][append_batch][converted_time_keys]"
 )
 {
     InitializeTimezoneData();
@@ -718,16 +718,15 @@ TEST_CASE(
     LogTable table({}, std::move(mgr));
     table.BeginStreaming(std::move(source));
 
-    // After `BeginStreaming`, the time-column key must already be resolvable
-    // (mirroring `BuildTimeColumnSpecs`) — without this the snapshot set
-    // would be permanently empty and the bug below would not be detected.
+    // The parser interns the time-column key through BuildTimeColumnSpecs and
+    // lists it in convertedTimeKeys. The table does not intern it itself.
     KeyIndex &keys = table.Keys();
-    const KeyId timestampId = keys.Find("timestamp");
+    const size_t keyCountBefore = keys.Size();
+    const KeyId timestampId = keys.GetOrInsert("timestamp");
     REQUIRE(timestampId != INVALID_KEY_ID);
 
     // Build a batch the way Stage C would: lines already carry promoted
-    // `TimeStamp` values; "timestamp" is not in `newKeys` (pre-registered
-    // before `prevKeyCount` was captured), but a brand-new "msg" key is.
+    // `TimeStamp` values, and both keys are announced as new.
     const TimeStamp ts = std::chrono::time_point_cast<std::chrono::microseconds>(
         std::chrono::sys_days{std::chrono::year{2024} / std::chrono::January / 15} + std::chrono::hours{12} +
         std::chrono::minutes{34} + std::chrono::seconds{56}
@@ -740,11 +739,13 @@ TEST_CASE(
             {{"timestamp", ts}, {"msg", std::string("hello")}},
             {{"timestamp", ts}, {"msg", std::string("world")}},
         },
-        keys.Size(),
+        keyCountBefore,
         1
     );
-    REQUIRE(batch.newKeys.size() == 1);
-    CHECK(batch.newKeys.front() == "msg");
+    REQUIRE(batch.newKeys.size() == 2);
+    CHECK(batch.newKeys.front() == "timestamp");
+    CHECK(batch.newKeys.back() == "msg");
+    batch.convertedTimeKeys = {timestampId};
 
     const auto appendResult5 = table.AppendBatch(std::move(batch));
 
@@ -777,6 +778,7 @@ TEST_CASE(
         3
     );
     REQUIRE(batch2.newKeys.empty());
+    batch2.convertedTimeKeys = {timestampId};
     const auto appendResult6 = table.AppendBatch(std::move(batch2));
 
     CHECK(table.RowCount() == 3);

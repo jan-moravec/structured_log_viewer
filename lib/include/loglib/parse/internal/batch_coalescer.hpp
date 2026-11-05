@@ -14,6 +14,8 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <utility>
+#include <vector>
 
 namespace loglib
 {
@@ -66,6 +68,12 @@ public:
      */
     void Prime(size_t firstLineNumber) noexcept;
 
+    /** @brief Sets the converted time keys that every batch carries. Call it once, before the first flush. */
+    void SetConvertedTimeKeys(std::vector<KeyId> keys)
+    {
+        mConvertedTimeKeys = std::move(keys);
+    }
+
     [[nodiscard]] bool IsPrimed() const noexcept
     {
         return mPrimed;
@@ -96,6 +104,7 @@ private:
     RowBatch mPending;
     bool mPrimed = false;
     size_t mPrevKeyCount;
+    std::vector<KeyId> mConvertedTimeKeys;
     size_t mFlushLines;
     std::chrono::milliseconds mFlushInterval;
     std::chrono::steady_clock::time_point mLastFlush;

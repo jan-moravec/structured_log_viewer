@@ -40,6 +40,12 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
 );
 
 /**
+ * @brief The key ids of all time columns in specs, sorted and without duplicates. It is what
+ * RowBatch::convertedTimeKeys holds.
+ */
+std::vector<KeyId> ConvertedTimeKeys(std::span<const TimeColumnSpec> specs);
+
+/**
  * @brief Each worker's own map from key text to key id. A hit needs no allocation, and a miss asks the shared index
  * once and stores the answer.
  */
