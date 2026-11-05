@@ -44,8 +44,8 @@ using loglib::JsonParser;
 using loglib::KeyIndex;
 using loglib::LogParseSink;
 using loglib::ParserOptions;
+using loglib::RowBatch;
 using loglib::StopSource;
-using loglib::StreamedBatch;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
 using namespace std::chrono_literals;
@@ -107,7 +107,7 @@ struct LatencyMeasuringSink final : LogParseSink
     void OnStarted() override
     {
     }
-    void OnBatch(StreamedBatch batch) override
+    void OnBatch(RowBatch batch) override
     {
         const auto now = std::chrono::steady_clock::now();
         const std::scoped_lock lock(mu);

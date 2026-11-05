@@ -51,7 +51,7 @@ public:
     /// is available we always enqueue, even after stop -- this preserves
     /// the existing sink contract that drain-phase `OnBatch` calls
     /// (between `RequestStop` and the worker join) deliver normally.
-    bool WaitEnqueue(loglib::StreamedBatch batch)
+    bool WaitEnqueue(loglib::RowBatch batch)
     {
         std::unique_lock<std::mutex> lock(mMtx);
         mNotFull.wait(lock, [this] { return mStopped || mItems.size() < mCapacity; });
@@ -69,9 +69,9 @@ public:
 
     /// Consumer-thread. Moves every currently-buffered batch out and
     /// wakes one blocked producer (if any).
-    [[nodiscard]] std::vector<loglib::StreamedBatch> DrainAll()
+    [[nodiscard]] std::vector<loglib::RowBatch> DrainAll()
     {
-        std::vector<loglib::StreamedBatch> out;
+        std::vector<loglib::RowBatch> out;
         {
             std::scoped_lock<std::mutex> lock(mMtx);
             out.reserve(mItems.size());
@@ -131,7 +131,7 @@ public:
 private:
     mutable std::mutex mMtx;
     std::condition_variable mNotFull;
-    std::deque<loglib::StreamedBatch> mItems;
+    std::deque<loglib::RowBatch> mItems;
     std::size_t mCapacity;
     bool mStopped = false;
     std::atomic<std::size_t> mDroppedDuringShutdown{0};

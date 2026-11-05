@@ -116,7 +116,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
     for (size_t base = 0; base < rowCount; base += BATCH)
     {
         const size_t batchSize = std::min(BATCH, rowCount - base);
-        StreamedBatch batch;
+        RowBatch batch;
         batch.firstLineNumber = base + 1;
         batch.lines.reserve(batchSize);
         for (size_t i = 0; i < batchSize; ++i)
@@ -179,7 +179,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
     for (size_t base = 0; base < rowCount; base += BATCH)
     {
         const size_t batchSize = std::min(BATCH, rowCount - base);
-        StreamedBatch batch;
+        RowBatch batch;
         batch.firstLineNumber = base + 1;
         batch.lines.reserve(batchSize);
         for (size_t i = 0; i < batchSize; ++i)
@@ -242,7 +242,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
     for (size_t base = 0; base < rowCount; base += BATCH)
     {
         const size_t batchSize = std::min(BATCH, rowCount - base);
-        StreamedBatch batch;
+        RowBatch batch;
         batch.firstLineNumber = base + 1;
         batch.lines.reserve(batchSize);
         for (size_t i = 0; i < batchSize; ++i)

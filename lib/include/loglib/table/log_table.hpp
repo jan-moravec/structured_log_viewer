@@ -106,7 +106,7 @@ public:
      * The result lists what else changed: columns that must move and columns that stopped being enumerations. The
      * caller must act on it.
      */
-    [[nodiscard]] AppendBatchResult AppendBatch(StreamedBatch batch);
+    [[nodiscard]] AppendBatchResult AppendBatch(RowBatch batch);
 
     /**
      * @brief Reports how many rows and columns AppendBatch would add, without changing the table.
@@ -118,7 +118,7 @@ public:
         size_t newRowCount = 0;
         size_t newColumnCount = 0;
     };
-    [[nodiscard]] AppendBatchPreview PreviewAppend(const StreamedBatch &batch) const;
+    [[nodiscard]] AppendBatchPreview PreviewAppend(const RowBatch &batch) const;
 
     /**
      * @brief Moves a column from srcIndex to destIndex.
@@ -142,7 +142,7 @@ public:
      * It runs AppendBatch, moves each new time column to the front, then moves the new level columns. A host that must
      * announce every move calls AppendBatch and the move steps itself.
      */
-    void AppendBatchArranged(StreamedBatch batch);
+    void AppendBatchArranged(RowBatch batch);
 
     /**
      * @brief Moves each column named in keys to CANONICAL_LEVEL_COLUMN_INDEX, unless ShouldBubbleLevelColumn says it

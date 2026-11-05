@@ -449,7 +449,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         void OnStarted() override
         {
         }
-        void OnBatch(StreamedBatch /*batch*/) override
+        void OnBatch(RowBatch /*batch*/) override
         {
             ++batches;
             if (batches == 1 && !stop.StopRequested())

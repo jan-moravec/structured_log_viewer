@@ -29,7 +29,7 @@ namespace loglib
  * the same for both. localLineOffsets is filled only by the file pipeline, and is appended to the line offsets of the
  * LogFile. The streaming loop leaves it empty.
  */
-struct StreamedBatch
+struct RowBatch
 {
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;

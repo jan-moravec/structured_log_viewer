@@ -8,7 +8,7 @@
 // demotions that AppendBatch and FinalizeAutoDetection report. The production API is [[nodiscard]] so real callers
 // cannot drop that result by accident; fixtures that do not need it go through these helpers, which say so once.
 
-inline void AppendFixtureBatch(loglib::LogTable &table, loglib::StreamedBatch batch)
+inline void AppendFixtureBatch(loglib::LogTable &table, loglib::RowBatch batch)
 {
     (void)table.AppendBatch(std::move(batch));
 }

@@ -67,7 +67,7 @@ public:
     void OnStarted() override
     {
     }
-    void OnBatch(StreamedBatch batch) override
+    void OnBatch(RowBatch batch) override
     {
         mFile->AppendLineOffsets(batch.localLineOffsets);
         for (const MultiLineRecordSpan &span : batch.multiLineSpans)
@@ -168,7 +168,7 @@ public:
     void OnStarted() override
     {
     }
-    void OnBatch(StreamedBatch batch) override
+    void OnBatch(RowBatch batch) override
     {
         std::ranges::move(batch.lines, std::back_inserter(lines));
         std::ranges::move(batch.errors, std::back_inserter(errors));
@@ -452,7 +452,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
         return LogLine(std::move(values), keys, source, lineId);
     };
 
-    StreamedBatch fileBatch;
+    RowBatch fileBatch;
     fileBatch.newKeys.emplace_back("value");
     // File line ids are far past anything the stream source has assigned.
     fileBatch.lines.push_back(makeLine(fileRef, 5000, "file-a"));
@@ -462,7 +462,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
     auto streamSource = std::make_unique<StreamLineSource>("<stream>", nullptr);
     StreamLineSource &streamRef = *streamSource;
     table.AppendStreaming(std::move(streamSource));
-    StreamedBatch streamBatch;
+    RowBatch streamBatch;
     for (const char *text : {"stream-a", "stream-b"})
     {
         const size_t lineId = streamRef.AppendLine(text, "");

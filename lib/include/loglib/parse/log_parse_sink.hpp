@@ -1,7 +1,7 @@
 /**
  * @brief Receiver for the batches a parser produces.
  *
- * Parsers do not build a table themselves. They cut their output into StreamedBatch values and hand each one to a
+ * Parsers do not build a table themselves. They cut their output into RowBatch values and hand each one to a
  * LogParseSink, which can append it to a table, buffer it for a synchronous call, or discard it. The sink gets a start
  * call, any number of batches and a finish call that says whether parsing was cancelled.
  *
@@ -40,7 +40,7 @@ public:
 
     virtual void OnStarted() = 0;
 
-    virtual void OnBatch(StreamedBatch batch) = 0;
+    virtual void OnBatch(RowBatch batch) = 0;
 
     virtual void OnFinished(bool cancelled) = 0;
 };

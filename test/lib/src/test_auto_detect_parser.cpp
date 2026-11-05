@@ -39,7 +39,7 @@ using loglib::BytesProducer;
 using loglib::KeyIndex;
 using loglib::LogParseSink;
 using loglib::ParserOptions;
-using loglib::StreamedBatch;
+using loglib::RowBatch;
 using loglib::StreamLineSource;
 using test_common::TempDir;
 
@@ -124,7 +124,7 @@ public:
     {
         started.store(true, std::memory_order_release);
     }
-    void OnBatch(StreamedBatch batch) override
+    void OnBatch(RowBatch batch) override
     {
         rowCount.fetch_add(batch.lines.size(), std::memory_order_relaxed);
         errorCount.fetch_add(batch.errors.size(), std::memory_order_relaxed);

@@ -293,14 +293,14 @@ template <class Body> void RunParserWorkerWithBoundary(QtStreamingLogSink *sink,
     }
     catch (const std::exception &e)
     {
-        loglib::StreamedBatch errorBatch;
+        loglib::RowBatch errorBatch;
         errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
         sink->OnBatch(std::move(errorBatch));
         sink->OnFinished(false);
     }
     catch (...)
     {
-        loglib::StreamedBatch errorBatch;
+        loglib::RowBatch errorBatch;
         errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
         sink->OnBatch(std::move(errorBatch));
         sink->OnFinished(false);
@@ -541,7 +541,7 @@ loglib::StopToken LogModel::BeginStreaming(
     return stopToken;
 }
 
-void LogModel::AppendBatch(loglib::StreamedBatch batch)
+void LogModel::AppendBatch(loglib::RowBatch batch)
 {
     // Capture errors before `LogTable::AppendBatch` swallows them.
     const auto capturedErrorCount = static_cast<qsizetype>(batch.errors.size());

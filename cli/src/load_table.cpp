@@ -137,7 +137,7 @@ public:
     {
     }
 
-    void OnBatch(loglib::StreamedBatch batch) override
+    void OnBatch(loglib::RowBatch batch) override
     {
         std::uint64_t &consumed = mLoaded->linesConsumed;
         // `firstLineNumber` is a start cursor: every line before it was consumed,

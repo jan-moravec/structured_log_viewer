@@ -420,7 +420,7 @@ public:
     {
     }
 
-    void OnBatch(loglib::StreamedBatch batch) override
+    void OnBatch(loglib::RowBatch batch) override
     {
         if (mFailure || mDone)
         {

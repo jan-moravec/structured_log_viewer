@@ -18,10 +18,10 @@
 #include "loglib/parse/internal/batch_coalescer.hpp"
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
-#include "loglib/time/internal/timestamp_promotion.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
 #include "loglib/parse/parse_error_text.hpp"
 #include "loglib/parse/parser_options.hpp"
+#include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <fmt/format.h>
 
@@ -470,7 +470,7 @@ void RunStaticParserPipeline(
             };
         }
 
-        StreamedBatch &pending = coalescer.Pending();
+        RowBatch &pending = coalescer.Pending();
 
         // Prime with the earliest record represented in this output.
         if (heldLineToEmit.has_value())
@@ -539,7 +539,7 @@ void RunStaticParserPipeline(
         const MultiLineRecordSpan span{held->headerLineIdx, held->lastLineIdx};
         const bool isMultiLine = span.lastLineId > span.headerLineId;
 
-        StreamedBatch &pending = coalescer.Pending();
+        RowBatch &pending = coalescer.Pending();
         coalescer.Prime(held->absoluteLineNumber);
         pending.lines.push_back(std::move(held->line));
         if (isMultiLine)

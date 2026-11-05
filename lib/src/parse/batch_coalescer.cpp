@@ -33,7 +33,7 @@ void BatchCoalescer::Prime(size_t firstLineNumber) noexcept
     }
 }
 
-void BatchCoalescer::DrainNewKeysInto(StreamedBatch &out)
+void BatchCoalescer::DrainNewKeysInto(RowBatch &out)
 {
     const size_t currentKeyCount = mKeys.Size();
     if (currentKeyCount > mPrevKeyCount)
@@ -70,7 +70,7 @@ bool BatchCoalescer::TryFlush(bool force)
 
     DrainNewKeysInto(mPending);
     mSink.OnBatch(std::move(mPending));
-    mPending = StreamedBatch{};
+    mPending = RowBatch{};
     mPrimed = false;
     mLastFlush = now;
     return true;
@@ -88,12 +88,12 @@ void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
         }
         DrainNewKeysInto(mPending);
         mSink.OnBatch(std::move(mPending));
-        mPending = StreamedBatch{};
+        mPending = RowBatch{};
         mPrimed = false;
     }
     else
     {
-        StreamedBatch tail;
+        RowBatch tail;
         tail.firstLineNumber = fallbackLineNumber;
         DrainNewKeysInto(tail);
         mSink.OnBatch(std::move(tail));

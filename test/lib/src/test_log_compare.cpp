@@ -71,7 +71,7 @@ LogTable BuildSingleColumnTable(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     batch.lines.reserve(perRowValues.size());
     for (const auto &v : perRowValues)
@@ -342,7 +342,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     // Insertion order is the dict order: warn=0, info=1, error=2, debug=3.
     // Alphabetic rank should re-order to debug<error<info<warn.
@@ -391,7 +391,7 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     // Row 1 has no field -> monostate -> takes the fallback branch.
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("info")}}));
@@ -440,7 +440,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     // Row 0: dict-resolved "info".
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("info")}}));
@@ -521,7 +521,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     const std::vector<std::string> rowValues = {"warn", "info", "error"};
     for (const auto &v : rowValues)
@@ -620,7 +620,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     const std::vector<std::string> rowValues = {"WARN", "INFO", "ERROR", "FATAL", "qux"};
     for (const auto &v : rowValues)
@@ -666,7 +666,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    StreamedBatch batch;
+    RowBatch batch;
     batch.firstLineNumber = 1;
     // Insertion order: info, warn, error, fatal, qux. Ranks come out
     // `Info(3) < Warn(4) < Error(5) < Fatal(6) < sentinel(255)`, so:

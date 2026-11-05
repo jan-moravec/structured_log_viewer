@@ -8,10 +8,10 @@
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/internal/static_parser_pipeline.hpp>
 #include <loglib/parse/internal/streaming_parse_loop.hpp>
-#include <loglib/time/internal/timestamp_promotion.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/time/internal/timestamp_promotion.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -35,7 +35,7 @@ using loglib::LogFile;
 using loglib::LogLine;
 using loglib::LogParseSink;
 using loglib::LogValue;
-using loglib::StreamedBatch;
+using loglib::RowBatch;
 
 namespace
 {
@@ -513,7 +513,7 @@ public:
     {
         ++startedCount;
     }
-    void OnBatch(StreamedBatch batch) override
+    void OnBatch(RowBatch batch) override
     {
         batches.push_back(std::move(batch));
     }
@@ -524,7 +524,7 @@ public:
     }
 
     KeyIndex mKeys;
-    std::vector<StreamedBatch> batches;
+    std::vector<RowBatch> batches;
     bool cancelled = false;
     int startedCount = 0;
     int finishedCount = 0;
@@ -693,7 +693,7 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
     REQUIRE(std::get<std::string>(lastIndex) == std::to_string(RECORD_COUNT - 1));
 }
 
-TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors", "[mock_parser]")
+TEST_CASE("Mock parser: per-line errors propagate through RowBatch::errors", "[mock_parser]")
 {
     std::string content = "level=info msg=ok\n";
     content += "!boom\n";
@@ -801,7 +801,7 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
         std::chrono::steady_clock::time_point finishedAt;
         size_t batchCount = 0;
 
-        void OnBatch(StreamedBatch batch) override
+        void OnBatch(RowBatch batch) override
         {
             CollectingSink::OnBatch(std::move(batch));
             ++batchCount;

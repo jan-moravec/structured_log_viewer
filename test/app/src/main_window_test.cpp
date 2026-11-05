@@ -660,7 +660,7 @@ loglib::StreamLineSource &BeginSyntheticStaticSession(LogModel &model)
 // @p streamSource so `RawLine(lineId)` round-trips. Set
 // @p declareNewKey on the first batch in a sequence so
 // `LogTable::PreviewAppend`'s column predictor matches reality.
-loglib::StreamedBatch MakeSyntheticBatch(
+loglib::RowBatch MakeSyntheticBatch(
     loglib::StreamLineSource &streamSource,
     loglib::KeyIndex &keys,
     loglib::KeyId valueKey,
@@ -669,7 +669,7 @@ loglib::StreamedBatch MakeSyntheticBatch(
     bool declareNewKey
 )
 {
-    loglib::StreamedBatch batch;
+    loglib::RowBatch batch;
     batch.firstLineNumber = firstLineId;
     if (declareNewKey)
     {
@@ -1424,7 +1424,7 @@ private slots:
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
                 loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
-                loglib::StreamedBatch batch;
+                loglib::RowBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
                 sinkBeforeBegin->OnBatch(std::move(batch));
@@ -1506,7 +1506,7 @@ private slots:
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
                 loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
-                loglib::StreamedBatch batch;
+                loglib::RowBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
                 sinkBeforeBegin->OnBatch(std::move(batch));
@@ -1732,7 +1732,7 @@ private slots:
         size_t cursorOffset = 0;
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = (static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch)) + size_t{1};
             batch.lines.reserve(linesPerBatch);
             batch.localLineOffsets.reserve(linesPerBatch);
@@ -2189,7 +2189,7 @@ private slots:
         // *static-content* batch (`lines` + `localLineOffsets`).
         const size_t staticBatchRows = cap; // 100
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("value");
             batch.lines.reserve(staticBatchRows);
@@ -2218,7 +2218,7 @@ private slots:
         const size_t overflowRows = 30;
         loglib::StreamLineSource liveTailSource(std::filesystem::path("synthetic"), nullptr);
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = staticBatchRows + 1;
             batch.lines.reserve(overflowRows);
             for (size_t i = 0; i < overflowRows; ++i)
@@ -8727,7 +8727,7 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.lines.push_back(makeLine("NOTICE")); // override -> Info
             batch.lines.push_back(makeLine("PANIC"));  // override -> Fatal
@@ -9028,7 +9028,7 @@ private slots:
         // Batch 1: 2x "info" promotes `level` (stream threshold = 2).
         // Dict size 0 -> 1.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
@@ -9066,7 +9066,7 @@ private slots:
         // back-fill enum-type check sees `String` post-batch, so the
         // registry-shape path is the only signal site.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 3;
             batch.lines.push_back(makeLine("warn"));
             batch.lines.push_back(makeLine("error"));
@@ -9124,7 +9124,7 @@ private slots:
 
         // Batch 1 promotes "category" (stream threshold = 2).
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
@@ -9142,7 +9142,7 @@ private slots:
         // Batch 2 grows the dictionary. `Grew` is a no-op for the
         // rank cache so the entry stays.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 3;
             batch.lines.push_back(makeLine("error"));
             batch.lines.push_back(makeLine("info"));
@@ -9190,7 +9190,7 @@ private slots:
         // third distinct value, demoting back to `Type::String` --
         // all inside a single `AppendBatch`.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
@@ -9262,7 +9262,7 @@ private slots:
         // Batch 1: 2x `info` + 1x `warn` promotes through Enumeration
         // to Level (`IsLogLevelKey` match + canonical dict entries).
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("level");
             batch.lines.push_back(makeLine("info"));
@@ -9299,7 +9299,7 @@ private slots:
         // to String. The Demoted handler expands `["Info"]` to the
         // raw entries pre-demote (`["info"]`).
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 4;
             batch.lines.push_back(makeLine("error"));
             batch.lines.push_back(makeLine("debug"));
@@ -9348,7 +9348,7 @@ private slots:
         // Batch 1: two "info" rows promote `level`. Dict size 1;
         // predicate built against it observes `mAllResolved == true`.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
@@ -9384,7 +9384,7 @@ private slots:
         // `Find` returns nullptr, `EnumFilterFullyResolved` is false,
         // and the slot rebuilds the predicate.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 3;
             batch.lines.push_back(makeLine("warn"));
             batch.lines.push_back(makeLine("error"));
@@ -15327,7 +15327,7 @@ private slots:
         };
 
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("level");
             batch.lines.push_back(makeLine("info"));
@@ -15366,7 +15366,7 @@ private slots:
         // The `Demoted` handler rewrites `["Info"] -> ["info"]`
         // and resyncs the tooltip cache.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 4;
             batch.lines.push_back(makeLine("error"));
             batch.lines.push_back(makeLine("debug"));
@@ -16735,7 +16735,7 @@ private slots:
 
         // Batch 1: dict_v1 = {"info" -> 0, "warn" -> 1}.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
@@ -16764,7 +16764,7 @@ private slots:
         // Batch 2: dictionary grows from 2 to 4 entries; cached rank
         // is now too small.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 3;
             batch.lines.push_back(makeLine("error"));
             batch.lines.push_back(makeLine("debug"));
@@ -16824,7 +16824,7 @@ private slots:
                 return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
             };
 
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             // Same shape on both sides; dictionary instances differ.
@@ -16933,7 +16933,7 @@ private slots:
                 values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
                 return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
             };
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
@@ -20591,7 +20591,7 @@ private slots:
         constexpr int BATCH_SIZE = 100;
         loglib::KeyIndex &keys = model->Table().Keys();
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("msg");
             batch.lines.reserve(BATCH_SIZE);
@@ -21277,7 +21277,7 @@ private slots:
         // `ResolveEnumDictionary` returns nullptr at filter-install
         // time.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("mycol");
             batch.lines.push_back(makeLine("alpha"));
@@ -21322,7 +21322,7 @@ private slots:
         // trips streaming promotion. The slot must rebuild the
         // predicate to upgrade it to the bitset path.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 2;
             batch.lines.push_back(makeLine("alpha"));
             model->AppendBatch(std::move(batch));
@@ -21388,7 +21388,7 @@ private slots:
         // it stays a candidate (`Type::Any + autoDetect`) until
         // batch 2 introduces it.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("colA");
             batch.lines.push_back(makeColARow("alpha"));
@@ -21425,7 +21425,7 @@ private slots:
         // promotes via the streaming threshold. colA does not
         // appear in this batch so its dictionary is untouched.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 3;
             batch.newKeys.emplace_back("colB");
             batch.lines.push_back(makeColBRow("x"));
@@ -21498,7 +21498,7 @@ private slots:
         // with dict size 1. `colA` is appended first so it lands at
         // column 0.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("colA");
             batch.newKeys.emplace_back("colB");
@@ -21531,7 +21531,7 @@ private slots:
         //   * `colC` promotes (2 same-value presences): recordBackfill(2).
         // the batch result backfill range becomes `[0, 2]` with `colB` at column 1.
         {
-            loglib::StreamedBatch batch;
+            loglib::RowBatch batch;
             batch.firstLineNumber = 3;
             batch.newKeys.emplace_back("colC");
             batch.lines.push_back(makeRow({{"colA", "z"}, {"colB", "w"}, {"colC", "m"}}));

@@ -36,7 +36,7 @@ public:
     KeyIndex &Keys() override;
 
     void OnStarted() override;
-    void OnBatch(StreamedBatch batch) override;
+    void OnBatch(RowBatch batch) override;
     void OnFinished(bool cancelled) override;
 
     /** @brief Returns the collected data. Call it once, after OnFinished. */
