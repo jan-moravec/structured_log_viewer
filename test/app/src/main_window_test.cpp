@@ -8591,8 +8591,12 @@ private slots:
         const int timeCol = ColumnByHeader(*model, QStringLiteral("timestamp"));
         QVERIFY2(timeCol >= 0, "timestamp column must exist");
 
-        QCOMPARE(model->data(model->index(0, timeCol), Qt::DisplayRole).toString(), QStringLiteral("2024-04-28 10:00:01.000"));
-        QCOMPARE(model->data(model->index(2, timeCol), Qt::DisplayRole).toString(), QStringLiteral("2024-07-01 23:30:00.000"));
+        QCOMPARE(
+            model->data(model->index(0, timeCol), Qt::DisplayRole).toString(), QStringLiteral("2024-04-28 10:00:01.000")
+        );
+        QCOMPARE(
+            model->data(model->index(2, timeCol), Qt::DisplayRole).toString(), QStringLiteral("2024-07-01 23:30:00.000")
+        );
 
         constexpr std::int64_t MICROS_2024_04_28_10_00_02 = 1'714'298'402'000'000;
         const std::int64_t expectedUtc =
