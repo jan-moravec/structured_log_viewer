@@ -4,6 +4,7 @@
 #include "session_config.hpp"
 #include "text_util.hpp"
 
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -373,15 +374,11 @@ private:
         {
             return CancelledFailure();
         }
-        catch (const loglib::DecompressionSizeCapExceeded &ex)
+        catch (const loglib::LimitError &ex)
         {
             return LoadFail(ExitCode::Input, ex.what());
         }
-        catch (const loglib::SessionBundleVersionError &ex)
-        {
-            return LoadFail(ExitCode::Input, ex.what());
-        }
-        catch (const loglib::SessionBundleReadError &ex)
+        catch (const loglib::FormatError &ex)
         {
             return LoadFail(ExitCode::Input, ex.what());
         }

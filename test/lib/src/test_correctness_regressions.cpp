@@ -1,5 +1,6 @@
 #include "table_fixture.hpp"
 #include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/internal/stable_byte_arena.hpp>
 #include <loglib/core/key_index.hpp>
@@ -721,7 +722,7 @@ TEST_CASE("Session bundle metadata rejects a very deep filter tree", "[session_b
     tree += R"({"kind":"leaf","rule":{"type":"string","columnKeys":["n"],"matchType":"contains","filterString":"1"}})";
     tree += std::string(DEPTH, '}');
     const std::string json = R"({"bundle":{"configuration":{"expression":)" + tree + "}}}";
-    CHECK_THROWS_AS(ParseSessionBundleMetadata(json), SessionBundleReadError);
+    CHECK_THROWS_AS(ParseSessionBundleMetadata(json), FormatError);
 }
 
 TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode]")

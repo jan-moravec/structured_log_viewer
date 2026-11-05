@@ -22,24 +22,6 @@
 namespace loglib
 {
 
-/** @brief Thrown when decompressing a file would produce more bytes than the configured cap allows. */
-class DecompressionSizeCapExceeded : public std::exception
-{
-public:
-    explicit DecompressionSizeCapExceeded(std::string what)
-        : mWhat(std::move(what))
-    {
-    }
-
-    [[nodiscard]] const char *what() const noexcept override
-    {
-        return mWhat.c_str();
-    }
-
-private:
-    std::string mWhat;
-};
-
 /**
  * @brief Decompresses a gzip, bzip2, xz or zstd file into a temporary file and removes that file when destroyed.
  *
@@ -79,7 +61,7 @@ public:
     struct Options
     {
         /**
-         * @brief The most decompressed bytes allowed. Going past it throws DecompressionSizeCapExceeded. Zero turns
+         * @brief The most decompressed bytes allowed. Going past it throws LimitError. Zero turns
          * the cap off.
          */
         std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;

@@ -7,6 +7,7 @@ Thanks for your interest in contributing! This document is the developer referen
 - [Architecture](#architecture)
   - [Project Structure](#project-structure)
   - [Library](#library)
+    - [Error handling](#error-handling)
   - [GUI Application](#gui-application)
   - [Session tabs](#session-tabs)
   - [Static vs Streaming pipelines](#static-vs-streaming-pipelines)
@@ -106,6 +107,19 @@ Several helpers live under `lib/include/loglib/<module>/internal/` and are inten
 - `ClassifyBareScalar` (`classify_bare_scalar.hpp`) — shared inline header with `TryParseFiniteDouble`, `MakeStringCompact`, and `ClassifyBareScalar`. Both `LogfmtParser` and `CsvParser` use it to type unquoted values; inline (not a separate TU) so each parser keeps within-TU inlining regardless of LTO.
 - `SerializeNormalizedJsonRow` (`normalized_json_row.hpp`) — shared typed JSON-object serializer used by JSON Lines row export and session-bundle export so booleans, numbers, timestamps, strings, and missing values have one wire representation.
 - The shared scratch types both pipelines use live in `parse_runtime.hpp`; `timestamp_promotion.hpp` rounds out the set. Pipeline tuning is `ParserOptions::threads` / `batchSizeBytes`.
+
+#### Error handling
+
+The library reports problems in one of four ways, chosen by what failed. `lib/include/loglib/core/error.hpp` holds the exception types.
+
+1. **Parsing user data never throws.** A problem with a line or record is an error in the batch, and a value that does not convert stays text.
+1. **Validating user input returns `std::expected`.** Queries, regex patterns, templates, print formats and timestamp formats return `std::expected<T, E>`, where E holds a message and, when it helps, a position. The same check runs when a configuration or template is loaded.
+1. **Resource failures throw a `loglib::Error`.** Opening, reading and writing files and sockets, decompressing, and reading saved files such as configurations, bundles and template files throw a subclass of `loglib::Error`, which derives from `std::runtime_error`. IoError means a file or socket operation failed and holds the path or endpoint and the system error. FormatError means a saved file or bundle cannot be read. LimitError means a configured limit was reached, such as the decompression size cap.
+1. **Two control exceptions stay outside `loglib::Error`.** OperationCancelled means the stop token fired, and BrokenPipe means the reader of the output went away. A handler for `loglib::Error` does not catch them, and a library catch-all must rethrow them.
+1. **A parse that fails part-way finishes its sink.** The parser reports one error in a last batch, calls OnFinished, and rethrows. A sink that threw is not called again. A cancelled parse calls OnFinished with cancelled set, then rethrows.
+1. **No silent fallback.** When the library replaces a bad value, as with an invalid print format, it reports that through a warnings list the caller can show. The library never catches an error and carries on without reporting it. Destructors and other noexcept cleanup paths may swallow an error, with a comment that says why.
+1. **Programming errors are asserts,** not exceptions. `std::bad_alloc` passes through.
+1. **The application layer catches.** The GUI worker boundary and the `slp` command entry points turn exceptions into messages and exit codes. The library catches only to add context, such as the path, or to keep a contract, such as calling OnFinished.
 
 ### GUI Application
 

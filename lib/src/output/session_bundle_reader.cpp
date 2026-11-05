@@ -1,5 +1,6 @@
 #include "loglib/output/session_bundle.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/ingest/decompressing_byte_source.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
@@ -53,24 +54,24 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
     const auto error = glz::read<internal::LOG_CONFIG_OPTS>(envelope, json);
     if (error)
     {
-        throw SessionBundleReadError(
+        throw FormatError(
             "Session bundle metadata is malformed: " + glz::format_error(error, std::string(json))
         );
     }
     if (!envelope.bundle.has_value())
     {
-        throw SessionBundleReadError("Session bundle metadata envelope is missing");
+        throw FormatError("Session bundle metadata envelope is missing");
     }
     if (envelope.bundle->formatVersion != SESSION_BUNDLE_FORMAT_VERSION)
     {
-        throw SessionBundleVersionError(
+        throw FormatError(
             "Unsupported session bundle format version " + std::to_string(envelope.bundle->formatVersion) +
             " (expected " + std::to_string(SESSION_BUNDLE_FORMAT_VERSION) + ")"
         );
     }
     if (envelope.bundle->rowCount > SESSION_BUNDLE_MAX_ROWS)
     {
-        throw SessionBundleReadError(
+        throw FormatError(
             "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
         );
     }

@@ -30,6 +30,7 @@
 #include <loglib/core/ascii_case.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
@@ -5184,12 +5185,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         {
             bundleMetadata.emplace(loglib::ParseSessionBundleMetadata(dbs->DiscardedFirstLine()));
         }
-        catch (const loglib::SessionBundleVersionError &e)
-        {
-            errorEntry = tr("Cannot open session bundle '%1': %2")
-                             .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
-        }
-        catch (const loglib::SessionBundleReadError &e)
+        catch (const loglib::FormatError &e)
         {
             errorEntry = tr("'%1' is not a valid session bundle: %2")
                              .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));

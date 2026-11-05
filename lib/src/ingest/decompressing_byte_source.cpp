@@ -1,4 +1,6 @@
 #include "loglib/ingest/decompressing_byte_source.hpp"
+
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 
 #include <fmt/format.h>
@@ -324,7 +326,7 @@ void WriteOutput(
     decompressedSize += bytes;
     if (maxDecompressedBytes != 0 && decompressedSize > maxDecompressedBytes)
     {
-        throw DecompressionSizeCapExceeded(
+        throw LimitError(
             fmt::format(
                 "Decompressed output for '{}' exceeded the {}-byte cap "
                 "(would need at least {} bytes)",

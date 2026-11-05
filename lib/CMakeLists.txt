@@ -110,6 +110,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/decompressing_byte_source.hpp
     include/loglib/core/enum_dictionary.hpp
     include/loglib/table/enum_inference.hpp
+    include/loglib/core/error.hpp
     include/loglib/output/exports/export_sink.hpp
     include/loglib/output/exports/row_exporter.hpp
     include/loglib/core/file_line_source.hpp
