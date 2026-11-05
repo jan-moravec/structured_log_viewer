@@ -5,11 +5,13 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <array>
 #include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace loglib
 {
@@ -17,9 +19,10 @@ namespace loglib
 namespace
 {
 
-/// Builds the per-line scratch state shared by both `BackfillTimestampColumn`
-/// overloads. Returns `false` when @p lines is empty, in which case the
-/// caller should bail out (the spec arrays are not built).
+/**
+ * @brief Builds the scratch state for converting one column. Returns false when lines is empty, and then nothing else
+ * is set.
+ */
 bool MakeBackfillState(
     const Column &column,
     std::span<LogLine> lines,
@@ -53,57 +56,14 @@ bool MakeBackfillState(
     return true;
 }
 
-} // namespace
-
-namespace
+/**
+ * @brief Converts the column in every line. When errors is not null, adds one message per line that failed.
+ *
+ * The lines are already resolved through their own source, so the owned-bytes view passed to PromoteLineTimestamps is
+ * empty.
+ */
+void BackfillColumnLoop(const Column &column, std::span<LogLine> lines, std::vector<std::string> *errors)
 {
-
-/// Returns an empty view: `BackfillTimestampColumn` over a `LogLine`
-/// span flows through `PromoteLineTimestamps`, which now resolves the
-/// per-line owned-bytes arena via the line's `LineSource` directly
-/// (`source->ResolveOwnedBytes(offset, length, lineId)`). The
-/// `ownedArena` parameter only matters during Stage B / Stage C of the
-/// parser pipeline, where the per-batch staging buffer carries
-/// `OwnedString` payloads before they are rebased onto the canonical
-/// source arena. This backfill path runs after the pipeline, when
-/// every payload is already source-relative.
-std::string_view OwnedArenaForBackfill(const LogLine & /*line*/) noexcept
-{
-    return std::string_view{};
-}
-
-} // namespace
-
-std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines)
-{
-    std::vector<std::string> errors;
-    std::array<internal::TimeColumnSpec, 1> specs;
-    std::vector<std::optional<LastValidTimestampParse>> lastValid;
-    std::vector<internal::LastTimestampBytesHit> bytesHits;
-    if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
-    {
-        return errors;
-    }
-
-    TimestampParseScratch scratch;
-    for (auto &line : lines)
-    {
-        const std::string_view ownedArena = OwnedArenaForBackfill(line);
-        if (!internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
-        {
-            errors.emplace_back(
-                fmt::format(
-                    "Failed to parse a timestamp for column '{}' from line number {}", column.header, line.LineId()
-                )
-            );
-        }
-    }
-    return errors;
-}
-
-void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors)
-{
-    static_cast<void>(discardErrors);
     std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
     std::vector<internal::LastTimestampBytesHit> bytesHits;
@@ -115,9 +75,31 @@ void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, Bac
     TimestampParseScratch scratch;
     for (auto &line : lines)
     {
-        const std::string_view ownedArena = OwnedArenaForBackfill(line);
-        static_cast<void>(internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
+        if (!internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, std::string_view{}) &&
+            errors != nullptr)
+        {
+            errors->emplace_back(
+                fmt::format(
+                    "Failed to parse a timestamp for column '{}' from line number {}", column.header, line.LineId()
+                )
+            );
+        }
     }
+}
+
+} // namespace
+
+std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines)
+{
+    std::vector<std::string> errors;
+    BackfillColumnLoop(column, lines, &errors);
+    return errors;
+}
+
+void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors)
+{
+    static_cast<void>(discardErrors);
+    BackfillColumnLoop(column, lines, nullptr);
 }
 
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
