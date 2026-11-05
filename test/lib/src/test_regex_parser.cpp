@@ -85,7 +85,7 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("non-empty pattern"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("non-empty pattern"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -97,7 +97,7 @@ TEST_CASE("RegexParser unparsable pattern surfaces error [regex]", "[regex_parse
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("Pattern compile failed"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Pattern compile failed"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -111,7 +111,7 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("named capture groups"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("named capture groups"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -171,8 +171,8 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("line 2"));
-    CHECK(result.errors[0].contains("did not match"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("did not match"));
 }
 
 TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_parser]")
@@ -405,9 +405,9 @@ namespace
 /// about is "did the streaming pipeline surface this error at
 /// all" — the batch boundary the coalescer picked is an
 /// implementation detail.
-std::vector<std::string> FlattenSinkErrors(const CollectingStreamSink &sink)
+std::vector<loglib::ParseError> FlattenSinkErrors(const CollectingStreamSink &sink)
 {
-    std::vector<std::string> all;
+    std::vector<loglib::ParseError> all;
     for (const auto &batch : sink.batches)
     {
         for (const auto &err : batch.errors)
@@ -425,7 +425,7 @@ std::vector<std::string> FlattenSinkErrors(const CollectingStreamSink &sink)
 /// block. The payload text is irrelevant on the error paths —
 /// they fail before any line is decoded — but keeping it varied
 /// makes it obvious in stack traces which test tripped.
-std::vector<std::string> RunStreamingParseCollectingErrors(std::string_view pattern, std::string_view payload)
+std::vector<loglib::ParseError> RunStreamingParseCollectingErrors(std::string_view pattern, std::string_view payload)
 {
     const RegexParser parser{std::string{pattern}};
     StreamLineSource source(
@@ -460,7 +460,7 @@ TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][strea
     CHECK_FALSE(sink.finishedCancelled);
     const auto errors = FlattenSinkErrors(sink);
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("non-empty pattern"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("non-empty pattern"));
 }
 
 TEST_CASE("RegexParser streaming with unparsable pattern surfaces error [regex][stream_line_source]", "[regex_parser]")
@@ -472,7 +472,7 @@ TEST_CASE("RegexParser streaming with unparsable pattern surfaces error [regex][
     // pipeline or eating the message.
     const auto errors = RunStreamingParseCollectingErrors(R"((?<a)", "one\ntwo\n");
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("Pattern compile failed"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("Pattern compile failed"));
 }
 
 TEST_CASE(
@@ -486,7 +486,7 @@ TEST_CASE(
     // the guard was ever removed).
     const auto errors = RunStreamingParseCollectingErrors(R"(^(\w+)\s+(.*)$)", "info hello\nwarn world\n");
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("named capture groups"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("named capture groups"));
 }
 
 TEST_CASE(
@@ -698,7 +698,7 @@ TEST_CASE(
     REQUIRE(sink.finished);
 
     std::vector<LogLine *> lines;
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         for (auto &l : b.lines)
@@ -743,7 +743,7 @@ TEST_CASE(
     auto result = ParseFile(parser, file.GetFilePath());
     for (const auto &e : result.errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
@@ -808,7 +808,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -882,7 +882,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -1178,10 +1178,10 @@ TEST_CASE(
     );
 
     LogData data = sink.TakeData();
-    const std::vector<std::string> errors = sink.TakeErrors();
+    const std::vector<loglib::ParseError> errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -1237,7 +1237,7 @@ TEST_CASE(
     }
     const auto errors = FlattenSinkErrors(sink);
     REQUIRE(errors.size() == 1);
-    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(loglib::FormatParseError(errors.front()).contains("Header anchor compile failed"));
     CHECK(lines.empty());
 }
 
@@ -1268,9 +1268,9 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     RegexParser{bad.pattern, bad.continuationMode, bad.headerAnchor}.ParseStreaming(*sourcePtr, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
-    const std::vector<std::string> errors = sink.TakeErrors();
+    const std::vector<loglib::ParseError> errors = sink.TakeErrors();
     REQUIRE(errors.size() == 1);
-    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(loglib::FormatParseError(errors.front()).contains("Header anchor compile failed"));
     CHECK(data.Lines().empty());
 }
 

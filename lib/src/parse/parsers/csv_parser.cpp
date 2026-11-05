@@ -12,7 +12,6 @@
 #include "loglib/parse/internal/static_parser_pipeline.hpp"
 #include "loglib/parse/internal/streaming_parse_loop.hpp"
 #include "loglib/parse/log_parser.hpp"
-#include "loglib/parse/parse_error_text.hpp"
 
 #include <fmt/format.h>
 
@@ -574,7 +573,9 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
         internal::BatchCoalescer coalescer(
             sink, keys, internal::STATIC_BATCH_FLUSH_LINES, internal::STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline
         );
-        coalescer.Pending().errors.emplace_back(FormatLineError(headerLineNumber, "Invalid CSV header."));
+        coalescer.Pending().errors.push_back(
+            ParseError{.firstLine = headerLineNumber, .lastLine = headerLineNumber, .message = "Invalid CSV header."}
+        );
         coalescer.Finish(headerLineNumber + 1, /*wasCancelled=*/false);
         return;
     }

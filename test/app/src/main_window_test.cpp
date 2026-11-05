@@ -1127,7 +1127,7 @@ private slots:
 
         const auto &errors = run.model->StreamingErrors();
         QCOMPARE(static_cast<int>(errors.size()), 1);
-        const QString message = QString::fromStdString(errors.front());
+        const QString message = QString::fromStdString(loglib::FormatParseError(errors.front()));
         QVERIFY2(
             message.contains(QStringLiteral("line"), Qt::CaseInsensitive),
             qPrintable(QStringLiteral("error '%1' must reference a line number").arg(message))

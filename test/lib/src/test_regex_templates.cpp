@@ -626,7 +626,7 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
 
     for (const auto &e : result.errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);

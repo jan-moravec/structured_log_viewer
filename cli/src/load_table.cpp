@@ -15,7 +15,6 @@
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/parse/parse_error_text.hpp>
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/user_paths.hpp>
@@ -163,9 +162,9 @@ public:
         {
             consumed = std::max(consumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
         }
-        for (std::string &error : batch.errors)
+        for (loglib::ParseError &error : batch.errors)
         {
-            consumed = std::max(consumed, loglib::LocateParseError(error).lastLine);
+            consumed = std::max(consumed, error.lastLine);
             mLoaded->parseErrors.push_back(std::move(error));
         }
         batch.errors.clear();

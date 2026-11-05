@@ -300,14 +300,14 @@ template <class Body> void RunParserWorkerWithBoundary(QtStreamingLogSink *sink,
     catch (const std::exception &e)
     {
         loglib::RowBatch errorBatch;
-        errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
+        errorBatch.errors.push_back(loglib::ParseError{.message = std::string("Streaming parse failed: ") + e.what()});
         sink->OnBatch(std::move(errorBatch));
         sink->OnFinished(false);
     }
     catch (...)
     {
         loglib::RowBatch errorBatch;
-        errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
+        errorBatch.errors.push_back(loglib::ParseError{.message = "Streaming parse failed: unknown exception"});
         sink->OnBatch(std::move(errorBatch));
         sink->OnFinished(false);
     }
@@ -2158,7 +2158,7 @@ QtStreamingLogSink *LogModel::Sink()
     return mSink;
 }
 
-const std::vector<std::string> &LogModel::StreamingErrors() const
+const std::vector<loglib::ParseError> &LogModel::StreamingErrors() const
 {
     // Surface back-pressure shutdown drops as synthetic error strings
     // so the post-session dialog reports incomplete output. Materialised
@@ -2170,9 +2170,12 @@ const std::vector<std::string> &LogModel::StreamingErrors() const
         if (dropped != mLastReportedShutdownDropCount)
         {
             const std::size_t delta = dropped - mLastReportedShutdownDropCount;
-            mStreamingErrors.emplace_back(
-                std::string("Lost ") + std::to_string(delta) + (delta == 1 ? " parsed batch" : " parsed batches") +
-                " between the parser and the GUI when the stream was stopped (back-pressure shutdown)."
+            mStreamingErrors.push_back(
+                loglib::ParseError{
+                    .message = std::string("Lost ") + std::to_string(delta) +
+                               (delta == 1 ? " parsed batch" : " parsed batches") +
+                               " between the parser and the GUI when the stream was stopped (back-pressure shutdown)."
+                }
             );
             mLastReportedShutdownDropCount = dropped;
         }

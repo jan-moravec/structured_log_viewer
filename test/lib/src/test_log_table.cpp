@@ -367,7 +367,7 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
 
     RowBatch errorOnly;
     errorOnly.firstLineNumber = 1;
-    errorOnly.errors.emplace_back("Something went wrong on line 1");
+    errorOnly.errors.push_back(loglib::ParseError{.firstLine = 1, .lastLine = 1, .message = "Something went wrong"});
     LogTable::AppendBatchResult appendResult1;
     REQUIRE_NOTHROW(appendResult1 = table.AppendBatch(std::move(errorOnly)));
 

@@ -145,7 +145,7 @@ public:
 
     KeyIndex keys;
     std::vector<LogLine> lines;
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
 };
 
 template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 60s)
@@ -272,9 +272,9 @@ TEST_CASE("Malformed JSON values fail the line instead of dropping fields", "[js
     );
     CHECK(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 3);
-    CHECK(result.errors[0].starts_with("Error on line 2:"));
-    CHECK(result.errors[1].starts_with("Error on line 3:"));
-    CHECK(result.errors[2].starts_with("Error on line 4:"));
+    CHECK(loglib::FormatParseError(result.errors[0]).starts_with("Error on line 2:"));
+    CHECK(loglib::FormatParseError(result.errors[1]).starts_with("Error on line 3:"));
+    CHECK(loglib::FormatParseError(result.errors[2]).starts_with("Error on line 4:"));
 }
 
 TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser][malformed][stream]")
@@ -296,8 +296,8 @@ TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser]
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 6);
-    CHECK(sink.errors[0].starts_with("Error on line 2:"));
-    CHECK(sink.errors[5].starts_with("Error on line 7:"));
+    CHECK(loglib::FormatParseError(sink.errors[0]).starts_with("Error on line 2:"));
+    CHECK(loglib::FormatParseError(sink.errors[5]).starts_with("Error on line 7:"));
 }
 
 TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed]")
@@ -498,7 +498,7 @@ TEST_CASE("The stream loop drops an oversized line and resumes after it", "[stre
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 1);
-    CHECK(sink.errors[0].starts_with("Error on line 2:"));
+    CHECK(loglib::FormatParseError(sink.errors[0]).starts_with("Error on line 2:"));
     CHECK(source.RawLine(2) == "a=2");
 }
 
@@ -519,7 +519,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
     CHECK(sink.lines.size() == 2);
     CHECK(source.RawLine(1).size() <= 2 * options.maxLineBytes);
     REQUIRE(sink.errors.size() == 1);
-    CHECK(sink.errors[0].find("Continuation lines dropped") != std::string::npos);
+    CHECK(loglib::FormatParseError(sink.errors[0]).find("Continuation lines dropped") != std::string::npos);
 }
 
 TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBytesProducer][rotation]")

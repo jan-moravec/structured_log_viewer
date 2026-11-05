@@ -4,6 +4,7 @@
 #include "diagnostics.hpp"
 #include "options.hpp"
 
+#include <loglib/core/row_batch.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/parse/format_detection.hpp>
@@ -35,7 +36,7 @@ class Console;
 struct LoadedTable
 {
     loglib::LogTable table{loglib::LogData{}, loglib::LogConfigurationManager{}};
-    std::vector<std::string> parseErrors;
+    std::vector<loglib::ParseError> parseErrors;
     std::vector<std::shared_ptr<loglib::DecompressingByteSource>> ownedDecompressors;
     std::optional<loglib::DetectedFormat> format;
     std::uint64_t linesConsumed = 0;

@@ -47,7 +47,7 @@ loglib::ParseResult ParseWithSink(const std::filesystem::path &path, const logli
     loglib::internal::BufferingSink sink(std::move(source));
     loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
     loglib::LogData data = sink.TakeData();
-    std::vector<std::string> errors = sink.TakeErrors();
+    std::vector<loglib::ParseError> errors = sink.TakeErrors();
     return loglib::ParseResult{.data = std::move(data), .errors = std::move(errors)};
 }
 } // namespace
@@ -245,8 +245,8 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     REQUIRE(result.errors.size() == 2);
     const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
     const std::string expectedB = "Error on line " + std::to_string(INVALID_LINE_NUMBER_B);
-    CHECK(result.errors[0].contains(expectedA));
-    CHECK(result.errors[1].contains(expectedB));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains(expectedA));
+    CHECK(loglib::FormatParseError(result.errors[1]).contains(expectedB));
 }
 
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
@@ -1322,7 +1322,7 @@ TEST_CASE(
     REQUIRE(sink.finished);
 
     size_t goodLines = 0;
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &batch : sink.batches)
     {
         goodLines += batch.lines.size();
@@ -1330,8 +1330,8 @@ TEST_CASE(
     }
     CHECK(goodLines == 2);
     REQUIRE(errors.size() == 1);
-    INFO(errors.front());
+    INFO(loglib::FormatParseError(errors.front()));
     // Absolute line number 2 is the bad line; the surrounding "Error on
     // line N:" wrapper is composed by the streaming pipeline.
-    CHECK(errors.front().contains("Error on line 2:"));
+    CHECK(loglib::FormatParseError(errors.front()).contains("Error on line 2:"));
 }

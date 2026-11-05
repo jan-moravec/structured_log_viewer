@@ -4399,13 +4399,13 @@ void MainWindow::OnStreamingFinished(LogSession *origin, StreamingResult result)
         const size_t cut = std::min(origin->StreamingErrorsCut(), allErrors.size());
         if (cut < allErrors.size())
         {
-            const std::vector<std::string> thisFileErrors(
+            const std::vector<loglib::ParseError> thisFileErrors(
                 allErrors.begin() + static_cast<std::ptrdiff_t>(cut), allErrors.end()
             );
             const QString title = origin->StreamingFileName().isEmpty()
                                       ? tr("Error Parsing Logs")
                                       : tr("Error Parsing Logs \u2014 %1").arg(origin->StreamingFileName());
-            ShowParseErrors(title, thisFileErrors, origin);
+            ShowParsedErrors(title, thisFileErrors, origin);
         }
         origin->SetStreamingErrorsCut(allErrors.size());
     }
@@ -8441,6 +8441,14 @@ void MainWindow::ShowParseErrors(
     const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession
 )
 {
+    ShowParsedErrors(title, MessagesAsParseErrors(errors), originatingSession);
+}
+
+void MainWindow::ShowParsedErrors(
+    const QString &title, const std::vector<loglib::ParseError> &errors, LogSession *originatingSession
+)
+
+{
     if (errors.empty())
     {
         return;
@@ -8461,7 +8469,7 @@ void MainWindow::ShowParseErrors(
     // session) or only into the originating session's log
     // (background session).
     LogSession *originating = originatingSession != nullptr ? originatingSession : mSession;
-    mParseErrorsDock->AppendErrorsForSession(originating, title, errors);
+    mParseErrorsDock->AppendParseErrorsForSession(originating, title, errors);
     if (originating != nullptr && originating != mParseErrorsDock->BoundSession())
     {
         originating->QueueParseErrorsRaise();

@@ -89,9 +89,9 @@ struct CollectingSink final : LogParseSink
         return lines;
     }
 
-    [[nodiscard]] std::vector<std::string> Errors() const
+    [[nodiscard]] std::vector<loglib::ParseError> Errors() const
     {
-        std::vector<std::string> errors;
+        std::vector<loglib::ParseError> errors;
         for (const RowBatch &batch : batches)
         {
             errors.insert(errors.end(), batch.errors.begin(), batch.errors.end());

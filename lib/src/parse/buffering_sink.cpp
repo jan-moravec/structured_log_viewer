@@ -88,7 +88,7 @@ LogData BufferingSink::TakeData()
     return {std::move(mSource), std::move(mLines), std::move(mKeys)};
 }
 
-std::vector<std::string> BufferingSink::TakeErrors()
+std::vector<ParseError> BufferingSink::TakeErrors()
 {
     return std::move(mErrors);
 }

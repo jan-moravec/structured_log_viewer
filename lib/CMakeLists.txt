@@ -35,7 +35,7 @@ add_library(
     src/parse/format_detection.cpp
     src/query/histogram_bucket_index.cpp
     src/core/key_index.cpp
-    src/parse/parse_error_text.cpp
+    src/core/row_batch.cpp
     src/parse/parse_file.cpp
     src/parse/static_parser_pipeline.cpp
     src/core/stream_line_source.cpp
@@ -134,7 +134,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/query/log_string_matcher.hpp
     include/loglib/table/log_table.hpp
     include/loglib/core/log_value.hpp
-    include/loglib/parse/parse_error_text.hpp
     include/loglib/parse/parse_file.hpp
     include/loglib/parse/parser_options.hpp
     include/loglib/parse/parsers/csv_parser.hpp

@@ -19,7 +19,6 @@
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
-#include "loglib/parse/parse_error_text.hpp"
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
@@ -50,8 +49,8 @@ constexpr size_t STATIC_BATCH_FLUSH_LINES = 1000;
 constexpr auto STATIC_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(50);
 
 /**
- * @brief An error from decoding one line. relativeLine counts from 1 inside the batch, and Stage C turns it into
- * "Error on line N: ..." with the absolute line number.
+ * @brief An error from decoding one line. relativeLine counts from 1 inside the batch, and Stage C turns it into a
+ * ParseError with the absolute line number.
  */
 struct ParsedLineError
 {
@@ -435,9 +434,8 @@ void RunStaticParserPipeline(
             held.reset();
         }
 
-        // Compose absolute "Error on line N: ..." here so error and
-        // line numbering stay in lockstep with ShiftLineId above.
-        auto formatErrorsInto = [&](std::vector<std::string> &out) {
+        // Build the absolute ParseErrors here so error and line numbering stay in lockstep with ShiftLineId above.
+        auto moveErrorsInto = [&](std::vector<ParseError> &out) {
             if (parsed.errors.empty())
             {
                 return;
@@ -445,7 +443,8 @@ void RunStaticParserPipeline(
             out.reserve(out.size() + parsed.errors.size());
             for (auto &err : parsed.errors)
             {
-                out.push_back(FormatLineError(err.relativeLine + lineNumberDelta, err.body));
+                const std::uint64_t line = err.relativeLine + lineNumberDelta;
+                out.push_back(ParseError{.firstLine = line, .lastLine = line, .message = std::move(err.body)});
             }
             parsed.errors.clear();
         };
@@ -509,7 +508,7 @@ void RunStaticParserPipeline(
                 std::make_move_iterator(spansThisBatch.end())
             );
         }
-        formatErrorsInto(pending.errors);
+        moveErrorsInto(pending.errors);
 
         nextLineNumber += parsed.totalLineCount;
 

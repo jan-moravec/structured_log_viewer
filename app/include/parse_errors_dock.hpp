@@ -2,6 +2,8 @@
 
 #include "log_session_presentation.hpp"
 
+#include <loglib/core/row_batch.hpp>
+
 #include <QDockWidget>
 #include <QPointer>
 #include <QString>
@@ -43,6 +45,9 @@ public:
      */
     void AppendErrors(const QString &title, const std::vector<std::string> &errors);
 
+    /** @brief Like AppendErrors, for errors that carry the lines they refer to. */
+    void AppendParseErrors(const QString &title, const std::vector<loglib::ParseError> &errors);
+
     /**
      * @brief Appends an error batch to its originating session.
      * @param originating Origin session, or `nullptr` for the bound session.
@@ -54,6 +59,11 @@ public:
      * updates only that session's capped error log.
      */
     void AppendErrorsForSession(LogSession *originating, const QString &title, const std::vector<std::string> &errors);
+
+    /** @brief Like AppendErrorsForSession, for errors that carry the lines they refer to. */
+    void AppendParseErrorsForSession(
+        LogSession *originating, const QString &title, const std::vector<loglib::ParseError> &errors
+    );
 
     /** @brief Clears displayed errors without rearming first-batch notification. */
     void ClearErrors();
@@ -153,7 +163,9 @@ private:
      * @param errors Original error messages.
      * @param errorsBegin Index of the first retained error.
      */
-    void MirrorAppendIntoShadow(const QString &title, const std::vector<std::string> &errors, size_t errorsBegin);
+    void MirrorAppendIntoShadow(
+        const QString &title, const std::vector<loglib::ParseError> &errors, size_t errorsBegin
+    );
     void TrimShadowToCap();
     void ReplayLogIntoVisibleList(const SessionParseErrorLog &log);
 
@@ -165,7 +177,9 @@ private:
      *
      * Visible dock state is not changed.
      */
-    void AppendErrorsIntoSessionLog(LogSession *session, const QString &title, const std::vector<std::string> &errors);
+    void AppendErrorsIntoSessionLog(
+        LogSession *session, const QString &title, const std::vector<loglib::ParseError> &errors
+    );
 
     QListWidget *mList = nullptr;
     QLabel *mSummary = nullptr;

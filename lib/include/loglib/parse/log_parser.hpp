@@ -11,6 +11,7 @@
 
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
+#include "loglib/core/row_batch.hpp"
 #include "loglib/parse/parser_options.hpp"
 
 #include <cstddef>
@@ -30,7 +31,7 @@ class StreamLineSource;
 struct ParseResult
 {
     LogData data;
-    std::vector<std::string> errors;
+    std::vector<ParseError> errors;
 };
 
 /**

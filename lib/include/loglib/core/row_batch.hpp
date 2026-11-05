@@ -20,6 +20,29 @@ namespace loglib
 {
 
 /**
+ * @brief One problem a parser found, with the physical lines it refers to.
+ *
+ * Lines are counted from 1 for files and streams alike. Both are 0 when the error has no line, as for a parser that
+ * could not start. A single line has firstLine equal to lastLine.
+ */
+struct ParseError
+{
+    std::uint64_t firstLine = 0;
+    std::uint64_t lastLine = 0;
+    std::string message;
+
+    friend bool operator==(const ParseError &, const ParseError &) = default;
+};
+
+/**
+ * @brief The text shown to users for an error.
+ *
+ * It is "Error on line N: message" for one line, "Error on lines N-M: message" for a range, and the message alone when
+ * the error has no line.
+ */
+[[nodiscard]] std::string FormatParseError(const ParseError &error);
+
+/**
  * @brief One batch of output that a parser hands to a LogParseSink.
  *
  * A batch without rows is valid, even if it has errors or new keys. The parser always sends a last batch before
@@ -33,7 +56,7 @@ struct RowBatch
 {
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
-    std::vector<std::string> errors;
+    std::vector<ParseError> errors;
     std::vector<std::string> newKeys;
     /**
      * @brief The line ranges of multi-line records in a file source. A consumer must append localLineOffsets before it

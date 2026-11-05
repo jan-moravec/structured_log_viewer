@@ -18,7 +18,6 @@
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
-#include "loglib/parse/parse_error_text.hpp"
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
@@ -298,20 +297,28 @@ void RunStreamingParseLoop(
         {
             return;
         }
-        std::string msg;
         if (orphanRunFirstLine == orphanRunLastLine)
         {
-            msg = FormatLineError(orphanRunFirstLine, "Orphaned continuation line.");
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = orphanRunFirstLine,
+                    .lastLine = orphanRunFirstLine,
+                    .message = "Orphaned continuation line.",
+                }
+            );
         }
         else
         {
-            msg = FormatLineRangeError(
-                orphanRunFirstLine,
-                orphanRunLastLine,
-                fmt::format("{} orphaned continuation lines dropped.", orphanRunLastLine - orphanRunFirstLine + 1)
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = orphanRunFirstLine,
+                    .lastLine = orphanRunLastLine,
+                    .message = fmt::format(
+                        "{} orphaned continuation lines dropped.", orphanRunLastLine - orphanRunFirstLine + 1
+                    ),
+                }
             );
         }
-        coalescer.Pending().errors.emplace_back(std::move(msg));
         orphanRunFirstLine = 0;
         orphanRunLastLine = 0;
     };
@@ -339,23 +346,30 @@ void RunStreamingParseLoop(
                 const std::string_view reason = outcome == ContinuationSpliceOutcome::MissingTarget
                                                     ? "target field is not present in the record"
                                                     : "target field is not a string";
-                coalescer.Pending().errors.emplace_back(
-                    FormatLineError(rec.startLineNumber, fmt::format("Continuation lines dropped: {}.", reason))
+                coalescer.Pending().errors.push_back(
+                    ParseError{
+                        .firstLine = rec.startLineNumber,
+                        .lastLine = rec.startLineNumber,
+                        .message = fmt::format("Continuation lines dropped: {}.", reason),
+                    }
                 );
             }
         }
         // Trailing blanks remain between-record separators.
         if (rec.droppedContinuationLines > 0)
         {
-            coalescer.Pending().errors.emplace_back(FormatLineError(
-                rec.startLineNumber,
-                fmt::format(
-                    "Continuation lines dropped ({} line{}): target field is not present in the record or is not a "
-                    "string.",
-                    rec.droppedContinuationLines,
-                    rec.droppedContinuationLines == 1 ? "" : "s"
-                )
-            ));
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = rec.startLineNumber,
+                    .lastLine = rec.startLineNumber,
+                    .message = fmt::format(
+                        "Continuation lines dropped ({} line{}): target field is not present in the record or is not "
+                        "a string.",
+                        rec.droppedContinuationLines,
+                        rec.droppedContinuationLines == 1 ? "" : "s"
+                    ),
+                }
+            );
         }
 
         std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
@@ -395,7 +409,9 @@ void RunStreamingParseLoop(
         if (result == LineDecodeResult::Error)
         {
             flushOrphanRun();
-            coalescer.Pending().errors.emplace_back(FormatLineError(lineNumber, lineError));
+            coalescer.Pending().errors.push_back(
+                ParseError{.firstLine = lineNumber, .lastLine = lineNumber, .message = lineError}
+            );
             return;
         }
         if (result == LineDecodeResult::Skip)
@@ -516,8 +532,12 @@ void RunStreamingParseLoop(
         if (carry.size() > maxLineBytes)
         {
             flushOrphanRun();
-            coalescer.Pending().errors.emplace_back(
-                FormatLineError(nextLineNumber, fmt::format("Line exceeds the {}-byte limit; dropped.", maxLineBytes))
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = nextLineNumber,
+                    .lastLine = nextLineNumber,
+                    .message = fmt::format("Line exceeds the {}-byte limit; dropped.", maxLineBytes),
+                }
             );
             ++nextLineNumber;
             carry.clear();

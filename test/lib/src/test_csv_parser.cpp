@@ -215,8 +215,8 @@ TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
     // Error line numbers are 1-based and include the header row.
-    CHECK(result.errors[0].contains("line 3"));
-    CHECK(result.errors[0].contains("Unterminated quoted value"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 3"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Unterminated quoted value"));
     CHECK(result.data.Lines().size() == 1);
 }
 
@@ -232,8 +232,8 @@ TEST_CASE("Ragged row with extra cells surfaces as error [csv]", "[csv_parser]")
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("line 3"));
-    CHECK(result.errors[0].contains("extra cell"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 3"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("extra cell"));
     CHECK(result.data.Lines().size() == 1);
 }
 
@@ -490,8 +490,8 @@ TEST_CASE("Malformed CSV header surfaces a single error and zero data rows [csv]
     const ParseResult result = ParseFile(parser, file.GetFilePath());
     CHECK(result.data.Lines().empty());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("Invalid CSV header"));
-    CHECK(result.errors[0].contains("line 1"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Invalid CSV header"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 1"));
 }
 
 TEST_CASE("Malformed CSV header after blank lines reports the right line number [csv]", "[csv_parser]")
@@ -507,8 +507,8 @@ TEST_CASE("Malformed CSV header after blank lines reports the right line number 
     const ParseResult result = ParseFile(parser, file.GetFilePath());
     CHECK(result.data.Lines().empty());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("Invalid CSV header"));
-    CHECK(result.errors[0].contains("line 3"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Invalid CSV header"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 3"));
 }
 
 TEST_CASE("Duplicate CSV column names are silently renamed [csv]", "[csv_parser]")

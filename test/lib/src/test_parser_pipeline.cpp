@@ -718,7 +718,7 @@ TEST_CASE("Mock parser: per-line errors propagate through RowBatch::errors", "[m
         totalLines += b.lines.size();
         for (const auto &e : b.errors)
         {
-            allErrors.push_back(e);
+            allErrors.push_back(loglib::FormatParseError(e));
         }
     }
     REQUIRE(totalLines == 2);
@@ -771,7 +771,7 @@ TEST_CASE(
     {
         for (const auto &e : b.errors)
         {
-            allErrors.push_back(e);
+            allErrors.push_back(loglib::FormatParseError(e));
         }
     }
     REQUIRE(allErrors.size() == expectedErrorLines.size());
@@ -1025,7 +1025,7 @@ TEST_CASE(
         totalLines += b.lines.size();
         for (const auto &e : b.errors)
         {
-            allErrors.push_back(e);
+            allErrors.push_back(loglib::FormatParseError(e));
         }
     }
     CHECK(totalLines == 1);

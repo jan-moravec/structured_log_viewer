@@ -147,7 +147,7 @@ TEST_CASE("Unterminated quoted value reports a parse error [logfmt]", "[logfmt_p
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("Unterminated quoted value"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Unterminated quoted value"));
 }
 
 TEST_CASE("Bare key with no '=' is treated as null [logfmt]", "[logfmt_parser]")
@@ -248,8 +248,8 @@ TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_p
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("line 2"));
-    CHECK(result.errors[0].contains("Not a logfmt record"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Not a logfmt record"));
     REQUIRE(result.data.Lines().size() == 2);
 }
 
@@ -535,14 +535,14 @@ TEST_CASE(
     auto lines = FlattenLines(sink.batches);
     REQUIRE(lines.size() == 1);
 
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         errors.insert(errors.end(), b.errors.begin(), b.errors.end());
     }
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("line 1"));
-    CHECK(errors[0].contains("Orphaned continuation line"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("line 1"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("Orphaned continuation line"));
 }
 
 TEST_CASE(
@@ -569,14 +569,14 @@ TEST_CASE(
     auto lines = FlattenLines(sink.batches);
     REQUIRE(lines.size() == 1);
 
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         errors.insert(errors.end(), b.errors.begin(), b.errors.end());
     }
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("lines 1-5"));
-    CHECK(errors[0].contains("5 orphaned continuation lines"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("lines 1-5"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("5 orphaned continuation lines"));
 }
 
 TEST_CASE(
@@ -599,14 +599,14 @@ TEST_CASE(
     auto lines = FlattenLines(sink.batches);
     REQUIRE(lines.empty());
 
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         errors.insert(errors.end(), b.errors.begin(), b.errors.end());
     }
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("lines 1-3"));
-    CHECK(errors[0].contains("3 orphaned continuation lines"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("lines 1-3"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("3 orphaned continuation lines"));
 }
 
 TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfmt_parser][stream_line_source]")
@@ -653,7 +653,7 @@ TEST_CASE(
     const auto result = ParseFile(parser, file.GetFilePath());
     for (const auto &e : result.errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
@@ -703,7 +703,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -764,7 +764,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
