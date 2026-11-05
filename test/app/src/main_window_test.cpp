@@ -30,6 +30,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -505,6 +506,40 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
         run.cancelled = (result == StreamingResult::Cancelled);
     }
     return run;
+}
+
+// A producer whose Read throws, to drive a parse that fails part-way.
+class ThrowingBytesProducer final : public loglib::BytesProducer
+{
+public:
+    std::size_t Read(std::span<char> /*buffer*/) override
+    {
+        throw std::runtime_error("producer failed");
+    }
+
+    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    {
+    }
+
+    void Stop() noexcept override
+    {
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "throwing";
+    }
+};
+
+// A parser that cannot be built: the factory throws before any parse starts.
+std::unique_ptr<loglib::LogParser> ThrowingParserFactory()
+{
+    throw std::runtime_error("factory failed");
 }
 
 // RAII helper for the live-tail smoke test: a temp directory that lives
@@ -1115,6 +1150,56 @@ private slots:
         QVERIFY(displayVal(2, colA).isEmpty());
         QCOMPARE(displayVal(2, colB), QStringLiteral("b3"));
         QCOMPARE(displayVal(2, colC), QStringLiteral("c3"));
+    }
+
+    // A parse that throws reports one error and finishes the sink exactly once: the library finishes it when the parse
+    // throws, and the worker boundary does not finish it a second time.
+    static void TestThrowingParseFinishesSinkOnce()
+    {
+        LogModel model;
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto source =
+            std::make_unique<loglib::StreamLineSource>("<throwing>", std::make_unique<ThrowingBytesProducer>());
+        model.BeginStreaming(std::move(source), loglib::ParserOptions{}, [] {
+            return std::make_unique<loglib::JsonParser>();
+        });
+
+        QVERIFY(finishedSpy.wait(60000));
+        // Give a second, wrongly sent OnFinished the chance to arrive.
+        QTest::qWait(100);
+        QCOMPARE(finishedSpy.count(), 1);
+
+        const auto &errors = model.StreamingErrors();
+        QCOMPARE(static_cast<int>(errors.size()), 1);
+        QCOMPARE(
+            QString::fromStdString(loglib::FormatParseError(errors.front())),
+            QStringLiteral("Streaming parse failed: producer failed")
+        );
+    }
+
+    // The same for a failure before the parse starts, which only the worker boundary can report.
+    static void TestFailingParserFactoryFinishesSinkOnce()
+    {
+        LogModel model;
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto source =
+            std::make_unique<loglib::StreamLineSource>("<throwing>", std::make_unique<ThrowingBytesProducer>());
+        model.BeginStreaming(std::move(source), loglib::ParserOptions{}, ThrowingParserFactory);
+
+        QVERIFY(finishedSpy.wait(60000));
+        QTest::qWait(100);
+        QCOMPARE(finishedSpy.count(), 1);
+
+        const auto &errors = model.StreamingErrors();
+        QCOMPARE(static_cast<int>(errors.size()), 1);
+        QCOMPARE(
+            QString::fromStdString(loglib::FormatParseError(errors.front())),
+            QStringLiteral("Streaming parse failed: factory failed")
+        );
     }
 
     static void TestFixtureInvalidLines()

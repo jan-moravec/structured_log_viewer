@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <exception>
 #include <span>
 #include <utility>
 #include <vector>
@@ -89,13 +90,28 @@ public:
      */
     void Finish(size_t lastLineNumber, bool wasCancelled);
 
+    /**
+     * @brief Keeps the sink contract when a parse threw. Call it from the handler of the exception, then rethrow.
+     *
+     * For OperationCancelled it finishes the sink as cancelled. For any other exception it adds one error without a
+     * line, "Streaming parse failed: " and the message, to the last batch and finishes the sink. It does nothing when
+     * the sink itself threw, because a sink that threw is not called again, or when the sink was finished already.
+     * lastLineNumber is the number of lines read so far.
+     */
+    void FinishAfterException(size_t lastLineNumber, std::exception_ptr error);
+
 private:
+    /** Sends a batch to the sink and remembers whether the sink threw. */
+    void SendBatch(RowBatch batch);
+
     LogParseSink &mSink;
     KeyIndex &mKeys;
     RowBatch mPending;
     bool mPrimed = false;
     /** One bit per key id: set once the key is in the newKeys of some batch. */
     std::vector<bool> mAnnounced;
+    bool mSinkThrew = false;
+    bool mFinished = false;
     std::vector<KeyId> mConvertedTimeKeys;
     size_t mFlushLines;
     std::chrono::milliseconds mFlushInterval;

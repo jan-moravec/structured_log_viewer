@@ -132,6 +132,14 @@ public:
     void OnBatch(loglib::RowBatch batch) override;
     void OnFinished(bool cancelled) override;
 
+    /// True once the parser called `OnFinished` since the last `Arm()`.
+    /// The worker boundary uses it to finish the sink exactly once when a
+    /// parse throws. Thread-safe.
+    [[nodiscard]] bool OnFinishedCalled() const noexcept
+    {
+        return mOnFinishedCalled.load(std::memory_order_acquire);
+    }
+
 private:
     /// Concatenates the batches into one. The first batch's
     /// `firstLineNumber` is preserved; all other vectors are appended.
@@ -175,6 +183,9 @@ private:
     /// and the GUI thread picking it up. Coalesces multiple worker
     /// enqueues onto a single GUI-thread drain lambda per epoch.
     std::atomic<bool> mDrainScheduled{false};
+
+    /// Set by `OnFinished` on the worker thread, cleared by `Arm()`.
+    std::atomic<bool> mOnFinishedCalled{false};
 
     /// Backs `IsActive()`: set by `Arm()`, cleared by matching
     /// `OnFinished` or `DropPendingBatches()`. GUI thread.

@@ -240,24 +240,15 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
 }
 
 /**
- * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
+ * @brief The body of RunStaticParserPipeline, after the sink was started. It may throw.
  *
- * - Stage A runs in order and cuts the file into batches. It stops cutting when the stop token fires.
- * - Stage B runs in parallel and decodes the batches. It gives every row its source and a line id counted inside the
- *   batch, and converts the time columns.
- * - Stage C runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena of the
- *   file, coalesces batches, announces the new keys and calls the sink.
- *
- * Stage B records the keys it meets first in each batch, and Stage C announces them in batch order, so the new keys
- * come in the order they first appear in the file, however the workers were scheduled. declaredKeys are announced
- * before the first row. A parser that interns its keys before the pipeline starts, such as CSV with its header, passes
- * them there so they appear even if no row has a value.
+ * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
  */
 // The two callables are taken as forwarding references so that lvalues and rvalues both work without a move at the call
 // site. They are used many times inside the pipeline, so they are deliberately not forwarded, because forwarding an
 // rvalue more than once would be undefined behavior. The related warnings are suppressed below.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
-void RunStaticParserPipeline(
+void RunStaticParserPipelineBody(
     FileLineSource &source,
     LogParseSink &sink,
     const ParserOptions &options,
@@ -265,16 +256,13 @@ void RunStaticParserPipeline(
     StageADriver &&stageADriver,
     // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     StageBDecoder &&stageBDecoder,
-    std::span<const KeyId> declaredKeys = {}
+    BatchCoalescer &coalescer,
+    size_t &nextLineNumber
 )
 {
     LogFile &file = source.File();
 
-    sink.OnStarted();
-
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL);
-    coalescer.AddSeenKeys(declaredKeys);
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
         keys,
@@ -303,8 +291,6 @@ void RunStaticParserPipeline(
     file.ReserveLineOffsets(file.Size() / 100);
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
-
-    size_t nextLineNumber = 1;
 
     // Stage C holds a batch's open final record until the next batch
     // determines whether more continuation text follows. Line offsets are
@@ -558,6 +544,56 @@ void RunStaticParserPipeline(
     }
 
     coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
+}
+
+/**
+ * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
+ *
+ * - Stage A runs in order and cuts the file into batches. It stops cutting when the stop token fires.
+ * - Stage B runs in parallel and decodes the batches. It gives every row its source and a line id counted inside the
+ *   batch, and converts the time columns.
+ * - Stage C runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena of the
+ *   file, coalesces batches, announces the new keys and calls the sink.
+ *
+ * Stage B records the keys it meets first in each batch, and Stage C announces them in batch order, so the new keys
+ * come in the order they first appear in the file, however the workers were scheduled. declaredKeys are announced
+ * before the first row. A parser that interns its keys before the pipeline starts, such as CSV with its header, passes
+ * them there so they appear even if no row has a value.
+ *
+ * When the parse throws, the sink still gets one last batch with an error that says so, and OnFinished, and the
+ * exception goes on to the caller. See BatchCoalescer::FinishAfterException. TBB cancels the pipeline and rethrows a
+ * stage's exception on the calling thread, so the sink is never called from two threads at once.
+ */
+// The callables are forwarded as lvalues to the body, which uses them many times.
+template <class Token, class UserState, class StageADriver, class StageBDecoder>
+void RunStaticParserPipeline(
+    FileLineSource &source,
+    LogParseSink &sink,
+    const ParserOptions &options,
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+    StageADriver &&stageADriver,
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+    StageBDecoder &&stageBDecoder,
+    std::span<const KeyId> declaredKeys = {}
+)
+{
+    sink.OnStarted();
+
+    BatchCoalescer coalescer(sink, sink.Keys(), STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL);
+    coalescer.AddSeenKeys(declaredKeys);
+    size_t nextLineNumber = 1;
+
+    try
+    {
+        RunStaticParserPipelineBody<Token, UserState>(
+            source, sink, options, stageADriver, stageBDecoder, coalescer, nextLineNumber
+        );
+    }
+    catch (...)
+    {
+        coalescer.FinishAfterException(nextLineNumber - 1, std::current_exception());
+        throw;
+    }
 }
 
 } // namespace loglib::internal

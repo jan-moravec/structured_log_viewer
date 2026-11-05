@@ -156,38 +156,21 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
 }
 
 /**
- * @brief Parses a live stream line by line for any format.
+ * @brief The body of RunStreamingParseLoop, after the sink was started. It may throw.
  *
- * The loop reads lines from source.Producer() and hands each non-blank line to the decoder, which must satisfy
- * CompactLineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
- * which are sent on after STREAMING_BATCH_FLUSH_LINES lines or STREAMING_BATCH_FLUSH_INTERVAL.
- *
- * It runs on one thread, because a stream delivers thousands of lines per second and a thread pool would not pay off.
- * The source is changed on the parser thread and read by other threads at the same time, and the mutex and deque
- * storage of StreamLineSource make that safe.
- *
- * A Continue result adds the line to the raw text of the pending record and to the field that
- * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
- * waited STREAMING_PENDING_RECORD_MAX_AGE.
- *
- * The loop announces the keys that decoders look up through the worker key cache, before each flush, and the
- * declaredKeys before the first row. A parser that interns its keys before calling, as the regex parser does for the
- * groups of its pattern, passes them as declaredKeys, so those columns appear even if no row has a value.
+ * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
  */
 template <class Decoder>
-void RunStreamingParseLoop(
+void RunStreamingParseLoopBody(
     StreamLineSource &source,
     Decoder &decoder,
     LogParseSink &sink,
     const ParserOptions &options,
-    std::span<const KeyId> declaredKeys = {}
+    BatchCoalescer &coalescer,
+    size_t &nextLineNumber
 )
 {
-    sink.OnStarted();
-
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL);
-    coalescer.AddSeenKeys(declaredKeys);
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
         keys,
@@ -211,8 +194,6 @@ void RunStreamingParseLoop(
 
     WorkerScratchBase promoteScratch;
     promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
-
-    size_t nextLineNumber = 1;
 
     // Bytes that an earlier stage, such as format detection, read from the producer and gave back to the source. They
     // come before anything the producer delivers now.
@@ -618,6 +599,54 @@ void RunStreamingParseLoop(
 
     announceSeenKeys();
     coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
+}
+
+/**
+ * @brief Parses a live stream line by line for any format.
+ *
+ * The loop reads lines from source.Producer() and hands each non-blank line to the decoder, which must satisfy
+ * CompactLineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
+ * which are sent on after STREAMING_BATCH_FLUSH_LINES lines or STREAMING_BATCH_FLUSH_INTERVAL.
+ *
+ * It runs on one thread, because a stream delivers thousands of lines per second and a thread pool would not pay off.
+ * The source is changed on the parser thread and read by other threads at the same time, and the mutex and deque
+ * storage of StreamLineSource make that safe.
+ *
+ * A Continue result adds the line to the raw text of the pending record and to the field that
+ * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
+ * waited STREAMING_PENDING_RECORD_MAX_AGE.
+ *
+ * The loop announces the keys that decoders look up through the worker key cache, before each flush, and the
+ * declaredKeys before the first row. A parser that interns its keys before calling, as the regex parser does for the
+ * groups of its pattern, passes them as declaredKeys, so those columns appear even if no row has a value.
+ *
+ * When the loop throws, the sink still gets one last batch with an error that says so, and OnFinished, and the
+ * exception goes on to the caller. See BatchCoalescer::FinishAfterException.
+ */
+template <class Decoder>
+void RunStreamingParseLoop(
+    StreamLineSource &source,
+    Decoder &decoder,
+    LogParseSink &sink,
+    const ParserOptions &options,
+    std::span<const KeyId> declaredKeys = {}
+)
+{
+    sink.OnStarted();
+
+    BatchCoalescer coalescer(sink, sink.Keys(), STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL);
+    coalescer.AddSeenKeys(declaredKeys);
+    size_t nextLineNumber = 1;
+
+    try
+    {
+        RunStreamingParseLoopBody(source, decoder, sink, options, coalescer, nextLineNumber);
+    }
+    catch (...)
+    {
+        coalescer.FinishAfterException(nextLineNumber - 1, std::current_exception());
+        throw;
+    }
 }
 
 } // namespace loglib::internal

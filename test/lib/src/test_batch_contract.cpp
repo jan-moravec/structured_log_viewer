@@ -8,6 +8,9 @@
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/parse/internal/line_decoder.hpp>
+#include <loglib/parse/internal/static_parser_pipeline.hpp>
+#include <loglib/parse/internal/streaming_parse_loop.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -28,6 +31,8 @@
 #include <cstdio>
 #include <memory>
 #include <numeric>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -832,5 +837,294 @@ TEST_CASE(
                 CHECK(actual.jsonLines == expected.jsonLines);
             }
         }
+    }
+}
+
+namespace
+{
+
+/** Counts the calls a driver makes, and can throw from OnBatch or OnFinished. */
+class CountingSink final : public LogParseSink
+{
+public:
+    enum class ThrowFrom
+    {
+        Nowhere,
+        OnBatch,
+        OnFinished,
+    };
+
+    explicit CountingSink(ThrowFrom throwFrom = ThrowFrom::Nowhere, int throwOnBatchCall = 2)
+        : mThrowFrom(throwFrom), mThrowOnBatchCall(throwOnBatchCall)
+    {
+    }
+
+    KeyIndex &Keys() override
+    {
+        return mKeys;
+    }
+
+    void OnStarted() override
+    {
+        ++started;
+    }
+
+    void OnBatch(RowBatch batch) override
+    {
+        ++batchCalls;
+        if (finished > 0 || finishedCalls > 0)
+        {
+            callAfterFinish = true;
+        }
+        if (mThrowFrom == ThrowFrom::OnBatch && batchCalls == mThrowOnBatchCall)
+        {
+            throw exports::BrokenPipe();
+        }
+        batches.push_back(std::move(batch));
+    }
+
+    void OnFinished(bool cancelled) override
+    {
+        ++finishedCalls;
+        wasCancelled = cancelled;
+        if (mThrowFrom == ThrowFrom::OnFinished)
+        {
+            throw exports::BrokenPipe();
+        }
+        ++finished;
+    }
+
+    std::vector<RowBatch> batches;
+    int started = 0;
+    int batchCalls = 0;
+    int finishedCalls = 0;
+    int finished = 0;
+    bool wasCancelled = false;
+    bool callAfterFinish = false;
+
+    [[nodiscard]] const RowBatch &LastBatch() const
+    {
+        REQUIRE_FALSE(batches.empty());
+        return batches.back();
+    }
+
+private:
+    ThrowFrom mThrowFrom;
+    int mThrowOnBatchCall;
+    KeyIndex mKeys;
+};
+
+struct NoWorkerState
+{
+};
+
+/** A Stage B that throws on one batch and otherwise only counts the lines of its slice. */
+struct ThrowingStageB
+{
+    template <class Exception> struct Of
+    {
+        uint64_t throwOnBatch;
+        Exception exception;
+
+        void operator()(
+            internal::ByteRange token,
+            internal::WorkerScratch<NoWorkerState> & /*worker*/,
+            KeyIndex & /*keys*/,
+            std::span<const internal::TimeColumnSpec> /*timeColumns*/,
+            internal::ParsedPipelineBatch &parsed
+        ) const
+        {
+            if (token.batchIndex == throwOnBatch)
+            {
+                throw exception;
+            }
+            parsed.batchIndex = token.batchIndex;
+            parsed.totalLineCount = static_cast<std::size_t>(std::count(token.bytesBegin, token.bytesEnd, '\n'));
+        }
+    };
+};
+
+/** Runs the static driver over about 300 short lines with a Stage B that throws. */
+template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, Exception exception)
+{
+    std::string bytes;
+    for (int i = 0; i < 300; ++i)
+    {
+        bytes += "line " + std::to_string(i) + "\n";
+    }
+    const TestLogFile file("batch_contract_throwing_static.log");
+    file.Write(bytes);
+    auto source = file.CreateFileLineSource();
+    const LogFile &logFile = source->File();
+    ParserOptions options;
+    options.threads = 2;
+    ThrowingStageB::Of<Exception> stageB{2, std::move(exception)};
+    internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
+        *source,
+        sink,
+        options,
+        internal::MakeLineAlignedBatcher(logFile.Data(), logFile.Data() + logFile.Size(), 64),
+        stageB
+    );
+}
+
+/** A streaming decoder that throws on the line "boom" and otherwise emits an empty row. */
+template <class Exception> class ThrowingLineDecoder
+{
+public:
+    explicit ThrowingLineDecoder(Exception exception)
+        : mException(std::move(exception))
+    {
+    }
+
+    internal::LineDecodeResult DecodeCompact(
+        std::string_view line,
+        KeyIndex & /*keys*/,
+        internal::PerWorkerKeyCache & /*keyCache*/,
+        std::vector<std::pair<KeyId, CompactLogValue>> &out,
+        std::string &outOwnedArena,
+        std::string & /*errorOut*/
+    )
+    {
+        out.clear();
+        outOwnedArena.clear();
+        if (line == "boom")
+        {
+            throw mException;
+        }
+        return internal::LineDecodeResult::Emit;
+    }
+
+private:
+    Exception mException;
+};
+
+template <class Exception> void RunStreamWithThrowingDecoder(CountingSink &sink, Exception exception)
+{
+    StreamLineSource source(
+        "memory.log", std::make_unique<InMemoryBytesProducer>("one\ntwo\nthree\nboom\nfive\nsix\n", 4)
+    );
+    ThrowingLineDecoder<Exception> decoder(std::move(exception));
+    internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{});
+}
+
+void CheckFinishedWithFailureError(const CountingSink &sink, const std::string &what)
+{
+    CHECK(sink.started == 1);
+    CHECK(sink.finished == 1);
+    CHECK(sink.finishedCalls == 1);
+    CHECK_FALSE(sink.wasCancelled);
+    CHECK_FALSE(sink.callAfterFinish);
+    const auto &errors = sink.LastBatch().errors;
+    REQUIRE(errors.size() >= 1);
+    CHECK(errors.back().firstLine == 0);
+    CHECK(errors.back().lastLine == 0);
+    CHECK(errors.back().message == "Streaming parse failed: " + what);
+}
+
+} // namespace
+
+TEST_CASE("A decoder that throws still finishes the sink, once, and the exception goes on", "[batch_contract][failure]")
+{
+    SECTION("the static driver")
+    {
+        CountingSink sink;
+        CHECK_THROWS_WITH(RunStaticWithThrowingStageB(sink, std::runtime_error("decoder failed")), "decoder failed");
+        CheckFinishedWithFailureError(sink, "decoder failed");
+    }
+    SECTION("the streaming driver")
+    {
+        CountingSink sink;
+        CHECK_THROWS_WITH(RunStreamWithThrowingDecoder(sink, std::runtime_error("decoder failed")), "decoder failed");
+        CheckFinishedWithFailureError(sink, "decoder failed");
+        // The rows committed before the failing line were delivered, and the lines read so far are counted.
+        std::size_t rows = 0;
+        for (const RowBatch &batch : sink.batches)
+        {
+            rows += batch.lines.size();
+        }
+        CHECK(rows == 2);
+        CHECK(sink.LastBatch().lastLineNumber == 4);
+    }
+    SECTION("an exception that is not a std::exception")
+    {
+        CountingSink sink;
+        CHECK_THROWS(RunStreamWithThrowingDecoder(sink, 42));
+        CheckFinishedWithFailureError(sink, "unknown exception");
+    }
+}
+
+TEST_CASE("A cancelled operation finishes the sink as cancelled and goes on", "[batch_contract][failure]")
+{
+    SECTION("the static driver")
+    {
+        CountingSink sink;
+        CHECK_THROWS_AS(RunStaticWithThrowingStageB(sink, OperationCancelled("stop")), OperationCancelled);
+        CHECK(sink.finished == 1);
+        CHECK(sink.wasCancelled);
+        CHECK_FALSE(sink.callAfterFinish);
+    }
+    SECTION("the streaming driver")
+    {
+        CountingSink sink;
+        CHECK_THROWS_AS(RunStreamWithThrowingDecoder(sink, OperationCancelled("stop")), OperationCancelled);
+        CHECK(sink.finished == 1);
+        CHECK(sink.wasCancelled);
+        CHECK_FALSE(sink.callAfterFinish);
+    }
+}
+
+TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
+{
+    SECTION("from OnBatch, in the streaming driver")
+    {
+        CountingSink sink(CountingSink::ThrowFrom::OnBatch);
+        std::string bytes;
+        for (int i = 0; i < 2000; ++i)
+        {
+            bytes += "line " + std::to_string(i) + "\n";
+        }
+        StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, 4096));
+        ThrowingLineDecoder<int> decoder(0);
+        // 250 rows make a batch, so the second batch throws on the sink's second call.
+        CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
+        CHECK(sink.batchCalls == 2);
+        CHECK(sink.finishedCalls == 0);
+    }
+    SECTION("from OnBatch, in the static driver")
+    {
+        // Stage B finds no rows here, so the only batch is the last one, sent when the pipeline finishes.
+        CountingSink sink(CountingSink::ThrowFrom::OnBatch, 1);
+        std::string bytes;
+        for (int i = 0; i < 2000; ++i)
+        {
+            bytes += "line " + std::to_string(i) + "\n";
+        }
+        const TestLogFile file("batch_contract_sink_throws.log");
+        file.Write(bytes);
+        auto source = file.CreateFileLineSource();
+        const LogFile &logFile = source->File();
+        ThrowingStageB::Of<int> stageB{UINT64_MAX, 0};
+        CHECK_THROWS_AS(
+            (internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
+                *source,
+                sink,
+                ParserOptions{},
+                internal::MakeLineAlignedBatcher(logFile.Data(), logFile.Data() + logFile.Size(), 64),
+                stageB
+            )),
+            exports::BrokenPipe
+        );
+        CHECK(sink.batchCalls == 1);
+        CHECK(sink.finishedCalls == 0);
+    }
+    SECTION("from OnFinished")
+    {
+        CountingSink sink(CountingSink::ThrowFrom::OnFinished);
+        StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>("one\ntwo\n", 4));
+        ThrowingLineDecoder<int> decoder(0);
+        CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
+        CHECK(sink.finishedCalls == 1);
+        CHECK(sink.batchCalls >= 1);
     }
 }

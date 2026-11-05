@@ -1,8 +1,10 @@
 #include "loglib/parse/internal/batch_coalescer.hpp"
 
 #include "loglib/core/key_index.hpp"
+#include "loglib/core/stop_token.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <string>
 #include <utility>
 
@@ -68,7 +70,7 @@ bool BatchCoalescer::TryFlush(bool force, size_t lastLineNumber)
 
     mPending.lastLineNumber = lastLineNumber;
     mPending.convertedTimeKeys = mConvertedTimeKeys;
-    mSink.OnBatch(std::move(mPending));
+    SendBatch(std::move(mPending));
     mPending = RowBatch{};
     mPrimed = false;
     mLastFlush = now;
@@ -87,7 +89,7 @@ void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
         }
         mPending.lastLineNumber = lastLineNumber;
         mPending.convertedTimeKeys = mConvertedTimeKeys;
-        mSink.OnBatch(std::move(mPending));
+        SendBatch(std::move(mPending));
         mPending = RowBatch{};
         mPrimed = false;
     }
@@ -97,9 +99,57 @@ void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
         tail.firstLineNumber = lastLineNumber + 1;
         tail.lastLineNumber = lastLineNumber;
         tail.convertedTimeKeys = mConvertedTimeKeys;
-        mSink.OnBatch(std::move(tail));
+        SendBatch(std::move(tail));
     }
-    mSink.OnFinished(wasCancelled);
+    mFinished = true;
+    try
+    {
+        mSink.OnFinished(wasCancelled);
+    }
+    catch (...)
+    {
+        mSinkThrew = true;
+        throw;
+    }
+}
+
+void BatchCoalescer::FinishAfterException(size_t lastLineNumber, std::exception_ptr error)
+{
+    if (mSinkThrew || mFinished)
+    {
+        return;
+    }
+    try
+    {
+        std::rethrow_exception(std::move(error));
+    }
+    catch (const OperationCancelled &)
+    {
+        Finish(lastLineNumber, true);
+    }
+    catch (const std::exception &ex)
+    {
+        mPending.errors.push_back(ParseError{.message = std::string("Streaming parse failed: ") + ex.what()});
+        Finish(lastLineNumber, false);
+    }
+    catch (...)
+    {
+        mPending.errors.push_back(ParseError{.message = "Streaming parse failed: unknown exception"});
+        Finish(lastLineNumber, false);
+    }
+}
+
+void BatchCoalescer::SendBatch(RowBatch batch)
+{
+    try
+    {
+        mSink.OnBatch(std::move(batch));
+    }
+    catch (...)
+    {
+        mSinkThrew = true;
+        throw;
+    }
 }
 
 } // namespace loglib::internal

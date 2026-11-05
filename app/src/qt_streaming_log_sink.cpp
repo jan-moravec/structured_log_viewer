@@ -31,6 +31,7 @@ loglib::StopToken QtStreamingLogSink::Arm()
     // worker, so no producer can be racing this clear.
     mPending.Reset();
     mDrainScheduled.store(false, std::memory_order_release);
+    mOnFinishedCalled.store(false, std::memory_order_release);
     mPaused.store(false, std::memory_order_release);
     mPausedDropCount.store(0, std::memory_order_release);
     mActive = true;
@@ -268,6 +269,7 @@ void QtStreamingLogSink::OnBatch(loglib::RowBatch batch)
 
 void QtStreamingLogSink::OnFinished(bool cancelled)
 {
+    mOnFinishedCalled.store(true, std::memory_order_release);
     const uint64_t gen = mGeneration.load(std::memory_order_acquire);
     QMetaObject::invokeMethod(
         this,
