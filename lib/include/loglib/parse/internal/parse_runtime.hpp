@@ -2,8 +2,8 @@
  * @brief Per-thread scratch state shared by the parsing pipelines.
  *
  * Each worker keeps a cache from key text to key id and the last parsed timestamp per time column, so repeated work is
- * skipped. The static pipeline and the live-stream loop share this state. This header defines it and the helper that
- * promotes time columns on a line.
+ * skipped. The static pipeline and the live-stream loop share this state. This header defines it and builds the time column
+ * specs from a configuration.
  *
  * This is part of the parse module.
  */
@@ -12,7 +12,8 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/transparent_string_hash.hpp"
-#include "loglib/parse/internal/timestamp_promotion.hpp"
+#include "loglib/schema/log_configuration.hpp"
+#include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <tsl/robin_map.h>
 
@@ -25,6 +26,11 @@
 
 namespace loglib::internal
 {
+
+/**
+ * @brief Builds a TimeColumnSpec for each Time column of the configuration. A null configuration gives an empty list.
+ */
+std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
 
 /**
  * @brief Each worker's own map from key text to key id. A hit needs no allocation, and a miss asks the shared index

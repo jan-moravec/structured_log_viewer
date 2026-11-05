@@ -1,16 +1,17 @@
 /**
- * @brief Converts timestamp text in a row to real timestamps while parsing.
+ * @brief Converts timestamp text in a row to real timestamps.
  *
- * When the configuration marks a column as time, the parsers use these helpers to parse its text with the configured
- * formats and replace it with a timestamp. The helpers remember the last successful format per column to skip work.
+ * A TimeColumnSpec describes one Time column: its key ids, its formats and the zone for values that name none. The
+ * parsers and the table use PromoteLineTimestamps to parse that text with the configured formats and replace it with a
+ * timestamp. The helpers remember the last successful format and text per column to skip work.
  *
- * This is part of the parse module.
+ * This is part of the time module. It needs only LogLine and the timestamp parsing functions, so building the specs
+ * from a configuration is left to the callers.
  */
 #pragma once
 
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/schema/log_configuration.hpp"
 #include "loglib/time/time_zone_context.hpp"
 #include "loglib/time/timestamp_parsing.hpp"
 
@@ -47,11 +48,6 @@ struct TimeColumnSpec
     /** @brief The zone in which values that name no zone are read. */
     TimeZoneContext timeZone;
 };
-
-/**
- * @brief Builds a TimeColumnSpec for each Time column of the configuration. A null configuration gives an empty list.
- */
-std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
 
 /**
  * @brief Converts the time columns of one line to timestamps, in place. Returns true if at least one column was

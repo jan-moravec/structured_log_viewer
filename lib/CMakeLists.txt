@@ -42,7 +42,8 @@ add_library(
     src/ingest/tailing_bytes_producer.cpp
     src/ingest/tcp_server_producer.cpp
     src/ingest/udp_server_producer.cpp
-    src/parse/timestamp_promotion.cpp
+    src/time/timestamp_promotion.cpp
+    src/parse/parse_runtime.cpp
     src/schema/log_configuration.cpp
     src/query/column_projection.cpp
     src/table/column_key_id_cache.cpp
