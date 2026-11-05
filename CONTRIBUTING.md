@@ -194,7 +194,7 @@ Both drivers share the same **multi-line record** contract:
 - Static Stage C holds back each batch's tail row. It uses `ExtendContinuationTarget` within a batch and `SpliceCrossBatchContinuation` across batches. `RowBatch::multiLineSpans` is registered only after line offsets, so `LogFile::GetLine(headerId)` returns the original header-through-last-continuation byte range.
 - Blank lines are attached only when a later continuation proves they are inside the record; trailing or between-record blanks remain separators.
 
-`RegexTemplate::continuationMode` accepts `none`, `indented`, or `untilNextHeader`; `headerAnchor` can replace the full-pattern header probe in the last mode. Logfmt uses indented continuation by default and can disable it with `ParserOptions::multilineLogfmt = false`. JSON and CSV never return `Continue`.
+`RegexTemplate::continuationMode` accepts `none`, `indented`, or `untilNextHeader`; `headerAnchor` can replace the full-pattern header probe in the last mode. Logfmt uses indented continuation by default and can disable it with `LogfmtParser(false)`, or `FormatOptions::multilineLogfmt = false` when the parser comes from `MakeParserForFormat`. JSON and CSV never return `Continue`.
 
 ### Network producers (TCP / UDP)
 

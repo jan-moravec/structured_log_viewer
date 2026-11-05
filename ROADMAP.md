@@ -148,7 +148,7 @@ Each of the ten items below either closes a competitor-gap reviewers and first-t
 - Continuations append to the last named capture in source order. If that capture is missing or classifies as a non-string value for a header, its continuations are dropped with one error summary.
 - Seven built-ins use `"indented"`: Apache error, Generic bracketed level, Java / log4j / Logback, MongoDB 3.x, MySQL / MariaDB error, PostgreSQL, and spdlog.
 - Four use `"untilNextHeader"`: Google glog, Rust `env_logger`, Ruby on Rails, and Uber Zap.
-- Logfmt folds indented lines into the previous record's last source-order key by default. `ParserOptions::multilineLogfmt = false` restores the old row-per-line behavior.
+- Logfmt folds indented lines into the previous record's last source-order key by default. `LogfmtParser(false)` restores the old row-per-line behavior.
 - JSON Lines and CSV remain line-framed and never emit `Continue`.
 
 Blank lines join a record only when followed by another continuation; trailing and between-record blanks remain separators. A run of continuations before any header produces one summarized orphan error.
