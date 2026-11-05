@@ -395,7 +395,8 @@ TEST_CASE("AutoDetectParser composes with bytes the caller gave back to the sour
 
     CollectingSink sink;
     source.UnreadBytes(carryBytes);
-    RunStreaming(AutoDetectParser(), source, sink, ParserOptions{}, std::chrono::seconds(2));
+    const ParserOptions options;
+    RunStreaming(AutoDetectParser(), source, sink, options, std::chrono::seconds(2));
 
     CHECK(sink.finished.load());
     CHECK_FALSE(sink.finishedCancelled.load());

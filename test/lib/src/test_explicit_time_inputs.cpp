@@ -275,10 +275,12 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
 
     SECTION("Reset keeps both zones")
     {
-        berlinTable.SetDefaultSourceTimeZone(newYork);
-        berlinTable.Reset();
-        CHECK(berlinTable.DisplayTimeZone().IanaName() == "Europe/Berlin");
-        CHECK(berlinTable.DefaultSourceTimeZone().IanaName() == "America/New_York");
+        LogTable table = makeTable();
+        table.SetDisplayTimeZone(berlin);
+        table.SetDefaultSourceTimeZone(newYork);
+        table.Reset();
+        CHECK(table.DisplayTimeZone().IanaName() == "Europe/Berlin");
+        CHECK(table.DefaultSourceTimeZone().IanaName() == "America/New_York");
     }
 
     SECTION("A new table is UTC whatever the process zone is")
