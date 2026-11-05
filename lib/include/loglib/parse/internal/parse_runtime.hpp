@@ -2,8 +2,8 @@
  * @brief Per-thread scratch state shared by the parsing pipelines.
  *
  * Each worker keeps a cache from key text to key id and the last parsed timestamp per time column, so repeated work is
- * skipped. The static pipeline and the live-stream loop share this state. This header defines it and builds the time column
- * specs from a configuration.
+ * skipped. The static pipeline and the live-stream loop share this state. This header defines it and builds the time
+ * column specs from a configuration.
  *
  * This is part of the parse module.
  */

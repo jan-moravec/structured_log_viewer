@@ -8,7 +8,14 @@
 # fails here and not for a user. The consumer links loglib::loglib to prove that the package works.
 cmake_minimum_required(VERSION 3.28)
 
-foreach(required BUILD_DIR GENERATOR CXX_COMPILER BUILD_TYPE WORK_DIR)
+foreach(
+    required
+    BUILD_DIR
+    GENERATOR
+    CXX_COMPILER
+    BUILD_TYPE
+    WORK_DIR
+)
     if(NOT DEFINED ${required})
         message(FATAL_ERROR "check-loglib-install: ${required} is not set")
     endif()
@@ -39,9 +46,11 @@ if(NOT EXISTS "${prefix}/include/loglib/core/row_batch.hpp")
 endif()
 
 set(sources main.cpp)
-file(WRITE "${consumer}/main.cpp"
+file(
+    WRITE "${consumer}/main.cpp"
     "#include <loglib/core/version.hpp>\n"
-    "int main() { return loglib::Version().empty() ? 1 : 0; }\n")
+    "int main() { return loglib::Version().empty() ? 1 : 0; }\n"
+)
 foreach(header IN LISTS headers)
     if(header MATCHES "/internal/")
         message(FATAL_ERROR "an internal header was installed: ${header}")
@@ -52,18 +61,21 @@ foreach(header IN LISTS headers)
 endforeach()
 
 string(REPLACE ";" "\n    " sourceLines "${sources}")
-file(WRITE "${consumer}/CMakeLists.txt"
+file(
+    WRITE "${consumer}/CMakeLists.txt"
     "cmake_minimum_required(VERSION 3.28)\n"
     "project(loglib_install_consumer LANGUAGES CXX)\n"
     "set(CMAKE_CXX_STANDARD 23)\n"
     "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
     "find_package(loglib CONFIG REQUIRED)\n"
     "add_executable(consumer\n    ${sourceLines}\n)\n"
-    "target_link_libraries(consumer PRIVATE loglib::loglib)\n")
+    "target_link_libraries(consumer PRIVATE loglib::loglib)\n"
+)
 
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" -S "${consumer}" -B "${WORK_DIR}/build" -G "${GENERATOR}"
-            "-DCMAKE_CXX_COMPILER=${CXX_COMPILER}" "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" "-DCMAKE_PREFIX_PATH=${prefix}"
+    COMMAND
+        "${CMAKE_COMMAND}" -S "${consumer}" -B "${WORK_DIR}/build" -G "${GENERATOR}"
+        "-DCMAKE_CXX_COMPILER=${CXX_COMPILER}" "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}" "-DCMAKE_PREFIX_PATH=${prefix}"
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
     ERROR_VARIABLE output
