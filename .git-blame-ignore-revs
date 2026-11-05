@@ -1,3 +1,5 @@
 # Commits that only move or reformat files, for git blame --ignore-revs-file.
 # Rename library/ to lib/ and move files into module folders.
 3bb12179cb334bc464cfc877a0abf88bf454c450
+# Rename StreamedBatch to RowBatch.
+1ec06b87dc98f28f691cb161067c267363c9434b
