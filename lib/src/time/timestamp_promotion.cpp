@@ -126,7 +126,7 @@ bool PromoteLineTimestamps(
                 return true;
             }
             TimeStamp parsed;
-            if (!TryParseTimestamp(sv, format, kind, tsScratch, parsed))
+            if (!TryParseTimestamp(sv, format, kind, tsScratch, spec.referenceTime, parsed))
             {
                 return false;
             }

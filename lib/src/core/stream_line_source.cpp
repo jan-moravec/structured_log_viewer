@@ -129,6 +129,19 @@ size_t StreamLineSource::AppendLine(std::string rawLine, std::string ownedBytes)
     return lineId;
 }
 
+void StreamLineSource::UnreadBytes(std::string bytes)
+{
+    const std::scoped_lock guard(mLock);
+    bytes.append(mUnreadBytes);
+    mUnreadBytes = std::move(bytes);
+}
+
+std::string StreamLineSource::TakeUnreadBytes()
+{
+    const std::scoped_lock guard(mLock);
+    return std::exchange(mUnreadBytes, std::string{});
+}
+
 size_t StreamLineSource::Size() const noexcept
 {
     const std::scoped_lock guard(mLock);

@@ -78,7 +78,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
         }
     }
 
-    const std::unique_ptr<LogParser> parser = MakeParserForFormat(detected.format, detected.regexPattern);
+    const std::unique_ptr<LogParser> parser = MakeParserForFormat(detected.format, detected.Options());
     return ParseFile(*parser, file);
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)

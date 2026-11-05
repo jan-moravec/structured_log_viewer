@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include "loglib/schema/source_descriptor.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -27,23 +29,6 @@ namespace loglib
  * both sides for users who want to order their own. The template file schema and the editor both use this value.
  */
 inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
-
-/**
- * @brief How a template recognizes continuation lines.
- *
- * - None: every line is parsed on its own.
- * - Indented: lines that start with a space or tab continue the previous record.
- * - UntilNextHeader: lines that do not match the header pattern continue the previous record.
- *
- * With any mode but None, the continuation text is appended to the last named capture of the pattern, which must be a
- * string.
- */
-enum class ContinuationMode : uint8_t
-{
-    None = 0,
-    Indented,
-    UntilNextHeader,
-};
 
 /** @brief The name used for a mode in template JSON files. */
 [[nodiscard]] std::string_view ContinuationModeName(ContinuationMode mode) noexcept;

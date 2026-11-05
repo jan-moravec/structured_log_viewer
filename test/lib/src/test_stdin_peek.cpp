@@ -171,7 +171,7 @@ TEST_CASE("StdinPeek stops at the timeout when the producer is silent", "[StdinP
 TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPath on the same content", "[StdinPeek]")
 {
     // The stdin path drives its format decision through the
-    // `peek -> DetectFormatFromBytes -> initialCarry` handshake.
+    // peek -> DetectFormatFromBytes -> UnreadBytes handshake.
     // File-backed opens go through `DetectFormatForPath`. Assert
     // both entry points reach the same verdict for identical bytes.
     struct Sample

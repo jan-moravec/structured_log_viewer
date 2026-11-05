@@ -192,7 +192,7 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
     for (const auto &fmt : candidates)
     {
         TimeStamp parsed{};
-        if (TryParseTimestamp(trimmed, fmt, ClassifyTimestampFormat(fmt), scratch, parsed))
+        if (TryParseTimestamp(trimmed, fmt, ClassifyTimestampFormat(fmt), scratch, now, parsed))
         {
             return UserTimestampParse{
                 .micros = parsed.time_since_epoch().count(),

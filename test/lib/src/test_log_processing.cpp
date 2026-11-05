@@ -26,6 +26,15 @@
 
 using namespace loglib;
 
+namespace
+{
+/** @brief A fixed "now" for formats without a year, so the assumed year does not depend on the day the test runs. */
+std::chrono::system_clock::time_point ReferenceNow()
+{
+    return std::chrono::sys_days{std::chrono::year{2025} / std::chrono::June / 15} + std::chrono::hours{12};
+}
+} // namespace
+
 TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_processing]")
 {
     const auto invalidPath = std::filesystem::path("non_existent_path");
@@ -61,11 +70,11 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     column.keys = {"key2"};
     configuration.columns.push_back(column);
 
-    auto errors = ParseTimestamps(logData, configuration);
+    auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
     CHECK(errors.empty());
 
     configuration.columns[0].type = ColumnType::Time;
-    errors = ParseTimestamps(logData, configuration);
+    errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
 
     CHECK(errors.size() == logData.Lines().size());
 }
@@ -93,7 +102,7 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 
-    auto errors = ParseTimestamps(logData, configuration);
+    const auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
 
     CHECK(errors.empty());
     REQUIRE(logData.Lines().size() == 4);
@@ -126,7 +135,7 @@ TEST_CASE(
         for (const std::string &format : DefaultTimeParseFormats())
         {
             TimeStamp out{};
-            if (TryParseTimestamp(text, format, ClassifyTimestampFormat(format), scratch, out))
+            if (TryParseTimestamp(text, format, ClassifyTimestampFormat(format), scratch, ReferenceNow(), out))
             {
                 return out;
             }
@@ -382,11 +391,9 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
 TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processing][syslog_rfc3164_fast_path]")
 {
     // The parser injects the year via the "if parsed month is later
-    // than the wall-clock month, use the previous year" heuristic, so
-    // the concrete year the assertion sees depends on when the test
-    // runs. Guarding against wall-clock drift keeps the test stable
-    // across all months while still exercising the fast path.
-    const auto today = date::floor<date::days>(std::chrono::system_clock::now());
+    // than the reference month, use the previous year" heuristic. A fixed
+    // reference time makes the year the same on every day the test runs.
+    const auto today = date::floor<date::days>(ReferenceNow());
     const date::year_month_day nowYmd{today};
     const unsigned nowMonth = static_cast<unsigned>(nowYmd.month());
 
@@ -409,21 +416,21 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
     SECTION("Space-padded single-digit day (`%e` shape, canonical RFC 3164)")
     {
         TimeStamp out{};
-        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37", out));
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37", out, ReferenceNow()));
         CHECK(out == expected(8, 8, 13, 25, 37));
     }
 
     SECTION("Zero-padded single-digit day (`%d` shape emitted by some senders)")
     {
         TimeStamp out{};
-        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug 08 13:25:37", out));
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug 08 13:25:37", out, ReferenceNow()));
         CHECK(out == expected(8, 8, 13, 25, 37));
     }
 
     SECTION("Two-digit day")
     {
         TimeStamp out{};
-        REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out));
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, ReferenceNow()));
         CHECK(out == expected(12, 31, 23, 59, 59));
     }
 
@@ -447,7 +454,7 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
         {
             CAPTURE(STAMPS[i]);
             TimeStamp out{};
-            REQUIRE(TryParseSyslogRfc3164Timestamp(STAMPS[i], out));
+            REQUIRE(TryParseSyslogRfc3164Timestamp(STAMPS[i], out, ReferenceNow()));
             CHECK(out == expected(i + 1, 1, 0, 0, 0));
         }
     }
@@ -459,42 +466,42 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp rejects malformed inputs", "[log_proce
 
     SECTION("Empty and too-short strings")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("", out));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25", out, ReferenceNow()));
     }
 
     SECTION("Unknown month abbreviation")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Xyz  8 13:25:37", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Xyz  8 13:25:37", out, ReferenceNow()));
         // Case-sensitive on purpose -- RFC 3164 §4.1.2 pins the canonical spelling.
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("aug  8 13:25:37", out));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("AUG  8 13:25:37", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("aug  8 13:25:37", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("AUG  8 13:25:37", out, ReferenceNow()));
     }
 
     SECTION("Invalid day-of-month")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Feb 30 12:00:00", out));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan  0 12:00:00", out));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan 32 12:00:00", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Feb 30 12:00:00", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan  0 12:00:00", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan 32 12:00:00", out, ReferenceNow()));
     }
 
     SECTION("Invalid hour / minute")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 24:00:00", out));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 12:60:00", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 24:00:00", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 12:60:00", out, ReferenceNow()));
     }
 
     SECTION("Trailing garbage after the seconds field")
     {
         // The parser accepts only the exact header; the caller is
         // expected to strip surrounding record framing.
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37 host", out));
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37Z", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37 host", out, ReferenceNow()));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37Z", out, ReferenceNow()));
     }
 
     SECTION("Missing separator space after month")
     {
-        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug08 13:25:37", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug08 13:25:37", out, ReferenceNow()));
     }
 }
 
@@ -543,25 +550,33 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
 
     SECTION("Iso8601T routes to fast path")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, out));
+        REQUIRE(TryParseTimestamp(
+            "2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, ReferenceNow(), out
+        ));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 
     SECTION("Iso8601Space routes to fast path")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, out));
+        REQUIRE(TryParseTimestamp(
+            "2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, ReferenceNow(), out
+        ));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 
     SECTION("Generic routes to date::parse")
     {
-        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out));
+        REQUIRE(TryParseTimestamp(
+            "2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, ReferenceNow(), out
+        ));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 
     SECTION("Generic rejects malformed input")
     {
-        CHECK_FALSE(TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out));
+        CHECK_FALSE(
+            TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, ReferenceNow(), out)
+        );
     }
 }
 
@@ -583,7 +598,7 @@ TEST_CASE("Default parse formats accept Apache error log timestamps", "[log_proc
         for (const std::string &format : loglib::DefaultTimeParseFormats())
         {
             TimeStamp out{};
-            if (TryParseTimestamp(input, format, ClassifyTimestampFormat(format), scratch, out))
+            if (TryParseTimestamp(input, format, ClassifyTimestampFormat(format), scratch, ReferenceNow(), out))
             {
                 parsed = out;
                 break;
@@ -819,28 +834,6 @@ TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
 namespace
 {
 
-/// Sets the process zone for one test and restores the previous zone.
-class ScopedProcessZone
-{
-public:
-    explicit ScopedProcessZone(const std::string &zone)
-        : mPrevious(ProcessDefaultTimeZone())
-    {
-        SetProcessDefaultTimeZone(TimeZoneContext::Load(FindTestTzdata(), zone));
-    }
-
-    ScopedProcessZone(const ScopedProcessZone &) = delete;
-    ScopedProcessZone &operator=(const ScopedProcessZone &) = delete;
-
-    ~ScopedProcessZone()
-    {
-        SetProcessDefaultTimeZone(mPrevious);
-    }
-
-private:
-    TimeZoneContext mPrevious;
-};
-
 } // namespace
 
 TEST_CASE("OffsetWindowAt agrees with LocalMicrosecondsToUtc across a year", "[time_zone][offset_window]")
@@ -901,18 +894,39 @@ TEST_CASE("IsNaiveTimestamp finds values that name no zone", "[timestamp][naive]
     CHECK(IsNaiveTimestamp("Jan  1 10:00:00", "%b %e %H:%M:%S"));
 }
 
-TEST_CASE("ParseQuery reads time bounds without a zone in the process zone", "[query_parser][naive]")
+TEST_CASE("ParseQuery reads time bounds without a zone in the zone it is given", "[query_parser][naive]")
 {
-    const auto bound = [](std::string_view text) -> std::optional<std::int64_t> {
-        const auto parsed = ParseQuery("ts IN [" + std::string(text) + "..]");
+    const auto tokyo = TimeZoneContext::Load(FindTestTzdata(), "Asia/Tokyo");
+    const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
+    const auto bound = [](std::string_view text, const TimeZoneContext &zone) -> std::optional<std::int64_t> {
+        const auto parsed = ParseQuery("ts IN [" + std::string(text) + "..]", zone);
         REQUIRE(parsed.has_value());
         return std::get<FilterExpression::Leaf>(parsed->node).rule.filterBegin;
     };
-    const auto utcBound = bound("2024-01-01T01:00:00Z");
+    const auto utcBound = bound("2024-01-01T01:00:00Z", TimeZoneContext{});
 
-    const ScopedProcessZone tokyo("Asia/Tokyo");
-    CHECK(bound("2024-01-01T10:00:00") == utcBound);
-    CHECK(bound("2024-01-01 10:00:00") == utcBound);
-    CHECK(bound("2024-01-01T01:00:00Z") == utcBound);
-    CHECK(bound("2024-01-01T10:00:00+09:00") == utcBound);
+    SECTION("A zone-less time is read in the given zone")
+    {
+        CHECK(bound("2024-01-01T10:00:00", tokyo) == utcBound);
+        CHECK(bound("2024-01-01 10:00:00", tokyo) == utcBound);
+    }
+
+    SECTION("A time that names its zone ignores the given zone")
+    {
+        CHECK(bound("2024-01-01T01:00:00Z", tokyo) == utcBound);
+        CHECK(bound("2024-01-01T10:00:00+09:00", berlin) == utcBound);
+    }
+
+    SECTION("The same text gives different bounds in different zones, whatever the process zone is")
+    {
+        const auto inUtc = bound("2024-01-01T10:00:00", TimeZoneContext{});
+        const auto inBerlin = bound("2024-01-01T10:00:00", berlin);
+        const auto inTokyo = bound("2024-01-01T10:00:00", tokyo);
+        REQUIRE(inUtc.has_value());
+        REQUIRE(inBerlin.has_value());
+        REQUIRE(inTokyo.has_value());
+        constexpr std::int64_t HOUR_US = 3'600'000'000;
+        CHECK(*inUtc - *inBerlin == HOUR_US);
+        CHECK(*inUtc - *inTokyo == 9 * HOUR_US);
+    }
 }

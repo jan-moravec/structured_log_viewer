@@ -115,7 +115,7 @@ namespace
     loglib::FilterExpression expression{};
     if (filter.has_value())
     {
-        auto parsed = loglib::ParseQuery(*filter);
+        auto parsed = loglib::ParseQuery(*filter, loglib::ProcessDefaultTimeZone());
         if (!parsed.has_value())
         {
             *error = QStringLiteral("filter must parse");

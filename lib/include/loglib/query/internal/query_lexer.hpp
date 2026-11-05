@@ -706,7 +706,9 @@ private:
  *
  * The shape and the calendar ranges are checked strictly, so a typo gives an error and not a date that rolled over.
  */
-[[nodiscard]] inline std::optional<std::int64_t> ParseIsoTimestamp(std::string_view text)
+[[nodiscard]] inline std::optional<std::int64_t> ParseIsoTimestamp(
+    std::string_view text, const TimeZoneContext &timeZone
+)
 {
     if (!StartsWithDigitYear(text))
     {
@@ -901,7 +903,7 @@ private:
                                         offsetSeconds;
     // Bare-date: hour/minute/second stay 0 = midnight.
     const std::int64_t micros = (secondsSinceEpoch * 1'000'000LL) + fractionalMicros;
-    return hasZone ? micros : ProcessDefaultTimeZone().LocalMicrosecondsToUtc(micros);
+    return hasZone ? micros : timeZone.LocalMicrosecondsToUtc(micros);
 }
 
 } // namespace loglib::internal::query

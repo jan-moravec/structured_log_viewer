@@ -18,6 +18,7 @@
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QApplication>
 #include <QBrush>
@@ -62,6 +63,11 @@ LogModel::LogModel(
 )
     : QAbstractTableModel{parent}, mTheme(theme), mAnchors(anchors), mHighlights(highlights)
 {
+    // The application owns the process-wide zone, which main() loads before any model exists. The table reads it from
+    // here and never itself.
+    mLogTable.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
+    mLogTable.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());
+
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
     // Required for queued worker→GUI delivery.

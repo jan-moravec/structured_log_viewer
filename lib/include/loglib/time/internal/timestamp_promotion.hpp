@@ -1,9 +1,10 @@
 /**
  * @brief Converts timestamp text in a row to real timestamps.
  *
- * A TimeColumnSpec describes one Time column: its key ids, its formats and the zone for values that name none. The
- * parsers and the table use PromoteLineTimestamps to parse that text with the configured formats and replace it with a
- * timestamp. The helpers remember the last successful format and text per column to skip work.
+ * A TimeColumnSpec describes one Time column: its key ids, its formats, the zone for values that name none, and the
+ * reference time for formats without a year. The parsers and the table use PromoteLineTimestamps to parse that text
+ * with the configured formats and replace it with a timestamp. The helpers remember the last successful format and text
+ * per column to skip work.
  *
  * This is part of the time module. It needs only LogLine and the timestamp parsing functions, so building the specs
  * from a configuration is left to the callers.
@@ -15,6 +16,7 @@
 #include "loglib/time/time_zone_context.hpp"
 #include "loglib/time/timestamp_parsing.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -47,6 +49,8 @@ struct TimeColumnSpec
     std::vector<TimestampFormatKind> formatKinds;
     /** @brief The zone in which values that name no zone are read. */
     TimeZoneContext timeZone;
+    /** @brief The "now" for formats that carry no year, fixed once per parse. */
+    std::chrono::system_clock::time_point referenceTime;
 };
 
 /**

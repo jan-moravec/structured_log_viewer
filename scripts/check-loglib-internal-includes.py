@@ -10,6 +10,10 @@ Each loglib header and source file belongs to the module named by its
 directory under lib/include/loglib and lib/src. A file may include headers
 only from its own module and the modules listed for it in MODULE_DEPENDENCIES.
 
+The library never reads the process-wide time zone. A call to ProcessDefaultTimeZone() in lib/src or lib/include is
+allowed only in the time zone context itself, which defines it. The application layer owns that setting and passes the
+zone to the library as a value.
+
 Invoked from pre-commit.
 """
 
@@ -39,6 +43,16 @@ MODULE_DEPENDENCIES: dict[str, frozenset[str]] = {
     "support": frozenset({"core"}),
 }
 SOURCE_SUFFIXES = {".hpp", ".h", ".cpp", ".cc"}
+
+# Files that may mention a call to ProcessDefaultTimeZone(): its declaration and its definition.
+PROCESS_ZONE_ALLOWED = frozenset(
+    {
+        "lib/include/loglib/time/time_zone_context.hpp",
+        "lib/src/time/time_zone_context.cpp",
+    }
+)
+# A word boundary keeps SetProcessDefaultTimeZone out of the match.
+PROCESS_ZONE_CALL_RE = re.compile(r"\bProcessDefaultTimeZone\s*\(")
 
 INTERNAL_INCLUDE_RE = re.compile(
     r'^\s*#\s*include\s*[<"]loglib/[a-z]+/(?:[a-z_]+/)*internal/[^>"]+[>"]',
@@ -100,6 +114,18 @@ def rel(path: Path) -> str:
     return str(path.relative_to(ROOT)).replace("\\", "/")
 
 
+def process_zone_violations() -> list[str]:
+    violations: list[str] = []
+    for root in (PUBLIC_HEADER_ROOT, SOURCE_ROOT):
+        for path in iter_sources(root):
+            if rel(path) in PROCESS_ZONE_ALLOWED:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if PROCESS_ZONE_CALL_RE.search(text):
+                violations.append(f"{rel(path)}: calls ProcessDefaultTimeZone(); take a TimeZoneContext as a parameter")
+    return violations
+
+
 def main() -> int:
     violations: list[str] = []
 
@@ -125,6 +151,7 @@ def main() -> int:
             violations.append(f"{rel(path)}: supported header includes an implementation library")
 
     violations.extend(module_violations())
+    violations.extend(process_zone_violations())
 
     if violations:
         print("loglib public/internal header policy violations:", file=sys.stderr)

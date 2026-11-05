@@ -557,6 +557,31 @@ using loglib::DetectedFormat;
 using loglib::DetectFormatForPath;
 using loglib::MakeParserForFormat;
 
+/**
+ * @brief Parser options for a configuration: its Time columns and the application's display zone as the zone in which
+ * timestamps without an offset were written. The table is given the same zone by LogModel, so both agree.
+ */
+loglib::ParserOptions MakeParserOptionsFor(const loglib::LogConfiguration &configuration)
+{
+    loglib::ParserOptions options;
+    options.timeColumns = loglib::TimeColumnsOf(configuration);
+    options.defaultSourceTimeZone = loglib::ProcessDefaultTimeZone();
+    return options;
+}
+
+/** @brief The settings that build a source's parser: the saved regex pattern, continuation mode and header anchor. */
+loglib::FormatOptions FormatOptionsOf(const std::optional<loglib::Source> &source)
+{
+    loglib::FormatOptions options;
+    if (source.has_value())
+    {
+        options.regexPattern = source->regexPattern;
+        options.regexContinuationMode = source->regexContinuationMode;
+        options.regexHeaderAnchor = source->regexHeaderAnchor;
+    }
+    return options;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -4697,6 +4722,8 @@ bool MainWindow::ContinueOpenAfterPrepared(
             .format = detected.format,
             .locators = {{displayPath, dedupKey}},
             .regexPattern = std::move(detected.regexPattern),
+            .regexContinuationMode = detected.regexContinuationMode,
+            .regexHeaderAnchor = std::move(detected.regexHeaderAnchor),
         };
         // Seed the source from the global preference and CLI override.
         currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
@@ -4737,15 +4764,13 @@ bool MainWindow::ContinueOpenAfterPrepared(
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     QtStreamingLogSink *sink = model->Sink();
 
-    loglib::ParserOptions options;
-    options.configuration = std::move(cfg);
+    loglib::ParserOptions options = MakeParserOptionsFor(*cfg);
 
     // Per-file parser detection runs against the effective (possibly
     // decompressed) path so the sniff sees the actual bytes.
     // `origin->MutableCurrentSource()` still stores the first file's session-level format.
     const DetectedFormat detectedPerFile = DetectFormatForPath(effectivePath);
-    std::shared_ptr<loglib::LogParser> parser =
-        MakeParserForFormat(detectedPerFile.format, detectedPerFile.regexPattern);
+    std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(detectedPerFile.format, detectedPerFile.Options());
 
     // False positive: `parseCallable` is moved into the model and invoked;
     // `cfg` is consumed by `options`.
@@ -6396,6 +6421,8 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
             .format = detected.format,
             .locators = {{displayPath, dedupKey}},
             .regexPattern = std::move(detected.regexPattern),
+            .regexContinuationMode = detected.regexContinuationMode,
+            .regexHeaderAnchor = std::move(detected.regexHeaderAnchor),
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6413,16 +6440,14 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
-    loglib::ParserOptions options;
-    options.configuration = std::move(cfg);
+    loglib::ParserOptions options = MakeParserOptionsFor(*cfg);
 
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
-    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
-        return MakeParserForFormat(format, regexPattern);
+    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
+        return MakeParserForFormat(format, formatOptions);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
@@ -6513,6 +6538,8 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
             .format = detected.format,
             .locators = {{displayPath, dedupKey}},
             .regexPattern = std::move(detected.regexPattern),
+            .regexContinuationMode = detected.regexContinuationMode,
+            .regexHeaderAnchor = std::move(detected.regexHeaderAnchor),
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6551,14 +6578,12 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     ApplyDisplayOrder(origin, LogSessionViewForSession(origin));
 
     auto cfg = std::make_shared<const loglib::LogConfiguration>(model->Configuration());
-    loglib::ParserOptions options;
-    options.configuration = std::move(cfg);
+    loglib::ParserOptions options = MakeParserOptionsFor(*cfg);
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
-    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
-        return MakeParserForFormat(format, regexPattern);
+    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
+        return MakeParserForFormat(format, formatOptions);
     };
     // The rescue path may have no initialized stream to append to.
     if (model->IsStreamingActive() || model->rowCount() > 0)
@@ -6698,12 +6723,13 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     // produces zero rows either way.
     const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
     const auto format = detected.format;
-    std::string regexPattern = detected.regexPattern;
     mSession->MutableCurrentSource() = loglib::Source{
         .kind = loglib::Source::Kind::Stdin,
         .format = format,
         .locators = {{displayName, displayName}},
-        .regexPattern = regexPattern,
+        .regexPattern = detected.regexPattern,
+        .regexContinuationMode = detected.regexContinuationMode,
+        .regexHeaderAnchor = detected.regexHeaderAnchor,
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6714,17 +6740,14 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    auto config = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
-    loglib::ParserOptions options;
-    options.configuration = std::move(config);
-    // Feed the peeked bytes back to the resolved parser so the
-    // stream is delivered in full (peek + subsequent bytes).
-    options.initialCarry = std::move(peek);
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Configuration());
 
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
-    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
-        return loglib::MakeParserForFormat(format, regexPattern);
+    // Give the peeked bytes back to the source so the stream is delivered in full (peek + subsequent bytes).
+    streamSource->UnreadBytes(std::move(peek));
+    auto parserFactory = [format, formatOptions = detected.Options()] {
+        return loglib::MakeParserForFormat(format, formatOptions);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 
@@ -6863,6 +6886,17 @@ void MainWindow::OpenNetworkStream()
         .locators = {{displayName, displayName}},
         .regexPattern = cfg.regexPattern.toStdString(),
     };
+    // The dialog gives only a pattern. If it is a known template, keep the template's continuation settings with the
+    // source, so the saved session parses multi-line records the same way after the template is deleted.
+    if (auto &networkSource = mSession->MutableCurrentSource();
+        networkSource.has_value() && networkSource->format == loglib::Source::Format::Regex)
+    {
+        if (const auto tmpl = loglib::FindTemplateByPattern(networkSource->regexPattern); tmpl.has_value())
+        {
+            networkSource->regexContinuationMode = tmpl->continuationMode;
+            networkSource->regexHeaderAnchor = tmpl->headerAnchor;
+        }
+    }
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
     SetConfigurationUiEnabled(false);
@@ -6872,9 +6906,7 @@ void MainWindow::OpenNetworkStream()
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    auto config = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
-    loglib::ParserOptions options;
-    options.configuration = std::move(config);
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Configuration());
 
     // Network streams have no real filesystem path; the producer's
     // display string serves as the LineSource's opaque identity.
@@ -6892,9 +6924,8 @@ void MainWindow::OpenNetworkStream()
     }
     const auto &currentSource = mSession->CurrentSource();
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
-    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
-        return MakeParserForFormat(format, regexPattern);
+    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
+        return MakeParserForFormat(format, formatOptions);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }

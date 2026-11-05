@@ -377,17 +377,14 @@ private:
 
 } // namespace
 
-TEST_CASE("AutoDetectParser composes with a caller-supplied initialCarry", "[AutoDetectParser]")
+TEST_CASE("AutoDetectParser composes with bytes the caller gave back to the source", "[AutoDetectParser]")
 {
-    // Regression: `ParseStreaming(StreamLineSource&, ...)` used to
-    // clobber `options.initialCarry` when a caller pre-fed bytes.
-    // Now the adapter prepends peek to any prior carry so the
+    // The adapter puts the source's unread bytes in front of its peek, so the
     // resolved parser sees the full in-order stream.
     //
-    // Split the JSON across the carry / producer boundary: the
-    // producer holds a valid probe head (first line -> JSON), and
-    // the caller pre-fed a second full line via `initialCarry`.
-    // Both must land as rows.
+    // Split the JSON across the unread bytes and the producer: the producer
+    // holds a valid probe head (first line -> JSON), and the caller gave back
+    // a second full line with UnreadBytes. Both must land as rows.
     const std::string producerBytes = R"({"msg":"from-producer"})"
                                       "\n";
     const std::string carryBytes = R"({"msg":"from-carry"})"
@@ -397,9 +394,9 @@ TEST_CASE("AutoDetectParser composes with a caller-supplied initialCarry", "[Aut
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;
-    ParserOptions options;
-    options.initialCarry = carryBytes;
-    RunStreaming(AutoDetectParser(), source, sink, std::move(options), std::chrono::seconds(2));
+    source.UnreadBytes(carryBytes);
+    const ParserOptions options;
+    RunStreaming(AutoDetectParser(), source, sink, options, std::chrono::seconds(2));
 
     CHECK(sink.finished.load());
     CHECK_FALSE(sink.finishedCancelled.load());

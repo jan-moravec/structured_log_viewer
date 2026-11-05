@@ -9,6 +9,7 @@
 #pragma once
 
 #include "loglib/parse/regex_templates.hpp"
+#include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <glaze/glaze.hpp>
 #include <array>
@@ -17,14 +18,6 @@
 // header does not include the JSON library. The name value is required by the library's reflection, so the naming check
 // is turned off here.
 // NOLINTBEGIN(readability-identifier-naming)
-
-template <> struct glz::meta<loglib::ContinuationMode>
-{
-    using enum loglib::ContinuationMode;
-    // The names pair with the values by position. Their case is part of the saved format.
-    static constexpr std::array keys{"none", "indented", "untilNextHeader"};
-    static constexpr std::array value{None, Indented, UntilNextHeader};
-};
 
 template <> struct glz::meta<loglib::RegexTemplate>
 {

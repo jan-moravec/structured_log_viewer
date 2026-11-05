@@ -84,6 +84,18 @@ public:
     /** @brief Adds a line with its decoded strings, which may be empty, and returns the new line id. */
     size_t AppendLine(std::string rawLine, std::string ownedBytes);
 
+    /**
+     * @brief Puts bytes in front of the bytes the source has not handed to a parser yet.
+     *
+     * A caller that read from the producer to detect the format gives those bytes back here, so the parser processes
+     * them first and none are lost. A second call puts its bytes in front of the first call's. Call it before the parse
+     * starts.
+     */
+    void UnreadBytes(std::string bytes);
+
+    /** @brief Returns the bytes given to UnreadBytes, in order, and clears them. The streaming parse calls it once. */
+    [[nodiscard]] std::string TakeUnreadBytes();
+
     /** @brief Number of lines held now, not counting evicted ones. */
     [[nodiscard]] size_t Size() const noexcept;
 
@@ -105,6 +117,9 @@ private:
 
     /** @brief Decoded strings of each line, indexed like mLines. */
     std::deque<std::string> mLineOwnedBytes;
+
+    /** @brief Bytes read from the producer by an earlier stage and returned for the parser to read first. */
+    std::string mUnreadBytes;
 
     size_t mFirstAvailableLineId = 1;
     size_t mNextLineId = 1;

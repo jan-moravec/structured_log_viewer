@@ -104,7 +104,7 @@ Typical composition:
 1. Ingest with `ParseFile` / `MakeParserForFormat`.
 1. Hold rows in `LogTable`.
 
-`SetProcessDefaultTimeZone` is a documented process-wide convenience for formatting helpers such as `UtcMicrosecondsToDateTimeString`. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
+`SetProcessDefaultTimeZone` is a documented process-wide convenience for applications and for formatting helpers such as `UtcMicrosecondsToDateTimeString`. The library never reads it, and `scripts/check-loglib-internal-includes.py` enforces that. A parse gets its zone as `ParserOptions::defaultSourceTimeZone`, a `LogTable` has its own display zone and default source zone, and `ParseQuery` takes a zone. All of them are UTC unless the caller sets one. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 
 ## Worked example: `slp`
 

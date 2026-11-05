@@ -7972,7 +7972,7 @@ private slots:
         // the wire the editor uses internally). `LoadFromExpression`
         // must render it back to a form the parser accepts as
         // equivalent.
-        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info");
+        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info", loglib::ProcessDefaultTimeZone());
         QVERIFY2(seeded.has_value(), "seed query must parse");
         editor.LoadFromExpression(*seeded);
         QCoreApplication::processEvents();
@@ -8569,6 +8569,46 @@ private slots:
     // Regression: a theme switch must emit `dataChanged` on the
     // styled roles so the view drops its per-item style cache.
     // `viewport()->update()` alone doesn't reliably invalidate it.
+    void TestLocalTimestampsShowAsWrittenInTheDisplayZone()
+    {
+        // A file with timestamps that name no zone is read in the application's zone and shown in it, so the
+        // cells show the text as written, and the stored instant is that wall clock converted to UTC.
+        const QStringList lines{
+            QStringLiteral(R"({"timestamp":"2024-04-28 10:00:01","msg":"first"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28 10:00:02","msg":"second"})"),
+            QStringLiteral(R"({"timestamp":"2024-07-01 23:30:00","msg":"summer"})"),
+        };
+        const TempJsonFile fixture(lines);
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(60000);
+        }
+        QCOMPARE(model->rowCount(), 3);
+        const int timeCol = ColumnByHeader(*model, QStringLiteral("timestamp"));
+        QVERIFY2(timeCol >= 0, "timestamp column must exist");
+
+        QCOMPARE(
+            model->data(model->index(0, timeCol), Qt::DisplayRole).toString(), QStringLiteral("2024-04-28 10:00:01.000")
+        );
+        QCOMPARE(
+            model->data(model->index(2, timeCol), Qt::DisplayRole).toString(), QStringLiteral("2024-07-01 23:30:00.000")
+        );
+
+        constexpr std::int64_t MICROS_2024_04_28_10_00_02 = 1'714'298'402'000'000;
+        const std::int64_t expectedUtc =
+            loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(MICROS_2024_04_28_10_00_02);
+        QCOMPARE(
+            static_cast<std::int64_t>(
+                model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong()
+            ),
+            expectedUtc
+        );
+    }
+
     void TestThemeSwitchEmitsDataChangedOnLogTable()
     {
         QVERIFY(mTheme != nullptr);
@@ -12329,7 +12369,7 @@ private slots:
 
         // Parse `svc:auth` -- ParseQuery emits a single-key
         // binding matching the identifier the user typed.
-        auto parsed = loglib::ParseQuery("svc:auth");
+        auto parsed = loglib::ParseQuery("svc:auth", loglib::ProcessDefaultTimeZone());
         QVERIFY2(parsed.has_value(), "ParseQuery must accept a well-formed simple leaf");
         const auto *parsedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&parsed->node);
         QVERIFY2(parsedLeaf != nullptr, "parsed root must be a Leaf");

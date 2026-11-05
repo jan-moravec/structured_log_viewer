@@ -71,7 +71,7 @@ constexpr std::string_view FOUR_ROWS =
 
 [[nodiscard]] loglib::FilterExpression Query(std::string_view text)
 {
-    auto parsed = loglib::ParseQuery(text);
+    auto parsed = loglib::ParseQuery(text, loglib::TimeZoneContext{});
     REQUIRE(parsed.has_value());
     return std::move(*parsed);
 }

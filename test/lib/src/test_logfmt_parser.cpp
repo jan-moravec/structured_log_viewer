@@ -553,10 +553,8 @@ TEST_CASE(
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
     CollectingStreamSink sink;
-    const LogfmtParser parser;
-    ParserOptions options;
-    options.multilineLogfmt = false;
-    parser.ParseStreaming(source, sink, options);
+    const LogfmtParser parser(false);
+    parser.ParseStreaming(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
@@ -856,9 +854,8 @@ TEST_CASE(
         "\ttab-indented continuation\n"
     );
 
-    const LogfmtParser parser;
+    const LogfmtParser parser(false);
     ParserOptions options;
-    options.multilineLogfmt = false;
 
     auto logFile = std::make_unique<LogFile>(file.GetFilePath());
     auto fileSource = std::make_unique<FileLineSource>(std::move(logFile));

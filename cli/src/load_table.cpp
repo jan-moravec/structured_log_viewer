@@ -12,6 +12,7 @@
 #include <loglib/ingest/stdin_peek.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/auto_detect_parser.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parse_error_text.hpp>
 #include <loglib/parse/regex_templates.hpp>
@@ -64,13 +65,23 @@ namespace
 }
 
 /** @brief The pattern named by `--regex` or `--regex-template`. */
-[[nodiscard]] std::expected<std::string, Failure> ResolveRegexPattern(
+/** @brief The regex settings of a template: its pattern, continuation mode and header anchor. */
+[[nodiscard]] loglib::FormatOptions RegexOptionsOf(const loglib::RegexTemplate &tmpl)
+{
+    return loglib::FormatOptions{
+        .regexPattern = tmpl.pattern,
+        .regexContinuationMode = tmpl.continuationMode,
+        .regexHeaderAnchor = tmpl.headerAnchor,
+    };
+}
+
+[[nodiscard]] std::expected<loglib::FormatOptions, Failure> ResolveRegexPattern(
     const GlobalOptions &global, const InputOptions &input
 )
 {
     if (input.regex)
     {
-        return *input.regex;
+        return loglib::FormatOptions{.regexPattern = *input.regex};
     }
     if (!input.regexTemplate)
     {
@@ -82,7 +93,7 @@ namespace
     {
         if (EqualsIgnoreCase(entry.slug, slug))
         {
-            return entry.tmpl.pattern;
+            return RegexOptionsOf(entry.tmpl);
         }
     }
 
@@ -97,7 +108,7 @@ namespace
             buffer << file.rdbuf();
             try
             {
-                return loglib::ParseRegexTemplate(buffer.str()).pattern;
+                return RegexOptionsOf(loglib::ParseRegexTemplate(buffer.str()));
             }
             catch (const std::exception &ex)
             {
@@ -111,7 +122,7 @@ namespace
         {
             if (EqualsIgnoreCase(tmpl.name, slug))
             {
-                return tmpl.pattern;
+                return RegexOptionsOf(tmpl);
             }
         }
     }
@@ -190,6 +201,8 @@ public:
     )
         : mGlobal(&global), mInput(&input), mConsole(&console), mRuntime(&runtime)
     {
+        mLoaded.table.SetDisplayTimeZone(runtime.timeZone);
+        mLoaded.table.SetDefaultSourceTimeZone(runtime.timeZone);
     }
 
     /** @brief Seeds the configuration from `--config`. */
@@ -205,6 +218,7 @@ public:
             return LoadFail(ExitCode::Input, configuration.error());
         }
         mLoaded.table.Configuration().SetConfiguration(std::move(*configuration));
+        ReportConfigurationWarnings();
         return std::nullopt;
     }
 
@@ -280,8 +294,8 @@ public:
         loglib::StreamLineSource &source = *lineSource;
         Attach(std::move(lineSource));
 
+        source.UnreadBytes(std::move(peek));
         loglib::ParserOptions parserOptions = MakeParserOptions(*mGlobal, *mInput, mRuntime->stop);
-        parserOptions.initialCarry = std::move(peek);
         try
         {
             Parse(*format, source, std::move(parserOptions));
@@ -328,6 +342,7 @@ private:
                 if (mFirst && !mInput->config)
                 {
                     mLoaded.table.Configuration().SetConfiguration(metadata.configuration);
+                    ReportConfigurationWarnings();
                 }
             }
 
@@ -390,14 +405,16 @@ private:
             resolved.format = *pinned;
             if (*pinned == loglib::Source::Format::Regex)
             {
-                auto pattern = ResolveRegexPattern(*mGlobal, *mInput);
-                if (!pattern)
+                auto regex = ResolveRegexPattern(*mGlobal, *mInput);
+                if (!regex)
                 {
-                    return std::unexpected(std::move(pattern.error()));
+                    return std::unexpected(std::move(regex.error()));
                 }
-                resolved.regexPattern = std::move(*pattern);
+                resolved.regexPattern = std::move(regex->regexPattern);
+                resolved.regexContinuationMode = regex->regexContinuationMode;
+                resolved.regexHeaderAnchor = std::move(regex->regexHeaderAnchor);
             }
-            const auto parser = loglib::MakeParserForFormat(resolved.format, resolved.regexPattern);
+            const auto parser = loglib::MakeParserForFormat(resolved.format, resolved.Options());
             if (!probe.accepts(*parser))
             {
                 return std::unexpected(LoadFail(
@@ -423,6 +440,15 @@ private:
         return resolved;
     }
 
+    /** @brief Reports once the print formats that the configuration check replaced. */
+    void ReportConfigurationWarnings()
+    {
+        for (const std::string &warning : mLoaded.table.Configuration().TakeWarnings())
+        {
+            mConsole->Warn(warning);
+        }
+    }
+
     template <typename Source> void Attach(std::unique_ptr<Source> source)
     {
         if (mFirst)
@@ -439,10 +465,10 @@ private:
     template <typename Source>
     void Parse(const loglib::DetectedFormat &format, Source &source, loglib::ParserOptions parserOptions)
     {
-        // The table skips columns it expects the parser to have converted.
-        parserOptions.configuration =
-            std::make_shared<const loglib::LogConfiguration>(mLoaded.table.Configuration().Configuration());
-        const auto parser = loglib::MakeParserForFormat(format.format, format.regexPattern);
+        // The table skips columns it expects the parser to have converted, so the parser gets the table's Time columns.
+        parserOptions.timeColumns = loglib::TimeColumnsOf(mLoaded.table.Configuration().Configuration());
+        parserOptions.defaultSourceTimeZone = mLoaded.table.DefaultSourceTimeZone();
+        const auto parser = loglib::MakeParserForFormat(format.format, format.Options(!mInput->noMultilineLogfmt));
         TableSink sink(mLoaded);
         parser->ParseStreaming(source, sink, parserOptions);
     }
@@ -578,9 +604,13 @@ std::expected<std::unique_ptr<loglib::LogParser>, Failure> MakeStreamParser(
     const auto pinned = ToSourceFormat(input.format);
     if (!pinned)
     {
-        return std::make_unique<loglib::AutoDetectParser>();
+        return std::make_unique<loglib::AutoDetectParser>(
+            loglib::PROBE_BYTES_BUDGET,
+            loglib::AutoDetectParser::DEFAULT_PEEK_TIMEOUT,
+            loglib::FormatOptions{.multilineLogfmt = !input.noMultilineLogfmt}
+        );
     }
-    std::string pattern;
+    loglib::FormatOptions options;
     if (*pinned == loglib::Source::Format::Regex)
     {
         auto resolved = ResolveRegexPattern(global, input);
@@ -588,9 +618,10 @@ std::expected<std::unique_ptr<loglib::LogParser>, Failure> MakeStreamParser(
         {
             return std::unexpected(std::move(resolved.error()));
         }
-        pattern = std::move(*resolved);
+        options = std::move(*resolved);
     }
-    return loglib::MakeParserForFormat(*pinned, pattern);
+    options.multilineLogfmt = !input.noMultilineLogfmt;
+    return loglib::MakeParserForFormat(*pinned, options);
 }
 
 loglib::ParserOptions MakeParserOptions(
@@ -600,7 +631,6 @@ loglib::ParserOptions MakeParserOptions(
     loglib::ParserOptions parserOptions;
     parserOptions.stopToken = stop;
     parserOptions.threads = global.threads;
-    parserOptions.multilineLogfmt = !input.noMultilineLogfmt;
     if (input.batchSizeBytes)
     {
         parserOptions.batchSizeBytes = static_cast<std::size_t>(*input.batchSizeBytes);

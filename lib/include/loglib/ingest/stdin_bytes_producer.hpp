@@ -40,7 +40,7 @@ struct StdinBytesProducerTestAccess;
  * - Stop closes the duplicate, joins the worker and marks the producer closed. It is safe to call twice and from any
  *   thread.
  * - Format detection happens before the producer is used. The caller peeks with StdinPeek and hands those bytes to the
- *   parser through ParserOptions::initialCarry, so the producer only delivers the bytes that come after the peek.
+ *   parser through StreamLineSource::UnreadBytes, so the producer only delivers the bytes that come after the peek.
  */
 class StdinBytesProducer final : public BytesProducer
 {

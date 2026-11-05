@@ -34,8 +34,10 @@ constexpr size_t INITIAL_FIELD_CAPACITY = 16;
 
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
-/// Crossover at which `InsertSorted` switches from a linear back-scan to
-/// `std::lower_bound`. Same threshold the JSON parser uses.
+/**
+ * Crossover at which InsertSorted switches from a linear back-scan to
+ * std::lower_bound. Same threshold the JSON parser uses.
+ */
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
 void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, KeyId id, loglib::CompactLogValue value)
@@ -74,10 +76,12 @@ void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, K
     out.emplace(it, id, value);
 }
 
-/// One key/value pair from a single record.
-/// `valueWasQuoted`: disables typed-value detection (`"42"` stays a string).
-/// `unescapedFromQuoted`: value bytes live in the decoder's scratch
-/// buffer (not aliasing the source), so they must be copied into the arena.
+/**
+ * One key/value pair from a single record.
+ * valueWasQuoted: disables typed-value detection ("42" stays a string).
+ * unescapedFromQuoted: value bytes live in the decoder's scratch
+ * buffer (not aliasing the source), so they must be copied into the arena.
+ */
 struct LogfmtField
 {
     std::string_view key;
@@ -87,12 +91,14 @@ struct LogfmtField
     bool valueIsNull = false;
 };
 
-/// State machine ported from `kr/logfmt`'s `scanner.go`
-/// (https://github.com/kr/logfmt/blob/19f9bcb100e6/scanner.go).
-/// Walks @p line and emits each `key=value` (or bare-key) field via
-/// @p emit. Returns false on an unterminated quoted value; fields
-/// emitted before that point are kept. @p quotedScratch is reused
-/// across calls to hold unescaped quoted bytes.
+/**
+ * State machine ported from kr/logfmt's scanner.go
+ * (https://github.com/kr/logfmt/blob/19f9bcb100e6/scanner.go).
+ * Walks @p line and emits each key=value (or bare-key) field via
+ * @p emit. Returns false on an unterminated quoted value; fields
+ * emitted before that point are kept. @p quotedScratch is reused
+ * across calls to hold unescaped quoted bytes.
+ */
 template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string &quotedScratch, Emit emit)
 {
     const char *const data = line.data();
@@ -270,10 +276,12 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
     return true;
 }
 
-/// Parse one logfmt record into compact values.
-/// `fileBegin`/`fileSize` describe the mmap (or 0/nullptr when
-/// streaming). `ownedArena` is the per-batch buffer for
-/// `OwnedString` payloads. `quotedScratch` is reused across calls.
+/**
+ * Parse one logfmt record into compact values.
+ * fileBegin/fileSize describe the mmap (or 0/nullptr when
+ * streaming). ownedArena is the per-batch buffer for
+ * OwnedString payloads. quotedScratch is reused across calls.
+ */
 void ParseLogfmtLine(
     std::string_view line,
     KeyIndex &keys,
@@ -365,7 +373,7 @@ bool LineLooksLikeLogfmt(std::string_view line)
     return i != keyStart && i < line.size() && line[i] == '=';
 }
 
-/// Logfmt-specific per-worker scratch.
+/** Logfmt-specific per-worker scratch. */
 struct LogfmtWorkerState
 {
     std::string quotedScratch;
@@ -579,10 +587,12 @@ void DecodeLogfmtBatch(
     }
 }
 
-/// Logfmt record decoder for `RunStreamingParseLoop`. Owns the
-/// per-line scratch. Satisfies `CompactLineDecoder`.
-/// In multi-line mode, indented lines continue the preceding record's
-/// last source-order field. Other lines retain normal logfmt parsing.
+/**
+ * Logfmt record decoder for RunStreamingParseLoop. Owns the
+ * per-line scratch. Satisfies CompactLineDecoder.
+ * In multi-line mode, indented lines continue the preceding record's
+ * last source-order field. Other lines retain normal logfmt parsing.
+ */
 class LogfmtLineDecoder
 {
 public:
@@ -665,7 +675,7 @@ public:
         }
     }
 
-    /// Last source-order field from the most recent emitted record.
+    /** Last source-order field from the most recent emitted record. */
     [[nodiscard]] KeyId LastContinuationTarget() const noexcept
     {
         return mLastContinuationTarget;
@@ -702,9 +712,14 @@ bool LogfmtParser::IsValidBytes(std::string_view sniffBuffer) const
     return false;
 }
 
+LogfmtParser::LogfmtParser(bool multiline) noexcept
+    : mMultiline(multiline)
+{
+}
+
 void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    LogfmtLineDecoder decoder(options.multilineLogfmt);
+    LogfmtLineDecoder decoder(mMultiline);
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
@@ -719,7 +734,7 @@ void LogfmtParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Pa
     auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 
     FileLineSource *sourcePtr = &source;
-    const bool multiline = options.multilineLogfmt;
+    const bool multiline = mMultiline;
     auto stageB = [sourcePtr, multiline](
                       internal::ByteRange token,
                       internal::WorkerScratch<LogfmtWorkerState> &worker,

@@ -146,6 +146,8 @@ namespace
         if (source.format == loglib::Source::Format::Regex)
         {
             source.regexPattern = loaded.format->regexPattern;
+            source.regexContinuationMode = loaded.format->regexContinuationMode;
+            source.regexHeaderAnchor = loaded.format->regexHeaderAnchor;
         }
     }
     source.followRotationSiblings = !global.noRotationHistory;
