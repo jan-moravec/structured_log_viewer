@@ -49,7 +49,7 @@ add_library(
     src/table/column_key_id_cache.cpp
     src/table/column_type_health.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
-    src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
+    src/clang_tidy_stubs/glaze_options.cpp
     src/query/log_compare.cpp
     src/core/log_data.cpp
     src/core/log_file.cpp

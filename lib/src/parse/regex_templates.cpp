@@ -1,7 +1,7 @@
 #include "loglib/parse/regex_templates.hpp"
 
 #include "loglib/core/ascii_case.hpp"
-#include "loglib/core/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/parse/internal/embedded_regex_templates.hpp"
 #include "loglib/parse/internal/regex_template_glaze_meta.hpp"

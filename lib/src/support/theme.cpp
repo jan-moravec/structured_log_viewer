@@ -1,6 +1,6 @@
 #include "loglib/support/theme.hpp"
 
-#include "loglib/core/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/support/internal/theme_glaze_meta.hpp"
 

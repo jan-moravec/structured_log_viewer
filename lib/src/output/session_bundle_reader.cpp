@@ -1,6 +1,6 @@
 #include "loglib/output/session_bundle.hpp"
 
-#include "loglib/core/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/ingest/decompressing_byte_source.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 

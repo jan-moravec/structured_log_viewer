@@ -1,7 +1,7 @@
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/core/ascii_case.hpp"
 #include "loglib/core/internal/file_busy_retry.hpp"
-#include "loglib/core/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
@@ -159,7 +159,7 @@ std::vector<std::string> Source::DedupKeys() const
 namespace
 {
 
-// See `log_configuration_glaze_opts.hpp` for the pinned options.
+// The pinned options are defined in glaze_options.hpp.
 constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
 /// Wire-format shim for `SaveScope::ColumnsOnly`: emits the two
