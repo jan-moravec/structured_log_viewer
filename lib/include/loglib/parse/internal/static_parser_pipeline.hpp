@@ -240,10 +240,11 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
 /**
  * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
  *
- * - Stage A runs in order and cuts the file into batches.
- * - Stage B runs in parallel and decodes the batches. It gives every row its source and absolute line id.
- * - Stage C runs in order. It appends each batch's strings to the arena of the file, coalesces batches, finds the new
- *   keys, converts time columns, and stops when the stop token fires.
+ * - Stage A runs in order and cuts the file into batches. It stops cutting when the stop token fires.
+ * - Stage B runs in parallel and decodes the batches. It gives every row its source and a line id counted inside the
+ *   batch, and converts the time columns.
+ * - Stage C runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena of the
+ *   file, coalesces batches, finds the new keys and calls the sink.
  *
  * newKeyBaseline is passed to BatchCoalescer. A parser that adds its keys before the pipeline starts passes the key
  * count from before. By default it is the current size of the index.

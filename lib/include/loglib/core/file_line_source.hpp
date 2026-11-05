@@ -4,6 +4,11 @@
  * A FileLineSource owns a LogFile. It resolves the offsets stored in rows against the mapped bytes, so rows from a
  * static file never copy their text. It is used when a file is opened as a whole, as opposed to followed live.
  *
+ * The line id of a row is the zero-based physical line of the first line of its record, so it indexes the line offsets
+ * of the file. A record that spans several lines has the id of its first line, and the other lines have no row of their
+ * own. An id is not a count of lines or records, because blank lines, lines that failed to parse and continuation lines
+ * take up physical lines too.
+ *
  * This is part of the core module.
  */
 #pragma once
@@ -26,7 +31,7 @@ class LogFile;
  * @brief LineSource for a memory-mapped file that has a fixed size.
  *
  * Static parsing runs directly over the mapping, and the rows it produces resolve their MmapSlice and OwnedString cells
- * through this source. It owns the LogFile. Line ids are zero-based line numbers of the file. It cannot evict lines.
+ * through this source. It owns the LogFile. It cannot evict lines.
  */
 class FileLineSource final : public LineSource
 {
