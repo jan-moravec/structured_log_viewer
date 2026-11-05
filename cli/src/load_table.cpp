@@ -130,7 +130,7 @@ namespace
     return std::unexpected(LoadFail(ExitCode::Usage, std::format("unknown regex template slug '{}'.", slug)));
 }
 
-/** @brief Feeds parsed batches into the table and records parse errors and line coverage. */
+/** @brief Feeds parsed batches into the table and records parse errors and the number of lines read. */
 class TableSink final : public loglib::LogParseSink
 {
 public:
@@ -150,21 +150,9 @@ public:
 
     void OnBatch(loglib::RowBatch batch) override
     {
-        std::uint64_t &consumed = mLoaded->linesConsumed;
-        // `firstLineNumber` is a start cursor: every line before it was consumed,
-        // but the line it names may not exist (an empty terminal batch carries
-        // the cursor one past the last line).
-        if (batch.firstLineNumber != 0)
-        {
-            consumed = std::max(consumed, static_cast<std::uint64_t>(batch.firstLineNumber) - std::uint64_t{1});
-        }
-        for (const loglib::LogLine &line : batch.lines)
-        {
-            consumed = std::max(consumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
-        }
+        mLastLine = std::max(mLastLine, static_cast<std::uint64_t>(batch.lastLineNumber));
         for (loglib::ParseError &error : batch.errors)
         {
-            consumed = std::max(consumed, error.lastLine);
             mLoaded->parseErrors.push_back(std::move(error));
         }
         batch.errors.clear();
@@ -173,10 +161,12 @@ public:
 
     void OnFinished(bool /*cancelled*/) override
     {
+        mLoaded->linesConsumed += mLastLine;
     }
 
 private:
     LoadedTable *mLoaded;
+    std::uint64_t mLastLine = 0;
 };
 
 /**

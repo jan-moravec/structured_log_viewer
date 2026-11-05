@@ -576,7 +576,7 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
         coalescer.Pending().errors.push_back(
             ParseError{.firstLine = headerLineNumber, .lastLine = headerLineNumber, .message = "Invalid CSV header."}
         );
-        coalescer.Finish(headerLineNumber + 1, /*wasCancelled=*/false);
+        coalescer.Finish(headerLineNumber, /*wasCancelled=*/false);
         return;
     }
 

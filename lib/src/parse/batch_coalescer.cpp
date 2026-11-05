@@ -47,7 +47,7 @@ void BatchCoalescer::DrainNewKeysInto(RowBatch &out)
     }
 }
 
-bool BatchCoalescer::TryFlush(bool force)
+bool BatchCoalescer::TryFlush(bool force, size_t lastLineNumber)
 {
     const auto now = std::chrono::steady_clock::now();
     if (!force)
@@ -69,6 +69,7 @@ bool BatchCoalescer::TryFlush(bool force)
     }
 
     DrainNewKeysInto(mPending);
+    mPending.lastLineNumber = lastLineNumber;
     mSink.OnBatch(std::move(mPending));
     mPending = RowBatch{};
     mPrimed = false;
@@ -76,7 +77,7 @@ bool BatchCoalescer::TryFlush(bool force)
     return true;
 }
 
-void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
+void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
 {
     const bool hasContent =
         mPrimed || mKeys.Size() > mPrevKeyCount || !mPending.errors.empty() || !mPending.localLineOffsets.empty();
@@ -84,9 +85,10 @@ void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
     {
         if (!mPrimed)
         {
-            Prime(fallbackLineNumber);
+            Prime(lastLineNumber + 1);
         }
         DrainNewKeysInto(mPending);
+        mPending.lastLineNumber = lastLineNumber;
         mSink.OnBatch(std::move(mPending));
         mPending = RowBatch{};
         mPrimed = false;
@@ -94,7 +96,8 @@ void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
     else
     {
         RowBatch tail;
-        tail.firstLineNumber = fallbackLineNumber;
+        tail.firstLineNumber = lastLineNumber + 1;
+        tail.lastLineNumber = lastLineNumber;
         DrainNewKeysInto(tail);
         mSink.OnBatch(std::move(tail));
     }

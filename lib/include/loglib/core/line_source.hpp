@@ -9,7 +9,8 @@
  * A row's line id means something different for each source, and the row's source pointer tells which one applies. For
  * a FileLineSource it is the zero-based physical line of the first line of the record. For a StreamLineSource it is a
  * one-based number that AppendLine gives to each record, and a record that spans several lines gets one id. An id is
- * therefore a key for RawLine, not a line count. Do not turn ids into line counts.
+ * therefore a key for RawLine, not a line count. Do not turn ids into line counts. The number of lines a parser read is
+ * RowBatch::lastLineNumber.
  *
  * This is part of the core module.
  */

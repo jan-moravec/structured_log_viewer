@@ -193,7 +193,7 @@ void RunStreamingParseLoop(
     {
         // No producer (e.g. unit tests driving AppendLine directly).
         // Honour the sink contract with one empty terminal batch.
-        coalescer.Finish(1, false);
+        coalescer.Finish(0, false);
         return;
     }
 
@@ -549,7 +549,7 @@ void RunStreamingParseLoop(
     if (!carry.empty() && !stopToken.StopRequested())
     {
         scanCarry();
-        coalescer.TryFlush(false);
+        coalescer.TryFlush(false, nextLineNumber - 1);
     }
 
     bool reachedEof = false;
@@ -582,7 +582,7 @@ void RunStreamingParseLoop(
                         commitPending();
                     }
                 }
-                coalescer.TryFlush(false);
+                coalescer.TryFlush(false, nextLineNumber - 1);
                 producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
                 continue;
             }
@@ -590,7 +590,7 @@ void RunStreamingParseLoop(
 
         scanCarry();
 
-        coalescer.TryFlush(false);
+        coalescer.TryFlush(false, nextLineNumber - 1);
     }
 
     if (!carry.empty() && !stopToken.StopRequested())
@@ -604,7 +604,7 @@ void RunStreamingParseLoop(
     flushOrphanRun();
     commitPending();
 
-    coalescer.Finish(nextLineNumber, stopToken.StopRequested());
+    coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
 }
 
 } // namespace loglib::internal

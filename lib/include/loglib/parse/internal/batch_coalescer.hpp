@@ -78,15 +78,17 @@ public:
      * @brief Sends the pending batch if a threshold was reached, or always when force is set. Returns true if a batch
      * was sent.
      *
-     * An empty batch is not sent for a threshold, but the time of the last flush is still updated.
+     * lastLineNumber is the number of the last physical line the caller has read, and becomes the batch's
+     * lastLineNumber. An empty batch is not sent for a threshold, but the time of the last flush is still updated.
      */
-    bool TryFlush(bool force);
+    bool TryFlush(bool force, size_t lastLineNumber);
 
     /**
-     * @brief Sends a last batch, which is empty if nothing is pending, and then calls OnFinished with wasCancelled. An
-     * empty batch gets fallbackLineNumber as its first line.
+     * @brief Sends a last batch, which is empty if nothing is pending, and then calls OnFinished with wasCancelled.
+     *
+     * lastLineNumber is the total number of physical lines read. An empty batch starts at the line after it.
      */
-    void Finish(size_t fallbackLineNumber, bool wasCancelled);
+    void Finish(size_t lastLineNumber, bool wasCancelled);
 
 private:
     LogParseSink &mSink;

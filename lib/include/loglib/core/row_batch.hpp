@@ -71,6 +71,14 @@ struct RowBatch
      * it does not refer to a particular line.
      */
     size_t firstLineNumber = 0;
+    /**
+     * @brief The number of the last physical line read when the batch was sent, counting from 1.
+     *
+     * Every line up to it is accounted for: a row, an error, a blank line, a continuation, or part of a record held
+     * for the next batch. It is 0 before the first line. The last batch of a parse holds the total line count, the
+     * same for a file and for a stream.
+     */
+    size_t lastLineNumber = 0;
 };
 
 } // namespace loglib

@@ -353,6 +353,7 @@ loglib::RowBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::RowBatch
     out.newKeys.reserve(newKeyCount);
     out.multiLineSpans.reserve(multiLineSpanCount);
     out.firstLineNumber = batches.front().firstLineNumber;
+    out.lastLineNumber = batches.back().lastLineNumber;
     for (auto &batch : batches)
     {
         std::ranges::move(batch.lines, std::back_inserter(out.lines));

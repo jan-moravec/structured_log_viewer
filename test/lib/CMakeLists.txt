@@ -15,6 +15,7 @@ add_executable(
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_auto_detect_parser.cpp"
+    "src/test_batch_contract.cpp"
     "src/test_column_projection.cpp"
     "src/test_column_key_id_cache.cpp"
     "src/test_column_type_health.cpp"

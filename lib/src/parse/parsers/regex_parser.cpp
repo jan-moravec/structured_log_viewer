@@ -582,7 +582,7 @@ void EmitErrorAndFinish(
         streaming ? internal::STREAMING_BATCH_FLUSH_INTERVAL : internal::STATIC_BATCH_FLUSH_INTERVAL;
     internal::BatchCoalescer coalescer(sink, keys, flushLines, flushInterval, newKeyBaseline);
     coalescer.Pending().errors.push_back(ParseError{.message = std::string(message)});
-    coalescer.Finish(1, /*wasCancelled=*/false);
+    coalescer.Finish(0, /*wasCancelled=*/false);
 }
 
 } // namespace

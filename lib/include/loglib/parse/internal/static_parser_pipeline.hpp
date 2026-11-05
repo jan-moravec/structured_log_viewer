@@ -274,13 +274,13 @@ void RunStaticParserPipeline(
     // every early-exit path.
     if (options.stopToken.StopRequested())
     {
-        coalescer.Finish(1, true);
+        coalescer.Finish(0, true);
         return;
     }
 
     if (file.Size() == 0 || file.Data() == nullptr)
     {
-        coalescer.Finish(1, false);
+        coalescer.Finish(0, false);
         return;
     }
 
@@ -512,7 +512,7 @@ void RunStaticParserPipeline(
 
         nextLineNumber += parsed.totalLineCount;
 
-        coalescer.TryFlush(false);
+        coalescer.TryFlush(false, nextLineNumber - 1);
         if (batchHasNewRecords)
         {
             held = std::move(newHeld);
@@ -546,7 +546,7 @@ void RunStaticParserPipeline(
         held.reset();
     }
 
-    coalescer.Finish(nextLineNumber, stopToken.StopRequested());
+    coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
 }
 
 } // namespace loglib::internal

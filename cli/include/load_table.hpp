@@ -30,8 +30,8 @@ class Console;
  *
  * `ownedDecompressors` must outlive `table` while any row still
  * references decompressed backing storage. `format` is the first
- * source's resolved format. `linesConsumed` is the highest 1-based
- * physical line number observed across rows and parse errors.
+ * source's resolved format. `linesConsumed` is the number of physical
+ * lines read from all sources.
  */
 struct LoadedTable
 {
