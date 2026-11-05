@@ -1209,61 +1209,6 @@ TEST_CASE(
 namespace
 {
 
-/// Single-shot in-memory `BytesProducer` for the `StreamLineSource`-based
-/// streaming-parser test. Yields the test's pre-baked bytes once and
-/// then reports terminal EOF so the parser exits its drain loop
-/// without parking on `WaitForBytes`.
-class InMemoryProducer final : public loglib::BytesProducer
-{
-public:
-    explicit InMemoryProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-            return 0;
-        }
-        const size_t available = mBytes.size() - mCursor;
-        const size_t n = std::min(available, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "in-memory";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 /// Captures `OnBatch` deliveries for the streaming-parser unit test
 /// without depending on Qt. Owns the `KeyIndex` (parser interns keys
 /// here) and the move-collected `RowBatch`es so the test can
@@ -1309,7 +1254,7 @@ TEST_CASE(
                                 R"({"k":"three","n":3})"
                                 "\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const JsonParser parser;
@@ -1368,7 +1313,7 @@ TEST_CASE(
                                 R"({"k":"second"})"
                                 "\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const JsonParser parser;

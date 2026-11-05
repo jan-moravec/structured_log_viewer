@@ -1,3 +1,4 @@
+#include "common.hpp"
 #include "table_fixture.hpp"
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/error.hpp>
@@ -122,42 +123,6 @@ LogTable TableOf(LogData data)
     configuration.Update(data.SortedKeys());
     return {std::move(data), std::move(configuration)};
 }
-
-/// Serves fixed bytes, then reports terminal EOF.
-class FixedBytesProducer final : public BytesProducer
-{
-public:
-    explicit FixedBytesProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        const size_t count = std::min(buffer.size(), mBytes.size() - mOffset);
-        std::copy_n(mBytes.data() + mOffset, count, buffer.data());
-        mOffset += count;
-        return count;
-    }
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-    void Stop() noexcept override
-    {
-    }
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mOffset == mBytes.size();
-    }
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "fixed";
-    }
-
-private:
-    std::string mBytes;
-    size_t mOffset = 0;
-};
 
 class CollectingSink : public LogParseSink
 {
@@ -317,14 +282,14 @@ TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser]
     // The first line caches each key's type, so later lines cover both decode paths.
     StreamLineSource source(
         "<test>",
-        std::make_unique<FixedBytesProducer>("{\"b\":true,\"s\":\"ok\",\"n\":1}\n"
-                                             "{\"b\":truex}\n"
-                                             "{\"s\":\"bad\\q\"}\n"
-                                             "{\"fresh\":truex}\n"
-                                             "{\"other\":\"bad\\q\"}\n"
-                                             "{\"num\":1e999}\n"
-                                             "{\"null\":nul}\n"
-                                             "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
+        std::make_unique<InMemoryBytesProducer>("{\"b\":true,\"s\":\"ok\",\"n\":1}\n"
+                                                "{\"b\":truex}\n"
+                                                "{\"s\":\"bad\\q\"}\n"
+                                                "{\"fresh\":truex}\n"
+                                                "{\"other\":\"bad\\q\"}\n"
+                                                "{\"num\":1e999}\n"
+                                                "{\"null\":nul}\n"
+                                                "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
     );
     CollectingSink sink;
     JsonParser{}.ParseStreaming(source, sink, ParserOptions{});
@@ -378,7 +343,7 @@ TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
     CHECK(result.data.Keys().Find("ts") != INVALID_KEY_ID);
     CHECK(result.data.Keys().Find("\xEF\xBB\xBFts") == INVALID_KEY_ID);
 
-    StreamLineSource source("<test>", std::make_unique<FixedBytesProducer>("\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n"));
+    StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>("\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n"));
     CollectingSink sink;
     LogfmtParser{}.ParseStreaming(source, sink, ParserOptions{});
     CHECK(sink.lines.size() == 2);
@@ -525,7 +490,7 @@ TEST_CASE("An outlier timestamp widens histogram buckets instead of allocating",
 TEST_CASE("The stream loop drops an oversized line and resumes after it", "[stream][limits]")
 {
     std::string bytes = "a=1\n" + std::string(100000, 'x') + "\na=2\n";
-    StreamLineSource source("<test>", std::make_unique<FixedBytesProducer>(std::move(bytes)));
+    StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>(std::move(bytes)));
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
@@ -545,7 +510,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
         bytes += "  continuation line\n";
     }
     bytes += "a=second\n";
-    StreamLineSource source("<test>", std::make_unique<FixedBytesProducer>(std::move(bytes)));
+    StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>(std::move(bytes)));
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;

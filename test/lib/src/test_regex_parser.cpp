@@ -311,61 +311,6 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
 namespace
 {
 
-/// Single-shot in-memory `BytesProducer` for the live-tail regex
-/// streaming test. Yields the pre-baked bytes once and reports
-/// terminal EOF so the parser exits its drain loop without
-/// parking on `WaitForBytes`. Mirrors `test_json_parser.cpp`.
-class StreamingInMemoryProducer final : public loglib::BytesProducer
-{
-public:
-    explicit StreamingInMemoryProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-            return 0;
-        }
-        const size_t available = mBytes.size() - mCursor;
-        const size_t n = std::min(available, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "in-memory";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 /// `LogParseSink` that records every emitted batch verbatim so
 /// the test can assert on `newKeys`. Owns its `KeyIndex` so the
 /// streaming parser interns into a sink-local index rather than
@@ -418,7 +363,7 @@ TEST_CASE(
                                 "warn world\n"
                                 "error boom\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -484,8 +429,7 @@ std::vector<std::string> RunStreamingParseCollectingErrors(std::string_view patt
 {
     const RegexParser parser{std::string{pattern}};
     StreamLineSource source(
-        std::filesystem::path("regex_stream_error.log"),
-        std::make_unique<StreamingInMemoryProducer>(std::string{payload})
+        std::filesystem::path("regex_stream_error.log"), std::make_unique<InMemoryBytesProducer>(std::string{payload})
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -507,8 +451,7 @@ TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][strea
     // wasn't wired for the streaming flush thresholds.
     const RegexParser parser{std::string{}};
     StreamLineSource source(
-        std::filesystem::path("regex_stream_empty_pattern.log"),
-        std::make_unique<StreamingInMemoryProducer>("one\ntwo\n")
+        std::filesystem::path("regex_stream_empty_pattern.log"), std::make_unique<InMemoryBytesProducer>("one\ntwo\n")
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -572,7 +515,7 @@ TEST_CASE(
                                 "\tat com.example.Baz.qux(Baz.java:7)\n"
                                 "info recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -638,7 +581,7 @@ TEST_CASE(
                                 "\n"
                                 "info recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -697,7 +640,7 @@ TEST_CASE(
                                 "  File \"a.py\", line 7\n"
                                 "[INFO] recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -748,7 +691,7 @@ TEST_CASE(
                                 "\tat com.example.Foo.bar(Foo.java:42)\n"
                                 "info recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -1159,7 +1102,7 @@ TEST_CASE(
                                 "2026-01-02 INFO recovered\n";
 
     StreamLineSource source(
-        std::filesystem::path("anchor_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+        std::filesystem::path("anchor_stream.log"), std::make_unique<InMemoryBytesProducer>(payload)
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -1277,7 +1220,7 @@ TEST_CASE(
 
     const std::string payload = "2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n";
     StreamLineSource source(
-        std::filesystem::path("anchor_bad_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+        std::filesystem::path("anchor_bad_stream.log"), std::make_unique<InMemoryBytesProducer>(payload)
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -1358,7 +1301,7 @@ TEST_CASE(
 
         const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
         StreamLineSource source(
-            std::filesystem::path("anchor_ignored.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+            std::filesystem::path("anchor_ignored.log"), std::make_unique<InMemoryBytesProducer>(payload)
         );
         CollectingStreamSink sink;
         parser.ParseStreaming(source, sink, ParserOptions{});

@@ -392,57 +392,6 @@ TEST_CASE(
 namespace
 {
 
-class InMemoryProducer final : public loglib::BytesProducer
-{
-public:
-    explicit InMemoryProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-            return 0;
-        }
-        const size_t available = mBytes.size() - mCursor;
-        const size_t n = std::min(available, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "in-memory";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 struct CollectingStreamSink final : loglib::LogParseSink
 {
     loglib::KeyIndex keys;
@@ -497,7 +446,7 @@ TEST_CASE(
                                 "\t\tmain.go:42 +0x0\n"
                                 "level=info msg=\"after trace\"\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -550,7 +499,7 @@ TEST_CASE(
     const std::string payload = "level=info msg=\"first record\"\n"
                                 "\ttab-indented continuation\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser(false);
@@ -576,7 +525,7 @@ TEST_CASE(
     const std::string payload = "\torphan indented at start\n"
                                 "level=info msg=\"first real record\"\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -610,7 +559,7 @@ TEST_CASE(
                                 "\torphan 5\n"
                                 "level=info msg=\"first real record\"\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -640,7 +589,7 @@ TEST_CASE(
                                 "\torphan 2\n"
                                 "\torphan 3\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -668,7 +617,7 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
                                 "\tone continuation line\n"
                                 "\tanother one\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
