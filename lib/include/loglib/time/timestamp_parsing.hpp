@@ -98,9 +98,6 @@ bool TryParseSyslogRfc3164Timestamp(
     std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
 );
 
-/** @brief Same as above, with the current time as the reference. */
-bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out);
-
 /**
  * @brief Parses with date::parse and an arbitrary format. It succeeds only if the format uses all of the text. The
  * scratch buffers are reused across calls.
@@ -109,12 +106,18 @@ bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 );
 
-/** @brief Parses a timestamp with the parser that kind selects. */
+/**
+ * @brief Parses a timestamp with the parser that kind selects.
+ *
+ * referenceTime is the "now" used for formats without a year. The caller fixes it once per parse, so every line of one
+ * file gets the same year.
+ */
 bool TryParseTimestamp(
     std::string_view sv,
     const std::string &format,
     TimestampFormatKind kind,
     TimestampParseScratch &scratch,
+    std::chrono::system_clock::time_point referenceTime,
     TimeStamp &out
 );
 

@@ -95,22 +95,22 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
 namespace
 {
 
-/// Which suffix may follow the date, time, and fraction.
+/** Which suffix may follow the date, time, and fraction. */
 enum class IsoZoneSuffix : std::uint8_t
 {
-    /// Nothing, or a `Z`.
+    /** Nothing, or a Z. */
     NoneOrUtc,
-    /// A required numeric offset.
+    /** A required numeric offset. */
     Offset,
 };
 
-/// Parses all of @p digits as a decimal number.
+/** Parses all of @p digits as a decimal number. */
 bool ParseDigits(std::string_view digits, int &out)
 {
     return ParseFixedDigits(digits.data(), digits.size(), out);
 }
 
-/// Parses `+h`, `+hh`, `+hh:mm`, or `+hhmm` covering all of @p sv.
+/** Parses +h, +hh, +hh:mm, or +hhmm covering all of @p sv. */
 bool ParseIsoOffset(std::string_view sv, std::int64_t &offsetSeconds)
 {
     constexpr size_t COMPACT_DIGITS = 4;
@@ -266,7 +266,7 @@ bool TryParseIsoOffsetTimestamp(std::string_view sv, char dateTimeSep, TimeStamp
 namespace
 {
 
-/// Year and month used by the RFC 3164 year-injection heuristic.
+/** Year and month used by the RFC 3164 year-injection heuristic. */
 struct AssumedNowFields
 {
     int year;
@@ -283,8 +283,10 @@ AssumedNowFields AssumedNow(std::chrono::system_clock::time_point referenceNow)
     };
 }
 
-/// Case-sensitive lookup for RFC 3164's English month abbreviations.
-/// Returns 1-based month index (`1..12`) or 0 on miss.
+/**
+ * Case-sensitive lookup for RFC 3164's English month abbreviations.
+ * Returns 1-based month index (1..12) or 0 on miss.
+ */
 unsigned MatchSyslogMonth(std::string_view sv) noexcept
 {
     static constexpr size_t MONTH_ABBREV_LEN = 3;
@@ -429,16 +431,13 @@ bool TryParseSyslogRfc3164Timestamp(
     return true;
 }
 
-bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
-{
-    return TryParseSyslogRfc3164Timestamp(sv, out, std::chrono::system_clock::now());
-}
-
 namespace
 {
 
-/// Removes fraction digits past microseconds. `date::from_stream` stops at
-/// microseconds and would read the digits left over as a UTC offset.
+/**
+ * Removes fraction digits past microseconds. date::from_stream stops at
+ * microseconds and would read the digits left over as a UTC offset.
+ */
 void DropExcessFractionDigits(std::string &text)
 {
     const auto isDigit = [](char ch) { return ch >= '0' && ch <= '9'; };
@@ -484,6 +483,7 @@ bool TryParseTimestamp(
     const std::string &format,
     TimestampFormatKind kind,
     TimestampParseScratch &scratch,
+    std::chrono::system_clock::time_point referenceTime,
     TimeStamp &out
 )
 {
@@ -498,7 +498,7 @@ bool TryParseTimestamp(
     case TimestampFormatKind::Iso8601SpaceOffset:
         return TryParseIsoOffsetTimestamp(sv, ' ', out);
     case TimestampFormatKind::SyslogRfc3164NoYear:
-        return TryParseSyslogRfc3164Timestamp(sv, out);
+        return TryParseSyslogRfc3164Timestamp(sv, out, referenceTime);
     case TimestampFormatKind::Generic:
     default:
         return TryParseGenericTimestamp(sv, format, scratch, out);

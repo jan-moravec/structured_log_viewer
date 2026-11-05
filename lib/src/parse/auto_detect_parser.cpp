@@ -10,7 +10,6 @@
 #include "loglib/parse/parsers/json_parser.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -27,15 +26,19 @@ namespace loglib
 namespace
 {
 
-/// Peek chunk size. Small enough to keep memory footprint tight
-/// while draining the probe budget; large enough that the syscall
-/// overhead vanishes next to `WaitForBytes`.
+/**
+ * Peek chunk size. Small enough to keep memory footprint tight
+ * while draining the probe budget; large enough that the syscall
+ * overhead vanishes next to WaitForBytes.
+ */
 constexpr std::size_t PEEK_CHUNK_BYTES = 4096;
 
-/// How long the peek loop parks in `WaitForBytes` between
-/// non-productive `Read` calls. Matches the streaming loop's
-/// `STREAMING_BATCH_FLUSH_INTERVAL` so the adapter is
-/// indistinguishable from a normal parser in profile traces.
+/**
+ * How long the peek loop parks in WaitForBytes between
+ * non-productive Read calls. Matches the streaming loop's
+ * STREAMING_BATCH_FLUSH_INTERVAL so the adapter is
+ * indistinguishable from a normal parser in profile traces.
+ */
 constexpr auto PEEK_WAIT_INTERVAL = std::chrono::milliseconds(100);
 
 std::string DrainPeek(
@@ -108,8 +111,10 @@ std::string DrainPeek(
 
 } // namespace
 
-AutoDetectParser::AutoDetectParser(std::size_t peekBytes, std::chrono::milliseconds peekTimeout) noexcept
-    : mPeekBytes(peekBytes), mPeekTimeout(peekTimeout)
+AutoDetectParser::AutoDetectParser(
+    std::size_t peekBytes, std::chrono::milliseconds peekTimeout, FormatOptions formatOptions
+) noexcept
+    : mPeekBytes(peekBytes), mPeekTimeout(peekTimeout), mFormatOptions(std::move(formatOptions))
 {
 }
 
@@ -120,26 +125,10 @@ bool AutoDetectParser::IsValidBytes(std::string_view /*sniffBuffer*/) const
 
 void AutoDetectParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // Static-file detection is fully served by `DetectFormatForPath`,
-    // which reads the head bytes once. Route through it so we don't
-    // double-read the file just to satisfy the interface.
-    //
-    // `initialCarry` is a streaming-only mechanism (see
-    // `parser_options.hpp` and the invariant asserted by
-    // `RunStaticParserPipeline`): a static file parse reads from
-    // the mmap directly and has nowhere to splice the carry in.
-    // Guard the invariant here so a misconfigured caller trips a
-    // debug-only assert with a clear message instead of aborting
-    // deep inside the pipeline, and clear the carry in release so
-    // the delegate does not inherit garbage.
-    assert(
-        options.initialCarry.empty() &&
-        "AutoDetectParser::ParseStreaming(FileLineSource, ...) does not support initialCarry; use the "
-        "StreamLineSource overload"
-    );
-    options.initialCarry.clear();
+    // Static files are detected from their head bytes, which are read once.
     const DetectedFormat detected = DetectFormatForPath(source.Path());
-    const std::unique_ptr<LogParser> resolved = MakeParserForFormat(detected.format, detected.regexPattern);
+    const std::unique_ptr<LogParser> resolved =
+        MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
     resolved->ParseStreaming(source, sink, std::move(options));
 }
 
@@ -155,19 +144,10 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
         return;
     }
 
-    const std::string peek = DrainPeek(*producer, mPeekBytes, mPeekTimeout, options.stopToken);
-
-    // Caller-supplied `initialCarry` semantically prefixes the
-    // producer's stream (bytes already consumed by an earlier
-    // stage). Combine them for both detection and delivery so the
-    // resolved parser sees `<caller carry> || <peek> || <future
-    // producer bytes>` in-order, and so the detector inspects the
-    // same head bytes the parser will see.
-    std::string combined;
-    combined.reserve(options.initialCarry.size() + peek.size());
-    combined.append(options.initialCarry);
-    combined.append(peek);
-    options.initialCarry.clear();
+    // Bytes the caller gave back to the source come first, then the peek, so the detector sees the head bytes that the
+    // parser will see.
+    std::string combined = source.TakeUnreadBytes();
+    combined.append(DrainPeek(*producer, mPeekBytes, mPeekTimeout, options.stopToken));
 
     if (combined.empty())
     {
@@ -178,8 +158,9 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
     }
 
     const DetectedFormat detected = DetectFormatFromBytes(combined);
-    const std::unique_ptr<LogParser> resolved = MakeParserForFormat(detected.format, detected.regexPattern);
-    options.initialCarry = std::move(combined);
+    const std::unique_ptr<LogParser> resolved =
+        MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
+    source.UnreadBytes(std::move(combined));
     resolved->ParseStreaming(source, sink, std::move(options));
 }
 

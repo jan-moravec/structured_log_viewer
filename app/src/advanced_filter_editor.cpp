@@ -5,6 +5,7 @@
 
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/filter_expression.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QColor>
 #include <QDialogButtonBox>
@@ -233,7 +234,7 @@ void AdvancedFilterEditor::ReparseAndUpdate()
 {
     const QString queryText = mQueryEdit->toPlainText();
     const std::string source = queryText.toStdString();
-    auto parsed = loglib::ParseQuery(source);
+    auto parsed = loglib::ParseQuery(source, loglib::ProcessDefaultTimeZone());
     if (parsed.has_value())
     {
         // Second-stage regex validity check: `ParseQuery` extracts

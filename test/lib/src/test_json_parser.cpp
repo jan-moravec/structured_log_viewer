@@ -58,7 +58,8 @@ TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[jso
 
     const ParserOptions defaults;
     CHECK_FALSE(defaults.stopToken.StopPossible());
-    CHECK(defaults.configuration == nullptr);
+    CHECK(defaults.timeColumns.empty());
+    CHECK_FALSE(defaults.referenceTime.has_value());
 
     CHECK(defaults.threads == 0u);
     CHECK(defaults.batchSizeBytes == 0u);
@@ -859,12 +860,11 @@ TEST_CASE(
     "[json_parser][stage_b_timestamps]"
 )
 {
-    // When `ParserOptions::configuration` describes a `Type::Time` column,
-    // every parsed line whose value at the column's key is a parseable
-    // ISO-8601 string must come out of `JsonParser::Parse` already promoted
-    // to `TimeStamp`. The legacy whole-data `ParseTimestamps` pass is thus
-    // redundant for these snapshot keys, which backs the truthful
-    // `LogData::MarkTimestampsParsed()` flag set by `BeginStreaming`.
+    // When ParserOptions::timeColumns names a Time column, every parsed line
+    // whose value at the column's key is a parseable ISO-8601 string must
+    // come out of the parser already promoted to TimeStamp. The whole-data
+    // ParseTimestamps pass is thus redundant for these keys, which backs the
+    // truthful LogData::MarkTimestampsParsed() flag set by BeginStreaming.
     using namespace loglib;
 
     InitializeTimezoneData();
@@ -902,7 +902,7 @@ TEST_CASE(
     configuration->columns.push_back(std::move(timestampColumn));
 
     ParserOptions opts;
-    opts.configuration = configuration;
+    opts.timeColumns = TimeColumnsOf(*configuration);
 
     const JsonParser parser;
     const ParseResult result = ParseWithSink(testFile.GetFilePath(), opts);
@@ -967,7 +967,7 @@ TEST_CASE(
     configuration->columns.push_back(std::move(timestampColumn));
 
     ParserOptions opts;
-    opts.configuration = configuration;
+    opts.timeColumns = TimeColumnsOf(*configuration);
 
     const JsonParser parser;
     const ParseResult result = ParseWithSink(testFile.GetFilePath(), opts);

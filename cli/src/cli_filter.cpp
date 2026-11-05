@@ -97,11 +97,11 @@ bool IsPresent(const loglib::LogValue &value) noexcept
     return !std::holds_alternative<std::monostate>(value);
 }
 
-std::optional<Failure> CheckFilterSyntax(const FilterOptions &filter)
+std::optional<Failure> CheckFilterSyntax(const FilterOptions &filter, const loglib::TimeZoneContext &timeZone)
 {
     for (const std::string &query : filter.filters)
     {
-        if (auto parsed = loglib::ParseQuery(query); !parsed)
+        if (auto parsed = loglib::ParseQuery(query, timeZone); !parsed)
         {
             return FilterSyntaxFailure(query, parsed.error());
         }
@@ -118,7 +118,7 @@ std::expected<loglib::FilterExpression, Failure> BuildRowFilter(
 
     for (const std::string &query : filter.filters)
     {
-        auto parsed = loglib::ParseQuery(query);
+        auto parsed = loglib::ParseQuery(query, runtime.timeZone);
         if (!parsed)
         {
             return std::unexpected(FilterSyntaxFailure(query, parsed.error()));

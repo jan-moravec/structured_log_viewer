@@ -84,6 +84,8 @@ void LoadUserTemplates(const GlobalOptions &global, const Console &console);
 /**
  * @brief Parser options shared by every command that parses.
  *
+ * The caller sets timeColumns and defaultSourceTimeZone from its table before it parses.
+ *
  * @param global Global flags that supply `--threads`.
  * @param input Parser flags.
  * @param stop Token the parser polls between batches.

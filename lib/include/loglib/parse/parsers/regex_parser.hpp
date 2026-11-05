@@ -29,10 +29,9 @@ class StreamLineSource;
 /**
  * @brief Parses lines with a PCRE2 pattern that has named groups. The group names become the column keys.
  *
- * The pattern is not read from the file, as a CSV header is. It comes from
- * ParserOptions::configuration->source->regexPattern or from the constructor. An empty pattern is allowed only for
- * detection probes, which go through the registry of templates. Calling ParseStreaming without a pattern reports one
- * parse error.
+ * The pattern is not read from the file, as a CSV header is. It comes from the constructor, together with the way
+ * continuation lines are joined. An empty pattern is allowed only for detection probes, which go through the registry
+ * of templates. Calling ParseStreaming without a pattern reports one parse error.
  *
  * The compiled pattern is shared by all worker threads, and each thread has its own match data. Match and depth limits
  * contain patterns that backtrack too much. A line that goes over a limit becomes a parse error and parsing goes on.
@@ -41,8 +40,8 @@ class StreamLineSource;
  * lnav and logstash-grok unchanged. CONTRIBUTING.md has the evaluation.
  *
  * Limits:
- * - A pattern matches one physical line. A registered template can join more lines according to its continuationMode.
- *   A pattern that is not registered stays line by line.
+ * - A pattern matches one physical line. With a continuation mode other than None, the parser joins more lines into
+ *   one record. The default mode is None, which keeps every line on its own.
  * - The pattern is configuration and not part of the file, so IsValid only detects files that match a template in the
  *   catalog: the built-in templates plus those registered with SetExtraRegexTemplates, as DetectRegexTemplate finds
  *   them. A file that needs a custom pattern that is not registered can be opened as a network stream with a custom
@@ -52,17 +51,18 @@ class RegexParser : public LogParser
 {
 public:
     /**
-     * @brief Creates a parser that takes its pattern from ParserOptions::configuration->source->regexPattern when it
-     * parses.
-     */
-    RegexParser() = default;
-
-    /**
-     * @brief Creates a parser that always uses the given pattern and ignores the one in the configuration.
+     * @brief Creates a parser for a pattern.
      *
-     * ParseFile uses it after detection has chosen a template, and tests use it to run a known pattern.
+     * An empty pattern is accepted, for detection probes, and makes ParseStreaming report one error.
+     *
+     * @param pattern The PCRE2 pattern, with named groups written as (?<Name>...).
+     * @param continuationMode How lines after the first line of a record are recognized.
+     * @param headerAnchor The pattern that recognizes the first line of a record when continuationMode is
+     * UntilNextHeader. If empty, the main pattern is used. It must compile, or ParseStreaming reports one error.
      */
-    explicit RegexParser(std::string pattern);
+    explicit RegexParser(
+        std::string pattern, ContinuationMode continuationMode = ContinuationMode::None, std::string headerAnchor = {}
+    );
 
     /**
      * @brief Says whether the first non-blank lines of the sample match a template with auto-detection turned on.
@@ -75,18 +75,16 @@ public:
      */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
-    /**
-     * @brief Parses a static file. The pattern comes from options.configuration->source->regexPattern, unless the
-     * parser was created with a pattern.
-     */
+    /** @brief Parses a static file with the pattern given to the constructor. */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /** @brief Parses a live stream. The pattern is chosen as for a static file. */
+    /** @brief Parses a live stream with the pattern given to the constructor. */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
 private:
-    /** @brief The pattern given to the constructor. Empty means the pattern is read from the options when parsing. */
-    std::optional<std::string> mExplicitPattern;
+    std::string mPattern;
+    ContinuationMode mContinuationMode;
+    std::string mHeaderAnchor;
 };
 
 /**

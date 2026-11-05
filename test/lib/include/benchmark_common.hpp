@@ -358,6 +358,9 @@ inline StreamingRunResult RunStreamingFlow(
         loglib::LogConfigurationManager configManager;
         configManager.Load(configPath.string());
         loglib::LogTable table(loglib::LogData{}, std::move(configManager));
+        // The benchmarks measure parsing in the machine's zone, as the application does.
+        table.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
+        table.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());
 
         // Mirror `MainWindow::OpenJsonStreaming`: the parser borrows the
         // same `FileLineSource` the table owns, so Stage C's offsets and
@@ -372,7 +375,8 @@ inline StreamingRunResult RunStreamingFlow(
         sink.table = &table;
 
         loglib::ParserOptions opts;
-        opts.configuration = std::move(configuration);
+        opts.timeColumns = loglib::TimeColumnsOf(*configuration);
+        opts.defaultSourceTimeZone = table.DefaultSourceTimeZone();
 
         parserStream(*parseSource, sink, opts);
 

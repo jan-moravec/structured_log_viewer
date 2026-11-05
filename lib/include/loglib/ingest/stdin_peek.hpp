@@ -34,8 +34,8 @@ namespace loglib
  * that they do not wait past the deadline.
  *
  * It is the first step of reading standard input. The bytes go to format detection and are then given back to the
- * parser through ParserOptions::initialCarry, so the stdin producer delivers only what comes after. It runs before the
- * producer's worker thread exists, so it needs no locking.
+ * parser through StreamLineSource::UnreadBytes, so the stdin producer delivers only what comes after. It runs before
+ * the producer's worker thread exists, so it needs no locking.
  */
 [[nodiscard]] std::string StdinPeek(std::size_t budget, std::chrono::milliseconds timeout);
 

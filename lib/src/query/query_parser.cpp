@@ -41,8 +41,8 @@ using namespace internal::query;
 class Parser
 {
 public:
-    explicit Parser(std::string_view input)
-        : mLexer(input), mInput(input)
+    Parser(std::string_view input, const TimeZoneContext &timeZone)
+        : mLexer(input), mInput(input), mTimeZone(timeZone)
     {
     }
 
@@ -77,7 +77,7 @@ public:
     }
 
 private:
-    /// Advance one token; the just-consumed token is returned.
+    /** Advance one token; the just-consumed token is returned. */
     [[nodiscard]] std::expected<Token, QueryParseError> Advance()
     {
         Token consumed = std::move(mLookahead);
@@ -102,13 +102,15 @@ private:
         return consumed;
     }
 
-    /// `or_expr := and_expr ( 'OR' and_expr )*`
-    ///
-    /// The four `ParseOr` / `ParseAnd` / `ParseNot` / `ParseAtom`
-    /// members form a mutually-recursive descent parser; the
-    /// misc-no-recursion suppression is here (and on the three
-    /// members below) rather than at the parser entry point so the
-    /// grammar shape stays obvious.
+    /**
+     * or_expr := and_expr ( 'OR' and_expr )*
+     *
+     * The four ParseOr / ParseAnd / ParseNot / ParseAtom
+     * members form a mutually-recursive descent parser; the
+     * misc-no-recursion suppression is here (and on the three
+     * members below) rather than at the parser entry point so the
+     * grammar shape stays obvious.
+     */
     // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseOr()
     {
@@ -139,8 +141,10 @@ private:
         return MakeOr(std::move(children));
     }
 
-    /// `and_expr := not_expr ( ('AND' | epsilon) not_expr )*`
-    /// Implicit-AND fires when the next token can start a new atom.
+    /**
+     * and_expr := not_expr ( ('AND' | epsilon) not_expr )*
+     * Implicit-AND fires when the next token can start a new atom.
+     */
     // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseAnd()
     {
@@ -196,7 +200,7 @@ private:
         return MakeAnd(std::move(children));
     }
 
-    /// Counts one level of recursion for the lifetime of a parse step.
+    /** Counts one level of recursion for the lifetime of a parse step. */
     class NestingScope
     {
     public:
@@ -226,7 +230,7 @@ private:
         return err;
     }
 
-    /// `not_expr := 'NOT' not_expr | atom`
+    /** not_expr := 'NOT' not_expr | atom */
     // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseNot()
     {
@@ -251,7 +255,7 @@ private:
         return ParseAtom();
     }
 
-    /// `atom := '(' or_expr ')' | leaf`
+    /** atom := '(' or_expr ')' | leaf */
     // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseAtom()
     {
@@ -287,7 +291,7 @@ private:
         return ParseLeaf();
     }
 
-    /// `leaf := column op value | column 'in' value_list`
+    /** leaf := column op value | column 'in' value_list */
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseLeaf()
     {
         // Column: bareword or quoted string.
@@ -526,7 +530,7 @@ private:
             return std::unexpected(err);
         }
 
-        const auto asTimestamp = ParseIsoTimestamp(valueText);
+        const auto asTimestamp = ParseIsoTimestamp(valueText, mTimeZone);
         const auto asNumber = asTimestamp.has_value() ? std::nullopt : ParseDouble(valueText);
         if (!asTimestamp.has_value() && !asNumber.has_value())
         {
@@ -697,7 +701,7 @@ private:
         std::optional<double> numMin;
         std::optional<double> numMax;
         const auto classify = [&](const Token &tok, std::optional<std::int64_t> &ts, std::optional<double> &num) {
-            const auto asTs = ParseIsoTimestamp(tok.text);
+            const auto asTs = ParseIsoTimestamp(tok.text, mTimeZone);
             if (asTs.has_value())
             {
                 ts = asTs;
@@ -829,7 +833,7 @@ private:
             // silently matching zero rows via the enum fallback.
             // ISO timestamps get the same treatment for symmetry.
             const std::string &only = rule.filterValues.front();
-            if (const auto asTs = ParseIsoTimestamp(only); asTs.has_value())
+            if (const auto asTs = ParseIsoTimestamp(only, mTimeZone); asTs.has_value())
             {
                 rule.type = LeafRule::Type::Time;
                 rule.filterBegin = asTs;
@@ -857,15 +861,16 @@ private:
 
     Lexer mLexer;
     std::string_view mInput;
+    TimeZoneContext mTimeZone;
     Token mLookahead;
     std::size_t mNesting = 0;
 };
 
 } // namespace
 
-std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view input)
+std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view input, const TimeZoneContext &timeZone)
 {
-    Parser parser(input);
+    Parser parser(input, timeZone);
     return parser.Parse();
 }
 

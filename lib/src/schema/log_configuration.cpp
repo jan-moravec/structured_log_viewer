@@ -6,6 +6,7 @@
 #include "loglib/core/log_data.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
+#include <fmt/format.h>
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <iterator>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 namespace
 {
@@ -162,11 +164,13 @@ namespace
 // The pinned options are defined in glaze_options.hpp.
 constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
-/// Wire-format shim for `SaveScope::ColumnsOnly`: emits the two
-/// Configuration-scope vectors (`columns` + `highlightRules`) and
-/// skips the session-scope blocks (`expression` / `sort` / `source`
-/// / `anchors`). Files written this way still round-trip through
-/// `glz::read_json<LogConfiguration>` -- missing members default.
+/**
+ * Wire-format shim for SaveScope::ColumnsOnly: emits the two
+ * Configuration-scope vectors (columns + highlightRules) and
+ * skips the session-scope blocks (expression / sort / source
+ * / anchors). Files written this way still round-trip through
+ * glz::read_json<LogConfiguration> -- missing members default.
+ */
 struct ColumnsOnlyDocument
 {
     // References (not pointers) so the glaze accessor can't deref
@@ -228,6 +232,7 @@ void LogConfigurationManager::LoadFromString(std::string_view content)
     }
     mConfiguration = std::move(parsed);
     mCacheStale = true;
+    SanitizePrintFormats();
 }
 
 void LogConfigurationManager::Save(const std::filesystem::path &path) const
@@ -322,6 +327,57 @@ void LogConfigurationManager::SetConfiguration(LogConfiguration configuration)
 {
     mConfiguration = std::move(configuration);
     mCacheStale = true;
+    SanitizePrintFormats();
+}
+
+std::vector<std::string> LogConfigurationManager::TakeWarnings()
+{
+    return std::exchange(mWarnings, {});
+}
+
+namespace
+{
+
+/**
+ * @brief True if fmt accepts the format for at least one of the value types a cell can hold. A format such as {:d} is
+ * fine for integers and not for doubles, so only a format that fails for every type counts as invalid.
+ */
+bool PrintFormatIsUsable(const std::string &format)
+{
+    const auto accepts = [&format](const auto &sample) {
+        try
+        {
+            static_cast<void>(fmt::vformat(format, fmt::make_format_args(sample)));
+            return true;
+        }
+        catch (const fmt::format_error &)
+        {
+            return false;
+        }
+    };
+    return accepts(std::int64_t{1}) || accepts(std::uint64_t{1}) || accepts(1.5) || accepts(true);
+}
+
+} // namespace
+
+void LogConfigurationManager::SanitizePrintFormats()
+{
+    for (Column &column : mConfiguration.columns)
+    {
+        // A Time column holds a time format, not an fmt format.
+        if (column.type == ColumnType::Time || PrintFormatIsUsable(column.printFormat))
+        {
+            continue;
+        }
+        mWarnings.push_back(
+            fmt::format(
+                "Column '{}': the print format '{}' is not valid and was replaced by {{}}.",
+                column.header,
+                column.printFormat
+            )
+        );
+        column.printFormat = "{}";
+    }
 }
 
 void LogConfigurationManager::Update(std::span<const std::string> sortedKeys)
@@ -543,6 +599,7 @@ void LogConfigurationManager::SetColumnPrintFormat(size_t columnIndex, std::stri
         return;
     }
     mConfiguration.columns[columnIndex].printFormat = std::move(printFormat);
+    SanitizePrintFormats();
 }
 
 void LogConfigurationManager::SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats)
@@ -631,6 +688,19 @@ bool LogConfigurationManager::IsKeyInAnyColumnCached(const std::string &key) con
 {
     EnsureKeyCacheBuilt();
     return mKeysInColumns.contains(key);
+}
+
+std::vector<Column> TimeColumnsOf(const LogConfiguration &configuration)
+{
+    std::vector<Column> result;
+    for (const Column &column : configuration.columns)
+    {
+        if (column.type == ColumnType::Time)
+        {
+            result.push_back(column);
+        }
+    }
+    return result;
 }
 
 } // namespace loglib

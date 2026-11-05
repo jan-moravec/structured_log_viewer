@@ -28,16 +28,21 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
     {
         if (MakeParserForFormat(format)->IsValidBytes(sniffBuffer))
         {
-            return DetectedFormat{.format = format, .regexPattern = {}};
+            return DetectedFormat{.format = format};
         }
     }
     if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
     {
-        return DetectedFormat{.format = Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
+        return DetectedFormat{
+            .format = Source::Format::Regex,
+            .regexPattern = std::move(tmpl->pattern),
+            .regexContinuationMode = tmpl->continuationMode,
+            .regexHeaderAnchor = std::move(tmpl->headerAnchor),
+        };
     }
     if (MakeParserForFormat(Source::Format::Csv)->IsValidBytes(sniffBuffer))
     {
-        return DetectedFormat{.format = Source::Format::Csv, .regexPattern = {}};
+        return DetectedFormat{.format = Source::Format::Csv};
     }
     return std::nullopt;
 }
@@ -57,20 +62,18 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
     return DetectFormatFromBytes(head);
 }
 
-std::unique_ptr<LogParser> MakeParserForFormat(Source::Format format, std::string_view regexPattern)
+std::unique_ptr<LogParser> MakeParserForFormat(Source::Format format, const FormatOptions &options)
 {
     switch (format)
     {
     case Source::Format::Logfmt:
-        return std::make_unique<LogfmtParser>();
+        return std::make_unique<LogfmtParser>(options.multilineLogfmt);
     case Source::Format::Csv:
         return std::make_unique<CsvParser>();
     case Source::Format::Regex:
-        // Pin the pattern on the parser instance directly rather
-        // than relying on `ParserOptions::configuration->source->
-        // regexPattern`: some callers pass an unrelated snapshot,
-        // and the explicit-pattern ctor short-circuits the lookup.
-        return std::make_unique<RegexParser>(std::string(regexPattern));
+        return std::make_unique<RegexParser>(
+            options.regexPattern, options.regexContinuationMode, options.regexHeaderAnchor
+        );
     case Source::Format::Json:
         return std::make_unique<JsonParser>();
     }

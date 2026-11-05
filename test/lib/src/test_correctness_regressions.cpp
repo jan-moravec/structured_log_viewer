@@ -387,16 +387,16 @@ TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
 TEST_CASE("ParseQuery rejects excessive nesting instead of overflowing the stack", "[query_parser][nesting]")
 {
     const auto nested = [](std::size_t depth) { return std::string(depth, '(') + "n>1" + std::string(depth, ')'); };
-    CHECK(ParseQuery(nested(MAX_QUERY_NESTING)).has_value());
-    CHECK_FALSE(ParseQuery(nested(MAX_QUERY_NESTING + 1)).has_value());
-    CHECK_FALSE(ParseQuery(nested(200000)).has_value());
+    CHECK(ParseQuery(nested(MAX_QUERY_NESTING), TimeZoneContext{}).has_value());
+    CHECK_FALSE(ParseQuery(nested(MAX_QUERY_NESTING + 1), TimeZoneContext{}).has_value());
+    CHECK_FALSE(ParseQuery(nested(200000), TimeZoneContext{}).has_value());
 
     std::string notChain;
     for (int i = 0; i < 200000; ++i)
     {
         notChain += "NOT ";
     }
-    CHECK_FALSE(ParseQuery(notChain + "n>1").has_value());
+    CHECK_FALSE(ParseQuery(notChain + "n>1", TimeZoneContext{}).has_value());
 }
 
 TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule_compile][level]")
@@ -409,7 +409,7 @@ TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule
     REQUIRE(columns.at(0).type == ColumnType::Level);
 
     const auto rowsFor = [&](const char *query) {
-        const auto expression = ParseQuery(query);
+        const auto expression = ParseQuery(query, TimeZoneContext{});
         REQUIRE(expression.has_value());
         return FilterAcceptedRows(table, CompileExpression(*expression, columns, &table)).size();
     };
@@ -422,7 +422,7 @@ TEST_CASE("FindFilterProblems reports unknown columns and invalid patterns", "[l
 {
     const std::vector<Column> columns = {Column{.header = "msg", .keys = {"msg"}}};
     const auto problemsFor = [&](const char *query) {
-        const auto expression = ParseQuery(query);
+        const auto expression = ParseQuery(query, TimeZoneContext{});
         REQUIRE(expression.has_value());
         return FindFilterProblems(*expression, columns);
     };

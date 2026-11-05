@@ -12,11 +12,12 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/transparent_string_hash.hpp"
-#include "loglib/schema/log_configuration.hpp"
+#include "loglib/schema/column_schema.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <tsl/robin_map.h>
 
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -28,9 +29,15 @@ namespace loglib::internal
 {
 
 /**
- * @brief Builds a TimeColumnSpec for each Time column of the configuration. A null configuration gives an empty list.
+ * @brief Builds a TimeColumnSpec for each column of type Time, in order. Columns of another type are skipped. Every
+ * spec reads naive timestamps in timeZone and uses referenceTime for formats without a year.
  */
-std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
+std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
+    KeyIndex &keys,
+    std::span<const Column> columns,
+    const TimeZoneContext &timeZone,
+    std::chrono::system_clock::time_point referenceTime
+);
 
 /**
  * @brief Each worker's own map from key text to key id. A hit needs no allocation, and a miss asks the shared index

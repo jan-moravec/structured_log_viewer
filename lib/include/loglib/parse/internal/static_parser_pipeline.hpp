@@ -264,14 +264,6 @@ void RunStaticParserPipeline(
     std::optional<size_t> newKeyBaseline = std::nullopt
 )
 {
-    // ParserOptions::initialCarry is a streaming-only mechanism
-    // (see parser_options.hpp); the static file pipeline reads
-    // from the mmap directly and has nowhere to splice the carry
-    // in. A non-empty carry here means a caller wired an
-    // AutoDetectParser-style handoff onto a FileLineSource,
-    // which would silently drop bytes.
-    assert(options.initialCarry.empty() && "initialCarry is streaming-only; static file parses must not set it");
-
     LogFile &file = source.File();
 
     sink.OnStarted();
@@ -296,7 +288,12 @@ void RunStaticParserPipeline(
     const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
     file.ReserveLineOffsets(file.Size() / 100);
 
-    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(keys, options.configuration.get());
+    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
+        keys,
+        options.timeColumns,
+        options.defaultSourceTimeZone,
+        options.referenceTime.value_or(std::chrono::system_clock::now())
+    );
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 

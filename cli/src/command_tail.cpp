@@ -807,7 +807,7 @@ ExitCode RunTail(
     const SourceSpec &spec = options.input.sources.front();
 
     // Reject malformed flags before any socket is bound or file is opened.
-    if (auto failure = CheckFilterSyntax(options.filter))
+    if (auto failure = CheckFilterSyntax(options.filter, runtime.timeZone))
     {
         return console.Report(*failure);
     }
@@ -862,6 +862,8 @@ ExitCode RunTail(
     loglib::BytesProducer *producer = live->producer.get();
     auto source = std::make_unique<loglib::StreamLineSource>(live->displayName, std::move(live->producer));
     loglib::StreamLineSource *rawSource = source.get();
+    table.SetDisplayTimeZone(runtime.timeZone);
+    table.SetDefaultSourceTimeZone(runtime.timeZone);
     table.BeginStreaming(std::move(source));
 
     std::size_t retentionCap = loglib::DEFAULT_RETENTION_LINES;
@@ -874,7 +876,10 @@ ExitCode RunTail(
     StopWatcher watcher(runtime.stop, stop, options.duration);
     watcher.Attach(producer);
 
-    parser.value()->ParseStreaming(*rawSource, sink, MakeParserOptions(global, options.input, stop.GetToken()));
+    loglib::ParserOptions parserOptions = MakeParserOptions(global, options.input, stop.GetToken());
+    parserOptions.timeColumns = loglib::TimeColumnsOf(table.Configuration().Configuration());
+    parserOptions.defaultSourceTimeZone = table.DefaultSourceTimeZone();
+    parser.value()->ParseStreaming(*rawSource, sink, std::move(parserOptions));
     sink.Finish();
 
     if (sink.Failed())

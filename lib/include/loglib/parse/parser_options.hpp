@@ -1,9 +1,9 @@
 /**
  * @brief Options that control a parse.
  *
- * ParserOptions carries the stop token, the optional configuration, and the knobs for the parallel file pipeline:
- * thread count and batch size. It also holds the logfmt continuation switch, the longest line a live stream buffers,
- * and bytes already consumed that the parser must process first.
+ * ParserOptions carries the stop token, the time columns to convert while parsing, the time zone and reference time
+ * they are read with, and the knobs for the parallel file pipeline: thread count and batch size. It also holds the
+ * longest line a live stream buffers. It holds plain values only, so a parse never reads a process-wide setting.
  *
  * This is part of the parse module.
  */
@@ -11,15 +11,16 @@
 
 #include "loglib/core/bytes_producer.hpp"
 #include "loglib/core/stop_token.hpp"
+#include "loglib/schema/column_schema.hpp"
+#include "loglib/time/time_zone_context.hpp"
 
+#include <chrono>
 #include <cstddef>
-#include <memory>
-#include <string>
+#include <optional>
+#include <vector>
 
 namespace loglib
 {
-
-struct LogConfiguration;
 
 /** @brief Thread cap used when ParserOptions::threads is 0, applied on top of the hardware concurrency. */
 inline constexpr unsigned int DEFAULT_MAX_PARSE_THREADS = 8;
@@ -30,31 +31,24 @@ inline constexpr std::size_t DEFAULT_PARSE_BATCH_BYTES = std::size_t{1024} * 102
 /**
  * @brief Options for LogParser::ParseStreaming.
  *
- * threads and batchSizeBytes tune the parallel static-file pipeline, and zero for either selects the default. The
- * configuration is only declared here, so including this header does not pull in the whole configuration.
+ * threads and batchSizeBytes tune the parallel static-file pipeline, and zero for either selects the default.
  */
 struct ParserOptions
 {
     /** @brief Cancels the parse when its source requests a stop. */
     StopToken stopToken;
 
-    /** @brief The configuration to parse with. May be null. */
-    std::shared_ptr<const LogConfiguration> configuration;
+    /** @brief Time columns to convert while parsing. Values in other columns are left as text. */
+    std::vector<Column> timeColumns;
+
+    /** @brief The zone in which timestamps that carry no offset were written. UTC unless set. */
+    TimeZoneContext defaultSourceTimeZone;
 
     /**
-     * @brief Whether the logfmt parser treats lines that start with a space or tab as the continuation of the previous
-     * record's last field. Other parsers ignore it.
+     * @brief The "now" for timestamp formats without a year, such as the RFC 3164 syslog header. If unset, the parse
+     * reads the clock once when it starts, so every line of one parse gets the same year.
      */
-    bool multilineLogfmt = true;
-
-    /**
-     * @brief Bytes that were already read from the stream and must be parsed first.
-     *
-     * AutoDetectParser and the standard input path use it to give the bytes they read for format detection to the
-     * chosen parser, without changing the producer. Only a live stream may set it; a static-file parse asserts that it
-     * is empty.
-     */
-    std::string initialCarry;
+    std::optional<std::chrono::system_clock::time_point> referenceTime;
 
     /**
      * @brief The most worker threads the static-file pipeline uses. Zero means the smaller of the hardware thread

@@ -7972,7 +7972,7 @@ private slots:
         // the wire the editor uses internally). `LoadFromExpression`
         // must render it back to a form the parser accepts as
         // equivalent.
-        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info");
+        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info", loglib::ProcessDefaultTimeZone());
         QVERIFY2(seeded.has_value(), "seed query must parse");
         editor.LoadFromExpression(*seeded);
         QCoreApplication::processEvents();
@@ -12329,7 +12329,7 @@ private slots:
 
         // Parse `svc:auth` -- ParseQuery emits a single-key
         // binding matching the identifier the user typed.
-        auto parsed = loglib::ParseQuery("svc:auth");
+        auto parsed = loglib::ParseQuery("svc:auth", loglib::ProcessDefaultTimeZone());
         QVERIFY2(parsed.has_value(), "ParseQuery must accept a well-formed simple leaf");
         const auto *parsedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&parsed->node);
         QVERIFY2(parsedLeaf != nullptr, "parsed root must be a Leaf");

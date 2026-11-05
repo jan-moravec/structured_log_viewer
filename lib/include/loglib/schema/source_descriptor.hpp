@@ -10,6 +10,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -17,6 +18,23 @@
 
 namespace loglib
 {
+
+/**
+ * @brief How a regex template recognizes continuation lines.
+ *
+ * - None: every line is parsed on its own.
+ * - Indented: lines that start with a space or tab continue the previous record.
+ * - UntilNextHeader: lines that do not match the header pattern continue the previous record.
+ *
+ * With any mode but None, the continuation text is appended to the last named capture of the pattern, which must be a
+ * string.
+ */
+enum class ContinuationMode : uint8_t
+{
+    None = 0,
+    Indented,
+    UntilNextHeader,
+};
 
 /**
  * @brief One saved source path, with the form to show and a normalized form to compare.
@@ -98,6 +116,18 @@ struct Source
      * there is one, is looked up for display with FindTemplateByPattern.
      */
     std::string regexPattern;
+
+    /**
+     * @brief How the regex parser joins continuation lines to the record before them. It is saved with the pattern, so
+     * a restored session parses multi-line records as it did, whether or not a template for the pattern still exists.
+     */
+    ContinuationMode regexContinuationMode = ContinuationMode::None;
+
+    /**
+     * @brief The pattern that recognizes the first line of a record when regexContinuationMode is UntilNextHeader. If
+     * empty, the main pattern is used.
+     */
+    std::string regexHeaderAnchor;
 
     /**
      * @brief Whether files added later also bring in their rotated companions. A restore opens the saved locators as

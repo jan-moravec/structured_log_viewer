@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -153,7 +154,9 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
     REQUIRE(parsed.errors.empty());
     loglib::LogConfigurationManager manager;
     manager.Update(parsed.data.SortedKeys());
-    loglib::ParseTimestamps(parsed.data, manager.Configuration());
+    loglib::ParseTimestamps(
+        parsed.data, manager.Configuration(), loglib::TimeZoneContext{}, std::chrono::system_clock::now()
+    );
     return {std::move(parsed.data), std::move(manager)};
 }
 

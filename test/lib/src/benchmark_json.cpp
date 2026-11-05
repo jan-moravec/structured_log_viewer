@@ -363,6 +363,8 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     LogConfigurationManager configManager;
     configManager.Load(cfgFile.GetFilePath());
     LogTable table(LogData{}, std::move(configManager));
+    table.SetDisplayTimeZone(ProcessDefaultTimeZone());
+    table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
 
     auto sourceForTable = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *parseSource = sourceForTable.get();
@@ -372,7 +374,8 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     sink.table = &table;
 
     ParserOptions opts;
-    opts.configuration = std::move(configuration);
+    opts.timeColumns = TimeColumnsOf(*configuration);
+    opts.defaultSourceTimeZone = table.DefaultSourceTimeZone();
 
     JsonParser{}.ParseStreaming(*parseSource, sink, opts);
 

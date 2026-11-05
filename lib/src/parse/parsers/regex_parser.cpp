@@ -50,9 +50,11 @@ using internal::UTF8_BOM;
 // Schema interning: named groups -> KeyIds, in pcre2 name-table order.
 // ---------------------------------------------------------------------
 
-/// Pre-intern every named group as a `KeyId` so Stage B does not
-/// touch the global `KeyIndex` per cell. Mirrors CSV's eager header
-/// intern step.
+/**
+ * Pre-intern every named group as a KeyId so Stage B does not
+ * touch the global KeyIndex per cell. Mirrors CSV's eager header
+ * intern step.
+ */
 std::vector<KeyId> InternSchemaKeys(const PatternSchema &schema, KeyIndex &keys)
 {
     std::vector<KeyId> ids;
@@ -68,19 +70,21 @@ std::vector<KeyId> InternSchemaKeys(const PatternSchema &schema, KeyIndex &keys)
 // Match-and-emit: shared between the static and streaming pipelines.
 // ---------------------------------------------------------------------
 
-/// Run one `pcre2_match` against @p line and emit the captured
-/// named groups as compact values. `out` is appended in source
-/// order (caller sorts before constructing the `LogLine`). The
-/// decoder reuses `ClassifyBareScalar` so numeric captures get
-/// typed (status codes, byte counts, ...), matching CSV's
-/// bare-cell typing.
-///
-/// `fileBegin`/`fileSize` enable the zero-copy `MmapSlice` fast
-/// path for static parsing; streaming callers pass `nullptr`/0.
-/// `errorOut` is populated on no-match / match-limit / other
-/// errors and the function returns false; the caller decides
-/// whether to surface it as a `ParsedLineError` or a
-/// `LineDecodeResult::Error`.
+/**
+ * Run one pcre2_match against @p line and emit the captured
+ * named groups as compact values. out is appended in source
+ * order (caller sorts before constructing the LogLine). The
+ * decoder reuses ClassifyBareScalar so numeric captures get
+ * typed (status codes, byte counts, ...), matching CSV's
+ * bare-cell typing.
+ *
+ * fileBegin/fileSize enable the zero-copy MmapSlice fast
+ * path for static parsing; streaming callers pass nullptr/0.
+ * errorOut is populated on no-match / match-limit / other
+ * errors and the function returns false; the caller decides
+ * whether to surface it as a ParsedLineError or a
+ * LineDecodeResult::Error.
+ */
 bool MatchLineAndEmit(
     const CompiledPattern &compiled,
     pcre2_match_data *matchData,
@@ -170,13 +174,15 @@ struct RegexWorkerState
     Pcre2MatchDataPtr matchData;
 };
 
-/// Lazily attach @p worker to @p compiled on first use.
-/// `enumerable_thread_specific` default-constructs `RegexWorkerState`,
-/// so we can't allocate at construction: the worker doesn't yet
-/// know which compiled pattern to size against. Kept as a free
-/// function so `RegexWorkerState` stays a pure scratch struct
-/// (no member functions alongside public data — placates
-/// `misc-non-private-member-variables-in-classes`).
+/**
+ * Lazily attach @p worker to @p compiled on first use.
+ * enumerable_thread_specific default-constructs RegexWorkerState,
+ * so we can't allocate at construction: the worker doesn't yet
+ * know which compiled pattern to size against. Kept as a free
+ * function so RegexWorkerState stays a pure scratch struct
+ * (no member functions alongside public data — placates
+ * misc-non-private-member-variables-in-classes).
+ */
 void EnsureWorkerMatchData(RegexWorkerState &worker, const CompiledPattern &compiled)
 {
     if (!worker.matchData)
@@ -196,8 +202,10 @@ std::string_view StripCr(std::string_view s) noexcept
     return s;
 }
 
-/// Strip a leading UTF-8 BOM from @p sv if present. Mirrors CSV's
-/// helper; only valid on the very first line of a file.
+/**
+ * Strip a leading UTF-8 BOM from @p sv if present. Mirrors CSV's
+ * helper; only valid on the very first line of a file.
+ */
 std::string_view StripBom(std::string_view sv) noexcept
 {
     if (sv.starts_with(UTF8_BOM))
@@ -417,9 +425,11 @@ void DecodeRegexBatch(
 // Streaming-loop glue.
 // ---------------------------------------------------------------------
 
-/// Test @p line with an anchored, partial-hard header probe. A partial
-/// prefix counts as a header so an incomplete live-tail line is not
-/// folded into the preceding record.
+/**
+ * Test @p line with an anchored, partial-hard header probe. A partial
+ * prefix counts as a header so an incomplete live-tail line is not
+ * folded into the preceding record.
+ */
 bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line)
 {
     if (line.empty() || compiled.Code() == nullptr)
@@ -438,9 +448,11 @@ bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *mat
     return rc >= 0 || rc == PCRE2_ERROR_PARTIAL;
 }
 
-/// Live-tail decoder that classifies continuations according to
-/// @p mode. `UntilNextHeader` uses @p headerAnchor when supplied,
-/// otherwise it probes the main compiled pattern.
+/**
+ * Live-tail decoder that classifies continuations according to
+ * @p mode. UntilNextHeader uses @p headerAnchor when supplied,
+ * otherwise it probes the main compiled pattern.
+ */
 class RegexLineDecoder
 {
 public:
@@ -525,7 +537,7 @@ public:
         return internal::LineDecodeResult::Emit;
     }
 
-    /// KeyId of the pattern's final source-order named group.
+    /** KeyId of the pattern's final source-order named group. */
     [[nodiscard]] KeyId LastContinuationTarget() const noexcept
     {
         return mLastContinuationTarget;
@@ -536,11 +548,13 @@ private:
     const std::vector<KeyId> *mColumnKeys;
     ContinuationMode mMode;
     KeyId mLastContinuationTarget;
-    /// Non-owning header probe; null outside `UntilNextHeader` mode.
+    /** Non-owning header probe; null outside UntilNextHeader mode. */
     const CompiledPattern *mHeaderProbe = nullptr;
     Pcre2MatchDataPtr mMatchData;
-    /// Match data is tied to `mHeaderProbe` and cannot be shared with
-    /// the main pattern's match state.
+    /**
+     * Match data is tied to mHeaderProbe and cannot be shared with
+     * the main pattern's match state.
+     */
     Pcre2MatchDataPtr mHeaderMatchData;
     bool mSawFirstLine = false;
 };
@@ -549,32 +563,14 @@ static_assert(
     internal::CompactLineDecoder<RegexLineDecoder>, "RegexLineDecoder must satisfy the CompactLineDecoder concept"
 );
 
-// ---------------------------------------------------------------------
-// Helpers to extract the active pattern.
-// ---------------------------------------------------------------------
-
-/// Resolve the pattern for this parse. `explicitPattern` (from
-/// the pinned-pattern ctor) wins; otherwise
-/// fall back to the configuration snapshot's `Source::regexPattern`.
-std::string ResolvePattern(const std::optional<std::string> &explicitPattern, const ParserOptions &options)
-{
-    if (explicitPattern.has_value())
-    {
-        return *explicitPattern;
-    }
-    if (options.configuration && options.configuration->source)
-    {
-        return options.configuration->source->regexPattern;
-    }
-    return {};
-}
-
-/// Single-error terminal pass: honour the sink contract (one
-/// `OnBatch` before `OnFinished`) when we can't start a pipeline
-/// at all — empty pattern, bad pattern, missing named groups.
-/// @p streaming picks flush thresholds that match the surrounding
-/// pipeline. Both presets behave identically for a single-batch
-/// error pass, but the symmetry keeps call sites consistent.
+/**
+ * Single-error terminal pass: honour the sink contract (one
+ * OnBatch before OnFinished) when we can't start a pipeline
+ * at all — empty pattern, bad pattern, missing named groups.
+ * @p streaming picks flush thresholds that match the surrounding
+ * pipeline. Both presets behave identically for a single-batch
+ * error pass, but the symmetry keeps call sites consistent.
+ */
 void EmitErrorAndFinish(
     LogParseSink &sink, std::string_view message, std::optional<size_t> newKeyBaseline, bool streaming = false
 )
@@ -595,8 +591,8 @@ void EmitErrorAndFinish(
 // RegexParser public surface.
 // ---------------------------------------------------------------------
 
-RegexParser::RegexParser(std::string pattern)
-    : mExplicitPattern(std::move(pattern))
+RegexParser::RegexParser(std::string pattern, ContinuationMode continuationMode, std::string headerAnchor)
+    : mPattern(std::move(pattern)), mContinuationMode(continuationMode), mHeaderAnchor(std::move(headerAnchor))
 {
 }
 
@@ -614,7 +610,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
     // with no visible columns.
     const size_t newKeyBaseline = sink.Keys().Size();
 
-    const std::string pattern = ResolvePattern(mExplicitPattern, options);
+    const std::string &pattern = mPattern;
     if (pattern.empty())
     {
         EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.", newKeyBaseline, /*streaming=*/true);
@@ -641,14 +637,8 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
-    // Unregistered patterns remain line-oriented.
-    ContinuationMode mode = ContinuationMode::None;
-    std::string headerAnchorSource;
-    if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
-    {
-        mode = tmpl->continuationMode;
-        headerAnchorSource = tmpl->headerAnchor;
-    }
+    const ContinuationMode mode = mContinuationMode;
+    const std::string &headerAnchorSource = mHeaderAnchor;
 
     // A configured anchor must compile; null means reuse the main pattern.
     CompiledPattern headerAnchor;
@@ -670,10 +660,8 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
 void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // A parser built with an explicit pattern, even an empty one, ignores the configuration's regexPattern. An empty
-    // pattern then fails with the same error as the streaming overload.
-    const std::string pattern =
-        mExplicitPattern.has_value() ? *mExplicitPattern : ResolvePattern(/*explicitPattern=*/std::nullopt, options);
+    // An empty pattern fails with the same error as the streaming overload.
+    const std::string &pattern = mPattern;
 
     const LogFile &file = source.File();
     const char *fileBegin = file.Data();
@@ -713,14 +701,8 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
-    // Unregistered patterns remain line-oriented.
-    ContinuationMode staticContinuationMode = ContinuationMode::None;
-    std::string headerAnchorSource;
-    if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
-    {
-        staticContinuationMode = tmpl->continuationMode;
-        headerAnchorSource = tmpl->headerAnchor;
-    }
+    const ContinuationMode staticContinuationMode = mContinuationMode;
+    const std::string &headerAnchorSource = mHeaderAnchor;
 
     // The synchronous pipeline guarantees this stack-owned pattern
     // outlives every Stage B worker.

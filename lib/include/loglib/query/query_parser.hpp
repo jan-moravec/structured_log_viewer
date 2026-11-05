@@ -9,6 +9,7 @@
 #pragma once
 
 #include "loglib/schema/filter_expression.hpp"
+#include "loglib/time/time_zone_context.hpp"
 
 #include <cstddef>
 #include <expected>
@@ -67,13 +68,15 @@ struct QueryParseError
  *                   parse as ISO timestamps, else Numeric;
  *                   either bound may be empty)
  *
- * An ISO timestamp without Z or an offset is read in ProcessDefaultTimeZone().
+ * An ISO timestamp without Z or an offset is read in timeZone.
  *
  * AND, OR, NOT and IN can be written in any case, and FormatExpression writes them in upper case. The column name is
  * stored as written, as the only element of LeafRule::columnKeys. Empty text, or text with only whitespace, gives a
  * match-all expression.
  */
-[[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view input);
+[[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseQuery(
+    std::string_view input, const TimeZoneContext &timeZone
+);
 
 /**
  * @brief Writes an expression as query text. ParseQuery reads back the same expression, for every tree it can produce.

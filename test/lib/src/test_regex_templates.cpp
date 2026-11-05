@@ -621,7 +621,7 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
     const TestLogFile file{"regex_templates_multiline_" + SlugifyName(tc.templateName) + ".log"};
     file.Write(content);
 
-    const RegexParser parser{t.pattern};
+    const RegexParser parser{t.pattern, t.continuationMode, t.headerAnchor};
     const ParseResult result = ParseFile(parser, file.GetFilePath());
 
     for (const auto &e : result.errors)

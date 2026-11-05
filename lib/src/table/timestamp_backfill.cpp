@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -26,6 +27,8 @@ namespace
 bool MakeBackfillState(
     const Column &column,
     std::span<LogLine> lines,
+    const TimeZoneContext &timeZone,
+    std::chrono::system_clock::time_point referenceTime,
     std::array<internal::TimeColumnSpec, 1> &specsOut,
     std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
     std::vector<internal::LastTimestampBytesHit> &bytesHitsOut
@@ -49,7 +52,8 @@ bool MakeBackfillState(
     {
         spec.formatKinds.push_back(ClassifyTimestampFormat(format));
     }
-    spec.timeZone = ProcessDefaultTimeZone();
+    spec.timeZone = timeZone;
+    spec.referenceTime = referenceTime;
     specsOut[0] = std::move(spec);
     lastValidOut.assign(1, std::nullopt);
     bytesHitsOut.assign(1, internal::LastTimestampBytesHit{});
@@ -62,12 +66,18 @@ bool MakeBackfillState(
  * The lines are already resolved through their own source, so the owned-bytes view passed to PromoteLineTimestamps is
  * empty.
  */
-void BackfillColumnLoop(const Column &column, std::span<LogLine> lines, std::vector<std::string> *errors)
+void BackfillColumnLoop(
+    const Column &column,
+    std::span<LogLine> lines,
+    const TimeZoneContext &timeZone,
+    std::chrono::system_clock::time_point referenceTime,
+    std::vector<std::string> *errors
+)
 {
     std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
     std::vector<internal::LastTimestampBytesHit> bytesHits;
-    if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
+    if (!MakeBackfillState(column, lines, timeZone, referenceTime, specs, lastValid, bytesHits))
     {
         return;
     }
@@ -89,20 +99,36 @@ void BackfillColumnLoop(const Column &column, std::span<LogLine> lines, std::vec
 
 } // namespace
 
-std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines)
+std::vector<std::string> BackfillTimestampColumn(
+    const Column &column,
+    std::span<LogLine> lines,
+    const TimeZoneContext &timeZone,
+    std::chrono::system_clock::time_point referenceTime
+)
 {
     std::vector<std::string> errors;
-    BackfillColumnLoop(column, lines, &errors);
+    BackfillColumnLoop(column, lines, timeZone, referenceTime, &errors);
     return errors;
 }
 
-void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors)
+void BackfillTimestampColumn(
+    const Column &column,
+    std::span<LogLine> lines,
+    const TimeZoneContext &timeZone,
+    std::chrono::system_clock::time_point referenceTime,
+    BackfillErrors discardErrors
+)
 {
     static_cast<void>(discardErrors);
-    BackfillColumnLoop(column, lines, nullptr);
+    BackfillColumnLoop(column, lines, timeZone, referenceTime, nullptr);
 }
 
-std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
+std::vector<std::string> ParseTimestamps(
+    LogData &logData,
+    const LogConfiguration &configuration,
+    const TimeZoneContext &timeZone,
+    std::chrono::system_clock::time_point referenceTime
+)
 {
     std::vector<std::string> errors;
 
@@ -110,7 +136,7 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
     {
         if (column.type == ColumnType::Time)
         {
-            auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
+            auto columnErrors = BackfillTimestampColumn(column, logData.Lines(), timeZone, referenceTime);
             if (!columnErrors.empty())
             {
                 errors.reserve(errors.size() + columnErrors.size());

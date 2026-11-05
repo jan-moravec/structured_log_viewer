@@ -90,6 +90,12 @@ struct LogConfiguration
 [[nodiscard]] int FirstTimeColumnIndex(const LogConfiguration &configuration);
 
 /**
+ * @brief The columns of type Time, in column order. A parser gets these as ParserOptions::timeColumns, so it converts
+ * the same columns that the table treats as time.
+ */
+[[nodiscard]] std::vector<Column> TimeColumnsOf(const LogConfiguration &configuration);
+
+/**
  * @brief Chooses what Save writes. Both use one file format, and a ColumnsOnly file is a Full file with the session
  * members left at their defaults.
  */
@@ -139,8 +145,16 @@ public:
     /** @brief Resets to an empty configuration, as for a new session. */
     void Reset();
 
-    /** @brief Replaces the whole configuration with an already parsed one, in one step and without reading a file. */
+    /**
+     * @brief Replaces the whole configuration with an already parsed one, in one step and without reading a file.
+     *
+     * Like loading and SetColumnPrintFormat, it checks the print formats of the columns that are not Time columns. A
+     * format that no value type accepts, such as {:q}, is replaced by {} and reported once through TakeWarnings.
+     */
     void SetConfiguration(LogConfiguration configuration);
+
+    /** @brief Returns the messages about print formats replaced since the last call, and clears them. */
+    [[nodiscard]] std::vector<std::string> TakeWarnings();
 
     /**
      * @brief Adds columns for keys that no column uses yet, and makes keys that look like timestamps Time columns.
@@ -220,10 +234,16 @@ public:
     const LogConfiguration &Configuration() const;
 
 private:
+    /** @brief Replaces print formats that no value type accepts with {} and records a warning for each. */
+    void SanitizePrintFormats();
+
     void EnsureKeyCacheBuilt() const;
     bool IsKeyInAnyColumnCached(const std::string &key) const;
 
     LogConfiguration mConfiguration;
+
+    /** @brief Messages about print formats that were replaced. TakeWarnings hands them out once. */
+    std::vector<std::string> mWarnings;
 
     /** @brief Every key that any column uses. It is rebuilt when mCacheStale is set, which the setters do. */
     mutable std::unordered_set<std::string> mKeysInColumns;

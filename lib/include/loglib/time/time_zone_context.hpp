@@ -3,7 +3,9 @@
  *
  * A TimeZoneContext loads a zone from the tzdata files and converts timestamps both ways, including the ambiguous and
  * missing hours around daylight saving changes. Callers pass a context explicitly. A process-wide default exists for
- * formatting helpers that have no context at hand. The header also holds the small conversion helpers built on it.
+ * applications that want one display zone, but the library never reads it: only the helpers without a context
+ * argument use it, and no other library code calls them. The header also holds the small conversion helpers built on
+ * it.
  *
  * This is part of the time module.
  */

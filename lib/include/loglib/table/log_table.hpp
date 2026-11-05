@@ -20,7 +20,9 @@
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/column_type_health.hpp"
 #include "loglib/table/enum_inference.hpp"
+#include "loglib/time/time_zone_context.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -39,6 +41,10 @@ namespace loglib
  * A LogTable owns the LogData and the column configuration, and turns a row and column number into a value. It also
  * splices streamed batches in and evicts the oldest rows. Type inference, enumeration dictionaries and the level rank
  * cache live in EnumInference, which the table owns and drives. Column health is computed by ComputeColumnTypeHealth.
+ *
+ * Two time zones belong to the table, and both are UTC until set. The display zone formats timestamp cells. The default
+ * source zone is how the table reads text that carries no offset when it converts a column itself. The table never
+ * reads the process-wide default zone, so two tables in one process can use different zones. Moves and Reset keep both.
  *
  * The table does not notify anyone of changes. A view over it must announce column moves, row removals and similar
  * changes before calling the mutating member.
@@ -331,13 +337,41 @@ public:
     /** @brief Checks whether the data of a column fits its configured type. See ComputeColumnTypeHealth. */
     [[nodiscard]] ColumnTypeHealth ComputeColumnTypeHealth(size_t columnIndex) const;
 
+    /** @brief Sets the zone in which timestamp cells are formatted. UTC by default. */
+    void SetDisplayTimeZone(TimeZoneContext timeZone);
+
+    /** @brief The zone in which timestamp cells are formatted. */
+    [[nodiscard]] const TimeZoneContext &DisplayTimeZone() const noexcept;
+
+    /**
+     * @brief Sets the zone in which the table reads timestamp text that carries no offset, when it converts a column
+     * after the rows exist. UTC by default. Pass the same zone to ParserOptions::defaultSourceTimeZone, so both agree.
+     */
+    void SetDefaultSourceTimeZone(TimeZoneContext timeZone);
+
+    /** @brief The zone in which the table reads timestamp text that carries no offset. */
+    [[nodiscard]] const TimeZoneContext &DefaultSourceTimeZone() const noexcept;
+
+    /**
+     * @brief Fixes the "now" the table uses to convert timestamp formats without a year. Without a call, the table
+     * reads the clock when it is created and again when BeginStreaming starts a parse, so one parse sees one year.
+     */
+    void SetReferenceTime(std::chrono::system_clock::time_point referenceTime) noexcept;
+
+    /** @brief The "now" the table uses to convert timestamp formats without a year. */
+    [[nodiscard]] std::chrono::system_clock::time_point ReferenceTime() const noexcept;
+
     const LogConfigurationManager &Configuration() const;
 
     /** @brief The configuration for loading and saving. Do not change it while a streaming parse runs. */
     LogConfigurationManager &Configuration();
 
 private:
-    static std::string FormatLogValue(const std::string &format, const LogValue &value);
+    /**
+     * @brief Formats a cell with the column's print format and the display zone. It does not throw: a print format that
+     * the value does not accept gives the value's plain text.
+     */
+    [[nodiscard]] std::string FormatLogValue(const std::string &format, const LogValue &value) const;
 
     void RefreshColumnKeyIds();
     void RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys);
@@ -348,6 +382,11 @@ private:
 
     LogData mData;
     LogConfigurationManager mConfiguration;
+
+    TimeZoneContext mDisplayTimeZone;
+    TimeZoneContext mDefaultSourceTimeZone;
+    std::chrono::system_clock::time_point mReferenceTime = std::chrono::system_clock::now();
+    bool mReferenceTimeFixed = false;
 
     /** @brief The key ids of each column, indexed by column. */
     std::vector<std::vector<KeyId>> mColumnKeyIds;

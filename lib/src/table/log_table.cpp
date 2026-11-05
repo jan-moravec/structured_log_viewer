@@ -41,6 +41,10 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
 LogTable::LogTable(LogTable &&other) noexcept
     : mData(std::move(other.mData)),
       mConfiguration(std::move(other.mConfiguration)),
+      mDisplayTimeZone(std::move(other.mDisplayTimeZone)),
+      mDefaultSourceTimeZone(std::move(other.mDefaultSourceTimeZone)),
+      mReferenceTime(other.mReferenceTime),
+      mReferenceTimeFixed(other.mReferenceTimeFixed),
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
       mStageBSnapshotTimeKeys(std::move(other.mStageBSnapshotTimeKeys)),
       mPostSnapshotTimeKeys(std::move(other.mPostSnapshotTimeKeys)),
@@ -57,6 +61,10 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     }
     mData = std::move(other.mData);
     mConfiguration = std::move(other.mConfiguration);
+    mDisplayTimeZone = std::move(other.mDisplayTimeZone);
+    mDefaultSourceTimeZone = std::move(other.mDefaultSourceTimeZone);
+    mReferenceTime = other.mReferenceTime;
+    mReferenceTimeFixed = other.mReferenceTimeFixed;
     mColumnKeyIds = std::move(other.mColumnKeyIds);
     mStageBSnapshotTimeKeys = std::move(other.mStageBSnapshotTimeKeys);
     mPostSnapshotTimeKeys = std::move(other.mPostSnapshotTimeKeys);
@@ -72,7 +80,7 @@ void LogTable::Update(LogData &&data)
     mConfiguration.Update(data.SortedKeys());
     if (!data.TimestampsAlreadyParsed())
     {
-        ParseTimestamps(data, mConfiguration.Configuration());
+        ParseTimestamps(data, mConfiguration.Configuration(), mDefaultSourceTimeZone, mReferenceTime);
     }
     mData.Merge(std::move(data));
     RewireSourceRegistries();
@@ -104,6 +112,10 @@ void LogTable::OnConfigurationReloaded()
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mEnum.BeginStreaming();
+    if (!mReferenceTimeFixed)
+    {
+        mReferenceTime = std::chrono::system_clock::now();
+    }
 
     if (source)
     {
@@ -204,7 +216,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 
         if (firstObservation)
         {
-            BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
+            BackfillTimestampColumn(
+                column,
+                std::span<LogLine>(mData.Lines()),
+                mDefaultSourceTimeZone,
+                mReferenceTime,
+                BackfillErrors::Discard
+            );
             for (const KeyId id : columnKeyIds)
             {
                 if (id != INVALID_KEY_ID)
@@ -225,7 +243,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
                 const std::span<LogLine> slice(
                     mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount
                 );
-                BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
+                BackfillTimestampColumn(column, slice, mDefaultSourceTimeZone, mReferenceTime, BackfillErrors::Discard);
             }
         }
     }
@@ -424,6 +442,37 @@ const KeyIndex &LogTable::Keys() const
     return mData.Keys();
 }
 
+void LogTable::SetDisplayTimeZone(TimeZoneContext timeZone)
+{
+    mDisplayTimeZone = std::move(timeZone);
+}
+
+const TimeZoneContext &LogTable::DisplayTimeZone() const noexcept
+{
+    return mDisplayTimeZone;
+}
+
+void LogTable::SetDefaultSourceTimeZone(TimeZoneContext timeZone)
+{
+    mDefaultSourceTimeZone = std::move(timeZone);
+}
+
+const TimeZoneContext &LogTable::DefaultSourceTimeZone() const noexcept
+{
+    return mDefaultSourceTimeZone;
+}
+
+void LogTable::SetReferenceTime(std::chrono::system_clock::time_point referenceTime) noexcept
+{
+    mReferenceTime = referenceTime;
+    mReferenceTimeFixed = true;
+}
+
+std::chrono::system_clock::time_point LogTable::ReferenceTime() const noexcept
+{
+    return mReferenceTime;
+}
+
 const LogConfigurationManager &LogTable::Configuration() const
 {
     return mConfiguration;
@@ -604,6 +653,8 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         BackfillTimestampColumn(
             mConfiguration.Configuration().columns[columnIndex],
             std::span<LogLine>(mData.Lines()),
+            mDefaultSourceTimeZone,
+            mReferenceTime,
             BackfillErrors::Discard
         );
         break;
@@ -772,10 +823,10 @@ const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const 
     return mEnum.LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
 }
 
-std::string LogTable::FormatLogValue(const std::string &format, const LogValue &value)
+std::string LogTable::FormatLogValue(const std::string &format, const LogValue &value) const
 {
     return std::visit(
-        [&format](const auto &arg) -> std::string {
+        [&](const auto &arg) -> std::string {
             using T = std::decay_t<decltype(arg)>;
             if constexpr (std::is_same_v<T, std::string>)
             {
@@ -790,11 +841,25 @@ std::string LogTable::FormatLogValue(const std::string &format, const LogValue &
                 std::is_same_v<T, bool>
             )
             {
-                return fmt::vformat(format, fmt::make_format_args(arg));
+                try
+                {
+                    return fmt::vformat(format, fmt::make_format_args(arg));
+                }
+                catch (const fmt::format_error &)
+                {
+                    return fmt::format("{}", arg);
+                }
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                return ProcessDefaultTimeZone().Format(arg, format);
+                try
+                {
+                    return mDisplayTimeZone.Format(arg, format);
+                }
+                catch (const std::exception &)
+                {
+                    return mDisplayTimeZone.FormatTimeStamp(arg);
+                }
             }
             else if constexpr (std::is_same_v<T, std::monostate>)
             {

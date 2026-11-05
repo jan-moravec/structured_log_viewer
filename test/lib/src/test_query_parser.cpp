@@ -1,16 +1,27 @@
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/filter_expression.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <catch2/catch_all.hpp>
 
 #include <array>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <variant>
 
 using namespace loglib;
+
+namespace
+{
+/** @brief Parses a query with UTC as the zone for timestamps without an offset. Zone tests pass their own. */
+std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view input)
+{
+    return loglib::ParseQuery(input, TimeZoneContext{});
+}
+} // namespace
 
 namespace
 {

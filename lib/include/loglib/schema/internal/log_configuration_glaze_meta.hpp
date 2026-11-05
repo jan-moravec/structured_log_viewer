@@ -61,6 +61,14 @@ template <> struct glz::meta<loglib::Source::Format>
     static constexpr std::array value{Json, Logfmt, Csv, Regex};
 };
 
+template <> struct glz::meta<loglib::ContinuationMode>
+{
+    using enum loglib::ContinuationMode;
+    // The names pair with the values by position. Their case is part of the saved format.
+    static constexpr std::array keys{"none", "indented", "untilNextHeader"};
+    static constexpr std::array value{None, Indented, UntilNextHeader};
+};
+
 // The saved field names of the nested types are listed explicitly. Renaming a member then fails to compile and cannot
 // silently change the saved format.
 template <> struct glz::meta<loglib::Source>
@@ -87,6 +95,10 @@ template <> struct glz::meta<loglib::Source>
         glz::custom<readDedupKeys, writeDedupKeys>,
         "regexPattern",
         &T::regexPattern,
+        "regexContinuationMode",
+        &T::regexContinuationMode,
+        "regexHeaderAnchor",
+        &T::regexHeaderAnchor,
         "followRotationSiblings",
         &T::followRotationSiblings
     );

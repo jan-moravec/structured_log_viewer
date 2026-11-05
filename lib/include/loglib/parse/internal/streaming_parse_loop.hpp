@@ -200,7 +200,12 @@ void RunStreamingParseLoop(
 
     const StopToken stopToken = options.stopToken;
 
-    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(keys, options.configuration.get());
+    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
+        keys,
+        options.timeColumns,
+        options.defaultSourceTimeZone,
+        options.referenceTime.value_or(std::chrono::system_clock::now())
+    );
     std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
     WorkerScratchBase promoteScratch;
@@ -208,11 +213,9 @@ void RunStreamingParseLoop(
 
     size_t nextLineNumber = 1;
 
-    // Seed carry from options.initialCarry so a wrapping parser
-    // (e.g. AutoDetectParser) can hand back bytes it already
-    // consumed from the producer during format detection. Zero cost
-    // on the default path where initialCarry is empty.
-    std::string carry = options.initialCarry;
+    // Bytes that an earlier stage, such as format detection, read from the producer and gave back to the source. They
+    // come before anything the producer delivers now.
+    std::string carry = source.TakeUnreadBytes();
     std::vector<char> readBuffer(STREAMING_READ_BUFFER_SIZE);
     // Bytes of carry already searched for a newline.
     size_t carrySearched = 0;
@@ -472,8 +475,7 @@ void RunStreamingParseLoop(
         ownedArena.clear();
     };
 
-    // Emit complete lines already present in initialCarry before
-    // waiting for more producer bytes.
+    // Emit complete lines already present in the unread bytes before waiting for more producer bytes.
     auto scanCarry = [&]() {
         if (skippingOversizedLine)
         {

@@ -38,7 +38,9 @@ namespace slp
  *
  * @return A usage failure with a caret diagnostic for the first malformed query.
  */
-[[nodiscard]] std::optional<Failure> CheckFilterSyntax(const FilterOptions &filter);
+[[nodiscard]] std::optional<Failure> CheckFilterSyntax(
+    const FilterOptions &filter, const loglib::TimeZoneContext &timeZone
+);
 
 /**
  * @brief Builds the combined row filter from the row flags.
