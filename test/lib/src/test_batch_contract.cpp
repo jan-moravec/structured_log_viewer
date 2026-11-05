@@ -655,3 +655,43 @@ TEST_CASE("Declared keys are announced before the keys of rows", "[batch_contrac
         }
     }
 }
+
+TEST_CASE("A JSON number's type follows the value's own text", "[batch_contract][json_numbers]")
+{
+    const std::string bytes =
+        "{\"n\":5.5}\n{\"n\":5}\n{\"n\":7.0}\n{\"n\":-3}\n{\"n\":18446744073709551615}\n{\"n\":5}\n{\"n\":6}\n"
+        "{\"n\":1e2}\n{\"n\":5}\n{\"n\":18446744073709551615}\n{\"n\":1000000000000000000}\n";
+    const std::vector<std::string> expected = {
+        "n=d:5.500000;",
+        "n=i:5;",
+        "n=d:7.000000;",
+        "n=i:-3;",
+        "n=u:18446744073709551615;",
+        "n=i:5;",
+        "n=i:6;",
+        "n=d:100.000000;",
+        "n=i:5;",
+        "n=u:18446744073709551615;",
+        "n=i:1000000000000000000;",
+    };
+
+    SECTION("a file, one thread and several")
+    {
+        for (const unsigned int threads : {1U, 4U})
+        {
+            for (const std::size_t batchSize : {std::size_t{8}, std::size_t{0}})
+            {
+                RecordingSink sink;
+                ParseAsFile(JsonParser{}, "batch_contract_numbers.jsonl", bytes, batchSize, sink, threads);
+                INFO("threads " << threads << ", batch size " << batchSize);
+                CHECK(DescribeRows(sink) == expected);
+            }
+        }
+    }
+    SECTION("a stream")
+    {
+        RecordingSink sink;
+        ParseAsStream(JsonParser{}, bytes, 5, sink);
+        CHECK(DescribeRows(sink) == expected);
+    }
+}

@@ -190,7 +190,9 @@ loglib::CompactLogValue ExtractRawJsonValue(
 }
 
 /// Per-key simdjson type cache so `value.type()` / `get_number_type()` fire
-/// only on the first occurrence of each key.
+/// only on the first occurrence of each key. The cached number type only picks
+/// the fast path. A fast path accepts a value only when the value's own text
+/// has that type, so a key gets the same cell types on every worker.
 struct ParseCache
 {
     std::vector<simdjson::ondemand::json_type> keyTypes;
@@ -288,15 +290,25 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                         uint64_t u = 0;
                         if (!value.get(u))
                         {
-                            InsertSorted(result, keyId, loglib::CompactLogValue::MakeUint64(u));
+                            // A value that fits in 64 bits signed is an Int64, as it would be on any other worker.
+                            InsertSorted(
+                                result,
+                                keyId,
+                                u > static_cast<uint64_t>(INT64_MAX)
+                                    ? loglib::CompactLogValue::MakeUint64(u)
+                                    : loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(u))
+                            );
                             continue;
                         }
                         break;
                     }
                     case simdjson::ondemand::number_type::floating_point_number:
                     {
+                        // get(double) also accepts 5, so the text must show a fraction or an exponent.
                         double d = NAN;
-                        if (!value.get(d))
+                        std::string_view token;
+                        if (!value.raw_json_token().get(token) &&
+                            token.find_first_of(".eE") != std::string_view::npos && !value.get(d))
                         {
                             InsertSorted(result, keyId, loglib::CompactLogValue::MakeDouble(d));
                             continue;
