@@ -170,9 +170,9 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
  * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
  * waited STREAMING_PENDING_RECORD_MAX_AGE.
  *
- * newKeyBaseline is passed to BatchCoalescer. A parser that adds keys to the index before calling, as the regex parser
- * does for the groups of its pattern, passes the key count from before, so those columns still appear as new keys in
- * the first batch. Parsers that add keys while parsing, such as JSON, logfmt and CSV, leave it empty.
+ * The loop announces the keys that decoders look up through the worker key cache, before each flush, and the
+ * declaredKeys before the first row. A parser that interns its keys before calling, as the regex parser does for the
+ * groups of its pattern, passes them as declaredKeys, so those columns appear even if no row has a value.
  */
 template <class Decoder>
 void RunStreamingParseLoop(
@@ -180,13 +180,14 @@ void RunStreamingParseLoop(
     Decoder &decoder,
     LogParseSink &sink,
     const ParserOptions &options,
-    std::optional<size_t> newKeyBaseline = std::nullopt
+    std::span<const KeyId> declaredKeys = {}
 )
 {
     sink.OnStarted();
 
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL, newKeyBaseline);
+    BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL);
+    coalescer.AddSeenKeys(declaredKeys);
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
         keys,
@@ -258,6 +259,13 @@ void RunStreamingParseLoop(
         size_t droppedContinuationLines = 0;
     };
     std::optional<PendingRecord> pending;
+
+    // Announces the keys the decoder met since the last call. This runs before every flush, so a batch always lists the
+    // keys of its rows. A key is recorded once for the whole stream, because the loop never starts a new key batch.
+    auto announceSeenKeys = [&]() {
+        coalescer.AddSeenKeys(promoteScratch.keyCache.firstSeen);
+        promoteScratch.keyCache.firstSeen.clear();
+    };
 
     // Reject invalid targets before buffering to keep memory bounded.
     auto canAcceptContinuation = [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
@@ -406,7 +414,7 @@ void RunStreamingParseLoop(
         }
 
         const LineDecodeResult result =
-            decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
+            decoder.DecodeCompact(trimmed, keys, promoteScratch.keyCache, compactValues, ownedArena, lineError);
         if (result == LineDecodeResult::Error)
         {
             flushOrphanRun();
@@ -550,6 +558,7 @@ void RunStreamingParseLoop(
     if (!carry.empty() && !stopToken.StopRequested())
     {
         scanCarry();
+        announceSeenKeys();
         coalescer.TryFlush(false, nextLineNumber - 1);
     }
 
@@ -583,6 +592,7 @@ void RunStreamingParseLoop(
                         commitPending();
                     }
                 }
+                announceSeenKeys();
                 coalescer.TryFlush(false, nextLineNumber - 1);
                 producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
                 continue;
@@ -591,6 +601,7 @@ void RunStreamingParseLoop(
 
         scanCarry();
 
+        announceSeenKeys();
         coalescer.TryFlush(false, nextLineNumber - 1);
     }
 
@@ -605,6 +616,7 @@ void RunStreamingParseLoop(
     flushOrphanRun();
     commitPending();
 
+    announceSeenKeys();
     coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
 }
 

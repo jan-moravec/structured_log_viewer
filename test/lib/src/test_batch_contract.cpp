@@ -20,10 +20,12 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -83,6 +85,11 @@ public:
         return rows;
     }
 
+    // The rows point into the source, which points into the file, so they live as long as the sink and are declared
+    // first. The batches are destroyed before them.
+    std::unique_ptr<TestLogFile> file;
+    std::unique_ptr<FileLineSource> fileSource;
+    std::unique_ptr<StreamLineSource> streamSource;
     std::vector<RowBatch> batches;
     int started = 0;
     int finished = 0;
@@ -102,13 +109,15 @@ void ParseAsFile(
     unsigned int threads = 0
 )
 {
-    const TestLogFile file(fileName);
-    file.Write(bytes);
-    auto source = file.CreateFileLineSource();
+    // Every call gets its own file, because the sinks of earlier calls may still map theirs.
+    static std::atomic<unsigned> counter{0};
+    sink.file = std::make_unique<TestLogFile>(std::to_string(counter.fetch_add(1)) + "_" + fileName);
+    sink.file->Write(bytes);
+    sink.fileSource = sink.file->CreateFileLineSource();
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
     options.threads = threads;
-    parser.ParseStreaming(*source, sink, options);
+    parser.ParseStreaming(*sink.fileSource, sink, options);
 }
 
 /** Runs a parser over bytes as a stream, delivered in chunks, and keeps the sink for inspection. */
@@ -120,8 +129,9 @@ void ParseAsStream(
     ParserOptions options = {}
 )
 {
-    StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, chunkSize));
-    parser.ParseStreaming(source, sink, options);
+    sink.streamSource =
+        std::make_unique<StreamLineSource>("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, chunkSize));
+    parser.ParseStreaming(*sink.streamSource, sink, options);
 }
 
 } // namespace
@@ -375,4 +385,273 @@ TEST_CASE(
 )
 {
     CHECK_FALSE(ParseTimeLinesIntoTable(true));
+}
+
+namespace
+{
+
+/** Writes a value with its type, so that Int64 5 and Double 5 differ. */
+[[nodiscard]] std::string DescribeValue(const LogValue &value)
+{
+    struct Visitor
+    {
+        std::string operator()(std::string_view v) const
+        {
+            return "s:" + std::string(v);
+        }
+        std::string operator()(const std::string &v) const
+        {
+            return "s:" + v;
+        }
+        std::string operator()(int64_t v) const
+        {
+            return "i:" + std::to_string(v);
+        }
+        std::string operator()(uint64_t v) const
+        {
+            return "u:" + std::to_string(v);
+        }
+        std::string operator()(double v) const
+        {
+            return "d:" + std::to_string(v);
+        }
+        std::string operator()(bool v) const
+        {
+            return v ? "b:true" : "b:false";
+        }
+        std::string operator()(TimeStamp v) const
+        {
+            return "t:" + std::to_string(v.time_since_epoch().count());
+        }
+        std::string operator()(std::monostate) const
+        {
+            return "null";
+        }
+    };
+    return std::visit(Visitor{}, value);
+}
+
+/** One text per row: every key of the parse in key text order, with the value and its type. */
+[[nodiscard]] std::vector<std::string> DescribeRows(RecordingSink &sink)
+{
+    KeyIndex &keys = sink.Keys();
+    std::vector<std::pair<std::string, KeyId>> ordered;
+    for (const std::string &key : keys.SortedKeys())
+    {
+        ordered.emplace_back(key, keys.Find(key));
+    }
+    std::vector<std::string> rows;
+    for (const RowBatch &batch : sink.batches)
+    {
+        for (const LogLine &line : batch.lines)
+        {
+            std::string text;
+            for (const auto &[key, id] : ordered)
+            {
+                const LogValue value = line.GetValue(id);
+                if (!std::holds_alternative<std::monostate>(value))
+                {
+                    text += key + "=" + DescribeValue(value) + ";";
+                }
+            }
+            rows.push_back(std::move(text));
+        }
+    }
+    return rows;
+}
+
+[[nodiscard]] std::vector<std::string> NewKeysOf(const RecordingSink &sink)
+{
+    std::vector<std::string> keys;
+    for (const RowBatch &batch : sink.batches)
+    {
+        keys.insert(keys.end(), batch.newKeys.begin(), batch.newKeys.end());
+    }
+    return keys;
+}
+
+/** The facts of a parse that must not depend on how the bytes arrived. */
+struct Observed
+{
+    std::size_t lastLine = 0;
+    std::vector<std::string> errors;
+    std::vector<std::string> rows;
+    std::vector<std::string> newKeys;
+};
+
+void CheckSame(const Observed &actual, const Observed &expected)
+{
+    CHECK(actual.lastLine == expected.lastLine);
+    CHECK(actual.errors == expected.errors);
+    CHECK(actual.rows == expected.rows);
+    CHECK(actual.newKeys == expected.newKeys);
+}
+
+[[nodiscard]] Observed Observe(RecordingSink &sink)
+{
+    std::vector<std::string> errors;
+    for (const ParseError &error : sink.Errors())
+    {
+        errors.push_back(std::to_string(error.firstLine) + "-" + std::to_string(error.lastLine) + ": " + error.message);
+    }
+    return Observed{sink.LastLineNumber(), std::move(errors), DescribeRows(sink), NewKeysOf(sink)};
+}
+
+/** Parses the bytes as a file for each batch size and as a stream for each chunk size, and compares them all. */
+void CheckStaticAndStreamAgree(const LogParser &parser, const std::string &bytes, const std::string &fileName)
+{
+    RecordingSink reference;
+    ParseAsFile(parser, fileName, bytes, 4096, reference);
+    const Observed expected = Observe(reference);
+    CHECK(reference.finished == 1);
+    CHECK(expected.rows.size() > 10);
+
+    for (const std::size_t batchSize : {std::size_t{64}, std::size_t{257}})
+    {
+        RecordingSink sink;
+        ParseAsFile(parser, fileName, bytes, batchSize, sink);
+        INFO("file, batch size " << batchSize);
+        CheckSame(Observe(sink), expected);
+    }
+    for (const std::size_t chunk : {std::size_t{1}, std::size_t{64}, std::size_t{257}, std::size_t{4096}})
+    {
+        RecordingSink sink;
+        ParseAsStream(parser, bytes, chunk, sink);
+        INFO("stream, chunk size " << chunk);
+        CheckSame(Observe(sink), expected);
+    }
+}
+
+[[nodiscard]] std::string JsonInput()
+{
+    std::string bytes;
+    for (int i = 0; i < 60; ++i)
+    {
+        bytes += "{\"id\":" + std::to_string(i) + ",\"msg\":\"line " + std::to_string(i) + "\"";
+        if (i % 7 == 0)
+        {
+            bytes += ",\"extra" + std::to_string(i) + "\":true";
+        }
+        if (i % 11 == 0)
+        {
+            bytes += ",\"esc\\u0041\":1.5";
+        }
+        bytes += "}\n";
+        if (i == 20)
+        {
+            bytes += "not json at all\n\n";
+        }
+    }
+    return bytes;
+}
+
+[[nodiscard]] std::string LogfmtInput()
+{
+    std::string bytes;
+    for (int i = 0; i < 30; ++i)
+    {
+        bytes += "level=info n=" + std::to_string(i) + " msg=\"row " + std::to_string(i) + "\"\n";
+        if (i % 4 == 0)
+        {
+            bytes += "  continuation of " + std::to_string(i) + "\n\n  and more\n";
+        }
+    }
+    return bytes;
+}
+
+[[nodiscard]] std::string CsvInput()
+{
+    std::string bytes = "\nid,name,empty\n";
+    for (int i = 0; i < 40; ++i)
+    {
+        bytes += std::to_string(i) + ",name" + std::to_string(i) + ",\n";
+        if (i == 10)
+        {
+            bytes += "1,2,3,4,5\n";
+        }
+        if (i == 20)
+        {
+            bytes += "9,\"unterminated\n";
+        }
+    }
+    return bytes;
+}
+
+[[nodiscard]] std::string RegexInput()
+{
+    std::string bytes;
+    for (int i = 0; i < 30; ++i)
+    {
+        bytes += std::to_string(1000 + i) + " INFO message " + std::to_string(i) + "\n";
+        if (i % 5 == 0)
+        {
+            bytes += "    at frame one\n    at frame two\n";
+        }
+    }
+    return bytes;
+}
+
+} // namespace
+
+TEST_CASE("The same bytes as a file and as a stream give the same batches", "[batch_contract][equivalence]")
+{
+    SECTION("json")
+    {
+        CheckStaticAndStreamAgree(JsonParser{}, JsonInput(), "batch_contract_eq.jsonl");
+    }
+    SECTION("logfmt with continuations")
+    {
+        CheckStaticAndStreamAgree(LogfmtParser{}, LogfmtInput(), "batch_contract_eq.log");
+    }
+    SECTION("csv")
+    {
+        CheckStaticAndStreamAgree(CsvParser{}, CsvInput(), "batch_contract_eq.csv");
+    }
+    SECTION("multi-line regex")
+    {
+        const RegexParser parser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+        CheckStaticAndStreamAgree(parser, RegexInput(), "batch_contract_eq_regex.log");
+    }
+}
+
+TEST_CASE("Declared keys are announced before the keys of rows", "[batch_contract][declared_keys]")
+{
+    SECTION("a CSV column that is empty in every row still appears")
+    {
+        const std::string bytes = "a,b,c\n1,2,\n3,4,\n";
+        RecordingSink fileSink;
+        ParseAsFile(CsvParser{}, "batch_contract_declared.csv", bytes, 0, fileSink);
+        RecordingSink streamSink;
+        ParseAsStream(CsvParser{}, bytes, 3, streamSink);
+        const std::vector<std::string> expected = {"a", "b", "c"};
+        CHECK(NewKeysOf(fileSink) == expected);
+        CHECK(NewKeysOf(streamSink) == expected);
+    }
+    SECTION("a regex group that never matches still appears")
+    {
+        const RegexParser parser(R"(^(?<a>\d+)(?: (?<b>x))?$)");
+        const std::string bytes = "1\n2\n";
+        RecordingSink fileSink;
+        ParseAsFile(parser, "batch_contract_declared.log", bytes, 0, fileSink);
+        RecordingSink streamSink;
+        ParseAsStream(parser, bytes, 3, streamSink);
+        for (const RecordingSink *sink : {&fileSink, &streamSink})
+        {
+            const auto keys = NewKeysOf(*sink);
+            CHECK(std::ranges::find(keys, "a") != keys.end());
+            CHECK(std::ranges::find(keys, "b") != keys.end());
+            CHECK(sink->RowCount() == 2);
+        }
+    }
+    SECTION("a key that only appears in rows is announced once, in input order")
+    {
+        const std::string bytes = "{\"z\":1}\n{\"a\":1}\n{\"z\":2,\"m\":1}\n{\"a\":3,\"b\":1}\n";
+        for (const std::size_t batchSize : {std::size_t{8}, std::size_t{0}})
+        {
+            RecordingSink sink;
+            ParseAsFile(JsonParser{}, "batch_contract_order.jsonl", bytes, batchSize, sink, 4);
+            const std::vector<std::string> expected = {"z", "a", "m", "b"};
+            CHECK(NewKeysOf(sink) == expected);
+        }
+    }
 }

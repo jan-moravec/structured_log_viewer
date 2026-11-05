@@ -88,11 +88,13 @@ void DeduplicateColumnNames(std::vector<std::string> &names)
 }
 
 /// Parse a CSV header into `columnKeys`, where `columnKeys[i]` is the
-/// `KeyId` for cell `i` in subsequent data rows. Returns false if the
-/// header is empty or has an unterminated quoted cell; duplicates are
-/// renamed (see `DeduplicateColumnNames`).
+/// `KeyId` for cell `i` in subsequent data rows. internKey turns a column
+/// name into its key id. Returns false if the header is empty or has an
+/// unterminated quoted cell; duplicates are renamed (see
+/// `DeduplicateColumnNames`).
+template <class InternKey>
 bool ParseHeaderLine(
-    std::string_view headerLine, KeyIndex &keys, std::string &headerScratch, std::vector<KeyId> &columnKeys
+    std::string_view headerLine, InternKey &&internKey, std::string &headerScratch, std::vector<KeyId> &columnKeys
 )
 {
     columnKeys.clear();
@@ -121,7 +123,7 @@ bool ParseHeaderLine(
     columnKeys.reserve(cellNames.size());
     for (auto &name : cellNames)
     {
-        columnKeys.push_back(keys.GetOrInsert(name));
+        columnKeys.push_back(internKey(std::string_view(name)));
     }
     return true;
 }
@@ -362,16 +364,12 @@ public:
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
-        internal::PerWorkerKeyCache *keyCache,
+        internal::PerWorkerKeyCache &keyCache,
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )
     {
-        // Header-built `columnKeys` already maps every column; the cache
-        // is unused. Touch it to silence `/WX` unused-parameter warnings.
-        (void)keyCache;
-
         out.clear();
         outOwnedArena.clear();
         if (line.empty())
@@ -382,7 +380,8 @@ public:
         if (!mHeaderConsumed)
         {
             const std::string_view headerLine = StripBom(line);
-            if (!ParseHeaderLine(headerLine, keys, mQuotedScratch, mColumnKeys))
+            const auto internKey = [&](std::string_view name) { return internal::InternKeyVia(name, keys, keyCache); };
+            if (!ParseHeaderLine(headerLine, internKey, mQuotedScratch, mColumnKeys))
             {
                 errorOut = "Invalid CSV header.";
                 return internal::LineDecodeResult::Error;
@@ -513,12 +512,6 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
     const size_t fileSize = file.Size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
-    // Snapshot key count before the eager header parse so the coalescer
-    // surfaces the header columns as `newKeys` even though we intern
-    // them up front. Without this the static path would emit no
-    // `newKeys` and the `LogTable` would never build any columns.
-    const size_t newKeyBaseline = sink.Keys().Size();
-
     // Eagerly find and parse the header. Outputs:
     //  * `columnKeys` -- shared `column -> KeyId` table for Stage B.
     //  * `headerLineOffset` -- exact byte offset Stage B uses to skip
@@ -551,7 +544,12 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
             {
                 headerLineOffset = static_cast<uint64_t>(cursor - fileBegin);
                 headerLineNumber = blankLinesBeforeHeader + 1;
-                headerParseFailed = !ParseHeaderLine(candidate, sink.Keys(), headerScratch, columnKeys);
+                headerParseFailed = !ParseHeaderLine(
+                    candidate,
+                    [&](std::string_view name) { return sink.Keys().GetOrInsert(name); },
+                    headerScratch,
+                    columnKeys
+                );
                 break;
             }
             ++blankLinesBeforeHeader;
@@ -571,7 +569,7 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
         sink.OnStarted();
         KeyIndex &keys = sink.Keys();
         internal::BatchCoalescer coalescer(
-            sink, keys, internal::STATIC_BATCH_FLUSH_LINES, internal::STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline
+            sink, keys, internal::STATIC_BATCH_FLUSH_LINES, internal::STATIC_BATCH_FLUSH_INTERVAL
         );
         coalescer.Pending().errors.push_back(
             ParseError{.firstLine = headerLineNumber, .lastLine = headerLineNumber, .message = "Invalid CSV header."}
@@ -593,8 +591,10 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
         DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset);
     };
 
+    // The header columns are interned up front, so the pipeline announces them as declared keys, even for a column
+    // that is empty in every row.
     internal::RunStaticParserPipeline<internal::ByteRange, CsvWorkerState>(
-        source, sink, options, stageA, stageB, newKeyBaseline
+        source, sink, options, stageA, stageB, columnKeys
     );
 }
 

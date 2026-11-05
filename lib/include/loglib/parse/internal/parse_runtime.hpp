@@ -17,12 +17,15 @@
 
 #include <tsl/robin_map.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace loglib::internal
@@ -46,12 +49,47 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
 std::vector<KeyId> ConvertedTimeKeys(std::span<const TimeColumnSpec> specs);
 
 /**
- * @brief Each worker's own map from key text to key id. A hit needs no allocation, and a miss asks the shared index
- * once and stores the answer.
+ * @brief Each worker's own map from key text to key id, and the keys it met first in the current batch.
+ *
+ * A hit needs no allocation, and a miss asks the shared index once and stores the answer. Every lookup also records the
+ * key in firstSeen the first time it comes up in a batch, in the order the decoder met it. The static pipeline starts a
+ * new batch with BeginBatch and takes the list with TakeFirstSeen. The streaming loop never starts a new batch, so it
+ * sees each key once for the whole stream and drains the list as it flushes.
  */
 struct PerWorkerKeyCache
 {
     tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
+    /** The generation of a key's last sighting, indexed by key id. */
+    std::vector<uint32_t> stamp;
+    uint32_t generation = 1;
+    /** Keys first met in the current batch, in the order they were met. */
+    std::vector<KeyId> firstSeen;
+
+    /** Forgets which keys were met, so the next lookups record them again. */
+    void BeginBatch()
+    {
+        ++generation;
+        firstSeen.clear();
+    }
+
+    /** Returns the keys first met since the last call, and starts the list again. */
+    [[nodiscard]] std::vector<KeyId> TakeFirstSeen()
+    {
+        return std::exchange(firstSeen, {});
+    }
+
+    void NoteSeen(KeyId id)
+    {
+        if (id >= stamp.size())
+        {
+            stamp.resize(std::max<size_t>(static_cast<size_t>(id) + 1, stamp.size() * 2), 0);
+        }
+        if (stamp[id] != generation)
+        {
+            stamp[id] = generation;
+            firstSeen.push_back(id);
+        }
+    }
 };
 
 /**
@@ -105,21 +143,22 @@ template <class UserState> struct WorkerScratch : WorkerScratchBase
 };
 
 /**
- * @brief Returns the id of a key through the worker's cache, or straight from the index if cache is null. On a miss
- * the key's bytes are copied into the cache.
+ * @brief Returns the id of a key through the worker's cache and records the key as seen. On a miss the key's bytes are
+ * copied into the cache.
  */
-inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache)
+inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache &cache)
 {
-    if (cache == nullptr)
+    KeyId id;
+    if (const auto it = cache.map.find(key); it != cache.map.end())
     {
-        return keys.GetOrInsert(key);
+        id = it->second;
     }
-    if (const auto it = cache->map.find(key); it != cache->map.end())
+    else
     {
-        return it->second;
+        id = keys.GetOrInsert(key);
+        cache.map.emplace(std::string(key), id);
     }
-    const KeyId id = keys.GetOrInsert(key);
-    cache->map.emplace(std::string(key), id);
+    cache.NoteSeen(id);
     return id;
 }
 

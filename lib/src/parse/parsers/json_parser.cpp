@@ -222,7 +222,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
     KeyIndex &keys,
     ParseCache &cache,
     bool sourceIsStable,
-    internal::PerWorkerKeyCache *keyCache,
+    internal::PerWorkerKeyCache &keyCache,
     const char *fileBegin,
     size_t fileSize,
     std::string &ownedArena,
@@ -247,7 +247,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             return result;
         }
 
-        const KeyId keyId = fk.isView ? internal::InternKeyVia(fk.view, keys, keyCache) : keys.GetOrInsert(fk.owned);
+        const KeyId keyId = internal::InternKeyVia(fk.isView ? fk.view : std::string_view(fk.owned), keys, keyCache);
         EnsureCacheCapacity(cache, keyId);
 
         auto value = field.value();
@@ -580,7 +580,7 @@ void DecodeJsonBatch(
                 keys,
                 worker.user.cache,
                 sourceIsStable,
-                &worker.keyCache,
+                worker.keyCache,
                 fileBegin,
                 fileSize,
                 parsed.ownedStringsArena,
@@ -671,7 +671,7 @@ public:
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
-        internal::PerWorkerKeyCache *keyCache,
+        internal::PerWorkerKeyCache &keyCache,
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut

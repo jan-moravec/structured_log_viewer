@@ -478,7 +478,7 @@ public:
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
-        internal::PerWorkerKeyCache *keyCache,
+        internal::PerWorkerKeyCache &keyCache,
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut
@@ -571,16 +571,14 @@ static_assert(
  * pipeline. Both presets behave identically for a single-batch
  * error pass, but the symmetry keeps call sites consistent.
  */
-void EmitErrorAndFinish(
-    LogParseSink &sink, std::string_view message, std::optional<size_t> newKeyBaseline, bool streaming = false
-)
+void EmitErrorAndFinish(LogParseSink &sink, std::string_view message, bool streaming = false)
 {
     sink.OnStarted();
     KeyIndex &keys = sink.Keys();
     const size_t flushLines = streaming ? internal::STREAMING_BATCH_FLUSH_LINES : internal::STATIC_BATCH_FLUSH_LINES;
     const auto flushInterval =
         streaming ? internal::STREAMING_BATCH_FLUSH_INTERVAL : internal::STATIC_BATCH_FLUSH_INTERVAL;
-    internal::BatchCoalescer coalescer(sink, keys, flushLines, flushInterval, newKeyBaseline);
+    internal::BatchCoalescer coalescer(sink, keys, flushLines, flushInterval);
     coalescer.Pending().errors.push_back(ParseError{.message = std::string(message)});
     coalescer.Finish(0, /*wasCancelled=*/false);
 }
@@ -598,22 +596,10 @@ RegexParser::RegexParser(std::string pattern, ContinuationMode continuationMode,
 
 void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // Capture the `KeyIndex` cursor *before* any intern happens.
-    // Forwarded to `EmitErrorAndFinish` on error paths so sink
-    // new-key bookkeeping starts at the right place even on
-    // failure, and to `RunStreamingParseLoop` on success so
-    // pre-interned named-group columns still surface as `newKeys`
-    // on the first emitted batch. Without this baseline
-    // `BatchCoalescer` would start counting from the post-intern
-    // size and `LogTable::AppendBatch` would never create the
-    // columns — live tail and network streams would ingest rows
-    // with no visible columns.
-    const size_t newKeyBaseline = sink.Keys().Size();
-
     const std::string &pattern = mPattern;
     if (pattern.empty())
     {
-        EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.", newKeyBaseline, /*streaming=*/true);
+        EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.", /*streaming=*/true);
         return;
     }
 
@@ -621,7 +607,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
     std::string compileError;
     if (!compiled.Compile(pattern, compileError))
     {
-        EmitErrorAndFinish(sink, compileError, newKeyBaseline, /*streaming=*/true);
+        EmitErrorAndFinish(sink, compileError, /*streaming=*/true);
         return;
     }
     if (!compiled.HasNamedGroups())
@@ -629,7 +615,6 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
         EmitErrorAndFinish(
             sink,
             "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`.",
-            newKeyBaseline,
             /*streaming=*/true
         );
         return;
@@ -648,14 +633,15 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
         std::string anchorErr;
         if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
         {
-            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline, /*streaming=*/true);
+            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, /*streaming=*/true);
             return;
         }
         anchorPtr = &headerAnchor;
     }
 
     RegexLineDecoder decoder(compiled, columnKeys, mode, anchorPtr);
-    internal::RunStreamingParseLoop(source, decoder, sink, options, newKeyBaseline);
+    // The named groups are interned up front, so the loop announces them as declared keys.
+    internal::RunStreamingParseLoop(source, decoder, sink, options, columnKeys);
 }
 
 void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
@@ -668,11 +654,9 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
     const size_t fileSize = file.Size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
-    const size_t newKeyBaseline = sink.Keys().Size();
-
     if (pattern.empty())
     {
-        EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.", newKeyBaseline);
+        EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.");
         return;
     }
 
@@ -686,15 +670,13 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
     std::string compileError;
     if (!compiled.Compile(pattern, compileError))
     {
-        EmitErrorAndFinish(sink, compileError, newKeyBaseline);
+        EmitErrorAndFinish(sink, compileError);
         return;
     }
     if (!compiled.HasNamedGroups())
     {
         EmitErrorAndFinish(
-            sink,
-            "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`.",
-            newKeyBaseline
+            sink, "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`."
         );
         return;
     }
@@ -713,7 +695,7 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
         std::string anchorErr;
         if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
         {
-            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline);
+            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr);
             return;
         }
         anchorPtr = &headerAnchor;
@@ -745,8 +727,9 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
         );
     };
 
+    // The named groups are interned up front, so the pipeline announces them as declared keys.
     internal::RunStaticParserPipeline<internal::ByteRange, RegexWorkerState>(
-        source, sink, options, stageA, stageB, newKeyBaseline
+        source, sink, options, stageA, stageB, columnKeys
     );
 }
 

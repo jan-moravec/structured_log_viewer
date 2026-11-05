@@ -342,15 +342,11 @@ struct CollectingStreamSink final : loglib::LogParseSink
 
 } // namespace
 
-// Regression for a live-tail / network-stream bug: the pattern's
-// named capture groups are interned into `KeyIndex` before
-// `RunStreamingParseLoop` starts, but the streaming overload used
-// to drop the pre-intern baseline. `BatchCoalescer` then started
-// its key cursor at the post-intern size, so every flushed batch
-// reported an empty `newKeys` and `LogTable::AppendBatch` never
-// created the columns -- streaming regex sessions ingested rows
-// with no visible columns. Fails on the pre-fix codebase; passes
-// once `newKeyBaseline` is threaded through.
+// The pattern's named capture groups are interned into `KeyIndex` before
+// `RunStreamingParseLoop` starts. The parser passes them as declared keys, so
+// the first batch announces them in `newKeys` and `LogTable::AppendBatch`
+// creates the columns. Without that, streaming regex sessions would ingest
+// rows with no visible columns.
 TEST_CASE(
     "RegexParser streaming surfaces named-group columns via newKeys [regex][stream_line_source]", "[regex_parser]"
 )
@@ -446,9 +442,8 @@ TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][strea
     // means "read pattern from options"; without a
     // `LogConfiguration` on the options the resolved pattern is
     // empty and the parser must fail closed before decoding any
-    // line. Prior to the newKeyBaseline fix the streaming overload
-    // dropped this error entirely because `EmitErrorAndFinish`
-    // wasn't wired for the streaming flush thresholds.
+    // line. The streaming overload reports this error through
+    // `EmitErrorAndFinish` with the streaming flush thresholds.
     const RegexParser parser{std::string{}};
     StreamLineSource source(
         std::filesystem::path("regex_stream_empty_pattern.log"), std::make_unique<InMemoryBytesProducer>("one\ntwo\n")

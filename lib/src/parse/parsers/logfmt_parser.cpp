@@ -285,7 +285,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
 void ParseLogfmtLine(
     std::string_view line,
     KeyIndex &keys,
-    internal::PerWorkerKeyCache *keyCache,
+    internal::PerWorkerKeyCache &keyCache,
     const char *fileBegin,
     size_t fileSize,
     std::string &ownedArena,
@@ -513,7 +513,7 @@ void DecodeLogfmtBatch(
             ParseLogfmtLine(
                 line,
                 keys,
-                &worker.keyCache,
+                worker.keyCache,
                 fileBegin,
                 fileSize,
                 parsed.ownedStringsArena,
@@ -606,7 +606,7 @@ public:
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
-        internal::PerWorkerKeyCache *keyCache,
+        internal::PerWorkerKeyCache &keyCache,
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut

@@ -2,25 +2,21 @@
  * @brief Groups parsed lines into batches for the sink.
  *
  * Sending one batch per line would swamp the sink, so the coalescer collects lines and flushes them when enough have
- * built up or enough time has passed. It also records which keys are new in each batch and always sends a final batch
+ * built up or enough time has passed. It also collects the keys the batch announces and always sends a final batch
  * before finishing. Both the static pipeline and the live-stream loop use it.
  *
  * This is part of the parse module.
  */
 #pragma once
 
+#include "loglib/core/key_index.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
 
 #include <chrono>
 #include <cstddef>
-#include <optional>
+#include <span>
 #include <utility>
 #include <vector>
-
-namespace loglib
-{
-class KeyIndex;
-}
 
 namespace loglib::internal
 {
@@ -29,25 +25,17 @@ namespace loglib::internal
  * @brief Collects parsed lines into batches and sends them to a sink when enough have piled up or enough time has
  * passed.
  *
- * Both the static pipeline and the streaming loop use it. It holds the batch being built and remembers how many keys
- * the sink has already been told about, so each batch can list only the new keys. A pipeline adds content through
+ * Both the static pipeline and the streaming loop use it. It holds the batch being built and remembers which keys the
+ * sink has been told about, so each key is announced once, in the batch where it first came up. The caller says which
+ * keys a batch holds through AddSeenKeys, in the order they first appear in the input. A pipeline adds content through
  * Pending and calls TryFlush with false to send a batch when a threshold is reached. Finish always sends a last batch,
  * which can be empty, and then calls OnFinished, so the sink gets its usual calls even when a parse ends early.
  */
 class BatchCoalescer
 {
 public:
-    /**
-     * @param newKeyBaseline The key count to start counting new keys from. By default it is the current size of the
-     * index. A parser that adds keys before the pipeline starts, such as the CSV parser with its header, passes the
-     * count from before, so those columns still appear as new keys.
-     */
     BatchCoalescer(
-        LogParseSink &sink,
-        KeyIndex &keys,
-        size_t flushLines,
-        std::chrono::milliseconds flushInterval,
-        std::optional<size_t> newKeyBaseline = std::nullopt
+        LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval
     ) noexcept;
 
     BatchCoalescer(const BatchCoalescer &) = delete;
@@ -79,8 +67,11 @@ public:
         return mPrimed;
     }
 
-    /** @brief Appends the keys added since the last call to out, and remembers that they were reported. */
-    void DrainNewKeysInto(RowBatch &out);
+    /**
+     * @brief Announces keys in the pending batch, in the order given. A key that an earlier call announced is skipped.
+     * The ids must belong to the key index of the sink.
+     */
+    void AddSeenKeys(std::span<const KeyId> ids);
 
     /**
      * @brief Sends the pending batch if a threshold was reached, or always when force is set. Returns true if a batch
@@ -103,7 +94,8 @@ private:
     KeyIndex &mKeys;
     RowBatch mPending;
     bool mPrimed = false;
-    size_t mPrevKeyCount;
+    /** One bit per key id: set once the key is in the newKeys of some batch. */
+    std::vector<bool> mAnnounced;
     std::vector<KeyId> mConvertedTimeKeys;
     size_t mFlushLines;
     std::chrono::milliseconds mFlushInterval;

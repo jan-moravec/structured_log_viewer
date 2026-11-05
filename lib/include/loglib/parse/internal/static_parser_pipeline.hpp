@@ -67,6 +67,9 @@ struct ParsedPipelineBatch
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
+    /** @brief The keys this batch met first, in the order the decoder met them. Stage C announces them in batch order.
+     */
+    std::vector<KeyId> firstSeenKeys;
     /**
      * @brief Staging area for the decoded strings of the batch. Stage C appends it to the file's arena and shifts the
      * offsets of the lines in one pass.
@@ -243,10 +246,12 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
  * - Stage B runs in parallel and decodes the batches. It gives every row its source and a line id counted inside the
  *   batch, and converts the time columns.
  * - Stage C runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena of the
- *   file, coalesces batches, finds the new keys and calls the sink.
+ *   file, coalesces batches, announces the new keys and calls the sink.
  *
- * newKeyBaseline is passed to BatchCoalescer. A parser that adds its keys before the pipeline starts passes the key
- * count from before. By default it is the current size of the index.
+ * Stage B records the keys it meets first in each batch, and Stage C announces them in batch order, so the new keys
+ * come in the order they first appear in the file, however the workers were scheduled. declaredKeys are announced
+ * before the first row. A parser that interns its keys before the pipeline starts, such as CSV with its header, passes
+ * them there so they appear even if no row has a value.
  */
 // The two callables are taken as forwarding references so that lvalues and rvalues both work without a move at the call
 // site. They are used many times inside the pipeline, so they are deliberately not forwarded, because forwarding an
@@ -260,7 +265,7 @@ void RunStaticParserPipeline(
     StageADriver &&stageADriver,
     // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     StageBDecoder &&stageBDecoder,
-    std::optional<size_t> newKeyBaseline = std::nullopt
+    std::span<const KeyId> declaredKeys = {}
 )
 {
     LogFile &file = source.File();
@@ -268,7 +273,8 @@ void RunStaticParserPipeline(
     sink.OnStarted();
 
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline);
+    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL);
+    coalescer.AddSeenKeys(declaredKeys);
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
         keys,
@@ -336,8 +342,10 @@ void RunStaticParserPipeline(
         WorkerScratch<UserState> &worker = workers.local();
         worker.EnsureTimeColumnCapacity(timeColumnsSpan.size());
 
+        worker.keyCache.BeginBatch();
         ParsedPipelineBatch parsed;
         stageBDecoder(std::move(token), worker, keys, timeColumnsSpan, parsed);
+        parsed.firstSeenKeys = worker.keyCache.TakeFirstSeen();
 
         return parsed;
     };
@@ -470,6 +478,7 @@ void RunStaticParserPipeline(
         }
 
         RowBatch &pending = coalescer.Pending();
+        coalescer.AddSeenKeys(parsed.firstSeenKeys);
 
         // Prime with the earliest record represented in this output.
         if (heldLineToEmit.has_value())
