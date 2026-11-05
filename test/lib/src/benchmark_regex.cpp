@@ -82,9 +82,10 @@ void RunRegexTemplateBenchmark(
     const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
-    const ParserStreamFn parserStream = [&pattern](
-                                            FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                                        ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
+    const ParserStreamFn parserStream =
+        [&pattern, tmpl](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+            RegexParser{pattern, tmpl->continuationMode, tmpl->headerAnchor}.ParseStreaming(source, sink, options);
+        };
 
     RunStreamingBenchmark(
         label,
@@ -290,9 +291,10 @@ TEST_CASE(
     const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
-    const ParserStreamFn parserStream = [&pattern](
-                                            FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                                        ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
+    const ParserStreamFn parserStream =
+        [&pattern, tmpl](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+            RegexParser{pattern, tmpl->continuationMode, tmpl->headerAnchor}.ParseStreaming(source, sink, options);
+        };
 
     RunStreamingBenchmark(
         "Stream 1'000'000 Java multi-line (indented) records to LogTable",
@@ -357,9 +359,11 @@ TEST_CASE(
     const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
-    const ParserStreamFn parserStream = [&pattern](
+    const ParserStreamFn parserStream = [&extra](
                                             FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                                        ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
+                                        ) {
+        RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.ParseStreaming(source, sink, options);
+    };
 
     RunStreamingBenchmark(
         "Stream 1'000'000 Python traceback (UntilNextHeader) records to LogTable",
@@ -412,9 +416,11 @@ TEST_CASE(
         };
         const std::vector<RegexTemplate> extras{extraNoAnchor};
         loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
-        const ParserStreamFn parserStream = [&pattern](
-                                                FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                                            ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
+        const ParserStreamFn parserStream =
+            [&extraNoAnchor](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+                RegexParser{extraNoAnchor.pattern, extraNoAnchor.continuationMode, extraNoAnchor.headerAnchor}
+                    .ParseStreaming(source, sink, options);
+            };
         const StreamingRunResult warmup =
             RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);
         REQUIRE(warmup.rowCount == testFile.RecordCount());
@@ -435,9 +441,12 @@ TEST_CASE(
         const std::vector<RegexTemplate> extras{extra};
         loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
 
-        const ParserStreamFn parserStream = [&pattern](
-                                                FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                                            ) { RegexParser{pattern}.ParseStreaming(source, sink, options); };
+        const ParserStreamFn parserStream =
+            [&extra](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+                RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.ParseStreaming(
+                    source, sink, options
+                );
+            };
 
         const StreamingRunResult run =
             RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);
