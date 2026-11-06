@@ -14,6 +14,7 @@ add_executable(
     "src/benchmark_session_bundle.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"
+    "src/parse_only.cpp"
     "src/test_auto_detect_parser.cpp"
     "src/test_batch_contract.cpp"
     "src/test_column_projection.cpp"

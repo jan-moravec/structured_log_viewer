@@ -20,7 +20,6 @@ add_library(
     STATIC
     src/parse/auto_detect_parser.cpp
     src/parse/batch_coalescer.cpp
-    src/parse/buffering_sink.cpp
     src/core/bytes_producer.cpp
     src/core/compact_log_value.cpp
     src/ingest/decompressing_byte_source.cpp
@@ -36,7 +35,6 @@ add_library(
     src/query/histogram_bucket_index.cpp
     src/core/key_index.cpp
     src/core/row_batch.cpp
-    src/parse/parse_file.cpp
     src/parse/static_parser_pipeline.cpp
     src/core/stream_line_source.cpp
     src/ingest/tailing_bytes_producer.cpp
@@ -138,7 +136,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/table/log_table.hpp
     include/loglib/table/table_loader.hpp
     include/loglib/core/log_value.hpp
-    include/loglib/parse/parse_file.hpp
     include/loglib/parse/parser_options.hpp
     include/loglib/parse/parsers/csv_parser.hpp
     include/loglib/parse/parsers/json_parser.hpp

@@ -2,8 +2,8 @@
  * @brief Base class for log format parsers.
  *
  * A parser can check whether a buffer or file looks like its format and can parse a static file or a live stream into a
- * sink. New formats derive from LogParser. The synchronous helper ParseFile in parse_file.hpp wraps this interface for
- * callers that just want the rows.
+ * sink. New formats derive from LogParser. LoadFile in output/file_loading.hpp and ParseIntoTable in
+ * table/table_loader.hpp run a parser and fill a table.
  *
  * This is part of the parse module.
  */
@@ -27,13 +27,6 @@ class FileLineSource;
 class LogParseSink;
 class StreamLineSource;
 
-/** @brief Buffered output of a synchronous parse. */
-struct ParseResult
-{
-    LogData data;
-    std::vector<ParseError> errors;
-};
-
 /**
  * @brief How many bytes of a file or stream format detection looks at. Every kind of input uses the same budget, so
  * the same bytes give the same result.
@@ -44,7 +37,7 @@ inline constexpr std::size_t PROBE_BYTES_BUDGET = 16 * 1024;
  * @brief Base class of the log format parsers.
  *
  * A new format implements IsValidBytes and both ParseStreaming overloads. IsValid for a path is not virtual. It reads
- * the head of the file and calls IsValidBytes. To parse a whole file at once, see ParseFile. The application calls
+ * the head of the file and calls IsValidBytes. To load a whole file into a table, see LoadFile. The application calls
  * ParseStreaming directly.
  */
 class LogParser

@@ -7,7 +7,7 @@
 #include <loglib/core/log_file.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>

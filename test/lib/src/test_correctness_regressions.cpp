@@ -12,7 +12,7 @@
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/internal/buffering_sink.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>

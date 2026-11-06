@@ -3,7 +3,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include "parse_only.hpp"
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>

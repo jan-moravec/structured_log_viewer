@@ -8,7 +8,7 @@
 #include "common.hpp"
 
 #include <loglib/ingest/decompressing_byte_source.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/parsers/json_parser.hpp>
 
 #include <test_common/log_format.hpp>

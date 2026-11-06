@@ -9,7 +9,7 @@
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
-#include <loglib/parse/internal/buffering_sink.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>

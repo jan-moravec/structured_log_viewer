@@ -4,7 +4,7 @@
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/parsers/json_parser.hpp>
 
 #include <test_common/temp_dir.hpp>

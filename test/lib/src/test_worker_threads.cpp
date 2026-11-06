@@ -1,6 +1,6 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_file.hpp>
-#include <loglib/parse/internal/buffering_sink.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/worker_threads.hpp>

@@ -14,7 +14,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include "parse_only.hpp"
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/table/log_table.hpp>
