@@ -21,12 +21,12 @@ FileLineSource::~FileLineSource() = default;
 
 const std::filesystem::path &FileLineSource::Path() const noexcept
 {
-    return mFile->GetPath();
+    return mFile->Path();
 }
 
 std::string FileLineSource::RawLine(size_t lineId) const
 {
-    return mFile->GetLine(lineId);
+    return mFile->RawLine(lineId);
 }
 
 std::string_view FileLineSource::ResolveMmapBytes(uint64_t offset, uint32_t length, size_t /*lineId*/) const noexcept
@@ -59,7 +59,7 @@ std::span<const char> FileLineSource::StableBytes() const noexcept
 uint64_t FileLineSource::AppendOwnedBytes(size_t /*lineId*/, std::string_view bytes)
 {
     // Forward to the session-global arena shared by every line.
-    return mFile->AppendOwnedStrings(bytes);
+    return mFile->AppendOwnedBytes(bytes);
 }
 
 bool FileLineSource::SupportsEviction() const noexcept

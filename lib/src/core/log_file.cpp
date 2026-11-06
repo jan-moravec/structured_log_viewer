@@ -82,7 +82,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
     }
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
-    // leading offset sentinel below still keeps GetLineCount() == 0 truthful.
+    // leading offset sentinel below still keeps LineCount() == 0 truthful.
     const auto size = std::filesystem::file_size(mStoragePath);
     if (size > 0)
     {
@@ -109,7 +109,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
 LogFile::LogFile(LogFile &&) noexcept = default;
 LogFile::~LogFile() = default;
 
-const std::filesystem::path &LogFile::GetPath() const
+const std::filesystem::path &LogFile::Path() const
 {
     return mPath;
 }
@@ -124,7 +124,7 @@ size_t LogFile::Size() const
     return mMapping ? mMapping->mmap.size() : 0;
 }
 
-std::string LogFile::GetLine(size_t lineNumber) const
+std::string LogFile::RawLine(size_t lineNumber) const
 {
     if (lineNumber + 1 >= mLineOffsets.size())
     {
@@ -168,7 +168,7 @@ std::string LogFile::GetLine(size_t lineNumber) const
     return buffer;
 }
 
-size_t LogFile::GetLineCount() const
+size_t LogFile::LineCount() const
 {
     return mLineOffsets.size() - 1;
 }
@@ -204,7 +204,7 @@ std::string_view LogFile::OwnedString(uint64_t offset, uint64_t length) const no
     return mOwnedStrings->View(offset, length);
 }
 
-uint64_t LogFile::AppendOwnedStrings(std::string_view bytes)
+uint64_t LogFile::AppendOwnedBytes(std::string_view bytes)
 {
     return mOwnedStrings->Append(bytes);
 }

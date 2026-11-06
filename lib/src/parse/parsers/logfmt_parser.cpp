@@ -436,7 +436,7 @@ void DecodeLogfmtBatch(
             line.remove_prefix(UTF8_BOM.size());
         }
 
-        // `GetLine` subtracts 1 (the '\n'); for an unterminated last
+        // `RawLine` subtracts 1 (the '\n'); for an unterminated last
         // line push `fileSize + 1` so we don't lose the final char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);

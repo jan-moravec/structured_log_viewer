@@ -287,7 +287,7 @@ void DecodeRegexBatch(
         }
 
         // Pad by 1 on an unterminated last line so the final
-        // byte isn't lost on `LogFile::GetLine` round-trips
+        // byte isn't lost on `LogFile::RawLine` round-trips
         // (matches the CSV pipeline).
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1U : 0U);
         parsed.localLineOffsets.push_back(nextOffset);

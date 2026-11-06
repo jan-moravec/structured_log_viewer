@@ -113,7 +113,7 @@ public:
                 const char *lineEnd = (newline != nullptr) ? newline : end;
                 cur = (newline != nullptr) ? newline + 1 : end;
 
-                // Match `LogFile::GetLine`'s `stopOffset - startOffset - 1` length
+                // Match `LogFile::RawLine`'s `stopOffset - startOffset - 1` length
                 // formula: when the last line of the file is unterminated, push
                 // `fileSize + 1` so the final character isn't trimmed off.
                 const uint64_t nextOffset = static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
@@ -198,7 +198,7 @@ public:
 
                 // 0-based offset within the batch so that, after Stage C
                 // shifts every line's id by the running line cursor (via
-                // `LogLine::ShiftLineId`), `LogFile::GetLine(N)` round-trips
+                // `LogLine::ShiftLineId`), `LogFile::RawLine(N)` round-trips
                 // the source bytes for the line.
                 LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));

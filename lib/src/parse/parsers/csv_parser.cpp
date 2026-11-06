@@ -270,7 +270,7 @@ void DecodeCsvBatch(
         std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
         line = StripCr(line);
 
-        // `GetLine` subtracts 1 for the '\n'; pad by 1 on an unterminated
+        // `RawLine` subtracts 1 for the '\n'; pad by 1 on an unterminated
         // last line so the final byte isn't lost.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);

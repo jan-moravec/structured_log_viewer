@@ -40,7 +40,7 @@ TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLin
     CHECK(source.RawLine(1) == "Line 2");
     CHECK(source.RawLine(2) == "Line 3");
 
-    // Mirrors `LogFile::GetLine`'s out-of-range contract.
+    // Mirrors `LogFile::RawLine`'s out-of-range contract.
     CHECK_THROWS_AS(source.RawLine(3), std::out_of_range);
 }
 
@@ -99,8 +99,8 @@ TEST_CASE("FileLineSource: ResolveOwnedBytes indexes into the LogFile owned-stri
     testLogFile.Write("x\n");
     auto logFile = testLogFile.CreateLogFile();
 
-    const auto firstOffset = logFile->AppendOwnedStrings("first");
-    const auto secondOffset = logFile->AppendOwnedStrings("second");
+    const auto firstOffset = logFile->AppendOwnedBytes("first");
+    const auto secondOffset = logFile->AppendOwnedBytes("second");
     REQUIRE(firstOffset == 0);
     REQUIRE(secondOffset == 5);
 

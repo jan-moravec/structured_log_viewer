@@ -1165,7 +1165,7 @@ TEST_CASE(
     REQUIRE(table.Data().FrontFileSource() == sourceAPtr);
     REQUIRE(table.Data().BackFileSource() == sourceAPtr);
 
-    const size_t fileAOffsetCountBefore = sourceAPtr->File().GetLineCount();
+    const size_t fileAOffsetCountBefore = sourceAPtr->File().LineCount();
 
     // Append a second file. Existing rows / KeyIndex / column cache must
     // survive.
@@ -1198,8 +1198,8 @@ TEST_CASE(
 
     // The new offset landed in fileB, leaving fileA's offset table
     // untouched.
-    CHECK(sourceAPtr->File().GetLineCount() == fileAOffsetCountBefore);
-    CHECK(sourceBPtr->File().GetLineCount() == 1);
+    CHECK(sourceAPtr->File().LineCount() == fileAOffsetCountBefore);
+    CHECK(sourceBPtr->File().LineCount() == 1);
 
     // Cross-file row resolution: row 0 came from fileA, row 1 from fileB.
     const auto &line0 = table.Data().Lines()[0];

@@ -819,11 +819,11 @@ TEST_CASE(
     CHECK(m0->contains("Wibble.java:99"));
 
     const LogFile &parsedFile = sourcePtr->File();
-    REQUIRE(parsedFile.GetLineCount() == 5);
-    CHECK(parsedFile.GetLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
-    CHECK(parsedFile.GetLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
-    CHECK(parsedFile.GetLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
-    CHECK(parsedFile.GetLine(4) == "info recovered");
+    REQUIRE(parsedFile.LineCount() == 5);
+    CHECK(parsedFile.RawLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.RawLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
+    CHECK(parsedFile.RawLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
+    CHECK(parsedFile.RawLine(4) == "info recovered");
 
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("error boom"));
@@ -882,10 +882,10 @@ TEST_CASE(
     REQUIRE(data.Lines().size() == 2);
 
     const LogFile &parsedFile = sourcePtr->File();
-    REQUIRE(parsedFile.GetLineCount() == 4);
-    CHECK(parsedFile.GetLine(1).empty());
-    CHECK(parsedFile.GetLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
-    CHECK(parsedFile.GetLine(3) == "info recovered");
+    REQUIRE(parsedFile.LineCount() == 4);
+    CHECK(parsedFile.RawLine(1).empty());
+    CHECK(parsedFile.RawLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.RawLine(3) == "info recovered");
 
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("error boom"));

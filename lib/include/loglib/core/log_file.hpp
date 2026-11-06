@@ -55,7 +55,7 @@ public:
     LogFile &operator=(LogFile &&) noexcept = delete;
 
     /** @brief The path to report to the user, which can differ from the path that is mapped. */
-    const std::filesystem::path &GetPath() const;
+    const std::filesystem::path &Path() const;
 
     /** @brief Start of the mapped bytes, or null when nothing is mapped. */
     const char *Data() const;
@@ -68,9 +68,9 @@ public:
      * For the first line of a multi-line record the result covers the whole record. Throws std::out_of_range when
      * lineNumber is past the last line.
      */
-    std::string GetLine(size_t lineNumber) const;
+    std::string RawLine(size_t lineNumber) const;
 
-    size_t GetLineCount() const;
+    size_t LineCount() const;
 
     /** @brief Reserves room for count line offsets, to avoid regrowing while a parse appends them. */
     void ReserveLineOffsets(size_t count);
@@ -101,14 +101,14 @@ public:
      *
      * Safe to call while another thread appends. The view stays valid for the lifetime of the file.
      *
-     * @param offset Offset returned by AppendOwnedStrings.
+     * @param offset Offset returned by AppendOwnedBytes.
      * @param length Number of bytes.
      * @return The bytes, or an empty view when the range was never stored.
      */
     [[nodiscard]] std::string_view OwnedString(uint64_t offset, uint64_t length) const noexcept;
 
     /** @brief Appends bytes to the owned-string arena and returns the offset of the first one. Safe from any thread. */
-    uint64_t AppendOwnedStrings(std::string_view bytes);
+    uint64_t AppendOwnedBytes(std::string_view bytes);
 
     /**
      * @brief Adds bytes to the end of an owned string, in place, when that string is the newest data in the arena.

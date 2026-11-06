@@ -15,29 +15,29 @@ TEST_CASE("Successfully open a valid log file", "[LogFile]")
 
     // Verify successful file opening
     const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    CHECK(logFile->GetPath() == testLogFile.GetFilePath());
+    CHECK(logFile->Path() == testLogFile.GetFilePath());
 
     // Verify we can read the lines
-    CHECK(logFile->GetLine(0) == "Line 1");
-    CHECK(logFile->GetLine(1) == "Line 2");
-    CHECK(logFile->GetLine(2) == "Line 3");
+    CHECK(logFile->RawLine(0) == "Line 1");
+    CHECK(logFile->RawLine(1) == "Line 2");
+    CHECK(logFile->RawLine(2) == "Line 3");
 
     // Verify we can't read beyond the end of the file
-    CHECK_THROWS_AS(logFile->GetLine(3), std::out_of_range);
+    CHECK_THROWS_AS(logFile->RawLine(3), std::out_of_range);
 }
 
 TEST_CASE("Read last line without trailing newline", "[LogFile]")
 {
     // The last line of a file may not end with '\n'; JsonParser handles that by pushing a
-    // virtual terminator one byte past EOF. Verify GetLine still returns the full content.
+    // virtual terminator one byte past EOF. Verify RawLine still returns the full content.
     const TestLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2");
 
     const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
 
-    CHECK(logFile->GetLineCount() == 2);
-    CHECK(logFile->GetLine(0) == "Line 1");
-    CHECK(logFile->GetLine(1) == "Line 2");
+    CHECK(logFile->LineCount() == 2);
+    CHECK(logFile->RawLine(0) == "Line 1");
+    CHECK(logFile->RawLine(1) == "Line 2");
 }
 
 TEST_CASE("Read lines from file with CRLF line endings", "[LogFile]")
@@ -49,9 +49,9 @@ TEST_CASE("Read lines from file with CRLF line endings", "[LogFile]")
 
     const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
 
-    CHECK(logFile->GetLine(0) == "Line 1");
-    CHECK(logFile->GetLine(1) == "Line 2");
-    CHECK(logFile->GetLine(2) == "Line 3");
+    CHECK(logFile->RawLine(0) == "Line 1");
+    CHECK(logFile->RawLine(1) == "Line 2");
+    CHECK(logFile->RawLine(2) == "Line 3");
 }
 
 TEST_CASE("Throw IoError when opening a non-existent file", "[LogFile]")
@@ -65,10 +65,10 @@ TEST_CASE("LogFile opens an empty file without mapping bytes", "[LogFile]")
     testLogFile.Write("");
 
     const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    CHECK(logFile->GetPath() == testLogFile.GetFilePath());
+    CHECK(logFile->Path() == testLogFile.GetFilePath());
     CHECK(logFile->Size() == 0);
-    CHECK(logFile->GetLineCount() == 0);
-    CHECK_THROWS_AS(logFile->GetLine(0), std::out_of_range);
+    CHECK(logFile->LineCount() == 0);
+    CHECK_THROWS_AS(logFile->RawLine(0), std::out_of_range);
 }
 
 // The mapped pointer must survive move so downstream `LogValue`s keep
@@ -103,15 +103,15 @@ TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-sta
     const std::string movedSnapshot(moved.Data(), moved.Size());
     CHECK(movedSnapshot == snapshot);
 
-    CHECK(moved.GetLine(0) == "Line 1");
-    CHECK(moved.GetLine(1) == "Line 2");
-    CHECK(moved.GetLine(2) == "Line 3");
+    CHECK(moved.RawLine(0) == "Line 1");
+    CHECK(moved.RawLine(1) == "Line 2");
+    CHECK(moved.RawLine(2) == "Line 3");
 
     // Drop the original wrapper to exercise its (now-empty) dtor.
     original.reset();
 
     CHECK(moved.Data() == originalData);
-    CHECK(moved.GetLine(0) == "Line 1");
+    CHECK(moved.RawLine(0) == "Line 1");
 }
 
 // Regression: `AttachLifetimeAnchor` used to overwrite the previous
@@ -168,7 +168,7 @@ TEST_CASE("LogFile: AttachLifetimeAnchor composes multiple anchors", "[LogFile]"
     CHECK(secondDestructed == 1);
 }
 
-TEST_CASE("LogFile: RegisterMultiLineRecord widens GetLine span", "[LogFile][multiline]")
+TEST_CASE("LogFile: RegisterMultiLineRecord widens RawLine span", "[LogFile][multiline]")
 {
     const TestLogFile testLogFile;
     testLogFile.Write(
@@ -180,23 +180,23 @@ TEST_CASE("LogFile: RegisterMultiLineRecord widens GetLine span", "[LogFile][mul
     );
 
     auto logFile = testLogFile.CreateLogFile();
-    REQUIRE(logFile->GetLineCount() == 5);
+    REQUIRE(logFile->LineCount() == 5);
 
-    CHECK(logFile->GetLine(0) == "level=info msg=first");
-    CHECK(logFile->GetLine(1) == "\tframe A1");
-    CHECK(logFile->GetLine(2) == "\tframe A2");
+    CHECK(logFile->RawLine(0) == "level=info msg=first");
+    CHECK(logFile->RawLine(1) == "\tframe A1");
+    CHECK(logFile->RawLine(2) == "\tframe A2");
     CHECK(logFile->HasMultiLineRecords() == false);
 
     logFile->RegisterMultiLineRecord(0, 2);
     logFile->RegisterMultiLineRecord(3, 4);
     CHECK(logFile->HasMultiLineRecords() == true);
 
-    CHECK(logFile->GetLine(0) == "level=info msg=first\n\tframe A1\n\tframe A2");
-    CHECK(logFile->GetLine(3) == "level=warn msg=second\n\tframe B1");
+    CHECK(logFile->RawLine(0) == "level=info msg=first\n\tframe A1\n\tframe A2");
+    CHECK(logFile->RawLine(3) == "level=warn msg=second\n\tframe B1");
 
-    CHECK(logFile->GetLine(1) == "\tframe A1");
-    CHECK(logFile->GetLine(2) == "\tframe A2");
-    CHECK(logFile->GetLine(4) == "\tframe B1");
+    CHECK(logFile->RawLine(1) == "\tframe A1");
+    CHECK(logFile->RawLine(2) == "\tframe A2");
+    CHECK(logFile->RawLine(4) == "\tframe B1");
 }
 
 TEST_CASE("LogFile: RegisterMultiLineRecord single-line span is a no-op", "[LogFile][multiline]")
@@ -207,7 +207,7 @@ TEST_CASE("LogFile: RegisterMultiLineRecord single-line span is a no-op", "[LogF
     auto logFile = testLogFile.CreateLogFile();
     logFile->RegisterMultiLineRecord(1, 1);
 
-    CHECK(logFile->GetLine(0) == "Line 1");
-    CHECK(logFile->GetLine(1) == "Line 2");
-    CHECK(logFile->GetLine(2) == "Line 3");
+    CHECK(logFile->RawLine(0) == "Line 1");
+    CHECK(logFile->RawLine(1) == "Line 2");
+    CHECK(logFile->RawLine(2) == "Line 3");
 }

@@ -719,11 +719,11 @@ TEST_CASE(
     CHECK(m0->contains("/app/main.go:10"));
 
     const LogFile &parsedFile = sourcePtr->File();
-    REQUIRE(parsedFile.GetLineCount() == 5);
-    CHECK(parsedFile.GetLine(1) == "\tgoroutine 1 [running]:");
-    CHECK(parsedFile.GetLine(2) == "\tmain.main()");
-    CHECK(parsedFile.GetLine(3) == "\t/app/main.go:10 +0x1a");
-    CHECK(parsedFile.GetLine(4) == "level=info msg=\"recovered\"");
+    REQUIRE(parsedFile.LineCount() == 5);
+    CHECK(parsedFile.RawLine(1) == "\tgoroutine 1 [running]:");
+    CHECK(parsedFile.RawLine(2) == "\tmain.main()");
+    CHECK(parsedFile.RawLine(3) == "\t/app/main.go:10 +0x1a");
+    CHECK(parsedFile.RawLine(4) == "level=info msg=\"recovered\"");
 
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("boom"));
@@ -769,10 +769,10 @@ TEST_CASE(
     REQUIRE(data.Lines().size() == 2);
 
     const LogFile &parsedFile = sourcePtr->File();
-    REQUIRE(parsedFile.GetLineCount() == 4);
-    CHECK(parsedFile.GetLine(1).empty());
-    CHECK(parsedFile.GetLine(2) == "\tgoroutine 1 [running]:");
-    CHECK(parsedFile.GetLine(3) == "level=info msg=\"recovered\"");
+    REQUIRE(parsedFile.LineCount() == 4);
+    CHECK(parsedFile.RawLine(1).empty());
+    CHECK(parsedFile.RawLine(2) == "\tgoroutine 1 [running]:");
+    CHECK(parsedFile.RawLine(3) == "level=info msg=\"recovered\"");
 
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("boom"));

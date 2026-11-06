@@ -226,7 +226,7 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
     auto logFile = std::make_unique<LogFile>(mFsPath);
 
     // Push one offset per '\n'; for an unterminated last line, push
-    // `fileSize + 1` as the virtual terminator (see LogFile::GetLine).
+    // `fileSize + 1` as the virtual terminator (see LogFile::RawLine).
     char ch = '\0';
     std::size_t pos = 0;
     std::vector<uint64_t> lineEnds;

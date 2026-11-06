@@ -530,7 +530,7 @@ void DecodeJsonBatch(
             line.remove_suffix(1);
         }
 
-        // `GetLine` subtracts 1 (the '\n'); for an unterminated final
+        // `RawLine` subtracts 1 (the '\n'); for an unterminated final
         // line push `fileSize + 1` so we don't lop off the last char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -611,7 +611,7 @@ void DecodeJsonBatch(
             }
 
             // 0-based intra-batch offset; Stage C shifts by the
-            // running cursor so `LogFile::GetLine(LineId())` indexes
+            // running cursor so `LogFile::RawLine(LineId())` indexes
             // `mLineOffsets` correctly. `relativeLineNumber` stays
             // 1-based for human-facing error messages.
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
