@@ -107,7 +107,7 @@ TEST_CASE("EnumInference encodes a pinned Enumeration column as DictRef", "[enum
     auto makeLine = [&](const std::string &value) {
         std::vector<std::pair<KeyId, LogValue>> sorted;
         sorted.emplace_back(keys.GetOrInsert("status"), LogValue{value});
-        return LogLine(std::move(sorted), keys, sourceRef, lines.size());
+        return LogLine(std::move(sorted), sourceRef, lines.size());
     };
     lines.push_back(makeLine("ok"));
     lines.push_back(makeLine("fail"));

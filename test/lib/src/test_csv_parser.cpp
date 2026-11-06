@@ -147,10 +147,19 @@ TEST_CASE("Parse minimal CSV [csv]", "[csv_parser]")
     auto result = loglib::ParseSource(parser, MemorySource("level,message\ninfo,hello\nerror,boom\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("message")) == std::string_view{"hello"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("level")) == std::string_view{"error"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("message")) == std::string_view{"boom"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "message")) ==
+        std::string_view{"hello"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "level")) == std::string_view{"error"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "message")) == std::string_view{"boom"}
+    );
 }
 
 TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
@@ -169,16 +178,16 @@ TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
     REQUIRE(result.data.Lines().size() == 1);
 
     const auto &row = result.data.Lines()[0];
-    CHECK(std::get<std::int64_t>(row.GetValue("i")) == -12);
-    CHECK(std::get<std::uint64_t>(row.GetValue("u")) == 10000000000000000000ULL);
-    CHECK(std::get<double>(row.GetValue("d")) == Catch::Approx(3.14));
-    CHECK(std::get<bool>(row.GetValue("b")) == true);
-    CHECK(std::get<bool>(row.GetValue("f")) == false);
+    CHECK(std::get<std::int64_t>(row.GetValue(result.data.Keys(), "i")) == -12);
+    CHECK(std::get<std::uint64_t>(row.GetValue(result.data.Keys(), "u")) == 10000000000000000000ULL);
+    CHECK(std::get<double>(row.GetValue(result.data.Keys(), "d")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(row.GetValue(result.data.Keys(), "b")) == true);
+    CHECK(std::get<bool>(row.GetValue(result.data.Keys(), "f")) == false);
     // Empty cell `n` -> omitted from the row; lookup yields monostate.
-    CHECK(std::holds_alternative<std::monostate>(row.GetValue("n")));
-    CHECK_FALSE(row.Values().contains("n"));
+    CHECK(std::holds_alternative<std::monostate>(row.GetValue(result.data.Keys(), "n")));
+    CHECK_FALSE(row.Values(result.data.Keys()).contains("n"));
     // Quoted `"42"` stays a string.
-    CHECK(loglib::AsStringView(row.GetValue("q")) == std::string_view{"42"});
+    CHECK(loglib::AsStringView(row.GetValue(result.data.Keys(), "q")) == std::string_view{"42"});
 }
 
 TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parser]")
@@ -197,8 +206,10 @@ TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parse
     );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("text")) == std::string_view{"a,b"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("text")) == std::string_view{"a\"b"});
+    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "text")) == std::string_view{"a,b"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "text")) == std::string_view{"a\"b"}
+    );
 }
 
 TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
@@ -256,16 +267,16 @@ TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monost
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(std::get<std::uint64_t>(row0.GetValue("a")) == 1u);
-    CHECK(std::holds_alternative<std::monostate>(row0.GetValue("b")));
-    CHECK_FALSE(row0.Values().contains("b"));
-    CHECK(std::get<std::uint64_t>(row0.GetValue("c")) == 3u);
+    CHECK(std::get<std::uint64_t>(row0.GetValue(result.data.Keys(), "a")) == 1u);
+    CHECK(std::holds_alternative<std::monostate>(row0.GetValue(result.data.Keys(), "b")));
+    CHECK_FALSE(row0.Values(result.data.Keys()).contains("b"));
+    CHECK(std::get<std::uint64_t>(row0.GetValue(result.data.Keys(), "c")) == 3u);
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(std::get<std::uint64_t>(row1.GetValue("a")) == 4u);
-    CHECK(std::get<std::uint64_t>(row1.GetValue("b")) == 5u);
-    CHECK(std::holds_alternative<std::monostate>(row1.GetValue("c")));
-    CHECK_FALSE(row1.Values().contains("c"));
+    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "a")) == 4u);
+    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "b")) == 5u);
+    CHECK(std::holds_alternative<std::monostate>(row1.GetValue(result.data.Keys(), "c")));
+    CHECK_FALSE(row1.Values(result.data.Keys()).contains("c"));
 }
 
 TEST_CASE("UTF-8 BOM on the header is stripped [csv]", "[csv_parser]")
@@ -278,7 +289,9 @@ TEST_CASE("UTF-8 BOM on the header is stripped [csv]", "[csv_parser]")
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"}
+    );
 }
 
 TEST_CASE("CRLF line endings work [csv]", "[csv_parser]")
@@ -288,8 +301,8 @@ TEST_CASE("CRLF line endings work [csv]", "[csv_parser]")
     auto result = loglib::ParseSource(parser, MemorySource("a,b\r\n1,2\r\n3,4\r\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(std::get<std::uint64_t>(result.data.Lines()[0].GetValue("b")) == 2u);
-    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue("b")) == 4u);
+    CHECK(std::get<std::uint64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "b")) == 2u);
+    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "b")) == 4u);
 }
 
 TEST_CASE("Last data line lacks trailing newline [csv]", "[csv_parser]")
@@ -299,8 +312,8 @@ TEST_CASE("Last data line lacks trailing newline [csv]", "[csv_parser]")
     auto result = loglib::ParseSource(parser, MemorySource("a,b\n1,2\n3,4"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue("a")) == 3u);
-    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue("b")) == 4u);
+    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "a")) == 3u);
+    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "b")) == 4u);
 }
 
 TEST_CASE("LineSource::RawLine alignment skips the header [csv]", "[csv_parser]")
@@ -329,7 +342,10 @@ TEST_CASE("Parse file via FactoryParser auto-detect [csv]", "[csv_parser]")
     auto result = loglib::ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("message")) == std::string_view{"hello"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "message")) ==
+        std::string_view{"hello"}
+    );
 }
 
 // Pins the CSV writer in `test_common` to what `CsvParser` reads back.
@@ -368,18 +384,18 @@ TEST_CASE(
     REQUIRE(result.data.Lines().size() == 1);
 
     const auto &row = result.data.Lines()[0];
-    CHECK(AsStringView(row.GetValue("bare")) == std::string_view{"info"});
-    CHECK(AsStringView(row.GetValue("spaced")) == std::string_view{"hello world"});
-    CHECK(AsStringView(row.GetValue("with_comma")) == std::string_view{"a,b"});
-    CHECK(AsStringView(row.GetValue("with_quote")) == std::string_view{"a\"b"});
-    CHECK(std::get<std::int64_t>(row.GetValue("ineg")) == -42);
-    CHECK(std::get<std::uint64_t>(row.GetValue("upos")) == 10000000000000000000ULL);
-    CHECK(std::get<double>(row.GetValue("dbl")) == Catch::Approx(3.14));
-    CHECK(std::get<bool>(row.GetValue("btrue")) == true);
-    CHECK(std::get<bool>(row.GetValue("bfalse")) == false);
+    CHECK(AsStringView(row.GetValue(result.data.Keys(), "bare")) == std::string_view{"info"});
+    CHECK(AsStringView(row.GetValue(result.data.Keys(), "spaced")) == std::string_view{"hello world"});
+    CHECK(AsStringView(row.GetValue(result.data.Keys(), "with_comma")) == std::string_view{"a,b"});
+    CHECK(AsStringView(row.GetValue(result.data.Keys(), "with_quote")) == std::string_view{"a\"b"});
+    CHECK(std::get<std::int64_t>(row.GetValue(result.data.Keys(), "ineg")) == -42);
+    CHECK(std::get<std::uint64_t>(row.GetValue(result.data.Keys(), "upos")) == 10000000000000000000ULL);
+    CHECK(std::get<double>(row.GetValue(result.data.Keys(), "dbl")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(row.GetValue(result.data.Keys(), "btrue")) == true);
+    CHECK(std::get<bool>(row.GetValue(result.data.Keys(), "bfalse")) == false);
     // null -> empty cell -> omitted from the row.
-    CHECK(std::holds_alternative<std::monostate>(row.GetValue("nullv")));
-    CHECK_FALSE(row.Values().contains("nullv"));
+    CHECK(std::holds_alternative<std::monostate>(row.GetValue(result.data.Keys(), "nullv")));
+    CHECK_FALSE(row.Values(result.data.Keys()).contains("nullv"));
 }
 
 TEST_CASE("test_common::Csv() round-trips the generator's record shape end-to-end [csv]", "[csv_parser][round_trip]")
@@ -415,7 +431,7 @@ TEST_CASE("test_common::Csv() round-trips the generator's record shape end-to-en
     for (std::size_t i = 0; i < LINE_COUNT; ++i)
     {
         INFO("row " << i);
-        const auto values = result.data.Lines()[i].Values();
+        const auto values = result.data.Lines()[i].Values(result.data.Keys());
         const auto &record = fixtureRecords[i];
         REQUIRE(record.is_object());
 
@@ -522,14 +538,14 @@ TEST_CASE("Duplicate CSV column names are silently renamed [csv]", "[csv_parser]
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(std::get<std::uint64_t>(row0.GetValue("id")) == 1u);
-    CHECK(AsStringView(row0.GetValue("name")) == std::string_view{"foo"});
-    CHECK(std::get<std::uint64_t>(row0.GetValue("id_2")) == 2u);
+    CHECK(std::get<std::uint64_t>(row0.GetValue(result.data.Keys(), "id")) == 1u);
+    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "name")) == std::string_view{"foo"});
+    CHECK(std::get<std::uint64_t>(row0.GetValue(result.data.Keys(), "id_2")) == 2u);
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(std::get<std::uint64_t>(row1.GetValue("id")) == 3u);
-    CHECK(AsStringView(row1.GetValue("name")) == std::string_view{"bar"});
-    CHECK(std::get<std::uint64_t>(row1.GetValue("id_2")) == 4u);
+    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "id")) == 3u);
+    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "name")) == std::string_view{"bar"});
+    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "id_2")) == 4u);
 }
 
 TEST_CASE("Duplicate CSV column names skip already-taken suffixes [csv]", "[csv_parser]")
@@ -544,7 +560,7 @@ TEST_CASE("Duplicate CSV column names skip already-taken suffixes [csv]", "[csv_
     REQUIRE(result.data.Lines().size() == 1);
 
     const auto &row = result.data.Lines()[0];
-    CHECK(std::get<std::uint64_t>(row.GetValue("id")) == 1u);
-    CHECK(std::get<std::uint64_t>(row.GetValue("id_2")) == 2u);
-    CHECK(std::get<std::uint64_t>(row.GetValue("id_3")) == 3u);
+    CHECK(std::get<std::uint64_t>(row.GetValue(result.data.Keys(), "id")) == 1u);
+    CHECK(std::get<std::uint64_t>(row.GetValue(result.data.Keys(), "id_2")) == 2u);
+    CHECK(std::get<std::uint64_t>(row.GetValue(result.data.Keys(), "id_3")) == 3u);
 }

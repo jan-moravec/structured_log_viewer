@@ -797,7 +797,7 @@ loglib::RowBatch MakeSyntheticBatch(
         Q_UNUSED(publishedId);
         std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
         compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
-        batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
+        batch.lines.emplace_back(std::move(compactValues), streamSource, lineId);
     }
     return batch;
 }
@@ -1663,7 +1663,7 @@ private slots:
                 const loglib::KeyId keyId = keys.GetOrInsert("a");
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-                loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
+                loglib::LogLine line(std::move(values), *sourcePtr, 1);
                 loglib::RowBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
@@ -1744,7 +1744,7 @@ private slots:
                 const loglib::KeyId keyId = keys.GetOrInsert("a");
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-                loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
+                loglib::LogLine line(std::move(values), *sourcePtr, 1);
                 loglib::RowBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
@@ -1980,7 +1980,7 @@ private slots:
                     (static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch)) + static_cast<size_t>(i) + size_t{1};
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
-                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
+                batch.lines.emplace_back(std::move(values), *sourcePtr, lineNumber);
                 cursorOffset += 16;
                 batch.localLineOffsets.push_back(static_cast<uint64_t>(cursorOffset));
             }
@@ -2436,7 +2436,7 @@ private slots:
                 const size_t lineNumber = i + 1;
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineNumber)});
-                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
+                batch.lines.emplace_back(std::move(values), *sourcePtr, lineNumber);
                 batch.localLineOffsets.push_back(lineNumber * 16);
             }
             sink->OnBatch(std::move(batch));
@@ -2464,7 +2464,7 @@ private slots:
                 static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
                 std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
                 compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
-                batch.lines.emplace_back(std::move(compactValues), keys, liveTailSource, lineId);
+                batch.lines.emplace_back(std::move(compactValues), liveTailSource, lineId);
             }
             sink->OnBatch(std::move(batch));
         }
@@ -8996,7 +8996,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("lvl"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
         {
             loglib::RowBatch batch;
@@ -9292,7 +9292,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: 2x "info" promotes `level` (stream threshold = 2).
@@ -9388,7 +9388,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1 promotes "category" (stream threshold = 2).
@@ -9449,7 +9449,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // One batch, five rows: the candidate scan early-bails after
@@ -9523,7 +9523,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: 2x `info` + 1x `warn` promotes through Enumeration
@@ -9608,7 +9608,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: two "info" rows promote `level`. Dict size 1;
@@ -15584,7 +15584,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         {
@@ -16990,7 +16990,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: dict_v1 = {"info" -> 0, "warn" -> 1}.
@@ -17080,7 +17080,7 @@ private slots:
             const auto makeLine = [&](const std::string &value) {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-                return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+                return loglib::LogLine{std::move(values), *sourcePtr, 0};
             };
 
             loglib::RowBatch batch;
@@ -17189,7 +17189,7 @@ private slots:
             const auto makeLine = [&](const std::string &value) {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-                return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+                return loglib::LogLine{std::move(values), *sourcePtr, 0};
             };
             loglib::RowBatch batch;
             batch.firstLineNumber = 1;
@@ -20847,7 +20847,7 @@ private slots:
             {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keys.GetOrInsert("msg"), loglib::LogValue(std::string("msg-") + std::to_string(i)));
-                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, static_cast<size_t>(i));
+                batch.lines.emplace_back(std::move(values), *sourcePtr, static_cast<size_t>(i));
             }
             model->AppendBatch(std::move(batch));
         }
@@ -21507,7 +21507,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("mycol"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: one row keeps `mycol` below
@@ -21613,12 +21613,12 @@ private slots:
         const auto makeColARow = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("colA"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
         const auto makeColBRow = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("colB"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: promote colA to Enumeration via the streaming
@@ -21726,7 +21726,7 @@ private slots:
             {
                 values.emplace_back(keys.GetOrInsert(k), loglib::LogValue(v));
             }
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: `colA` gets exactly one presence (stays a

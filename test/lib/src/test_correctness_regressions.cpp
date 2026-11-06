@@ -304,7 +304,7 @@ TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed
     const ParseResult result = ParseText(dir, JsonParser{}, "{\"id\":123456789012345678901234567890}\n");
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    const LogValue value = result.data.Lines()[0].GetValue(std::string("id"));
+    const LogValue value = result.data.Lines()[0].GetValue(result.data.Keys(), "id");
     const auto text = AsStringView(value);
     REQUIRE(text.has_value());
     CHECK(*text == "123456789012345678901234567890");
@@ -320,8 +320,8 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
     );
     REQUIRE(result.data.Lines().size() == 1);
     const LogLine &line = result.data.Lines()[0];
-    const auto text = [&line](const char *key) {
-        const LogValue value = line.GetValue(std::string(key));
+    const auto text = [&line, &result](const char *key) {
+        const LogValue value = line.GetValue(result.data.Keys(), key);
         return std::string(AsStringView(value).value_or("<not a string>"));
     };
     CHECK(text("zip") == "007");
@@ -329,9 +329,9 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
     CHECK(text("neg") == "-007");
     CHECK(text("small") == "-99999999999999999999");
     CHECK(text("plus") == "+5");
-    CHECK(std::holds_alternative<uint64_t>(line.GetValue(std::string("n"))));
-    CHECK(std::holds_alternative<double>(line.GetValue(std::string("f"))));
-    CHECK(std::holds_alternative<uint64_t>(line.GetValue(std::string("z"))));
+    CHECK(std::holds_alternative<uint64_t>(line.GetValue(result.data.Keys(), "n")));
+    CHECK(std::holds_alternative<double>(line.GetValue(result.data.Keys(), "f")));
+    CHECK(std::holds_alternative<uint64_t>(line.GetValue(result.data.Keys(), "z")));
 }
 
 TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
@@ -413,7 +413,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
     const auto makeLine = [&](LineSource &source, size_t lineId, const char *text) {
         std::vector<std::pair<KeyId, LogValue>> values;
         values.emplace_back(valueKey, LogValue{std::string(text)});
-        return LogLine(std::move(values), keys, source, lineId);
+        return LogLine(std::move(values), source, lineId);
     };
 
     RowBatch fileBatch;

@@ -85,7 +85,7 @@ TEST_CASE("ComputeColumnTypeHealth is a stateless walk of borrowed rows", "[colu
             sorted.emplace_back(keys.GetOrInsert(field.first), std::move(field.second));
         }
         std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-        return LogLine(std::move(sorted), keys, sourceRef, lines.size());
+        return LogLine(std::move(sorted), sourceRef, lines.size());
     };
 
     lines.push_back(makeLine({{"value", LogValue{static_cast<int64_t>(1)}}}));

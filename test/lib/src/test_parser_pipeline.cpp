@@ -197,7 +197,7 @@ public:
                 // shifts every line's id by the running line cursor (via
                 // `LogLine::ShiftLineId`), `FileLineSource::RawLine(N)` round-trips
                 // the source bytes for the line.
-                LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
+                LogLine logLine(std::move(values), *sourcePtr, relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));
                 worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
@@ -337,7 +337,7 @@ public:
                         {
                             const size_t headerLineId = parsed.lines.back().LineId();
                             parsed.lines.pop_back();
-                            LogLine rebuilt(std::move(mutableValues), keys, *sourcePtr, headerLineId);
+                            LogLine rebuilt(std::move(mutableValues), *sourcePtr, headerLineId);
                             parsed.lines.push_back(std::move(rebuilt));
                             tailLastPhysical = relativeLineNumber - 1;
                         }
@@ -436,7 +436,7 @@ public:
                     );
                 }
 
-                LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
+                LogLine logLine(std::move(values), *sourcePtr, relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));
                 worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
@@ -684,7 +684,7 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
     std::ranges::sort(allNewKeys);
     REQUIRE(allNewKeys == std::vector<std::string>{"index", "level", "msg"});
 
-    LogValue lastIndex = sink.batches.back().lines.back().GetValue("index");
+    LogValue lastIndex = sink.batches.back().lines.back().GetValue(sink.Keys(), "index");
     REQUIRE(std::holds_alternative<std::string>(lastIndex));
     REQUIRE(std::get<std::string>(lastIndex) == std::to_string(RECORD_COUNT - 1));
 }
@@ -867,7 +867,7 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
         for (const auto &line : b.lines)
         {
             ++totalLines;
-            LogValue v = line.GetValue("ts");
+            LogValue v = line.GetValue(sink.Keys(), "ts");
             if (std::holds_alternative<loglib::TimeStamp>(v))
             {
                 ++promoted;
@@ -916,7 +916,7 @@ TEST_CASE(
     }
     REQUIRE(allLines.size() == 2);
 
-    LogValue msgA = allLines[0]->GetValue("msg");
+    LogValue msgA = allLines[0]->GetValue(sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msgA));
     const std::string &msgAStr = std::get<std::string>(msgA);
     INFO("record A msg: " << msgAStr);
@@ -924,7 +924,7 @@ TEST_CASE(
     CHECK(msgAStr.contains("frame A1"));
     CHECK(msgAStr.contains("frame A2"));
 
-    LogValue msgB = allLines[1]->GetValue("msg");
+    LogValue msgB = allLines[1]->GetValue(sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msgB));
     const std::string &msgBStr = std::get<std::string>(msgB);
     INFO("record B msg: " << msgBStr);
@@ -974,7 +974,7 @@ TEST_CASE(
     }
     REQUIRE(allLines.size() == 2);
 
-    LogValue msgA = allLines[0]->GetValue("msg");
+    LogValue msgA = allLines[0]->GetValue(sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msgA));
     const std::string &msgAStr = std::get<std::string>(msgA);
     CHECK(msgAStr.contains("first"));
@@ -1059,7 +1059,7 @@ TEST_CASE("Mock parser (multiline): final multi-line record commits at EOF", "[m
     }
     REQUIRE(allLines.size() == 1);
 
-    LogValue msg = allLines[0]->GetValue("msg");
+    LogValue msg = allLines[0]->GetValue(sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msg));
     const std::string &msgStr = std::get<std::string>(msg);
     INFO("record msg: " << msgStr);

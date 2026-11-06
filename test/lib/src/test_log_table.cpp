@@ -229,7 +229,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
     std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-    return {std::move(sorted), keys, source, 0};
+    return {std::move(sorted), source, 0};
 }
 
 // Helper that snapshots a column → KeyId range from a given KeyIndex into a RowBatch::newKeys.
@@ -986,7 +986,7 @@ RowBatch MakeStreamBatch(
 
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> compactValues;
         compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
-        batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
+        batch.lines.emplace_back(std::move(compactValues), streamSource, lineId);
     }
     return batch;
 }

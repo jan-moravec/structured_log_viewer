@@ -60,7 +60,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
     std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-    return {std::move(sorted), keys, source, 0};
+    return {std::move(sorted), source, 0};
 }
 
 struct LargeTable

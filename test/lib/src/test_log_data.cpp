@@ -34,8 +34,8 @@ TEST_CASE(
     REQUIRE(data.FrontFileSource()->Path() == testLogFile.GetFilePath());
 
     REQUIRE(data.Lines().size() == 2);
-    CHECK(std::get<std::string>(data.Lines()[0].GetValue("key1")) == "value1");
-    CHECK(std::get<int64_t>(data.Lines()[1].GetValue("key2")) == 42);
+    CHECK(std::get<std::string>(data.Lines()[0].GetValue(data.Keys(), "key1")) == "value1");
+    CHECK(std::get<int64_t>(data.Lines()[1].GetValue(data.Keys(), "key2")) == 42);
 
     const auto sortedKeys = data.SortedKeys();
     REQUIRE(sortedKeys.size() == 2);

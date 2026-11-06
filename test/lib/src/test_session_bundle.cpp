@@ -232,12 +232,12 @@ TEST_CASE("session bundle v1 exports documented metadata and typed normalized JS
     REQUIRE(restored.errors.empty());
     REQUIRE(restored.data.Lines().size() == 1);
     const loglib::LogLine &row = restored.data.Lines().front();
-    CHECK(std::get<std::int64_t>(row.GetValue("signed")) == -7);
-    CHECK(std::get<std::uint64_t>(row.GetValue("unsigned")) == UINT64_MAX);
-    CHECK(std::get<double>(row.GetValue("whole")) == Catch::Approx(2.0));
-    CHECK(std::get<double>(row.GetValue("fraction")) == Catch::Approx(2.5));
-    CHECK(std::get<bool>(row.GetValue("ok")));
-    CHECK(loglib::AsStringView(row.GetValue("msg")) == "quote: \" slash: \\ newline:\n");
+    CHECK(std::get<std::int64_t>(row.GetValue(restored.data.Keys(), "signed")) == -7);
+    CHECK(std::get<std::uint64_t>(row.GetValue(restored.data.Keys(), "unsigned")) == UINT64_MAX);
+    CHECK(std::get<double>(row.GetValue(restored.data.Keys(), "whole")) == Catch::Approx(2.0));
+    CHECK(std::get<double>(row.GetValue(restored.data.Keys(), "fraction")) == Catch::Approx(2.5));
+    CHECK(std::get<bool>(row.GetValue(restored.data.Keys(), "ok")));
+    CHECK(loglib::AsStringView(row.GetValue(restored.data.Keys(), "msg")) == "quote: \" slash: \\ newline:\n");
 }
 
 TEST_CASE("session bundle metadata preserves investigation configuration and flattens source", "[SessionBundle]")
@@ -758,8 +758,10 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     loglib::LogTable table = ParseTable(source.Path());
     // Confirm the source table contains typed timestamps.
     REQUIRE(table.Data().Lines().size() == 2);
-    const loglib::TimeStamp originalRow0 = std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue("ts"));
-    const loglib::TimeStamp originalRow1 = std::get<loglib::TimeStamp>(table.Data().Lines()[1].GetValue("ts"));
+    const loglib::TimeStamp originalRow0 =
+        std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue(table.Data().Keys(), "ts"));
+    const loglib::TimeStamp originalRow1 =
+        std::get<loglib::TimeStamp>(table.Data().Lines()[1].GetValue(table.Data().Keys(), "ts"));
 
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
@@ -770,8 +772,12 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
 
     const loglib::LogTable reloaded = ParseTable(decoded.EffectivePath());
     REQUIRE(reloaded.Data().Lines().size() == 2);
-    CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[0].GetValue("ts")) == originalRow0);
-    CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue("ts")) == originalRow1);
+    CHECK(
+        std::get<loglib::TimeStamp>(reloaded.Data().Lines()[0].GetValue(reloaded.Data().Keys(), "ts")) == originalRow0
+    );
+    CHECK(
+        std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue(reloaded.Data().Keys(), "ts")) == originalRow1
+    );
 }
 
 TEST_CASE("session bundle prepends bundle-canonical Time parseFormat to embedded configuration", "[SessionBundle]")

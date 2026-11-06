@@ -287,7 +287,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue("key")));
+        CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")));
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -309,7 +309,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key")) == std::string_view{"value"});
+        CHECK(
+            loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) ==
+            std::string_view{"value"}
+        );
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -328,7 +331,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue("key")) == LARGE_UINT);
+        CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == LARGE_UINT);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -347,7 +350,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::get<int64_t>(result.data.Lines()[0].GetValue("key")) == -12);
+        CHECK(std::get<int64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == -12);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -366,7 +369,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::get<double>(result.data.Lines()[0].GetValue("key")) == Catch::Approx(3.14));
+        CHECK(std::get<double>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == Catch::Approx(3.14));
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -385,7 +388,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         REQUIRE(result.errors.empty());
         CHECK(result.data.Lines().size() == 1);
-        CHECK(std::get<bool>(result.data.Lines()[0].GetValue("key")) == true);
+        CHECK(std::get<bool>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == true);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -413,7 +416,7 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
-    const auto values = result.data.Lines()[0].Values();
+    const auto values = result.data.Lines()[0].Values(result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values.at("null")));
     CHECK(loglib::AsStringView(values.at("string")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values.at("uinteger")) == LARGE_UINT);
@@ -455,7 +458,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
-    const auto values = result.data.Lines()[0].Values();
+    const auto values = result.data.Lines()[0].Values(result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values.at("1")));
     CHECK(loglib::AsStringView(values.at("2")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values.at("3")) == LARGE_UINT);
@@ -463,7 +466,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(std::get<double>(values.at("5")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values.at("6")) == true);
 
-    const auto values1 = result.data.Lines()[1].Values();
+    const auto values1 = result.data.Lines()[1].Values(result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values1.at("6")));
     CHECK(loglib::AsStringView(values1.at("1")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values1.at("2")) == LARGE_UINT);
@@ -471,7 +474,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(std::get<double>(values1.at("4")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values1.at("5")) == true);
 
-    const auto values2 = result.data.Lines()[2].Values();
+    const auto values2 = result.data.Lines()[2].Values(result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values2.at("5")));
     CHECK(loglib::AsStringView(values2.at("6")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values2.at("1")) == LARGE_UINT);
@@ -503,8 +506,12 @@ TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+    );
     const auto sortedKeys = result.data.SortedKeys();
     REQUIRE(sortedKeys.size() == 2);
     CHECK(sortedKeys[0] == "key1");
@@ -529,8 +536,12 @@ TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]"
 
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+    );
 
     REQUIRE(result.data.Sources().size() == 1);
     const loglib::FileLineSource &file = *result.data.FrontFileSource();
@@ -556,8 +567,12 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     );
     CHECK(result.errors.size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+    );
     const auto sortedKeys = result.data.SortedKeys();
     REQUIRE(sortedKeys.size() == 2);
     CHECK(sortedKeys[0] == "key1");
@@ -588,8 +603,12 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
     );
     CHECK(result.errors.size() == 2);
     REQUIRE(result.data.SortedKeys().size() == 2);
-    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
-    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+    );
+    CHECK(
+        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+    );
     REQUIRE(result.data.Sources().size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(result.data.FrontFileSource()->Path() == "memory.log");
@@ -662,8 +681,8 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
         const auto &rhs = multiResult.data.Lines()[row];
         for (const auto &key : singleKeys)
         {
-            const auto lv = lhs.GetValue(key);
-            const auto rv = rhs.GetValue(key);
+            const auto lv = lhs.GetValue(singleResult.data.Keys(), key);
+            const auto rv = rhs.GetValue(multiResult.data.Keys(), key);
             INFO("row=" << row << " key=" << key);
             CHECK(LogValueEquivalent(lv, rv));
         }
