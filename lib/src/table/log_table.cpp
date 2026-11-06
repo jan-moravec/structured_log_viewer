@@ -23,18 +23,9 @@
 namespace loglib
 {
 
-LogTable::LogTable(LogData data, LogConfigurationManager configuration)
-    : mData(std::move(data)), mConfiguration(std::move(configuration))
+LogTable::LogTable(LogConfiguration configuration)
 {
-    mEnum.ClearLastBatchDemotedKeys();
-    RewireSourceRegistries();
-    mEnum.RefreshSnapshot(mData, mConfiguration);
-    RefreshColumnKeyIds();
-    std::optional<size_t> firstBackfilled;
-    std::optional<size_t> lastBackfilled;
-    mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, 0U, firstBackfilled, lastBackfilled);
-    mEnum.Finalize(mData, mConfiguration);
-    BubbleLevelColumns(mEnum.TakePendingLevelBubbleKeys());
+    mConfiguration.SetConfiguration(std::move(configuration));
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -71,26 +62,6 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     return *this;
 }
 
-void LogTable::Update(LogData &&data)
-{
-    mEnum.ClearLastBatchDemotedKeys();
-    const size_t oldLineCount = mData.Lines().size();
-    mConfiguration.Update(data.SortedKeys());
-    if (!data.TimestampsAlreadyParsed())
-    {
-        ParseTimestamps(data, mConfiguration.Configuration(), mDefaultSourceTimeZone, mReferenceTime);
-    }
-    mData.Merge(std::move(data));
-    RewireSourceRegistries();
-    mEnum.RefreshSnapshot(mData, mConfiguration);
-    RefreshColumnKeyIds();
-    std::optional<size_t> firstBackfilled;
-    std::optional<size_t> lastBackfilled;
-    mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
-    mEnum.Finalize(mData, mConfiguration);
-    BubbleLevelColumns(mEnum.TakePendingLevelBubbleKeys());
-}
-
 void LogTable::Reset()
 {
     mData = LogData{};
@@ -117,14 +88,11 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
     if (source)
     {
         std::vector<LogLine> noLines;
-        LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
-        fresh.MarkTimestampsParsed();
-        mData = std::move(fresh);
+        mData = LogData(std::move(source), std::move(noLines), KeyIndex{});
     }
     else
     {
         mData = LogData{};
-        mData.MarkTimestampsParsed();
     }
 
     RewireSourceRegistries();
@@ -382,12 +350,16 @@ size_t LogTable::RowCount() const
     return mData.Lines().size();
 }
 
-const LogData &LogTable::Data() const noexcept
+BytesProducer *LogTable::LiveProducer() noexcept
 {
-    return mData;
+    if (StreamLineSource *streamSource = mData.BackStreamSource(); streamSource != nullptr)
+    {
+        return streamSource->Producer();
+    }
+    return nullptr;
 }
 
-LogData &LogTable::Data() noexcept
+const LogData &LogTable::Data() const noexcept
 {
     return mData;
 }

@@ -1,7 +1,7 @@
 #include "slp_process.hpp"
 
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/parse_file.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -145,11 +145,9 @@ void ExpectTwoLinesCount(const slp::test::CommandResult &result)
 
 [[nodiscard]] loglib::LogTable ParseFixtureTable()
 {
-    loglib::ParseResult parsed = loglib::ParseFile(FixturesDir() / "two_lines.jsonl");
-    REQUIRE(parsed.errors.empty());
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    return {std::move(parsed.data), std::move(manager)};
+    loglib::LoadResult loaded = loglib::LoadFile(FixturesDir() / "two_lines.jsonl");
+    REQUIRE(loaded.errors.empty());
+    return std::move(loaded.table);
 }
 
 } // namespace

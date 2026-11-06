@@ -6,7 +6,6 @@
 
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stop_token.hpp>
-#include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -28,16 +27,13 @@ class Console;
 /**
  * @brief Result of loading every positional source into one table.
  *
- * `ownedDecompressors` must outlive `table` while any row still
- * references decompressed backing storage. `format` is the first
- * source's resolved format. `linesConsumed` is the number of physical
- * lines read from all sources.
+ * `format` is the first source's resolved format. `linesConsumed` is the
+ * number of physical lines read from all sources.
  */
 struct LoadedTable
 {
-    loglib::LogTable table{loglib::LogData{}, loglib::LogConfigurationManager{}};
+    loglib::LogTable table;
     std::vector<loglib::ParseError> parseErrors;
-    std::vector<std::shared_ptr<loglib::DecompressingByteSource>> ownedDecompressors;
     std::optional<loglib::DetectedFormat> format;
     std::uint64_t linesConsumed = 0;
 };
@@ -85,14 +81,15 @@ void LoadUserTemplates(const GlobalOptions &global, const Console &console);
 /**
  * @brief Parser options shared by every command that parses.
  *
- * The caller sets timeColumns and defaultSourceTimeZone from its table before it parses.
+ * The time columns and the default source zone come from @p table, so the parser converts the table's Time columns.
  *
  * @param global Global flags that supply `--threads`.
  * @param input Parser flags.
+ * @param table The table the parser will fill.
  * @param stop Token the parser polls between batches.
  */
 [[nodiscard]] loglib::ParserOptions MakeParserOptions(
-    const GlobalOptions &global, const InputOptions &input, const loglib::StopToken &stop
+    const GlobalOptions &global, const InputOptions &input, const loglib::LogTable &table, const loglib::StopToken &stop
 );
 
 } // namespace slp

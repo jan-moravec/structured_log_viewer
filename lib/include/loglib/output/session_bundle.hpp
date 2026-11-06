@@ -3,8 +3,8 @@
  *
  * A session bundle is one zstd-compressed file with the extension slvbundle. Its first line holds metadata: the format
  * version, the row count and the configuration. Every following line is one row as normalized JSON. WriteSessionBundle
- * creates a bundle from a LogTable and a configuration. LooksLikeSessionBundle checks a file,
- * ParseSessionBundleMetadata reads the metadata line, and the reading code in the sources loads the rows back.
+ * creates a bundle from a LogTable and a configuration. HasSessionBundleExtension says which paths are bundles,
+ * ParseSessionBundleMetadata reads the metadata line, and OpenFileSource and LoadFile load the rows back.
  *
  * This is part of the output module.
  */
@@ -18,6 +18,7 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,11 +65,26 @@ struct SessionBundleMetadata
  * @brief Writes the metadata and every row of the table as lines of JSON, in one zstd frame with a checksum.
  *
  * The destination is replaced only after the data has been flushed to disk, so a failed write leaves an existing bundle
- * untouched.
+ * untouched. Failures throw IoError, or LimitError when the row count or a row exceeds the bundle limits.
  */
 void WriteSessionBundle(
     const LogTable &table,
     const LogConfiguration &configuration,
+    const std::filesystem::path &destination,
+    const SessionBundleWriteOptions &options = {}
+);
+
+/**
+ * @brief Writes only the given rows of the table, in the order given, and nothing else.
+ *
+ * The bundle holds exactly rows.size() rows, which can be zero, and its metadata counts them. Anchors in the
+ * configuration are renumbered to the position of their row in the bundle, and an anchor whose row is not in the list
+ * is dropped. Every number must be a valid row of the table. The table is not changed.
+ */
+void WriteSessionBundle(
+    const LogTable &table,
+    const LogConfiguration &configuration,
+    std::span<const std::size_t> rows,
     const std::filesystem::path &destination,
     const SessionBundleWriteOptions &options = {}
 );
@@ -80,10 +96,12 @@ void WriteSessionBundle(
 [[nodiscard]] SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json);
 
 /**
- * @brief True if the file is zstd data that the decoder accepts. A file that is missing, unreadable or not zstd gives
- * false.
+ * @brief True if the path has the bundle extension, compared without regard to case.
+ *
+ * This is the one rule for what a bundle is. It does not open the file, so a file with this extension that is not a
+ * valid bundle fails when it is opened, not here.
  */
-[[nodiscard]] bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept;
+[[nodiscard]] bool HasSessionBundleExtension(const std::filesystem::path &path);
 
 /** @brief The format version this build writes and reads. Any other version is rejected. */
 constexpr std::uint32_t SESSION_BUNDLE_FORMAT_VERSION = 1;

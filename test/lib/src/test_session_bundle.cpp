@@ -1,12 +1,17 @@
+
+#include "parse_only.hpp"
+
 #include <loglib/core/error.hpp>
 #include <loglib/core/internal/path_encoding.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
+#include <loglib/table/table_loader.hpp>
 
 #include <test_common/temp_dir.hpp>
 
@@ -20,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -141,24 +147,25 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
 
 [[nodiscard]] loglib::LogTable ParseTable(const std::filesystem::path &path)
 {
-    loglib::ParseResult parsed = loglib::ParseFile(path);
-    REQUIRE(parsed.errors.empty());
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    return {std::move(parsed.data), std::move(manager)};
+    loglib::LoadResult loaded = loglib::LoadFile(path);
+    REQUIRE(loaded.errors.empty());
+    return std::move(loaded.table);
 }
 
-/// Parse a table and promote timestamp columns before serialization.
-[[nodiscard]] loglib::LogTable ParseTableWithTimestamps(const std::filesystem::path &path)
+/// Loads several JSON Lines files into one table, one source each.
+[[nodiscard]] loglib::LogTable ParseTables(const std::vector<std::filesystem::path> &paths)
 {
-    loglib::ParseResult parsed = loglib::ParseFile(path);
-    REQUIRE(parsed.errors.empty());
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    loglib::ParseTimestamps(
-        parsed.data, manager.Configuration(), loglib::TimeZoneContext{}, std::chrono::system_clock::now()
-    );
-    return {std::move(parsed.data), std::move(manager)};
+    loglib::LogTable table;
+    const loglib::JsonParser parser;
+    for (const auto &path : paths)
+    {
+        loglib::OpenedFile opened = loglib::OpenFileSource(path);
+        const loglib::ParseOutcome outcome =
+            loglib::ParseIntoTable(table, parser, std::move(opened.source), loglib::ParserOptionsFor(table));
+        REQUIRE(outcome.errors.empty());
+    }
+    loglib::FinishLoading(table);
+    return table;
 }
 
 [[nodiscard]] loglib::DecompressingByteSource DecodeBundle(const std::filesystem::path &path)
@@ -203,7 +210,7 @@ TEST_CASE("session bundle v1 exports documented metadata and typed normalized JS
     loglib::LogTable table = ParseTable(source.Path());
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
-    REQUIRE(loglib::LooksLikeSessionBundle(bundle.Path()));
+    REQUIRE(loglib::HasSessionBundleExtension(bundle.Path()));
     auto decoded = DecodeBundle(bundle.Path());
     const std::string &firstLine = decoded.DiscardedFirstLine();
     CHECK(firstLine.starts_with(R"({"__slv_bundle__":{"formatVersion":1,"rowCount":1,"configuration":)"));
@@ -420,14 +427,7 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
         "\n"
     );
 
-    loglib::ParseResult parsedA = loglib::ParseFile(sourceA.Path());
-    loglib::ParseResult parsedB = loglib::ParseFile(sourceB.Path());
-    REQUIRE(parsedA.errors.empty());
-    REQUIRE(parsedB.errors.empty());
-    parsedA.data.Merge(std::move(parsedB.data));
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsedA.data.SortedKeys());
-    loglib::LogTable table(std::move(parsedA.data), std::move(manager));
+    loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configuration.anchors = {
@@ -521,14 +521,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
         "\n"
     );
 
-    loglib::ParseResult parsedA = loglib::ParseFile(sourceA.Path());
-    loglib::ParseResult parsedB = loglib::ParseFile(sourceB.Path());
-    REQUIRE(parsedA.errors.empty());
-    REQUIRE(parsedB.errors.empty());
-    parsedA.data.Merge(std::move(parsedB.data));
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsedA.data.SortedKeys());
-    loglib::LogTable table(std::move(parsedA.data), std::move(manager));
+    loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configuration.anchors = {
@@ -599,7 +592,7 @@ TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBun
     {
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundlePath);
         REQUIRE(std::filesystem::exists(bundlePath));
-        CHECK(loglib::LooksLikeSessionBundle(bundlePath));
+        CHECK(loglib::HasSessionBundleExtension(bundlePath));
 
         loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
@@ -685,7 +678,7 @@ TEST_CASE("successful session bundle write atomically replaces destination", "[S
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
     CHECK(Read(bundle.Path()) != "old destination");
-    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    CHECK(loglib::HasSessionBundleExtension(bundle.Path()));
     CHECK_FALSE(bundle.HasStagingFiles());
     auto decoded = DecodeBundle(bundle.Path());
     CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 1);
@@ -710,7 +703,7 @@ TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destin
     loglib::LogTable table = ParseTable(source.Path());
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
-    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    CHECK(loglib::HasSessionBundleExtension(bundle.Path()));
     REQUIRE(std::filesystem::exists(decoy));
     CHECK(Read(decoy) == std::string(DECOY_CONTENTS));
 
@@ -739,20 +732,14 @@ TEST_CASE("session bundle metadata rejects malformed envelope versions and exces
     );
 }
 
-TEST_CASE("LooksLikeSessionBundle distinguishes plain input from produced zstd bundle", "[SessionBundle]")
+TEST_CASE("HasSessionBundleExtension is the one rule for what a bundle is", "[SessionBundle]")
 {
-    const TempPath plain(".jsonl");
-    const TempPath bundle(".slvbundle");
-    Write(
-        plain.Path(),
-        R"({"msg":"plain"})"
-        "\n"
-    );
-    CHECK_FALSE(loglib::LooksLikeSessionBundle(plain.Path()));
-
-    loglib::LogTable table = ParseTable(plain.Path());
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
-    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    CHECK(loglib::HasSessionBundleExtension("session.slvbundle"));
+    CHECK(loglib::HasSessionBundleExtension("dir/SESSION.SLVBundle"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("session.zst"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("session.jsonl"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("slvbundle"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("session.slvbundle.gz"));
 }
 
 TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBundle]")
@@ -768,7 +755,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
         "\n"
     );
 
-    loglib::LogTable table = ParseTableWithTimestamps(source.Path());
+    loglib::LogTable table = ParseTable(source.Path());
     // Confirm the source table contains typed timestamps.
     REQUIRE(table.Data().Lines().size() == 2);
     const loglib::TimeStamp originalRow0 = std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue("ts"));
@@ -781,7 +768,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     // Confirm the normalized on-disk UTC form.
     CHECK(jsonl.contains(R"("ts":"2025-04-25T12:34:56.123456Z")"));
 
-    loglib::LogTable reloaded = ParseTableWithTimestamps(decoded.EffectivePath());
+    const loglib::LogTable reloaded = ParseTable(decoded.EffectivePath());
     REQUIRE(reloaded.Data().Lines().size() == 2);
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[0].GetValue("ts")) == originalRow0);
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue("ts")) == originalRow1);
@@ -839,9 +826,52 @@ TEST_CASE("bundle metadata extraction enforces first-line cap and newline", "[Se
     loglib::DecompressingByteSource::Options capped;
     capped.discardFirstLine = true;
     capped.maxDiscardedFirstLineBytes = 8;
-    CHECK_THROWS_AS(loglib::DecompressingByteSource(oversized.Path(), {}, {}, capped), std::runtime_error);
+    CHECK_THROWS_AS(loglib::DecompressingByteSource(oversized.Path(), {}, {}, capped), loglib::LimitError);
 
     loglib::DecompressingByteSource::Options normal;
     normal.discardFirstLine = true;
-    CHECK_THROWS_AS(loglib::DecompressingByteSource(unterminated.Path(), {}, {}, normal), std::runtime_error);
+    CHECK_THROWS_AS(loglib::DecompressingByteSource(unterminated.Path(), {}, {}, normal), loglib::FormatError);
+}
+
+TEST_CASE("WriteSessionBundle with a row list writes exactly those rows in that order", "[SessionBundle][row_list]")
+{
+    const TempPath source(".jsonl");
+    std::string content;
+    for (int i = 0; i < 5; ++i)
+    {
+        content += R"({"n":)" + std::to_string(i) + "}\n";
+    }
+    Write(source.Path(), content);
+    loglib::LogTable table = ParseTable(source.Path());
+    REQUIRE(table.RowCount() == 5);
+    const loglib::LogConfiguration configuration = table.Configuration().Configuration();
+
+    SECTION("a list of rows")
+    {
+        const TempPath bundle(".slvbundle");
+        const std::vector<std::size_t> rows = {3, 1, 4};
+        loglib::WriteSessionBundle(table, configuration, rows, bundle.Path());
+
+        const auto decoded = DecodeBundle(bundle.Path());
+        CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 3);
+        CHECK(Read(decoded.EffectivePath()) == "{\"n\":3}\n{\"n\":1}\n{\"n\":4}\n");
+        CHECK(table.RowCount() == 5);
+    }
+    SECTION("an empty list writes no rows")
+    {
+        const TempPath bundle(".slvbundle");
+        loglib::WriteSessionBundle(table, configuration, std::span<const std::size_t>{}, bundle.Path());
+
+        const auto decoded = DecodeBundle(bundle.Path());
+        CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 0);
+        CHECK(Read(decoded.EffectivePath()).empty());
+    }
+    SECTION("no list writes every row")
+    {
+        const TempPath bundle(".slvbundle");
+        loglib::WriteSessionBundle(table, configuration, bundle.Path());
+
+        const auto decoded = DecodeBundle(bundle.Path());
+        CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 5);
+    }
 }

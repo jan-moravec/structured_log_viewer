@@ -1,3 +1,6 @@
+
+#include "table_from_data.hpp"
+
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/line_source.hpp>
@@ -227,6 +230,13 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
     lines.reserve(rowCount);
 
     const loglib::TimeStamp t0{std::chrono::microseconds(1700000000000000LL)};
+    if (extraFields)
+    {
+        // Intern the extra keys in a fixed order: a row is an unordered map, so the order of its keys differs by
+        // platform, and the columns the table adds for these keys follow the order they were first seen.
+        static_cast<void>(keys.GetOrInsert("extra_a"));
+        static_cast<void>(keys.GetOrInsert("extra_b"));
+    }
     for (std::size_t i = 0; i < rowCount; ++i)
     {
         loglib::LogMap map;
@@ -283,7 +293,7 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
 
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    return {std::move(data), std::move(manager)};
+    return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 
 std::string ReadFile(const std::filesystem::path &path)
@@ -541,7 +551,7 @@ TEST_CASE("exports: CSV formula-injection cells are quoted and prefixed", "[expo
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    const loglib::LogTable table(std::move(data), std::move(manager));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0, 1, 2, 3};
     std::vector<std::size_t> cols = {0};
@@ -593,7 +603,7 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    const loglib::LogTable table(std::move(data), std::move(manager));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0, 1, 2, 3};
     std::vector<std::size_t> cols;
@@ -638,7 +648,7 @@ TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][r
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    const loglib::LogTable table(std::move(data), std::move(manager));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0};
     std::vector<std::size_t> cols = {0};
@@ -701,7 +711,7 @@ TEST_CASE("exports: Snapshot skips unavailable source rows", "[exports][row_expo
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    const loglib::LogTable table(std::move(data), std::move(manager));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0, 1, 2, 3};
     std::vector<std::size_t> cols;

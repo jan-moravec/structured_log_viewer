@@ -4,11 +4,13 @@
 // Release-only (see `BENCHMARK_REQUIRES_RELEASE_BUILD`); opt-in via
 // the `[benchmark]` tag (`ctest -L benchmark`).
 
+#include "parse_only.hpp"
+
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
 #include <loglib/ingest/decompressing_byte_source.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 
 #include <test_common/log_format.hpp>
@@ -35,6 +37,8 @@
 using bench::ReportThroughput;
 using loglib::DecompressingByteSource;
 using loglib::JsonParser;
+using loglib::LoadFile;
+using loglib::LoadResult;
 using loglib::ParseFile;
 
 namespace
@@ -392,6 +396,16 @@ TEST_CASE("Decompress + parse a 500 MiB JSONL fixture (all codecs)", "[.][benchm
     const std::size_t baselineBytes =
         TimeAndReport("Baseline: ParseFile on uncompressed JSONL", paths.uncompressed, false);
     (void)baselineBytes;
+
+    // The same file through the path the GUI and slp use: open, detect, parse into a typed table and finish. Its figure
+    // is the reference for the table path, not a replacement for the parse-only baseline above.
+    {
+        const auto start = std::chrono::steady_clock::now();
+        const LoadResult loaded = LoadFile(paths.uncompressed);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        REQUIRE(loaded.table.RowCount() == BENCH_LINE_COUNT);
+        ReportThroughput("LoadFile on uncompressed JSONL", elapsed, baselineBytes, BENCH_LINE_COUNT);
+    }
 
     const auto compressedBytes = std::filesystem::file_size(paths.gzip);
     WARN(

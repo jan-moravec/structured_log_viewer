@@ -1,5 +1,7 @@
 #include "common.hpp"
+#include "parse_only.hpp"
 #include "table_fixture.hpp"
+#include "table_from_data.hpp"
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -12,7 +14,6 @@
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/internal/buffering_sink.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -119,9 +120,7 @@ ParseResult ParseText(const test_common::TempDir &dir, const LogParser &parser, 
 
 LogTable TableOf(LogData data)
 {
-    LogConfigurationManager configuration;
-    configuration.Update(data.SortedKeys());
-    return {std::move(data), std::move(configuration)};
+    return test_common_lib::TableFromData(std::move(data), LogConfigurationManager{});
 }
 
 class CollectingSink : public LogParseSink

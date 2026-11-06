@@ -1,4 +1,6 @@
 #include "common.hpp"
+#include "parse_only.hpp"
+#include "table_from_data.hpp"
 
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -9,7 +11,6 @@
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
-#include <loglib/parse/internal/buffering_sink.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -195,12 +196,11 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
             LogMap{{"ts", TimeStamp{std::chrono::microseconds{Micros(2026, 1, 15, 12, 0, 0)}}}}, keys, *sourcePtr, 0
         );
         LogData data(std::move(source), std::move(lines), std::move(keys));
-        data.MarkTimestampsParsed();
         LogConfigurationManager manager;
         LogConfiguration configuration;
         configuration.columns.push_back(TimeColumn("ts", "%F %T"));
         manager.SetConfiguration(std::move(configuration));
-        return LogTable(std::move(data), std::move(manager));
+        return test_common_lib::TableFromData(std::move(data), std::move(manager));
     };
 
     const LogTable utcTable = makeTable();
@@ -512,8 +512,7 @@ TEST_CASE("A print format that no value accepts is replaced on load and never th
         std::vector<LogLine> lines;
         lines.emplace_back(LogMap{{"ok", 1.5}}, keys, *sourcePtr, 0);
         LogData data(std::move(source), std::move(lines), std::move(keys));
-        data.MarkTimestampsParsed();
-        LogTable table(std::move(data), std::move(manager));
+        loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
         REQUIRE(table.Configuration().Configuration().columns[1].printFormat == "{:d}");
         // The "ok" column is the second one, but the table finds cells by key, so ask for its index.
         CHECK_NOTHROW(table.GetFormattedValue(0, 1));

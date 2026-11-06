@@ -2,6 +2,7 @@
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
+#include <loglib/core/log_data.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/filter_expression.hpp>
@@ -33,6 +34,22 @@ std::chrono::system_clock::time_point ReferenceNow()
 {
     return std::chrono::sys_days{std::chrono::year{2025} / std::chrono::June / 15} + std::chrono::hours{12};
 }
+
+/** @brief Converts the text of every time column of logData, as the table does for a batch. Returns the error messages.
+ */
+std::vector<std::string> ConvertTimeColumns(LogData &logData, const LogConfiguration &configuration)
+{
+    std::vector<std::string> errors;
+    for (const auto &column : configuration.columns)
+    {
+        if (column.type == ColumnType::Time)
+        {
+            auto columnErrors = BackfillTimestampColumn(column, logData.Lines(), TimeZoneContext{}, ReferenceNow());
+            errors.insert(errors.end(), columnErrors.begin(), columnErrors.end());
+        }
+    }
+    return errors;
+}
 } // namespace
 
 TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_processing]")
@@ -47,7 +64,7 @@ TEST_CASE("TimeZoneContext::Load accepts the staged tzdata directory", "[log_pro
     CHECK_FALSE(ProcessDefaultTimeZone().IanaName().empty());
 }
 
-TEST_CASE("ParseTimestamps errors", "[log_processing]")
+TEST_CASE("Converting time columns reports an error for each value that does not parse", "[log_processing]")
 {
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
@@ -70,16 +87,16 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     column.keys = {"key2"};
     configuration.columns.push_back(column);
 
-    auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
+    auto errors = ConvertTimeColumns(logData, configuration);
     CHECK(errors.empty());
 
     configuration.columns[0].type = ColumnType::Time;
-    errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
+    errors = ConvertTimeColumns(logData, configuration);
 
     CHECK(errors.size() == logData.Lines().size());
 }
 
-TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
+TEST_CASE("Converting time columns accepts different formats", "[log_processing]")
 {
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
@@ -102,7 +119,7 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 
-    const auto errors = ParseTimestamps(logData, configuration, TimeZoneContext{}, ReferenceNow());
+    const auto errors = ConvertTimeColumns(logData, configuration);
 
     CHECK(errors.empty());
     REQUIRE(logData.Lines().size() == 4);

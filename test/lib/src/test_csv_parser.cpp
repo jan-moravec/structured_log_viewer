@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "parse_only.hpp"
 #include "table_fixture.hpp"
 
 #include <loglib/core/file_line_source.hpp>
@@ -7,7 +8,6 @@
 #include <loglib/core/log_file.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/parse/parse_file.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
@@ -128,7 +128,7 @@ TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[cs
     const TestLogFile file("static_columns.csv");
     file.Write("level,message\ninfo,hello\nerror,boom\n");
 
-    loglib::LogTable table{loglib::LogData{}, loglib::LogConfigurationManager{}};
+    loglib::LogTable table;
     auto source = std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(file.GetFilePath()));
     loglib::FileLineSource *sourceRaw = source.get();
     table.BeginStreaming(std::move(source));
@@ -455,7 +455,7 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     const TestLogFile file("header_in_late_batch.csv");
     file.Write(content);
 
-    LogTable table{LogData{}, LogConfigurationManager{}};
+    loglib::LogTable table;
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file.GetFilePath()));
     FileLineSource *sourceRaw = source.get();
     table.BeginStreaming(std::move(source));

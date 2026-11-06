@@ -46,10 +46,11 @@
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/ingest/tcp_server_producer.hpp>
 #include <loglib/ingest/udp_server_producer.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/parse/parse_file.hpp>
 #include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/query/log_filter.hpp>
@@ -134,6 +135,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -299,10 +301,8 @@ QString WriteBundleFixture(
 )
 {
     const TempJsonFile source(lines);
-    loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(source.Path()));
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    loglib::LogTable table(std::move(parsed.data), std::move(manager));
+    const loglib::LoadResult loaded = loglib::LoadFile(logapp::QStringToFsPath(source.Path()));
+    const loglib::LogTable &table = loaded.table;
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configure(configuration);
     for (auto &anchor : configuration.anchors)
@@ -506,6 +506,88 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
         run.cancelled = (result == StreamingResult::Cancelled);
     }
     return run;
+}
+
+// Loads a file into a LogModel the way the GUI does for a static file, on the calling thread with the default
+// number of parser threads. Returns the model, which owns the table.
+std::unique_ptr<LogModel> RunStaticLoadInModel(const QString &fixturePath, const loglib::LogParser &parser)
+{
+    auto model = std::make_unique<LogModel>(nullptr, nullptr);
+    QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
+
+    auto fileSource =
+        std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(fixturePath.toStdString()));
+    loglib::FileLineSource *fileSourcePtr = fileSource.get();
+    const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+    loglib::ParserOptions options;
+    options.stopToken = stopToken;
+    parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+
+    if (finishedSpy.count() == 0)
+    {
+        finishedSpy.wait(60000);
+    }
+    return model;
+}
+
+// A fixture larger than one parse batch, so the comparison also covers keys and columns that arrive in later batches.
+QString WriteEquivalenceFixture(const QTemporaryDir &directory, const QString &name, const std::string &content)
+{
+    const QString path = directory.filePath(name);
+    std::ofstream stream(path.toStdString(), std::ios::binary);
+    stream << content;
+    return path;
+}
+
+struct EquivalenceFixtures
+{
+    std::string json;
+    std::string logfmt;
+    std::string csv;
+};
+
+// Rows with a timestamp, a level, a few repeated strings and numbers. One row in five carries one more key.
+EquivalenceFixtures MakeEquivalenceFixtures()
+{
+    constexpr int ROWS = 40000;
+    EquivalenceFixtures fixtures;
+    fixtures.csv = "timestamp,level,service,n,msg\n";
+    const char *levels[] = {"info", "warn", "error", "debug"};
+    for (int i = 0; i < ROWS; ++i)
+    {
+        const std::string time =
+            "2026-02-03T04:05:" + std::string(i % 60 < 10 ? "0" : "") + std::to_string(i % 60) + "Z";
+        const std::string level = levels[i % 4];
+        const std::string service = "svc" + std::to_string(i % 7);
+        const std::string message = "message number " + std::to_string(i);
+        const bool late = i % 5 == 0;
+
+        fixtures.json += std::format(
+            "{{\"timestamp\":\"{}\",\"level\":\"{}\",\"service\":\"{}\",\"n\":{},\"msg\":\"{}\"",
+            time,
+            level,
+            service,
+            i,
+            message
+        );
+        if (late)
+        {
+            fixtures.json += std::format(",\"late\":{}", i * 2);
+        }
+        fixtures.json += "}\n";
+
+        fixtures.logfmt +=
+            std::format("timestamp={} level={} service={} n={} msg=\"{}\"", time, level, service, i, message);
+        if (late)
+        {
+            fixtures.logfmt += std::format(" late={}", i * 2);
+        }
+        fixtures.logfmt += '\n';
+
+        fixtures.csv += std::format("{},{},{},{},{}\n", time, level, service, i, message);
+    }
+    return fixtures;
 }
 
 // A producer whose Read throws, to drive a parse that fails part-way.
@@ -957,6 +1039,86 @@ private slots:
         QCOMPARE(run.model->rowCount(), 0);
         QCOMPARE(run.model->columnCount(), 0);
         QVERIFY(run.model->StreamingErrors().empty());
+    }
+
+    // LoadFile must give the same table as the GUI's static load: the same columns, in the same order, with the same
+    // types and the same formatted cells. This guards the library loader against drifting from LogModel.
+    static void TestLoadFileMatchesStaticLoadInModel()
+    {
+        const QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+
+        const EquivalenceFixtures fixtures = MakeEquivalenceFixtures();
+
+        struct Case
+        {
+            const char *name;
+            QString path;
+            std::unique_ptr<loglib::LogParser> parser;
+        };
+        std::vector<Case> cases;
+        cases.push_back({
+            .name = "json",
+            .path = WriteEquivalenceFixture(directory, "equivalence.jsonl", fixtures.json),
+            .parser = std::make_unique<loglib::JsonParser>(),
+        });
+        cases.push_back({
+            .name = "logfmt",
+            .path = WriteEquivalenceFixture(directory, "equivalence.log", fixtures.logfmt),
+            .parser = std::make_unique<loglib::LogfmtParser>(),
+        });
+        cases.push_back({
+            .name = "csv",
+            .path = WriteEquivalenceFixture(directory, "equivalence.csv", fixtures.csv),
+            .parser = std::make_unique<loglib::CsvParser>(),
+        });
+
+        for (const Case &testCase : cases)
+        {
+            const auto model = RunStaticLoadInModel(testCase.path, *testCase.parser);
+            loglib::LoadOptions loadOptions;
+            loadOptions.displayTimeZone = model->Table().DisplayTimeZone();
+            loadOptions.defaultSourceTimeZone = model->Table().DefaultSourceTimeZone();
+            const loglib::LoadResult loaded = loglib::LoadFile(logapp::QStringToFsPath(testCase.path), loadOptions);
+            const loglib::LogTable &fromModel = model->Table();
+            const loglib::LogTable &fromLibrary = loaded.table;
+            const QString name = QString::fromLatin1(testCase.name);
+
+            QVERIFY2(loaded.errors.empty(), qPrintable(name));
+            QCOMPARE(static_cast<int>(fromLibrary.RowCount()), static_cast<int>(fromModel.RowCount()));
+            QCOMPARE(static_cast<int>(fromLibrary.ColumnCount()), static_cast<int>(fromModel.ColumnCount()));
+            QVERIFY2(fromLibrary.ColumnCount() >= 5, qPrintable(name));
+
+            const auto &modelColumns = fromModel.Configuration().Configuration().columns;
+            const auto &libraryColumns = fromLibrary.Configuration().Configuration().columns;
+            for (size_t column = 0; column < fromLibrary.ColumnCount(); ++column)
+            {
+                QVERIFY2(
+                    fromLibrary.GetHeader(column) == fromModel.GetHeader(column),
+                    qPrintable(name + QStringLiteral(": header of column %1").arg(column))
+                );
+                QVERIFY2(
+                    libraryColumns[column].type == modelColumns[column].type,
+                    qPrintable(
+                        name + QStringLiteral(": type of column %1 (%2, library %3 vs model %4)")
+                                   .arg(column)
+                                   .arg(QString::fromStdString(fromLibrary.GetHeader(column)))
+                                   .arg(static_cast<int>(libraryColumns[column].type))
+                                   .arg(static_cast<int>(modelColumns[column].type))
+                    )
+                );
+            }
+            for (size_t row = 0; row < fromLibrary.RowCount(); row += 7)
+            {
+                for (size_t column = 0; column < fromLibrary.ColumnCount(); ++column)
+                {
+                    QVERIFY2(
+                        fromLibrary.GetFormattedValue(row, column) == fromModel.GetFormattedValue(row, column),
+                        qPrintable(name + QStringLiteral(": cell %1, %2").arg(row).arg(column))
+                    );
+                }
+            }
+        }
     }
 
     static void TestFixtureSingleLine()
@@ -25963,7 +26125,7 @@ private slots:
         // Verify the produced bundle.
         const auto destPath = logapp::QStringToFsPath(destination);
         QVERIFY2(std::filesystem::exists(destPath), "Bundle export must produce the requested destination file.");
-        QVERIFY(loglib::LooksLikeSessionBundle(destPath));
+        QVERIFY(loglib::HasSessionBundleExtension(destPath));
 
         // Parse metadata to catch truncated output.
         loglib::DecompressingByteSource::Options options;

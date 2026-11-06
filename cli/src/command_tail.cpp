@@ -858,7 +858,7 @@ ExitCode RunTail(
     }
 
     loglib::StopSource stop;
-    loglib::LogTable table{loglib::LogData{}, loglib::LogConfigurationManager{}};
+    loglib::LogTable table;
     loglib::BytesProducer *producer = live->producer.get();
     auto source = std::make_unique<loglib::StreamLineSource>(live->displayName, std::move(live->producer));
     loglib::StreamLineSource *rawSource = source.get();
@@ -876,9 +876,7 @@ ExitCode RunTail(
     StopWatcher watcher(runtime.stop, stop, options.duration);
     watcher.Attach(producer);
 
-    loglib::ParserOptions parserOptions = MakeParserOptions(global, options.input, stop.GetToken());
-    parserOptions.timeColumns = loglib::TimeColumnsOf(table.Configuration().Configuration());
-    parserOptions.defaultSourceTimeZone = table.DefaultSourceTimeZone();
+    loglib::ParserOptions parserOptions = MakeParserOptions(global, options.input, table, stop.GetToken());
     parser.value()->ParseStreaming(*rawSource, sink, std::move(parserOptions));
     sink.Finish();
 

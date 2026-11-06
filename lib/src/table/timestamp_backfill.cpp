@@ -123,29 +123,4 @@ void BackfillTimestampColumn(
     BackfillColumnLoop(column, lines, timeZone, referenceTime, nullptr);
 }
 
-std::vector<std::string> ParseTimestamps(
-    LogData &logData,
-    const LogConfiguration &configuration,
-    const TimeZoneContext &timeZone,
-    std::chrono::system_clock::time_point referenceTime
-)
-{
-    std::vector<std::string> errors;
-
-    for (const auto &column : configuration.columns)
-    {
-        if (column.type == ColumnType::Time)
-        {
-            auto columnErrors = BackfillTimestampColumn(column, logData.Lines(), timeZone, referenceTime);
-            if (!columnErrors.empty())
-            {
-                errors.reserve(errors.size() + columnErrors.size());
-                std::ranges::move(columnErrors, std::back_inserter(errors));
-            }
-        }
-    }
-
-    return errors;
-}
-
 } // namespace loglib

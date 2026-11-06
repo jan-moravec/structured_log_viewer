@@ -40,27 +40,27 @@ namespace loglib
 namespace
 {
 
-/// Shared 64 KiB codec buffer size.
+// Shared 64 KiB codec buffer size.
 constexpr std::size_t CHUNK_SIZE = 64 * 1024;
 
-/// Bytes read for the codec probe. Matches the widest supported
-/// magic (`.xz` is 6 bytes).
+// Bytes read for the codec probe. Matches the widest supported
+// magic (.xz is 6 bytes).
 constexpr std::size_t MAGIC_MAX_BYTES = 6;
 
-/// Extension-independent codec signatures.
+// Extension-independent codec signatures.
 constexpr std::array<std::uint8_t, 2> GZIP_MAGIC = {0x1f, 0x8b};
 constexpr std::array<std::uint8_t, 3> BZIP2_MAGIC = {'B', 'Z', 'h'};
 constexpr std::array<std::uint8_t, 6> XZ_MAGIC = {0xfd, '7', 'z', 'X', 'Z', 0x00};
 constexpr std::array<std::uint8_t, 4> ZSTD_MAGIC = {0x28, 0xb5, 0x2f, 0xfd};
 
-/// Zstd skippable-frame magic range from RFC 8878 §3.1.2.
+// Zstd skippable-frame magic range from RFC 8878 §3.1.2.
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE0_MASK = 0xF0;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE0_VALUE = 0x50;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE1 = 0x2A;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE2 = 0x4D;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
 
-/// Return whether bytes start with a zstd skippable frame.
+// Return whether bytes start with a zstd skippable frame.
 [[nodiscard]] bool IsZstdSkippableMagic(std::span<const std::uint8_t> haystack) noexcept
 {
     return haystack.size() >= 4 &&
@@ -78,13 +78,13 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return std::memcmp(haystack.data(), needle.data(), needle.size()) == 0;
 }
 
-/// Read up to @p max leading bytes, throwing on open failure.
+// Read up to @p max leading bytes, throwing on open failure.
 [[nodiscard]] std::vector<std::uint8_t> ReadMagic(const std::filesystem::path &path, std::size_t max)
 {
     std::ifstream stream(path, std::ios::binary);
     if (!stream.is_open())
     {
-        throw std::runtime_error(fmt::format("Failed to open '{}' for codec sniff", internal::PathToUtf8(path)));
+        throw IoError(fmt::format("Failed to open '{}' for codec sniff", internal::PathToUtf8(path)));
     }
     std::vector<std::uint8_t> out(max);
     stream.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(max));
@@ -93,7 +93,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return out;
 }
 
-/// Non-throwing `ReadMagic`; returns empty on I/O failure.
+// Non-throwing ReadMagic; returns empty on I/O failure.
 [[nodiscard]] std::vector<std::uint8_t> TryReadMagic(const std::filesystem::path &path, std::size_t max) noexcept
 {
     try
@@ -137,14 +137,14 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return Codec::None;
 }
 
-/// Build a unique candidate path in the system temp directory.
+// Build a unique candidate path in the system temp directory.
 [[nodiscard]] std::filesystem::path MakeTempPath()
 {
     std::error_code ec;
     const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
     if (ec)
     {
-        throw std::runtime_error(fmt::format("temp_directory_path() failed: {}", ec.message()));
+        throw IoError(fmt::format("temp_directory_path() failed: {}", ec.message()));
     }
 
     // Mix random_device with steady_clock -- random_device alone
@@ -158,7 +158,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return base / fmt::format("slv-decompressed-{:016x}{:016x}{:08x}.tmp", r1, r2, c);
 }
 
-/// RAII wrapper around `std::FILE*`.
+// RAII wrapper around std::FILE*.
 class FileHandle
 {
 public:
@@ -213,10 +213,10 @@ private:
     std::FILE *mHandle = nullptr;
 };
 
-/// Collision error returned by exclusive temp-file creation.
+// Collision error returned by exclusive temp-file creation.
 constexpr int TEMP_FILE_COLLISION_ERRNO = EEXIST;
 
-/// Result of a single `TryOpenExclusive` attempt.
+// Result of a single TryOpenExclusive attempt.
 struct OpenExclusiveResult
 {
     FileHandle handle;
@@ -267,7 +267,7 @@ struct OpenExclusiveResult
 #endif
 }
 
-/// Create a unique temp file, retrying bounded name collisions.
+// Create a unique temp file, retrying bounded name collisions.
 [[nodiscard]] FileHandle OpenExclusiveWithRetry(std::filesystem::path &outPath)
 {
     constexpr int MAX_ATTEMPTS = 8;
@@ -276,7 +276,7 @@ struct OpenExclusiveResult
     for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
     {
         std::filesystem::path candidate = MakeTempPath();
-        // Ownership moves on success; otherwise `result` closes it.
+        // Ownership moves on success; otherwise result closes it.
         // NOLINTNEXTLINE(clang-analyzer-unix.Stream)
         OpenExclusiveResult result = TryOpenExclusive(candidate);
         if (result.handle.IsOpen())
@@ -291,9 +291,7 @@ struct OpenExclusiveResult
             break;
         }
     }
-    throw std::runtime_error(
-        fmt::format("Failed to create temp file '{}': errno {}", internal::PathToUtf8(lastPath), lastErrno)
-    );
+    throw IoError(fmt::format("Failed to create temp file '{}': errno {}", internal::PathToUtf8(lastPath), lastErrno));
 }
 
 void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::filesystem::path &tempPath)
@@ -305,13 +303,13 @@ void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::f
     const std::size_t wrote = std::fwrite(data, 1, bytes, out.Get());
     if (wrote != bytes)
     {
-        throw std::runtime_error(
+        throw IoError(
             fmt::format("Short write to temp file '{}' ({} of {} bytes)", internal::PathToUtf8(tempPath), wrote, bytes)
         );
     }
 }
 
-/// Write output, update its size, and enforce the configured cap.
+// Write output, update its size, and enforce the configured cap.
 void WriteOutput(
     FileHandle &out,
     const void *data,
@@ -338,7 +336,7 @@ void WriteOutput(
     }
 }
 
-/// Shared progress-fire + stop-token poll used by every codec.
+// Shared progress-fire + stop-token poll used by every codec.
 inline void ObservePoll(
     std::size_t bytesInSoFar,
     std::size_t totalBytesIn,
@@ -358,9 +356,9 @@ inline void ObservePoll(
 
 // --- gzip / bzip2: concatenated-member streams -------------------------
 
-/// Decodes a stream made of one or more concatenated members. The codec adapter supplies the library calls:
-/// SetInput, SetOutput, AvailIn, AvailOut, Step (returns true when a member ended, throws on error) and
-/// ResetForNextMember. A stream that ends without a clean member end is truncated.
+// Decodes a stream made of one or more concatenated members. The codec adapter supplies the library calls:
+// SetInput, SetOutput, AvailIn, AvailOut, Step (returns true when a member ended, throws on error) and
+// ResetForNextMember. A stream that ends without a clean member end is truncated.
 template <typename Codec>
 void DecodeConcatenatedMembers(
     Codec &codec,
@@ -387,7 +385,7 @@ void DecodeConcatenatedMembers(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+            throw IoError(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         const bool eof = in.eof() || gotSigned == 0;
         codec.SetInput(inBuf.data(), static_cast<std::size_t>(gotSigned));
@@ -432,7 +430,7 @@ void DecodeConcatenatedMembers(
     // Real EOF without a clean member end == truncation.
     if (!memberEnded)
     {
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format(
                 "Unexpected EOF in {} stream '{}' at input byte {}",
                 Codec::NAME,
@@ -454,9 +452,7 @@ public:
         // concatenated members.
         if (::inflateInit2(&mStream, 15 + 32) != Z_OK)
         {
-            throw std::runtime_error(
-                fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath))
-            );
+            throw IoError(fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath)));
         }
     }
     ~ZlibCodec() noexcept
@@ -491,7 +487,7 @@ public:
     {
         if (::inflateReset(&mStream) != Z_OK)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "zlib inflateReset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
                 )
@@ -499,8 +495,8 @@ public:
         }
     }
 
-    /// Z_NO_FLUSH handles concatenated members uniformly; Z_FINISH + reset-on-Z_STREAM_END breaks when member
-    /// boundaries land mid-buffer.
+    // Z_NO_FLUSH handles concatenated members uniformly; Z_FINISH + reset-on-Z_STREAM_END breaks when member
+    // boundaries land mid-buffer.
     bool Step(const std::filesystem::path &sourcePath, std::size_t consumed)
     {
         const int ret = ::inflate(&mStream, Z_NO_FLUSH);
@@ -510,7 +506,7 @@ public:
         case Z_DATA_ERROR:
         case Z_MEM_ERROR:
         case Z_STREAM_ERROR:
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "zlib inflate error on '{}' at input byte {} (code {})",
                     internal::PathToUtf8(sourcePath),
@@ -537,7 +533,7 @@ public:
     {
         if (::BZ2_bzDecompressInit(&mStream, 0, 0) != BZ_OK)
         {
-            throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
+            throw IoError(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
         }
     }
     ~Bzip2Codec() noexcept
@@ -568,14 +564,14 @@ public:
         return mStream.avail_out;
     }
 
-    /// Reinitializes the decoder for the next concatenated member and keeps the input that is still pending.
+    // Reinitializes the decoder for the next concatenated member and keeps the input that is still pending.
     void ResetForNextMember(const std::filesystem::path &sourcePath, std::size_t consumed)
     {
         char *pendingIn = mStream.next_in;
         const unsigned pendingAvail = mStream.avail_in;
         if (::BZ2_bzDecompressEnd(&mStream) != BZ_OK || ::BZ2_bzDecompressInit(&mStream, 0, 0) != BZ_OK)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format("bzip2 reset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed)
             );
         }
@@ -588,7 +584,7 @@ public:
         const int ret = ::BZ2_bzDecompress(&mStream);
         if (ret != BZ_OK && ret != BZ_STREAM_END)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "bzip2 decompress error on '{}' at input byte {} (code {})",
                     internal::PathToUtf8(sourcePath),
@@ -672,7 +668,7 @@ void DecodeXz(
     // Bound cancellation latency while liblzma is idle.
     constexpr std::uint32_t XZ_MT_POLL_WINDOW_MS = 100;
     mt.timeout = XZ_MT_POLL_WINDOW_MS;
-    // Hard cap: never fail with `LZMA_MEMLIMIT_ERROR`. Any file the
+    // Hard cap: never fail with LZMA_MEMLIMIT_ERROR. Any file the
     // ST decoder accepts must still open here.
     mt.memlimit_stop = UINT64_MAX;
     // Limit threading memory to 25% of RAM, or 512 MiB if unknown.
@@ -686,7 +682,7 @@ void DecodeXz(
     const lzma_ret initRet = ::lzma_stream_decoder_mt(&strm, &mt);
     if (initRet != LZMA_OK)
     {
-        throw std::runtime_error(
+        throw IoError(
             fmt::format(
                 "Failed to init xz decoder for '{}' (code {})",
                 internal::PathToUtf8(sourcePath),
@@ -729,7 +725,7 @@ void DecodeXz(
             const auto gotSigned = in.gcount();
             if (gotSigned < 0)
             {
-                throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+                throw IoError(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
             }
             strm.next_in = inBuf.data();
             strm.avail_in = static_cast<std::size_t>(gotSigned);
@@ -748,7 +744,7 @@ void DecodeXz(
         ret = ::lzma_code(&strm, action);
         if (ret != LZMA_OK && ret != LZMA_STREAM_END)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "xz decode error on '{}' at input byte {} (code {})",
                     internal::PathToUtf8(sourcePath),
@@ -782,7 +778,7 @@ void DecodeZstd(
     ZSTD_DCtx *dctx = ::ZSTD_createDCtx();
     if (dctx == nullptr)
     {
-        throw std::runtime_error(fmt::format("Failed to create zstd DCtx for '{}'", internal::PathToUtf8(sourcePath)));
+        throw IoError(fmt::format("Failed to create zstd DCtx for '{}'", internal::PathToUtf8(sourcePath)));
     }
     class ZstdGuard
     {
@@ -818,7 +814,7 @@ void DecodeZstd(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+            throw IoError(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         if (gotSigned == 0)
         {
@@ -836,7 +832,7 @@ void DecodeZstd(
             const std::size_t result = ::ZSTD_decompressStream(dctx, &output, &input);
             if (::ZSTD_isError(result) != 0U)
             {
-                throw std::runtime_error(
+                throw FormatError(
                     fmt::format(
                         "zstd decode error on '{}' at input byte {} ({})",
                         internal::PathToUtf8(sourcePath),
@@ -852,7 +848,7 @@ void DecodeZstd(
                 const std::size_t prefixSize = newline == std::string_view::npos ? produced.size() : newline;
                 if (discardedFirstLine.size() + prefixSize > maxDiscardedFirstLineBytes)
                 {
-                    throw std::runtime_error(
+                    throw LimitError(
                         fmt::format(
                             "First decompressed line in '{}' exceeds metadata limit", internal::PathToUtf8(sourcePath)
                         )
@@ -884,7 +880,7 @@ void DecodeZstd(
     {
         // Non-zero result at EOF -> truncated input (last frame
         // not fully consumed).
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format(
                 "Unexpected EOF in zstd stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
             )
@@ -892,7 +888,7 @@ void DecodeZstd(
     }
     if (!firstLineComplete)
     {
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format("Compressed stream '{}' has no metadata line terminator", internal::PathToUtf8(sourcePath))
         );
     }
@@ -918,26 +914,24 @@ DecompressingByteSource::DecompressingByteSource(
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     if (!std::filesystem::exists(mDisplayPath, ec) || ec)
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist", internal::PathToUtf8(mDisplayPath)));
+        throw IoError(fmt::format("File '{}' does not exist", internal::PathToUtf8(mDisplayPath)));
     }
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(mDisplayPath, ec);
     if (ec)
     {
-        throw std::runtime_error(
-            fmt::format("Failed to stat '{}': {}", internal::PathToUtf8(mDisplayPath), ec.message())
-        );
+        throw IoError(fmt::format("Failed to stat '{}': {}", internal::PathToUtf8(mDisplayPath), ec.message()));
     }
     mCompressedSize = static_cast<std::size_t>(size);
 
     if (mCompressedSize == 0)
     {
-        // Empty file: passthrough. `discardFirstLine` has no line
+        // Empty file: passthrough. discardFirstLine has no line
         // to consume, so fail loudly (likely a truncated bundle)
         // instead of silently returning an empty first line.
         if (options.discardFirstLine)
         {
-            throw std::invalid_argument(
+            throw FormatError(
                 fmt::format("Cannot discard first line from empty file '{}'", internal::PathToUtf8(mDisplayPath))
             );
         }
@@ -950,11 +944,11 @@ DecompressingByteSource::DecompressingByteSource(
     {
         // Uncompressed passthrough. Silently ignoring the discard
         // would leave the metadata line embedded in the returned
-        // file, so a plain `.jsonl` opened through the bundle path
+        // file, so a plain .jsonl opened through the bundle path
         // would parse it as row 1.
         if (options.discardFirstLine)
         {
-            throw std::invalid_argument(
+            throw FormatError(
                 fmt::format(
                     "discardFirstLine requires a compressed input; '{}' is not compressed",
                     internal::PathToUtf8(mDisplayPath)
@@ -965,10 +959,10 @@ DecompressingByteSource::DecompressingByteSource(
     }
     if (options.discardFirstLine && mCodec != Codec::Zstd)
     {
-        // Only the zstd decode path plumbs `discardFirstLine`; fail
+        // Only the zstd decode path plumbs discardFirstLine; fail
         // loudly rather than silently leaving the metadata line in
         // the decoded output.
-        throw std::invalid_argument(
+        throw FormatError(
             fmt::format(
                 "discardFirstLine is only supported for zstd streams; '{}' uses {}",
                 internal::PathToUtf8(mDisplayPath),
@@ -981,9 +975,7 @@ DecompressingByteSource::DecompressingByteSource(
     std::ifstream inStream(mDisplayPath, std::ios::binary);
     if (!inStream.is_open())
     {
-        throw std::runtime_error(
-            fmt::format("Failed to open '{}' for decompression", internal::PathToUtf8(mDisplayPath))
-        );
+        throw IoError(fmt::format("Failed to open '{}' for decompression", internal::PathToUtf8(mDisplayPath)));
     }
 
     try
@@ -991,7 +983,7 @@ DecompressingByteSource::DecompressingByteSource(
         std::filesystem::path tempPath;
         FileHandle outHandle = OpenExclusiveWithRetry(tempPath);
         // From here on we own a file on disk; the catch below
-        // unwinds via `ReleaseTempFile()`.
+        // unwinds via ReleaseTempFile().
         mEffectivePath = tempPath;
         mOwnsTempFile = true;
 
@@ -1061,7 +1053,7 @@ DecompressingByteSource::DecompressingByteSource(
         if (std::fflush(outHandle.Get()) != 0)
         {
             const int savedErrno = errno;
-            throw std::runtime_error(
+            throw IoError(
                 fmt::format("Failed to flush temp file '{}': errno {}", internal::PathToUtf8(tempPath), savedErrno)
             );
         }
@@ -1166,8 +1158,8 @@ const std::string &DecompressingByteSource::DiscardedFirstLine() const noexcept
 DecompressingByteSource::Codec DecompressingByteSource::SniffCodec(const std::filesystem::path &input) noexcept
 {
     std::error_code ec;
-    // Empty / missing / directory / unreadable -> None. `file_size`
-    // sets `ec` for all three failure cases.
+    // Empty / missing / directory / unreadable -> None. file_size
+    // sets ec for all three failure cases.
     // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(input, ec);

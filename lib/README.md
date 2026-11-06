@@ -53,10 +53,10 @@ The library is one static target, `loglib`. Its files sit in nine module folders
 | schema  | What the user configured, as saveable values | `log_configuration`, `column_schema`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                             |
 | time    | Reading timestamps and converting time zones | `time_zone_context`, `timestamp_parsing`, `user_timestamp`                                                                                                                                   |
 | ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                              |
-| parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `parse_file`, `log_parse_sink`                                                                                             |
-| table   | Holding rows and working out column types    | `log_table`, `enum_inference`, `column_type_health`                                                                                                                                          |
+| parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                                           |
+| table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                                          |
 | query   | Finding, ordering and summarizing rows       | `log_filter`, `leaf_rule_compile`, `query_parser`, `log_string_matcher`, `log_compare`, `row_ordering`, `histogram_bucket_index`                                                             |
-| output  | Writing rows out                             | `exports/*`, `session_bundle`                                                                                                                                                                |
+| output  | Writing and reading whole files of rows      | `exports/*`, `session_bundle`, `file_loading`                                                                                                                                                |
 | support | Application helpers that are not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                                       |
 
 Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit and CI:
@@ -67,12 +67,12 @@ Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit an
 
 ## Walkthrough: from a line to an exported row
 
-1. **Choose the files.** `ingest/source_plan.hpp` turns the selected paths into the files to open, adding rotated siblings if wanted. `ingest/decompressing_byte_source.hpp` unpacks compressed files first.
+1. **Choose the files.** `ingest/source_plan.hpp` turns the selected paths into the files to open, adding rotated siblings if wanted. `ingest/decompressing_byte_source.hpp` unpacks compressed files first. `output/file_loading.hpp` does this and the next step for a path in OpenFileSource, and LoadFile goes all the way to a table.
 1. **Map the bytes.** `core/log_file.hpp` memory-maps the file and `core/file_line_source.hpp` serves its bytes. For a live source, `ingest/tailing_bytes_producer.hpp` or another producer delivers bytes and `core/stream_line_source.hpp` keeps the lines.
 1. **Pick the format.** `parse/format_detection.hpp` sniffs the first bytes and `MakeParserForFormat` builds the parser from `parse/parsers/`.
 1. **Parse.** For a file, `parse/internal/static_parser_pipeline.hpp` splits the bytes into batches and decodes them on worker threads. For a live stream, `parse/internal/streaming_parse_loop.hpp` does the same on one thread. Each line becomes a `core/log_line.hpp` made of `core/compact_log_value.hpp` fields, with keys interned by `core/key_index.hpp`. Time columns are converted on the way with `time/timestamp_parsing.hpp`. The parser does not touch the table. It writes rows, copied text and keys to three different places, described in [Data flow and threads](#data-flow-and-threads).
 1. **Deliver.** `parse/internal/batch_coalescer.hpp` groups lines into `core/row_batch.hpp` batches and hands them to a `parse/log_parse_sink.hpp`.
-1. **Fill the table.** The sink passes each batch to `table/log_table.hpp`, which appends it. `table/enum_inference.hpp` turns columns with few distinct values into enumerations, and LogTable fixes time columns after the fact when a column becomes a time column.
+1. **Fill the table.** The sink passes each batch to `table/log_table.hpp`, which appends it. `table/table_loader.hpp` has the sink that `slp` and LoadFile use (TableSink) and ParseIntoTable, which adds a source to a table and parses it. `table/enum_inference.hpp` turns columns with few distinct values into enumerations, and LogTable fixes time columns after the fact when a column becomes a time column.
 1. **Filter and sort.** Rules from `schema/filter_expression.hpp`, or text parsed by `query/query_parser.hpp`, are compiled by `query/leaf_rule_compile.hpp` and run by `query/log_filter.hpp`. `query/row_ordering.hpp` and `query/log_compare.hpp` order the rows.
 1. **Write out.** `query/column_projection.hpp` picks the visible columns, `output/exports/row_exporter.hpp` writes the rows to an `output/exports/export_sink.hpp`, and `output/session_bundle.hpp` saves a whole session.
 
@@ -101,8 +101,8 @@ A row's line id depends on its source. For a FileLineSource it is the zero-based
 Typical composition:
 
 1. Construct a `TimeZoneContext` (default UTC, or `Load(tzdataPath[, zone])`).
-1. Ingest with `ParseFile` / `MakeParserForFormat`.
-1. Hold rows in `LogTable`.
+1. Load a file into a `LogTable` with `LoadFile`. It opens plain, compressed and bundle files, detects the format, parses and finishes type detection.
+1. Or take the steps yourself: `OpenFileSource`, `MakeParserForFormat`, then `ParseIntoTable` and `FinishLoading` for each source.
 
 `SetProcessDefaultTimeZone` is a documented process-wide convenience for applications and for formatting helpers such as `UtcMicrosecondsToDateTimeString`. The library never reads it, and `scripts/check-loglib-internal-includes.py` enforces that. A parse gets its zone as `ParserOptions::defaultSourceTimeZone`, a `LogTable` has its own display zone and default source zone, and `ParseQuery` takes a zone. All of them are UTC unless the caller sets one. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 

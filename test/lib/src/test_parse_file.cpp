@@ -1,7 +1,7 @@
 
-#include "common.hpp"
+#include "parse_only.hpp"
 
-#include <loglib/parse/parse_file.hpp>
+#include "common.hpp"
 
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>

@@ -5,8 +5,8 @@
 #include "options.hpp"
 #include "session_config.hpp"
 
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/parse_file.hpp>
 #include <loglib/query/leaf_rule_compile.hpp>
 #include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
@@ -62,11 +62,9 @@ constexpr std::string_view FOUR_ROWS =
 /** @brief Configuration detected from the four-row log; the base for authored configs. */
 [[nodiscard]] loglib::LogConfiguration DetectedConfiguration()
 {
-    const loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
-    REQUIRE(parsed.errors.empty());
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    return manager.Configuration();
+    const loglib::LoadResult loaded = loglib::LoadFile(WriteLog());
+    REQUIRE(loaded.errors.empty());
+    return loaded.table.Configuration().Configuration();
 }
 
 [[nodiscard]] loglib::FilterExpression Query(std::string_view text)
@@ -279,12 +277,9 @@ TEST_CASE("slp query --config precedence over a bundle and under flags", "[cli][
     bundled.expression = Query("level:error");
     const auto bundlePath = ScratchRoot() / "precedence.slvbundle";
     {
-        loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
-        REQUIRE(parsed.errors.empty());
-        loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data.SortedKeys());
-        const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
-        loglib::WriteSessionBundle(table, bundled, bundlePath);
+        const loglib::LoadResult loaded = loglib::LoadFile(WriteLog());
+        REQUIRE(loaded.errors.empty());
+        loglib::WriteSessionBundle(loaded.table, bundled, bundlePath);
     }
 
     loglib::LogConfiguration overlay = DetectedConfiguration();
@@ -521,11 +516,8 @@ TEST_CASE("slp stats honors a configuration expression", "[cli][session][e2e]")
     // `stats` has no `--config` flag; the bundle feeds it the configuration.
     const auto bundlePath = ScratchRoot() / "stats.slvbundle";
     {
-        loglib::ParseResult parsed = loglib::ParseFile(WriteLog());
-        loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data.SortedKeys());
-        const loglib::LogTable table{std::move(parsed.data), std::move(manager)};
-        loglib::WriteSessionBundle(table, configuration, bundlePath);
+        const loglib::LoadResult loaded = loglib::LoadFile(WriteLog());
+        loglib::WriteSessionBundle(loaded.table, configuration, bundlePath);
     }
 
     const auto result = RunSlp(

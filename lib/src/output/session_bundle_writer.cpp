@@ -1,5 +1,6 @@
 #include "loglib/output/session_bundle.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/file_busy_retry.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/core/line_source.hpp"
@@ -15,12 +16,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -59,7 +62,7 @@ void PollStop(const StopToken &token)
     }
 }
 
-/// Build a sibling staging path unique across concurrent writers.
+// Build a sibling staging path unique across concurrent writers.
 std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destination)
 {
     constexpr unsigned int RANDOM_DEVICE_BITS = 32U;
@@ -102,12 +105,12 @@ enum class ExclusiveOpenStatus
     OtherError,
 };
 
-/// Open @p path for binary writing without replacing an existing file.
+// Open @p path for binary writing without replacing an existing file.
 std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, ExclusiveOpenStatus &outStatus) noexcept
 {
     outStatus = ExclusiveOpenStatus::OtherError;
 #ifdef _WIN32
-    // `HANDLE const` makes the handle value immutable.
+    // HANDLE const makes the handle value immutable.
     // NOLINTNEXTLINE(misc-misplaced-const)
     HANDLE const handle = ::CreateFileW(
         path.native().c_str(),
@@ -126,11 +129,11 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
                         : ExclusiveOpenStatus::OtherError;
         return nullptr;
     }
-    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; `_open_osfhandle` takes intptr_t by design.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; _open_osfhandle takes intptr_t by design.
     const int fd = ::_open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_BINARY);
     if (fd == -1)
     {
-        // `_open_osfhandle` does not take ownership on failure.
+        // _open_osfhandle does not take ownership on failure.
         ::CloseHandle(handle);
         outStatus = ExclusiveOpenStatus::OtherError;
         return nullptr;
@@ -146,7 +149,7 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
     outStatus = ExclusiveOpenStatus::Ok;
     return fp;
 #else
-    // POSIX `open` is variadic by design; `mode` only applies with `O_CREAT`.
+    // POSIX open is variadic by design; mode only applies with O_CREAT.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (fd == -1)
@@ -169,15 +172,13 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
 class FileHandle
 {
 public:
-    /// Take ownership of @p alreadyOpen.
+    // Take ownership of @p alreadyOpen.
     explicit FileHandle(std::filesystem::path path, std::FILE *alreadyOpen)
         : mPath(std::move(path)), mFile(alreadyOpen)
     {
         if (mFile == nullptr)
         {
-            throw std::runtime_error(
-                "Session bundle: FileHandle received a null FILE* for '" + internal::PathToUtf8(mPath) + "'"
-            );
+            throw IoError("Session bundle: FileHandle received a null FILE* for '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
@@ -197,11 +198,11 @@ public:
     {
         if (!bytes.empty() && std::fwrite(bytes.data(), 1, bytes.size(), mFile) != bytes.size())
         {
-            throw std::runtime_error("Session bundle: short write to '" + internal::PathToUtf8(mPath) + "'");
+            throw IoError("Session bundle: short write to '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
-    /// Flush userspace and kernel buffers, then close.
+    // Flush userspace and kernel buffers, then close.
     void Close()
     {
         if (mFile == nullptr)
@@ -216,12 +217,12 @@ public:
         mFile = nullptr;
         if (!flushOk || !syncOk || !closeOk)
         {
-            throw std::runtime_error("Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'");
+            throw IoError("Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
 private:
-    /// Flush @p file to durable storage.
+    // Flush @p file to durable storage.
     static bool SyncToDisk(std::FILE *file) noexcept
     {
 #ifdef _WIN32
@@ -230,7 +231,7 @@ private:
         {
             return false;
         }
-        // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; `_get_osfhandle` returns intptr_t by design.
+        // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; _get_osfhandle returns intptr_t by design.
         auto *const handle = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
         if (handle == INVALID_HANDLE_VALUE)
         {
@@ -251,7 +252,7 @@ private:
     std::FILE *mFile = nullptr;
 };
 
-/// Open a unique staging file, retrying name collisions.
+// Open a unique staging file, retrying name collisions.
 std::FILE *OpenStagingFileWithRetry(const std::filesystem::path &destination, std::filesystem::path &outTemporary)
 {
     // Multiple attempts also handle stale files from an interrupted run.
@@ -298,7 +299,7 @@ std::FILE *OpenStagingFileWithRetry(const std::filesystem::path &destination, st
     {
         reason += " (staging path collided " + std::to_string(MAX_ATTEMPTS) + " times)";
     }
-    throw std::runtime_error(
+    throw IoError(
         "Session bundle: failed to open staging file for '" + internal::PathToUtf8(destination) + "': " + reason
     );
 }
@@ -311,7 +312,7 @@ public:
     {
         if (mContext == nullptr)
         {
-            throw std::runtime_error("Session bundle: ZSTD_createCCtx failed");
+            throw IoError("Session bundle: ZSTD_createCCtx failed");
         }
         SetParameter(ZSTD_c_compressionLevel, options.compressionLevel);
         SetParameter(ZSTD_c_checksumFlag, 1);
@@ -320,7 +321,7 @@ public:
             const std::size_t result = ZSTD_CCtx_setParameter(mContext, ZSTD_c_nbWorkers, options.totalWorkers);
             if (ZSTD_isError(result))
             {
-                throw std::runtime_error(
+                throw IoError(
                     std::string("Session bundle: zstd worker configuration failed: ") + ZSTD_getErrorName(result)
                 );
             }
@@ -363,9 +364,7 @@ private:
         const std::size_t result = ZSTD_CCtx_setParameter(mContext, parameter, value);
         if (ZSTD_isError(result))
         {
-            throw std::runtime_error(
-                std::string("Session bundle: zstd configuration failed: ") + ZSTD_getErrorName(result)
-            );
+            throw IoError(std::string("Session bundle: zstd configuration failed: ") + ZSTD_getErrorName(result));
         }
     }
 
@@ -375,9 +374,7 @@ private:
         const std::size_t result = ZSTD_compressStream2(mContext, &output, &input, directive);
         if (ZSTD_isError(result))
         {
-            throw std::runtime_error(
-                std::string("Session bundle: zstd compression failed: ") + ZSTD_getErrorName(result)
-            );
+            throw IoError(std::string("Session bundle: zstd compression failed: ") + ZSTD_getErrorName(result));
         }
         mFile.Write({mOutput.data(), output.pos});
         return result;
@@ -397,9 +394,9 @@ std::string CanonicalizeSourceLocator(const std::filesystem::path &path, const S
     return internal::PathToUtf8(path);
 }
 
-/// Composite key for the anchor index below. Stores by `std::string`
-/// because the canonicalizer returns by value; the bytes must outlive
-/// the insertion loop.
+// Composite key for the anchor index below. Stores by std::string
+// because the canonicalizer returns by value; the bytes must outlive
+// the insertion loop.
 struct AnchorLookupKey
 {
     std::string locator;
@@ -422,10 +419,10 @@ struct AnchorLookupKeyHash
     }
 };
 
-/// One slot per anchor in the wanted-set. `found=false` means the
-/// scan has not yet matched a row; `ambiguous=true` means the same
-/// `(canonical locator, lineId)` matched more than once, so the
-/// anchor cannot resolve to a single dense row and is dropped.
+// One slot per anchor in the wanted-set. found=false means the
+// scan has not yet matched a row; ambiguous=true means the same
+// (canonical locator, lineId) matched more than once, so the
+// anchor cannot resolve to a single dense row and is dropped.
 struct AnchorMatchSlot
 {
     std::uint64_t row = 0;
@@ -433,7 +430,7 @@ struct AnchorMatchSlot
     bool ambiguous = false;
 };
 
-/// Anchor lookup table sized by anchor count, not row count.
+// Anchor lookup table sized by anchor count, not row count.
 using AnchorWantedSet = std::unordered_map<AnchorLookupKey, AnchorMatchSlot, AnchorLookupKeyHash>;
 
 AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
@@ -448,9 +445,45 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
     return wanted;
 }
 
-void PopulateAnchorMatches(
-    AnchorWantedSet &wanted, const std::vector<LogLine> &lines, const SessionBundleWriteOptions &options
-)
+/**
+ * The rows of a bundle: every line of the table, or the lines at a list of row numbers in the order given. Row numbers
+ * in the bundle count the position in this view.
+ */
+class BundleRows
+{
+public:
+    BundleRows(const std::vector<LogLine> &lines, std::span<const std::size_t> rows, bool all)
+        : mLines(&lines), mRows(rows), mAll(all)
+    {
+    }
+
+    [[nodiscard]] std::size_t Size() const noexcept
+    {
+        return mAll ? mLines->size() : mRows.size();
+    }
+
+    [[nodiscard]] const LogLine &operator[](std::size_t position) const
+    {
+        if (mAll)
+        {
+            return (*mLines)[position];
+        }
+        assert(mRows[position] < mLines->size() && "WriteSessionBundle: row number out of range");
+        return (*mLines)[mRows[position]];
+    }
+
+    [[nodiscard]] bool Empty() const noexcept
+    {
+        return Size() == 0;
+    }
+
+private:
+    const std::vector<LogLine> *mLines;
+    std::span<const std::size_t> mRows;
+    bool mAll;
+};
+
+void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines, const SessionBundleWriteOptions &options)
 {
     if (wanted.empty())
     {
@@ -459,7 +492,7 @@ void PopulateAnchorMatches(
     // Canonicalize each source once.
     std::unordered_map<const LineSource *, std::string> canonicalCache;
 
-    for (std::size_t row = 0; row < lines.size(); ++row)
+    for (std::size_t row = 0; row < lines.Size(); ++row)
     {
         const LogLine &line = lines[row];
         const auto *source = line.Source();
@@ -493,7 +526,7 @@ void PopulateAnchorMatches(
         }
         else
         {
-            // Duplicate `(locator, lineId)`: drop rather than pick
+            // Duplicate (locator, lineId): drop rather than pick
             // an arbitrary row.
             it->second.ambiguous = true;
         }
@@ -502,7 +535,7 @@ void PopulateAnchorMatches(
 
 void RemapAnchors(
     LogConfiguration &configuration,
-    const std::vector<LogLine> &lines,
+    const BundleRows &lines,
     std::string_view flattenedLocator,
     const SessionBundleWriteOptions &options
 )
@@ -532,11 +565,11 @@ void RemapAnchors(
     configuration.anchors = std::move(remapped);
 }
 
-/// Parse format matching the bundle's normalized UTC timestamps.
+// Parse format matching the bundle's normalized UTC timestamps.
 constexpr std::string_view BUNDLE_TIME_PARSE_FORMAT = "%FT%T";
 
-/// Ensure Time columns can parse the bundle's normalized timestamps.
-/// Prepend the format so the fast ISO parser runs first.
+// Ensure Time columns can parse the bundle's normalized timestamps.
+// Prepend the format so the fast ISO parser runs first.
 void NormalizeTimeColumnParseFormats(LogConfiguration &configuration)
 {
     for (auto &column : configuration.columns)
@@ -561,9 +594,7 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
     const auto error = glz::write_json(configuration, json);
     if (error)
     {
-        throw std::runtime_error(
-            "Session bundle: failed to serialize configuration: " + glz::format_error(error, json)
-        );
+        throw IoError("Session bundle: failed to serialize configuration: " + glz::format_error(error, json));
     }
     return json;
 }
@@ -571,7 +602,7 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
 void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesystem::path &destination)
 {
 #ifdef _WIN32
-    // Same-volume staging enables atomic replacement. `FileHandle::Close`
+    // Same-volume staging enables atomic replacement. FileHandle::Close
     // durably flushes the file before this rename.
     const std::error_code moveError = internal::RetryWhileFileBusy([&temporary, &destination] {
         if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
@@ -587,7 +618,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
         const std::string destUtf8 = internal::PathToUtf8(destination);
         if (win32Error == ERROR_SHARING_VIOLATION)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "Session bundle: cannot replace '" + destUtf8 +
                 "' because another program has it open (Windows error 32, ERROR_SHARING_VIOLATION). "
                 "Close the file in the other program (log viewer, editor, antivirus scan, sync client) and try again."
@@ -595,13 +626,13 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
         }
         if (win32Error == ERROR_ACCESS_DENIED)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "Session bundle: cannot replace '" + destUtf8 +
                 "' due to a permissions error (Windows error 5, ERROR_ACCESS_DENIED). "
                 "Check that you can write to the destination folder and that the target file is not read-only."
             );
         }
-        throw std::runtime_error(
+        throw IoError(
             "Session bundle: atomic replacement of '" + destUtf8 + "' failed with Windows error " +
             std::to_string(win32Error)
         );
@@ -611,7 +642,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
     std::filesystem::rename(temporary, destination, error);
     if (error)
     {
-        throw std::runtime_error(
+        throw IoError(
             "Session bundle: atomic replacement of '" + internal::PathToUtf8(destination) +
             "' failed: " + error.message()
         );
@@ -621,23 +652,23 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
 
 } // namespace
 
-void WriteSessionBundle(
+namespace
+{
+
+void WriteBundle(
     const LogTable &table,
     const LogConfiguration &configuration,
+    const BundleRows &lines,
     const std::filesystem::path &destination,
     const SessionBundleWriteOptions &options
 )
 {
     PollStop(options.stopToken);
-    if (destination.empty() || destination.filename().empty())
-    {
-        throw std::invalid_argument("WriteSessionBundle requires a destination file");
-    }
+    assert(!destination.empty() && !destination.filename().empty() && "WriteSessionBundle requires a destination file");
 
-    const auto &lines = table.Data().Lines();
-    if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
+    if (lines.Size() > SESSION_BUNDLE_MAX_ROWS)
     {
-        throw std::length_error(
+        throw LimitError(
             "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
         );
     }
@@ -659,10 +690,10 @@ void WriteSessionBundle(
     const std::string configJson = SerializeCompactConfiguration(embedded);
     const std::string metadata =
         R"({"__slv_bundle__":{"formatVersion":)" + std::to_string(SESSION_BUNDLE_FORMAT_VERSION) + R"(,"rowCount":)" +
-        std::to_string(static_cast<std::uint64_t>(lines.size())) + R"(,"configuration":)" + configJson + "}}\n";
+        std::to_string(static_cast<std::uint64_t>(lines.Size())) + R"(,"configuration":)" + configJson + "}}\n";
     if (metadata.size() > MAX_METADATA_BYTES)
     {
-        throw std::length_error("Session bundle metadata exceeds the 64 MiB limit");
+        throw LimitError("Session bundle metadata exceeds the 64 MiB limit");
     }
 
     // Open a unique sibling so concurrent exports cannot share staging.
@@ -672,7 +703,7 @@ void WriteSessionBundle(
     try
     {
         FileHandle file(temporary, stagingFile);
-        // Ownership has moved to `FileHandle`.
+        // Ownership has moved to FileHandle.
         stagingFile = nullptr;
         ZstdWriter writer(file, options);
         writer.Write(metadata);
@@ -680,7 +711,7 @@ void WriteSessionBundle(
         // Reuse row storage across the hot loop.
         internal::NormalizedJsonRowWriter rowWriter(table);
         std::string rowBuffer;
-        for (std::size_t row = 0; row < lines.size(); ++row)
+        for (std::size_t row = 0; row < lines.Size(); ++row)
         {
             if ((row % PROGRESS_INTERVAL_ROWS) == 0)
             {
@@ -690,13 +721,13 @@ void WriteSessionBundle(
             rowWriter.Append(lines[row], rowBuffer);
             if (rowBuffer.size() > MAX_RECORD_BYTES)
             {
-                throw std::length_error("Session bundle row exceeds the 256 MiB limit");
+                throw LimitError("Session bundle row exceeds the 256 MiB limit");
             }
             rowBuffer.push_back('\n');
             writer.Write(rowBuffer);
             if (options.progress && ((row + 1) % PROGRESS_INTERVAL_ROWS) == 0)
             {
-                options.progress(row + 1, lines.size());
+                options.progress(row + 1, lines.Size());
             }
         }
 
@@ -704,10 +735,10 @@ void WriteSessionBundle(
         writer.Finish();
         file.Close();
         // Emit one terminal progress update, including for empty bundles.
-        const bool loopEmittedFinalTick = !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
+        const bool loopEmittedFinalTick = !lines.Empty() && (lines.Size() % PROGRESS_INTERVAL_ROWS) == 0;
         if (options.progress && !loopEmittedFinalTick)
         {
-            options.progress(lines.size(), lines.size());
+            options.progress(lines.Size(), lines.Size());
         }
         ReplaceAtomically(temporary, destination);
     }
@@ -724,6 +755,31 @@ void WriteSessionBundle(
         std::filesystem::remove(temporary, cleanupError);
         throw;
     }
+}
+
+} // namespace
+
+void WriteSessionBundle(
+    const LogTable &table,
+    const LogConfiguration &configuration,
+    const std::filesystem::path &destination,
+    const SessionBundleWriteOptions &options
+)
+{
+    const BundleRows rows(table.Data().Lines(), {}, true);
+    WriteBundle(table, configuration, rows, destination, options);
+}
+
+void WriteSessionBundle(
+    const LogTable &table,
+    const LogConfiguration &configuration,
+    std::span<const std::size_t> rows,
+    const std::filesystem::path &destination,
+    const SessionBundleWriteOptions &options
+)
+{
+    const BundleRows selected(table.Data().Lines(), rows, false);
+    WriteBundle(table, configuration, selected, destination, options);
 }
 
 } // namespace loglib

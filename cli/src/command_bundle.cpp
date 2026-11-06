@@ -22,6 +22,7 @@
 #include <exception>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -86,29 +87,6 @@ private:
     bool mDirty = false;
 };
 
-/**
- * @brief Keeps only the lines at @p rows, in ascending row order.
- *
- * The table's derived state (row ids, enum caches) is stale afterward;
- * the caller only hands the table to `WriteSessionBundle`, which reads
- * `Data().Lines()` and `Data().Keys()`.
- */
-void RetainRows(loglib::LogTable &table, std::vector<std::size_t> rows)
-{
-    std::ranges::sort(rows);
-    auto &lines = table.Data().Lines();
-    std::size_t kept = 0;
-    for (const std::size_t row : rows)
-    {
-        if (row != kept)
-        {
-            lines[kept] = std::move(lines[row]);
-        }
-        ++kept;
-    }
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(kept), lines.end());
-}
-
 } // namespace
 
 ExitCode RunBundle(
@@ -134,12 +112,13 @@ ExitCode RunBundle(
     loglib::LogConfiguration configuration = session->configuration;
     configuration.source.reset();
 
+    std::optional<std::vector<std::size_t>> filteredRows;
     if (options.filteredRows)
     {
         const auto compiled = loglib::CompileExpression(
             session->expression, loaded->table.Configuration().Configuration().columns, &loaded->table
         );
-        RetainRows(loaded->table, loglib::FilterAcceptedRows(loaded->table, compiled));
+        filteredRows = loglib::FilterAcceptedRows(loaded->table, compiled);
         configuration.expression = loglib::FilterExpression{};
     }
 
@@ -159,7 +138,14 @@ ExitCode RunBundle(
 
     try
     {
-        loglib::WriteSessionBundle(loaded->table, configuration, destination, writeOptions);
+        if (filteredRows)
+        {
+            loglib::WriteSessionBundle(loaded->table, configuration, *filteredRows, destination, writeOptions);
+        }
+        else
+        {
+            loglib::WriteSessionBundle(loaded->table, configuration, destination, writeOptions);
+        }
     }
     catch (const loglib::OperationCancelled &)
     {

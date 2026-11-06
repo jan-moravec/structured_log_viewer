@@ -1,14 +1,13 @@
 #include "common.hpp"
+#include "parse_only.hpp"
 
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
-#include <loglib/parse/internal/buffering_sink.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/parse/parse_file.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 

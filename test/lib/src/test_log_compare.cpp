@@ -67,7 +67,7 @@ LogTable BuildSingleColumnTable(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -338,7 +338,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -387,7 +387,7 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -436,7 +436,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -517,7 +517,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -616,7 +616,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -662,7 +662,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 

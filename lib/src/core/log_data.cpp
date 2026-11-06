@@ -32,13 +32,10 @@ LogData::LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines,
 }
 
 LogData::LogData(LogData &&other) noexcept
-    : mSources(std::move(other.mSources)),
-      mLines(std::move(other.mLines)),
-      mKeys(std::move(other.mKeys)),
-      mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
+    : mSources(std::move(other.mSources)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys))
 {
-    // KeyIndex moved address — rebind. `LineSource` heap addresses are
-    // stable across the move, so `mSource` pointers stay valid.
+    // KeyIndex moved address — rebind. LineSource heap addresses are
+    // stable across the move, so mSource pointers stay valid.
     for (auto &line : mLines)
     {
         line.RebindKeys(mKeys);
@@ -52,7 +49,6 @@ LogData &LogData::operator=(LogData &&other) noexcept
         mSources = std::move(other.mSources);
         mLines = std::move(other.mLines);
         mKeys = std::move(other.mKeys);
-        mTimestampsAlreadyParsed = other.mTimestampsAlreadyParsed;
         for (auto &line : mLines)
         {
             line.RebindKeys(mKeys);
@@ -162,71 +158,14 @@ std::vector<std::string> LogData::SortedKeys() const
     return mKeys.SortedKeys();
 }
 
-bool LogData::TimestampsAlreadyParsed() const
-{
-    return mTimestampsAlreadyParsed;
-}
-
-void LogData::MarkTimestampsParsed()
-{
-    mTimestampsAlreadyParsed = true;
-}
-
-void LogData::Merge(LogData other)
-{
-    // Splice sources first: each `LogLine` already points at a heap
-    // `LineSource` inside `other.mSources`; moving the `unique_ptr`s
-    // keeps the addresses stable.
-    mSources.reserve(mSources.size() + other.mSources.size());
-    std::move(
-        std::make_move_iterator(other.mSources.begin()),
-        std::make_move_iterator(other.mSources.end()),
-        std::back_inserter(mSources)
-    );
-
-    // Remap table: ids in other.mKeys -> ids in mKeys. O(N) in the merged-in key count.
-    const size_t otherKeyCount = other.mKeys.Size();
-    std::vector<KeyId> remap(otherKeyCount);
-    for (size_t i = 0; i < otherKeyCount; ++i)
-    {
-        const auto otherId = static_cast<KeyId>(i);
-        remap[i] = mKeys.GetOrInsert(other.mKeys.KeyOf(otherId));
-    }
-
-    mLines.reserve(mLines.size() + other.mLines.size());
-    for (auto &line : other.mLines)
-    {
-        // Rewire each pair's KeyId in place (no `LogValue`
-        // materialisation), then re-sort. `OwnedString` offsets stay
-        // valid: the source's arena moved with its bytes.
-        const auto values = line.CompactValues();
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> remapped;
-        remapped.reserve(values.size());
-        for (const auto &entry : values)
-        {
-            remapped.emplace_back(remap[entry.first], entry.second);
-        }
-        std::ranges::sort(remapped, [](const auto &a, const auto &b) { return a.first < b.first; });
-
-        assert(line.Source() != nullptr);
-        LogLine rebuilt(std::move(remapped), mKeys, *line.Source(), line.LineId());
-        mLines.push_back(std::move(rebuilt));
-    }
-
-    if (other.mTimestampsAlreadyParsed)
-    {
-        mTimestampsAlreadyParsed = true;
-    }
-}
-
 void LogData::AppendBatch(
     std::vector<LogLine> lines,
     const std::vector<uint64_t> &lineOffsets,
     std::span<const MultiLineRecordSpan> multiLineSpans
 )
 {
-    // No per-batch `reserve` — rely on geometric push_back growth
-    // (some STL impls take `reserve(size+n)` as exact = O(N^2/B)).
+    // No per-batch reserve — rely on geometric push_back growth
+    // (some STL impls take reserve(size+n) as exact = O(N^2/B)).
     if (!lines.empty())
     {
         for (auto &line : lines)

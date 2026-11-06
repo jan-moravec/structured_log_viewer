@@ -20,7 +20,6 @@ add_library(
     STATIC
     src/parse/auto_detect_parser.cpp
     src/parse/batch_coalescer.cpp
-    src/parse/buffering_sink.cpp
     src/core/bytes_producer.cpp
     src/core/compact_log_value.cpp
     src/ingest/decompressing_byte_source.cpp
@@ -36,7 +35,6 @@ add_library(
     src/query/histogram_bucket_index.cpp
     src/core/key_index.cpp
     src/core/row_batch.cpp
-    src/parse/parse_file.cpp
     src/parse/static_parser_pipeline.cpp
     src/core/stream_line_source.cpp
     src/ingest/tailing_bytes_producer.cpp
@@ -65,6 +63,7 @@ add_library(
     src/time/timestamp_parsing.cpp
     src/time/user_timestamp.cpp
     src/table/log_table.cpp
+    src/table/table_loader.cpp
     src/output/normalized_json_row.cpp
     src/query/query_parser.cpp
     src/query/query_printer.cpp
@@ -76,6 +75,7 @@ add_library(
     src/parse/worker_threads.cpp
     src/core/version.cpp
     src/query/row_ordering.cpp
+    src/output/file_loading.cpp
     src/output/session_bundle_writer.cpp
     src/output/session_bundle_reader.cpp
     src/parse/parsers/csv_parser.cpp
@@ -132,9 +132,10 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/parse/log_parse_sink.hpp
     include/loglib/parse/log_parser.hpp
     include/loglib/query/log_string_matcher.hpp
+    include/loglib/output/file_loading.hpp
     include/loglib/table/log_table.hpp
+    include/loglib/table/table_loader.hpp
     include/loglib/core/log_value.hpp
-    include/loglib/parse/parse_file.hpp
     include/loglib/parse/parser_options.hpp
     include/loglib/parse/parsers/csv_parser.hpp
     include/loglib/parse/parsers/json_parser.hpp

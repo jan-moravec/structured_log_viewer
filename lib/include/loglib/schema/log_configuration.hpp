@@ -137,12 +137,6 @@ public:
      */
     static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
 
-    /**
-     * @brief Rebuilds the configuration from the sorted keys of the loaded data. Do not call it while a stream is
-     * being parsed.
-     */
-    void Update(std::span<const std::string> sortedKeys);
-
     /** @brief Resets to an empty configuration, as for a new session. */
     void Reset();
 

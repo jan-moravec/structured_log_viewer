@@ -3,6 +3,8 @@
 // to run). Debug builds skip these cases automatically — see
 // `BENCHMARK_REQUIRES_RELEASE_BUILD`.
 
+#include "parse_only.hpp"
+
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
@@ -14,7 +16,6 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/parse/parse_file.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/table/log_table.hpp>
@@ -76,11 +77,9 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
     RunTimedSamples(
         "Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = testFile.RecordCount()}, [&]() {
-            LogTable table;
             ParseResult result = ParseFile(parser, testFile.GetFilePath());
             REQUIRE(result.data.Lines().size() == testFile.RecordCount());
             REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
         }
     );
 }
@@ -362,7 +361,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
 
     LogConfigurationManager configManager;
     configManager.Load(cfgFile.GetFilePath());
-    LogTable table(LogData{}, std::move(configManager));
+    loglib::LogTable table(configManager.Configuration());
     table.SetDisplayTimeZone(ProcessDefaultTimeZone());
     table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
 

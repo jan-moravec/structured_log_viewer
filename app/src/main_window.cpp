@@ -137,16 +137,10 @@
 namespace
 {
 
-// Check the extension without opening the bundle.
+// The library decides what a bundle is, by the extension alone.
 [[nodiscard]] bool IsSessionBundlePath(const QString &path)
 {
-    // `QFileInfo::suffix()` omits the leading dot.
-    static_assert(
-        loglib::SESSION_BUNDLE_EXTENSION[0] == '.' && loglib::SESSION_BUNDLE_EXTENSION[1] != '\0',
-        "SESSION_BUNDLE_EXTENSION must be a dot-prefixed, non-empty extension"
-    );
-    return QFileInfo(path).suffix().compare(QLatin1String(loglib::SESSION_BUNDLE_EXTENSION + 1), Qt::CaseInsensitive) ==
-           0;
+    return loglib::HasSessionBundleExtension(logapp::QStringToFsPath(path));
 }
 
 // Detect filters that cannot bind to the current columns.
@@ -4063,7 +4057,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
             nonExpandableInputs.append(p);
             continue;
         }
-        if (IsSessionBundlePath(p) && loglib::LooksLikeSessionBundle(logapp::QStringToFsPath(p)))
+        if (IsSessionBundlePath(p))
         {
             nonExpandableInputs.append(p);
             continue;
@@ -4132,7 +4126,7 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         {
             continue;
         }
-        if (IsSessionBundlePath(file) && loglib::LooksLikeSessionBundle(logapp::QStringToFsPath(file)))
+        if (IsSessionBundlePath(file))
         {
             ++bundleCount;
             logPaths.append(file);

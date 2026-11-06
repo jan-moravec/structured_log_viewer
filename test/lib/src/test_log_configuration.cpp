@@ -140,7 +140,7 @@ TEST_CASE("Handle empty file", "[LogConfigurationManager]")
     CHECK_THROWS_AS(manager.Load(testConfiguration.GetFilePath()), std::runtime_error);
 }
 
-TEST_CASE("Update with empty LogData should not modify configuration", "[LogConfigurationManager]")
+TEST_CASE("AppendKeys with no keys should not modify configuration", "[LogConfigurationManager]")
 {
     const TestLogConfiguration testLogConfiguration;
 
@@ -156,8 +156,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
 
     const size_t initialColumnCount = manager.Configuration().columns.size();
 
-    const LogData emptyLogData;
-    manager.Update(emptyLogData.SortedKeys());
+    manager.AppendKeys({});
 
     CHECK(manager.Configuration().columns.size() == initialColumnCount);
     CHECK(manager.Configuration().columns[0].header == defaultColumn.header);
@@ -202,7 +201,7 @@ TEST_CASE(
     checkType("tag", ColumnType::Any);
 }
 
-TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
+TEST_CASE("AppendKeys with mixed keys seeds the timestamp column", "[LogConfigurationManager]")
 {
     const TestLogConfiguration testLogConfiguration;
 
@@ -215,40 +214,29 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    const TestLogFile testLogFile;
-    auto source = testLogFile.CreateFileLineSource();
-    KeyIndex testKeys;
-    std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
-    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, *source, 0);
-    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
-
-    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
-
-    manager.Update(logData.SortedKeys());
+    manager.AppendKeys({"regular", "newKey", "timestamp"});
 
     REQUIRE(manager.Configuration().columns.size() == 3);
 
-    CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == ColumnType::Time);
+    CHECK(manager.Configuration().columns[0].header == "regular");
+    CHECK(manager.Configuration().columns[1].header == "newKey");
+    CHECK(manager.Configuration().columns[2].header == "timestamp");
+    CHECK(manager.Configuration().columns[2].type == ColumnType::Time);
 
-    CHECK(manager.Configuration().columns[1].header == "regular");
-    CHECK(manager.Configuration().columns[2].header == "newKey");
-
-    CHECK(manager.Configuration().columns[0].printFormat == "%F %H:%M:%S");
+    CHECK(manager.Configuration().columns[2].printFormat == "%F %H:%M:%S");
     // Default seed keeps ISO 8601 first (fast path via
     // `Iso8601T` / `Iso8601Space`) and appends non-ISO shapes
     // (Apache CLF at present) so shipped regex-template
     // timestamps promote without an editor round-trip. See
     // `DefaultTimeParseFormats` for the authoritative list.
-    const auto &seeded = manager.Configuration().columns[0].parseFormats;
+    const auto &seeded = manager.Configuration().columns[2].parseFormats;
     REQUIRE(seeded == loglib::DefaultTimeParseFormats());
     CHECK(seeded.front() == "%FT%T%Ez");
     CHECK(std::ranges::find(seeded, std::string("%d/%b/%Y:%H:%M:%S %z")) != seeded.end());
 }
 
 // `IsKeyInAnyColumn` cache-invalidation tests: every mutating path
-// (`Load`, `Update`, `AppendKeys`) must invalidate the cache.
+// (`Load`, `AppendKeys`) must invalidate the cache.
 
 TEST_CASE(
     "Cache: AppendKeys after a query sees the freshly appended key", "[LogConfigurationManager][cache_invalidation]"
@@ -268,7 +256,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Cache: Update after AppendKeys auto-promotes timestamps with the cache fresh",
+    "Cache: a second AppendKeys auto-promotes timestamps with the cache fresh",
     "[LogConfigurationManager][cache_invalidation]"
 )
 {
@@ -277,21 +265,13 @@ TEST_CASE(
     manager.AppendKeys({"regular"});
     REQUIRE(manager.Configuration().columns.size() == 1);
 
-    // Update must skip "regular" and add "timestamp" as Type::Time at index 0.
-    const TestLogFile testLogFile;
-    auto source = testLogFile.CreateFileLineSource();
-    KeyIndex testKeys;
-    std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
-    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
-    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
-
-    manager.Update(logData.SortedKeys());
+    // The second call must skip "regular" and add "timestamp" as Type::Time.
+    manager.AppendKeys({"regular", "timestamp"});
 
     REQUIRE(manager.Configuration().columns.size() == 2);
-    CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == ColumnType::Time);
-    CHECK(manager.Configuration().columns[1].header == "regular");
+    CHECK(manager.Configuration().columns[0].header == "regular");
+    CHECK(manager.Configuration().columns[1].header == "timestamp");
+    CHECK(manager.Configuration().columns[1].type == ColumnType::Time);
 }
 
 TEST_CASE(
@@ -369,21 +349,13 @@ TEST_CASE(
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    const TestLogFile testLogFile;
-    auto source = testLogFile.CreateFileLineSource();
-    KeyIndex testKeys;
-    std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
-    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, *source, 0);
-    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
-    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+    manager.AppendKeys({"regular", "newKey", "timestamp"});
 
-    manager.Update(logData.SortedKeys());
-
+    // New keys go to the end in the order they are given.
     REQUIRE(manager.Configuration().columns.size() == 3);
-    CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[1].header == "regular");
-    CHECK(manager.Configuration().columns[2].header == "newKey");
+    CHECK(manager.Configuration().columns[0].header == "regular");
+    CHECK(manager.Configuration().columns[1].header == "newKey");
+    CHECK(manager.Configuration().columns[2].header == "timestamp");
 }
 
 TEST_CASE(
@@ -459,17 +431,10 @@ TEST_CASE(
         CHECK(manager.Configuration().columns[0].autoDetect);
     }
 
-    SECTION("Update assigns the candidate state to every freshly-added non-time key")
+    SECTION("AppendKeys assigns the candidate state to every freshly-added non-time key")
     {
-        const TestLogFile testLogFile;
-        auto source = testLogFile.CreateFileLineSource();
-        KeyIndex keys;
-        std::vector<LogLine> lines;
-        lines.emplace_back(LogMap{{"k1", std::string("v1")}, {"k2", std::string("v2")}}, keys, *source, 0);
-        const LogData logData(std::move(source), std::move(lines), std::move(keys));
-
         LogConfigurationManager manager;
-        manager.Update(logData.SortedKeys());
+        manager.AppendKeys({"k1", "k2"});
 
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
@@ -1318,16 +1283,10 @@ TEST_CASE(
     }
     REQUIRE(LegacyLeavesOf(manager.Configuration().expression).size() == 2);
 
-    // `Update` with a fresh `timestamp` key: appended at index 2
-    // then bubbled to index 0; existing columns shift right.
-    const TestLogFile testLogFile;
-    auto source = testLogFile.CreateFileLineSource();
-    KeyIndex testKeys;
-    std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
-    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
-
-    manager.Update(logData.SortedKeys());
+    // A fresh `timestamp` key is appended at index 2, then moved to index 0 as the table does for a new time column;
+    // existing columns shift right.
+    manager.AppendKeys({"timestamp"});
+    manager.MoveColumn(2, 0);
 
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
