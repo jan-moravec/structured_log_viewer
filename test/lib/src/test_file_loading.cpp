@@ -259,9 +259,8 @@ TEST_CASE("Only the bundle extension makes a file a bundle", "[file_loading][bun
     }
     SECTION("a bundle with an unsupported version is a format error")
     {
-        const std::string metadata =
-            R"({"__slv_bundle__":{"formatVersion":2,"rowCount":0,"configuration":{}}})"
-            "\n";
+        const std::string metadata = R"({"__slv_bundle__":{"formatVersion":2,"rowCount":0,"configuration":{}}})"
+                                     "\n";
         CHECK_THROWS_AS(OpenFileSource(dir.Write("future.slvbundle", Zstd(metadata))), FormatError);
     }
     SECTION("a bundle without rows loads as an empty table")
@@ -284,7 +283,9 @@ TEST_CASE("LoadFile starts from the configuration it is given", "[file_loading][
     const auto path = dir.Write("plain.jsonl", JsonRows(5));
 
     LogConfiguration configuration;
-    configuration.columns.push_back({.header = "Message", .keys = {"msg"}, .printFormat = "{}", .type = ColumnType::Any});
+    configuration.columns.push_back(
+        {.header = "Message", .keys = {"msg"}, .printFormat = "{}", .type = ColumnType::Any}
+    );
     LoadOptions options;
     options.configuration = configuration;
 

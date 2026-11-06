@@ -13,9 +13,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <span>
 #include <stdexcept>
-#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -160,9 +160,8 @@ TEST_CASE("LinesConsumed counts physical lines the same for a file and a stream"
         {
             const TestLogFile file("table_loader_lines.log");
             LogTable table;
-            const ParseOutcome outcome = ParseIntoTable(
-                table, *testCase.parser, FileSourceOf(file, testCase.bytes), ParserOptionsFor(table)
-            );
+            const ParseOutcome outcome =
+                ParseIntoTable(table, *testCase.parser, FileSourceOf(file, testCase.bytes), ParserOptionsFor(table));
             CHECK(outcome.linesConsumed == testCase.lines);
             CHECK(outcome.errors.size() == testCase.errors);
         }
@@ -228,7 +227,9 @@ TEST_CASE("ParseIntoTable passes on a failure and keeps the rows that arrived", 
 
     LogTable table;
     auto source = std::make_unique<StreamLineSource>("memory.log", std::make_unique<FailingProducer>());
-    CHECK_THROWS_AS(ParseIntoTable(table, JsonParser{}, std::move(source), ParserOptionsFor(table)), std::runtime_error);
+    CHECK_THROWS_AS(
+        ParseIntoTable(table, JsonParser{}, std::move(source), ParserOptionsFor(table)), std::runtime_error
+    );
     CHECK(table.Data().Sources().size() == 1);
     // The record the parser still holds when it fails is dropped, so the table can hold fewer rows than were read.
     CHECK(table.RowCount() <= 3);

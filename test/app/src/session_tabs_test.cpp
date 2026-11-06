@@ -17,8 +17,8 @@
 #include "session_history_manager.hpp"
 #include "workspace_persistence.hpp"
 
-#include <loglib/output/session_bundle.hpp>
 #include <loglib/output/file_loading.hpp>
+#include <loglib/output/session_bundle.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>

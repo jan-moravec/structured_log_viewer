@@ -25,9 +25,7 @@ template <typename Source> void AttachSource(LogTable &table, std::unique_ptr<So
 }
 
 template <typename Source>
-ParseOutcome RunParse(
-    LogTable &table, const LogParser &parser, std::unique_ptr<Source> source, ParserOptions options
-)
+ParseOutcome RunParse(LogTable &table, const LogParser &parser, std::unique_ptr<Source> source, ParserOptions options)
 {
     Source &sourceRef = *source;
     AttachSource(table, std::move(source));
