@@ -75,13 +75,14 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
     // A RegexParser with an empty pattern fails closed.
     // Parsing must not crash; it surfaces one error and ends cleanly.
     const RegexParser parser{std::string{}};
-    const TestLogFile file("regex_no_pattern.log");
-    file.Write(
-        "Apr 28 04:02:03 host-a systemd: System starting\n"
-        "Apr 28 04:02:04 host-a systemd: another line\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "Apr 28 04:02:03 host-a systemd: System starting\n"
+            "Apr 28 04:02:04 host-a systemd: another line\n"
+        )
+    );
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("non-empty pattern"));
     CHECK(result.data.Lines().empty());
@@ -90,10 +91,8 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
 TEST_CASE("RegexParser unparsable pattern surfaces error [regex]", "[regex_parser]")
 {
     const RegexParser parser(R"((?<a)"); // dangling group
-    const TestLogFile file("regex_bad_pattern.log");
-    file.Write("anything\nat all\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("anything\nat all\n"));
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("Pattern compile failed"));
     CHECK(result.data.Lines().empty());
@@ -104,10 +103,8 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
     // Anonymous groups don't map to columns; refuse rather than
     // producing schemaless rows.
     const RegexParser parser(R"(^(\w+)\s+(.*)$)");
-    const TestLogFile file("regex_no_groups.log");
-    file.Write("a b\nc d\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("a b\nc d\n"));
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("named capture groups"));
     CHECK(result.data.Lines().empty());
@@ -117,10 +114,8 @@ TEST_CASE("RegexParser parses well-formed lines [regex]", "[regex_parser]")
 {
     // Simple `LEVEL message` shape; named groups map to columns.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
-    const TestLogFile file("regex_parse_minimal.log");
-    file.Write("info hello\nerror boom\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("info hello\nerror boom\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
@@ -134,13 +129,14 @@ TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
     // `ClassifyBareScalar` promotes numeric / bool captures the
     // same way it does for CSV / logfmt bare cells.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<code>\d+)\s+(?<ratio>\S+)\s+(?<ok>\S+)$)");
-    const TestLogFile file("regex_typing.log");
-    file.Write(
-        "info 200 0.75 true\n"
-        "warn 404 -1.5 false\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "info 200 0.75 true\n"
+            "warn 404 -1.5 false\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
@@ -159,14 +155,15 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
 {
     // Non-match is per-line; the rest of the file still parses.
     const RegexParser parser(R"(^(?<level>\w+):(?<message>.+)$)");
-    const TestLogFile file("regex_non_matching.log");
-    file.Write(
-        "info:hello\n"
-        "this line does not match\n"
-        "error:boom\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "info:hello\n"
+            "this line does not match\n"
+            "error:boom\n"
+        )
+    );
     REQUIRE(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
@@ -180,13 +177,14 @@ TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_
     // monostate (not the empty string), matching CSV's "missing
     // trailing cell" behaviour.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
-    const TestLogFile file("regex_optional.log");
-    file.Write(
-        "systemd: System starting\n"
-        "configd[17]: network changed\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "systemd: System starting\n"
+            "configd[17]: network changed\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
@@ -246,10 +244,8 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
 TEST_CASE("RegexParser captures named groups as values [regex]", "[regex_parser]")
 {
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
-    const TestLogFile file("regex_tostring.log");
-    file.Write("info hello world\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("info hello world\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -292,10 +288,8 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
     // before `level` must intern `message` first, not the
     // alphabetical permutation.
     const RegexParser parser(R"(^(?<message>[^|]*)\|(?<level>\w+)$)");
-    const TestLogFile file("regex_tostring_order.log");
-    file.Write("hello world|info\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("hello world|info\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -725,15 +719,15 @@ TEST_CASE(
 
     const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
 
-    const TestLogFile file("regex_static_multiline.log");
-    file.Write(
-        "error boom\n"
-        "\tat com.example.Foo.bar(Foo.java:42)\n"
-        "\tat com.example.Baz.qux(Baz.java:7)\n"
-        "info recovered\n"
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "error boom\n"
+            "\tat com.example.Foo.bar(Foo.java:42)\n"
+            "\tat com.example.Baz.qux(Baz.java:7)\n"
+            "info recovered\n"
+        )
     );
-
-    auto result = ParseFile(parser, file.GetFilePath());
     for (const auto &e : result.errors)
     {
         UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
@@ -1044,13 +1038,14 @@ TEST_CASE("RegexParser leaves optional groups that did not match empty [regex]",
     // the natural fixture: line 1 leaves `pid` absent, line 2
     // fills it.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
-    const TestLogFile file("regex_tostring_monostate.log");
-    file.Write(
-        "systemd: System starting\n"
-        "configd[17]: network changed\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "systemd: System starting\n"
+            "configd[17]: network changed\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 

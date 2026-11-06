@@ -143,10 +143,8 @@ TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[cs
 TEST_CASE("Parse minimal CSV [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write("level,message\ninfo,hello\nerror,boom\n");
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(parser, MemorySource("level,message\ninfo,hello\nerror,boom\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
@@ -159,13 +157,14 @@ TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
 {
     // Mirrors logfmt: bool / int / uint / double classify; quoted cells stay strings.
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write(
-        "i,u,d,b,f,n,q\n"
-        "-12,10000000000000000000,3.14,true,false,,\"42\"\n"
-    );
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(
+        parser,
+        MemorySource(
+            "i,u,d,b,f,n,q\n"
+            "-12,10000000000000000000,3.14,true,false,,\"42\"\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -187,14 +186,15 @@ TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parse
     // `""` decodes to a literal `"`; embedded `,` passes through.
     // Embedded newlines (multi-line cells) are unsupported in v1.
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write(
-        "label,text\n"
-        "comma,\"a,b\"\n"
-        "quote,\"a\"\"b\"\n"
-    );
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(
+        parser,
+        MemorySource(
+            "label,text\n"
+            "comma,\"a,b\"\n"
+            "quote,\"a\"\"b\"\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("text")) == std::string_view{"a,b"});
@@ -204,14 +204,15 @@ TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parse
 TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write(
-        "a,b\n"
-        "ok,ok\n"
-        "broken,\"unterminated\n"
-    );
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(
+        parser,
+        MemorySource(
+            "a,b\n"
+            "ok,ok\n"
+            "broken,\"unterminated\n"
+        )
+    );
     REQUIRE(result.errors.size() == 1);
     // Error line numbers are 1-based and include the header row.
     CHECK(loglib::FormatParseError(result.errors[0]).contains("line 3"));
@@ -222,14 +223,15 @@ TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
 TEST_CASE("Ragged row with extra cells surfaces as error [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write(
-        "a,b\n"
-        "1,2\n"
-        "1,2,3\n"
-    );
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(
+        parser,
+        MemorySource(
+            "a,b\n"
+            "1,2\n"
+            "1,2,3\n"
+        )
+    );
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("line 3"));
     CHECK(loglib::FormatParseError(result.errors[0]).contains("extra cell"));
@@ -241,14 +243,15 @@ TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monost
     // `a,,c` omits the middle key; `a,b` omits the missing trailing
     // key; both lookups yield monostate.
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write(
-        "a,b,c\n"
-        "1,,3\n"
-        "4,5\n"
-    );
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(
+        parser,
+        MemorySource(
+            "a,b,c\n"
+            "1,,3\n"
+            "4,5\n"
+        )
+    );
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
@@ -281,10 +284,8 @@ TEST_CASE("UTF-8 BOM on the header is stripped [csv]", "[csv_parser]")
 TEST_CASE("CRLF line endings work [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write("a,b\r\n1,2\r\n3,4\r\n");
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(parser, MemorySource("a,b\r\n1,2\r\n3,4\r\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(std::get<std::uint64_t>(result.data.Lines()[0].GetValue("b")) == 2u);
@@ -294,10 +295,8 @@ TEST_CASE("CRLF line endings work [csv]", "[csv_parser]")
 TEST_CASE("Last data line lacks trailing newline [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write("a,b\n1,2\n3,4");
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(parser, MemorySource("a,b\n1,2\n3,4"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue("a")) == 3u);
@@ -309,10 +308,8 @@ TEST_CASE("LineSource::RawLine alignment skips the header [csv]", "[csv_parser]"
     // `(Source, LineId)` must resolve to the data row's on-disk
     // bytes even though the header was swallowed; header is line 0.
     const loglib::CsvParser parser;
-    const TestLogFile file;
-    file.Write("a,b,c\n10,20,30\n40,50,60\n");
 
-    auto result = loglib::ParseFile(parser, file.GetFilePath());
+    auto result = loglib::ParseSource(parser, MemorySource("a,b,c\n10,20,30\n40,50,60\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
@@ -499,11 +496,8 @@ TEST_CASE("Malformed CSV header after blank lines reports the right line number 
     // surface as `Error on line 3: ...`.
     using namespace loglib;
 
-    const TestLogFile file("malformed_header_after_blanks.csv");
-    file.Write("\n\n\"name,value\ninfo,hello\n");
-
     const CsvParser parser;
-    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    const ParseResult result = ParseSource(parser, MemorySource("\n\n\"name,value\ninfo,hello\n"));
     CHECK(result.data.Lines().empty());
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("Invalid CSV header"));
@@ -544,11 +538,8 @@ TEST_CASE("Duplicate CSV column names skip already-taken suffixes [csv]", "[csv_
     // must skip to `id_3`. Pins the suffix-probe loop.
     using namespace loglib;
 
-    const TestLogFile file("duplicate_headers_skip.csv");
-    file.Write("id,id_2,id\n1,2,3\n");
-
     const CsvParser parser;
-    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    const ParseResult result = ParseSource(parser, MemorySource("id,id_2,id\n1,2,3\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 

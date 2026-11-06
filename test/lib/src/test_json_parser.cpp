@@ -143,9 +143,7 @@ TEST_CASE("Parse file with empty lines", "[json_parser]")
     // Blank lines are not errors, just content-free input. Parse should succeed with no data
     // and no errors so callers can distinguish this from parse failures.
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write("\n\n\n");
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("\n\n\n"));
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.empty());
 }
@@ -155,9 +153,7 @@ TEST_CASE("Parse file with invalid line", "[json_parser]")
     // A file containing only invalid lines produces an empty LogData but reports each failure
     // through `errors` so the caller can surface them.
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write("invalid json\n");
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("invalid json\n"));
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.size() == 1);
 }
@@ -165,13 +161,14 @@ TEST_CASE("Parse file with invalid line", "[json_parser]")
 TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write(
-        "invalid json\n"
-        R"({"key": "value"})"
-        "\n"
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "invalid json\n"
+            R"({"key": "value"})"
+            "\n"
+        )
     );
-    auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
     CHECK(result.data.Lines().size() == 1);
 }
@@ -179,9 +176,7 @@ TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
 TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write("invalid json 1\ninvalid json 2\n");
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("invalid json 1\ninvalid json 2\n"));
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.size() == 2);
 }
@@ -249,31 +244,27 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write("{}\n");
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("{}\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(result.data.Lines()[0].IndexedValues().empty());
     CHECK(result.data.Keys().Size() == 0);
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == "memory.log");
     CHECK(result.data.FrontFileSource()->RawLine(0) == "{}");
 }
 
 TEST_CASE("Parse file with multiple empty JSON objects", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write("{}\n{}\n");
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("{}\n{}\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(result.data.Keys().Size() == 0);
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == "memory.log");
     for (size_t i = 0; i < result.data.Lines().size(); i++)
     {
         CHECK(result.data.Lines()[i].IndexedValues().empty());
@@ -287,19 +278,20 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("Null")
     {
-        const TestLogFile testFile;
-        testFile.Write(
-            R"({"key":null})"
-            "\n"
+        auto result = ParseSource(
+            parser,
+            MemorySource(
+                R"({"key":null})"
+                "\n"
+            )
         );
-        auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue("key")));
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":null})");
     }
 
@@ -308,91 +300,96 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         // Unescaped string values are emitted as `std::string_view` into the mmap;
         // use `AsStringView` so the test is agnostic to which alternative the parser
         // picks per the fast/slow path heuristic.
-        const TestLogFile testFile;
-        testFile.Write(
-            R"({"key":"value"})"
-            "\n"
+        auto result = ParseSource(
+            parser,
+            MemorySource(
+                R"({"key":"value"})"
+                "\n"
+            )
         );
-        auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key")) == std::string_view{"value"});
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":"value"})");
     }
 
     SECTION("Unsigned integer")
     {
-        const TestLogFile testFile;
-        testFile.Write(
-            R"({"key":10000000000000000000})"
-            "\n"
+        auto result = ParseSource(
+            parser,
+            MemorySource(
+                R"({"key":10000000000000000000})"
+                "\n"
+            )
         );
-        auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue("key")) == LARGE_UINT);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":10000000000000000000})");
     }
 
     SECTION("Integer")
     {
-        const TestLogFile testFile;
-        testFile.Write(
-            R"({"key":-12})"
-            "\n"
+        auto result = ParseSource(
+            parser,
+            MemorySource(
+                R"({"key":-12})"
+                "\n"
+            )
         );
-        auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<int64_t>(result.data.Lines()[0].GetValue("key")) == -12);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":-12})");
     }
 
     SECTION("Double")
     {
-        const TestLogFile testFile;
-        testFile.Write(
-            R"({"key":3.14})"
-            "\n"
+        auto result = ParseSource(
+            parser,
+            MemorySource(
+                R"({"key":3.14})"
+                "\n"
+            )
         );
-        auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<double>(result.data.Lines()[0].GetValue("key")) == Catch::Approx(3.14));
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":3.14})");
     }
 
     SECTION("Boolean")
     {
-        const TestLogFile testFile;
-        testFile.Write(
-            R"({"key":true})"
-            "\n"
+        auto result = ParseSource(
+            parser,
+            MemorySource(
+                R"({"key":true})"
+                "\n"
+            )
         );
-        auto result = ParseFile(parser, testFile.GetFilePath());
         REQUIRE(result.errors.empty());
         CHECK(result.data.Lines().size() == 1);
         CHECK(std::get<bool>(result.data.Lines()[0].GetValue("key")) == true);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":true})");
     }
 }
@@ -526,11 +523,9 @@ TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]"
     // trailing '\n'). Without the compensating `+ 1` the last character of
     // the final line was silently lopped off when round-tripping through
     // `RawLine` -- here the final `}` would have gone missing.
-    const TestLogFile testFile;
-    testFile.Write("{\"key1\":\"value1\"}\n{\"key2\":\"value2\"}");
 
     const loglib::JsonParser parser;
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("{\"key1\":\"value1\"}\n{\"key2\":\"value2\"}"));
 
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
@@ -548,16 +543,17 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
 {
     // Invalid lines are reported as errors but do not abort the parse.
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write(
-        R"({"key1":"value1"})"
-        "\n"
-        "invalid json\n"
-        R"({"key2":"value2"})"
-        "\n"
-    );
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            R"({"key1":"value1"})"
+            "\n"
+            "invalid json\n"
+            R"({"key2":"value2"})"
+            "\n"
+        )
+    );
     CHECK(result.errors.size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
@@ -567,7 +563,7 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     CHECK(sortedKeys[0] == "key1");
     CHECK(sortedKeys[1] == "key2");
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == "memory.log");
     CHECK(result.data.FrontFileSource()->LineCount() == 3);
     CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key1":"value1"})");
     CHECK(result.data.FrontFileSource()->RawLine(1) == "invalid json");
@@ -578,24 +574,25 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
 {
     // Invalid lines accumulate as errors; valid ones still land in the result.
     const loglib::JsonParser parser;
-    const TestLogFile testFile;
-    testFile.Write(
-        R"({"key1":"value1"})"
-        "\n"
-        "invalid json 1\n"
-        R"({"key2":"value2"})"
-        "\n"
-        "invalid json 2\n"
-    );
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            R"({"key1":"value1"})"
+            "\n"
+            "invalid json 1\n"
+            R"({"key2":"value2"})"
+            "\n"
+            "invalid json 2\n"
+        )
+    );
     CHECK(result.errors.size() == 2);
     REQUIRE(result.data.SortedKeys().size() == 2);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
     CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
     REQUIRE(result.data.Sources().size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == "memory.log");
     CHECK(result.data.FrontFileSource()->LineCount() == 4);
     CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key1":"value1"})");
     CHECK(result.data.FrontFileSource()->RawLine(1) == "invalid json 1");
@@ -1026,11 +1023,9 @@ TEST_CASE(
         body.append(s);
         body.push_back('\n');
     }
-    const TestLogFile testFile;
-    testFile.Write(body);
 
     const JsonParser parser;
-    const ParseResult result = ParseFile(parser, testFile.GetFilePath());
+    const ParseResult result = ParseSource(parser, MemorySource(body));
 
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 10);
@@ -1079,20 +1074,20 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
     // cover every observable code path.
     using namespace loglib;
 
-    const TestLogFile testFile;
-    testFile.Write(
-        R"({"plain": "v-plain"})"
-        "\n"
-        R"({"with\"quote": "v-quote"})" // (a) fast path; (b) escaped quote
-        "\n"
-        R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
-        "\n"
-        R"({"\u0041BC": "v-unicode"})" // (d) Unicode escape
-        "\n"
-    );
-
     const JsonParser parser;
-    const ParseResult result = ParseFile(parser, testFile.GetFilePath());
+    const ParseResult result = ParseSource(
+        parser,
+        MemorySource(
+            R"({"plain": "v-plain"})"
+            "\n"
+            R"({"with\"quote": "v-quote"})" // (a) fast path; (b) escaped quote
+            "\n"
+            R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
+            "\n"
+            R"({"\u0041BC": "v-unicode"})" // (d) Unicode escape
+            "\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 4);
 
@@ -1122,18 +1117,18 @@ TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of E
     // memcpy+memset+iterate body, which must match the fast path bit-for-bit.
     using namespace loglib;
 
-    const TestLogFile testFile;
-    testFile.Write(
-        R"({"k":"a"})" // shortest
-        "\n"
-        R"({"k":"abcdefghijklmnopqrstuvwx"})" // longer
-        "\n"
-        R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
-        "\n"
-    );
-
     const JsonParser parser;
-    const ParseResult result = ParseFile(parser, testFile.GetFilePath());
+    const ParseResult result = ParseSource(
+        parser,
+        MemorySource(
+            R"({"k":"a"})" // shortest
+            "\n"
+            R"({"k":"abcdefghijklmnopqrstuvwx"})" // longer
+            "\n"
+            R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
+            "\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 3);
 
@@ -1172,16 +1167,17 @@ TEST_CASE(
     // (2) Narrow row: 4 fields with `dup` duplicated. `out.size() < 8` for the
     //     entire line, so the linear back-scan branch handles it. Both rows must
     //     yield the same "last write wins" outcome.
-    const TestLogFile testFile;
-    testFile.Write(
-        R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
-        "\n"
-        R"({"a":1,"dup":"first","b":2,"dup":"second"})"
-        "\n"
-    );
 
     const JsonParser parser;
-    const ParseResult result = ParseFile(parser, testFile.GetFilePath());
+    const ParseResult result = ParseSource(
+        parser,
+        MemorySource(
+            R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
+            "\n"
+            R"({"a":1,"dup":"first","b":2,"dup":"second"})"
+            "\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
