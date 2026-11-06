@@ -74,6 +74,14 @@ private:
 [[nodiscard]] ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file);
 
 /**
+ * @brief Parses a source with the given parser and default options, and returns everything it found.
+ *
+ * The result keeps the source alive, so its rows stay valid. Use it with MemorySource for tests that only need the text
+ * of a file.
+ */
+[[nodiscard]] ParseResult ParseSource(const LogParser &parser, std::unique_ptr<FileLineSource> source);
+
+/**
  * @brief Detects the format of a file as LoadFile does and parses it with the matching parser.
  *
  * Throws std::runtime_error if the file cannot be read, is empty, or no parser recognizes it.
