@@ -5,7 +5,6 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
@@ -40,8 +39,7 @@ constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
 // need to dial tuning knobs but still consume a `ParseResult`.
 loglib::ParseResult ParseWithSink(const std::filesystem::path &path, const loglib::ParserOptions &options = {})
 {
-    auto logFile = std::make_unique<loglib::LogFile>(path);
-    auto source = std::make_unique<loglib::FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<loglib::FileLineSource>(path);
     loglib::FileLineSource *sourcePtr = source.get();
     loglib::internal::BufferingSink sink(std::move(source));
     loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
@@ -260,8 +258,8 @@ TEST_CASE("Parse file with empty JSON object", "[json_parser]")
     CHECK(result.data.Lines()[0].IndexedValues().empty());
     CHECK(result.data.Keys().Size() == 0);
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-    CHECK(result.data.FrontFileSource()->File().RawLine(0) == "{}");
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->RawLine(0) == "{}");
 }
 
 TEST_CASE("Parse file with multiple empty JSON objects", "[json_parser]")
@@ -275,11 +273,11 @@ TEST_CASE("Parse file with multiple empty JSON objects", "[json_parser]")
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(result.data.Keys().Size() == 0);
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
     for (size_t i = 0; i < result.data.Lines().size(); i++)
     {
         CHECK(result.data.Lines()[i].IndexedValues().empty());
-        CHECK(result.data.FrontFileSource()->File().RawLine(i) == "{}");
+        CHECK(result.data.FrontFileSource()->RawLine(i) == "{}");
     }
 }
 
@@ -301,8 +299,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-        CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key":null})");
+        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":null})");
     }
 
     SECTION("String")
@@ -322,8 +320,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-        CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key":"value"})");
+        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":"value"})");
     }
 
     SECTION("Unsigned integer")
@@ -340,8 +338,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-        CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key":10000000000000000000})");
+        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":10000000000000000000})");
     }
 
     SECTION("Integer")
@@ -358,8 +356,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-        CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key":-12})");
+        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":-12})");
     }
 
     SECTION("Double")
@@ -376,8 +374,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-        CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key":3.14})");
+        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":3.14})");
     }
 
     SECTION("Boolean")
@@ -394,8 +392,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
-        CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-        CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key":true})");
+        CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+        CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":true})");
     }
 }
 
@@ -434,9 +432,9 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
     CHECK(sortedKeys1[4] == "string");
     CHECK(sortedKeys1[5] == "uinteger");
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
     CHECK(
-        result.data.FrontFileSource()->File().RawLine(0) ==
+        result.data.FrontFileSource()->RawLine(0) ==
         R"({"boolean":true,"double":3.14,"integer":-12,"null":null,"string":"value","uinteger":10000000000000000000})"
     );
 }
@@ -494,7 +492,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(sortedKeys2[5] == "6");
 
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
 }
 
 TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
@@ -515,15 +513,15 @@ TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
     CHECK(sortedKeys[0] == "key1");
     CHECK(sortedKeys[1] == "key2");
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-    CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key1":"value1"})");
-    CHECK(result.data.FrontFileSource()->File().RawLine(1) == R"({"key2":"value2"})");
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key1":"value1"})");
+    CHECK(result.data.FrontFileSource()->RawLine(1) == R"({"key2":"value2"})");
 }
 
 TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]")
 {
     // Regression: `DecodeJsonBatch` used to push `fileSize` as the sentinel
-    // offset for an unterminated final line, but `LogFile::RawLine` derives
+    // offset for an unterminated final line, but `FileLineSource::RawLine` derives
     // the line length as `stopOffset - startOffset - 1` (the `-1` being the
     // trailing '\n'). Without the compensating `+ 1` the last character of
     // the final line was silently lopped off when round-tripping through
@@ -540,7 +538,7 @@ TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]"
     CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
 
     REQUIRE(result.data.Sources().size() == 1);
-    const loglib::LogFile &file = result.data.FrontFileSource()->File();
+    const loglib::FileLineSource &file = *result.data.FrontFileSource();
     REQUIRE(file.LineCount() == 2);
     CHECK(file.RawLine(0) == R"({"key1":"value1"})");
     CHECK(file.RawLine(1) == R"({"key2":"value2"})");
@@ -569,11 +567,11 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     CHECK(sortedKeys[0] == "key1");
     CHECK(sortedKeys[1] == "key2");
     REQUIRE(result.data.Sources().size() == 1);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-    CHECK(result.data.FrontFileSource()->File().LineCount() == 3);
-    CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key1":"value1"})");
-    CHECK(result.data.FrontFileSource()->File().RawLine(1) == "invalid json");
-    CHECK(result.data.FrontFileSource()->File().RawLine(2) == R"({"key2":"value2"})");
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->LineCount() == 3);
+    CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key1":"value1"})");
+    CHECK(result.data.FrontFileSource()->RawLine(1) == "invalid json");
+    CHECK(result.data.FrontFileSource()->RawLine(2) == R"({"key2":"value2"})");
 }
 
 TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[json_parser]")
@@ -597,12 +595,12 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
     CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
     REQUIRE(result.data.Sources().size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(result.data.FrontFileSource()->File().Path() == testFile.GetFilePath());
-    CHECK(result.data.FrontFileSource()->File().LineCount() == 4);
-    CHECK(result.data.FrontFileSource()->File().RawLine(0) == R"({"key1":"value1"})");
-    CHECK(result.data.FrontFileSource()->File().RawLine(1) == "invalid json 1");
-    CHECK(result.data.FrontFileSource()->File().RawLine(2) == R"({"key2":"value2"})");
-    CHECK(result.data.FrontFileSource()->File().RawLine(3) == "invalid json 2");
+    CHECK(result.data.FrontFileSource()->Path() == testFile.GetFilePath());
+    CHECK(result.data.FrontFileSource()->LineCount() == 4);
+    CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key1":"value1"})");
+    CHECK(result.data.FrontFileSource()->RawLine(1) == "invalid json 1");
+    CHECK(result.data.FrontFileSource()->RawLine(2) == R"({"key2":"value2"})");
+    CHECK(result.data.FrontFileSource()->RawLine(3) == "invalid json 2");
 }
 
 TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
@@ -1002,10 +1000,10 @@ TEST_CASE(
     constexpr size_t EMPTY_LINE_COUNT = 100;
 
     // Layout: 5 valid lines, 100 blank lines, 5 valid lines. Absolute line numbers
-    // observed by the consumer are 0-based indices into `LogFile::mLineOffsets`
+    // observed by the consumer are 0-based indices into `FileLineSource::mLineOffsets`
     // (so `FileLineSource::RawLine()` round-trips the source bytes); after this
     // fixture they must be {0..4, 105..109}. Total file line count
-    // (`LogFile::LineCount`, which counts every consumed source line including
+    // (`FileLineSource::LineCount`, which counts every consumed source line including
     // the blanks) must be 110.
     std::vector<std::string> raw;
     raw.reserve(5 + EMPTY_LINE_COUNT + 5);
@@ -1059,10 +1057,10 @@ TEST_CASE(
         CHECK(line.Source()->RawLine(line.LineId()) == expectedContent);
     }
 
-    // The LogFile-side offset table should record one entry per consumed line including
+    // The FileLineSource-side offset table should record one entry per consumed line including
     // every blank line; otherwise RawLine(absoluteLineNumber) would skew when the GUI later
     // double-clicks a row to open the source line.
-    const LogFile &file = result.data.FrontFileSource()->File();
+    const FileLineSource &file = *result.data.FrontFileSource();
     CHECK(file.LineCount() == 110);
 
     // Spot-check that a specific empty-line index round-trips to an empty string and that

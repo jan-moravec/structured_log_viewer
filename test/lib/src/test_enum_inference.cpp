@@ -1,7 +1,6 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/schema/log_configuration.hpp>
@@ -100,7 +99,7 @@ TEST_CASE("EnumInference encodes a pinned Enumeration column as DictRef", "[enum
 {
     const TestLogFile testFile("enum_inference_encode.json");
     testFile.Write("a\nb\n");
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
     LineSource &sourceRef = *source;
 
     KeyIndex keys;

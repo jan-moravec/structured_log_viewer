@@ -252,7 +252,7 @@ void LogTable::ReserveLineOffsets(size_t count)
     }
     if (FileLineSource *fileSource = mData.FrontFileSource(); fileSource != nullptr)
     {
-        fileSource->File().ReserveLineOffsets(count);
+        fileSource->ReserveLineOffsets(count);
     }
 }
 

@@ -2,8 +2,8 @@
  * @brief Append-only byte store whose bytes never move.
  *
  * Writers take an internal lock. Readers take none, and a view returned from the arena stays valid for the arena's
- * whole lifetime. LogFile uses it to keep strings that cannot be views into the mapped file, so rows can safely refer
- * to them while parsing continues on other threads.
+ * whole lifetime. FileLineSource uses it to keep strings that cannot be views into the mapped file, so rows can safely
+ * refer to them while parsing continues on other threads.
  *
  * This is part of the core module.
  */

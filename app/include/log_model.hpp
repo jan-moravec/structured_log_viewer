@@ -146,7 +146,7 @@ public:
 
     /// Static-file streaming entry point. Runs @p parseCallable on a
     /// `QtConcurrent::run` worker; the future is parked on the model so
-    /// teardown can join before the borrowed `LogFile*` is unmapped.
+    /// teardown can join before the borrowed `FileLineSource*` is unmapped.
     /// Exceptions escaping the callable surface as a synthetic terminal
     /// `OnBatch` + `OnFinished(false)`.
     loglib::StopToken BeginStreaming(

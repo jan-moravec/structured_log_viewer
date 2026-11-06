@@ -19,7 +19,6 @@
 #include "session_bind_context.hpp"
 
 #include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -78,8 +77,7 @@ public:
 
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        auto file = std::make_unique<loglib::LogFile>(mPath.toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(mPath.toStdString());
         loglib::FileLineSource *parseSource = fileSource.get();
         const loglib::StopToken stopToken = model.BeginStreamingForSyncTest(std::move(fileSource));
 

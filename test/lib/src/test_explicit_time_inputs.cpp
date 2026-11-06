@@ -117,7 +117,7 @@ std::int64_t ParsedTimestampMicros(const std::string &content, const ParserOptio
 {
     const TestLogFile file("explicit_time_input.json");
     file.Write(content);
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
     JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
@@ -282,7 +282,7 @@ TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole p
     const auto parseYears = [&content](std::chrono::system_clock::time_point reference) {
         const TestLogFile file("explicit_time_reference.json");
         file.Write(content);
-        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file.GetFilePath()));
+        auto source = std::make_unique<FileLineSource>(file.GetFilePath());
         FileLineSource *sourcePtr = source.get();
         internal::BufferingSink sink(std::move(source));
         ParserOptions options;

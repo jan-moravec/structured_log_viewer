@@ -12,7 +12,6 @@
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/key_index.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stop_token.hpp"
 #include "loglib/parse/internal/batch_coalescer.hpp"
@@ -176,7 +175,7 @@ ResolvedPipelineSettings ResolvePipelineSettings(const ParserOptions &options);
  * Any other value is copied to the end of the arena and then extended.
  */
 inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
-    LogLine &heldLine, LogFile &file, KeyId targetKey, std::string_view leadingContinuationBytes
+    LogLine &heldLine, FileLineSource &source, KeyId targetKey, std::string_view leadingContinuationBytes
 )
 {
     if (targetKey == INVALID_KEY_ID)
@@ -205,7 +204,7 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
         extension.reserve(1 + leadingContinuationBytes.size());
         extension.push_back('\n');
         extension.append(leadingContinuationBytes);
-        if (file.TryExtendOwnedString(slot->payload, slot->aux, extension))
+        if (source.TryExtendOwnedString(slot->payload, slot->aux, extension))
         {
             slot->aux = static_cast<uint32_t>(static_cast<size_t>(slot->aux) + extension.size());
             return ContinuationSpliceOutcome::Ok;
@@ -232,7 +231,7 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     }
     joined.append(leadingContinuationBytes);
 
-    const uint64_t offset = file.AppendOwnedBytes(joined);
+    const uint64_t offset = source.AppendOwnedBytes(heldLine.LineId(), joined);
     slot->tag = CompactTag::OwnedString;
     slot->payload = offset;
     slot->aux = static_cast<uint32_t>(joined.size());
@@ -260,8 +259,6 @@ void RunStaticParserPipelineBody(
     size_t &nextLineNumber
 )
 {
-    LogFile &file = source.File();
-
     KeyIndex &keys = sink.Keys();
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
@@ -281,14 +278,14 @@ void RunStaticParserPipelineBody(
         return;
     }
 
-    if (file.Size() == 0 || file.Data() == nullptr)
+    if (source.StableBytes().empty())
     {
         coalescer.Finish(0, false);
         return;
     }
 
     const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
-    file.ReserveLineOffsets(file.Size() / 100);
+    source.ReserveLineOffsets(source.StableBytes().size() / 100);
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 
@@ -364,12 +361,12 @@ void RunStaticParserPipelineBody(
             }
         }
 
-        // Rebase per-batch OwnedString offsets into the LogFile
+        // Rebase per-batch OwnedString offsets into the FileLineSource
         // arena. Stage C is serial_in_order, so this write is
         // single-threaded.
         if (!parsed.ownedStringsArena.empty())
         {
-            const uint64_t delta = file.AppendOwnedBytes(parsed.ownedStringsArena);
+            const uint64_t delta = source.AppendOwnedBytes(nextLineNumber, parsed.ownedStringsArena);
             for (LogLine &line : parsed.lines)
             {
                 line.RebaseOwnedStringOffsets(delta);
@@ -383,7 +380,7 @@ void RunStaticParserPipelineBody(
             if (held.has_value())
             {
                 const ContinuationSpliceOutcome outcome = SpliceCrossBatchContinuation(
-                    held->line, file, held->continuationTargetKeyId, parsed.leadingContinuationBytes
+                    held->line, source, held->continuationTargetKeyId, parsed.leadingContinuationBytes
                 );
                 if (outcome != ContinuationSpliceOutcome::Ok)
                 {

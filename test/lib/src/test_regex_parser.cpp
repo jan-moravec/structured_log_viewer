@@ -4,7 +4,6 @@
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_data.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -791,8 +790,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -818,7 +816,7 @@ TEST_CASE(
     CHECK(m0->contains("Baz.java:7"));
     CHECK(m0->contains("Wibble.java:99"));
 
-    const LogFile &parsedFile = sourcePtr->File();
+    const FileLineSource &parsedFile = *sourcePtr;
     REQUIRE(parsedFile.LineCount() == 5);
     CHECK(parsedFile.RawLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
     CHECK(parsedFile.RawLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
@@ -865,8 +863,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -881,7 +878,7 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    const LogFile &parsedFile = sourcePtr->File();
+    const FileLineSource &parsedFile = *sourcePtr;
     REQUIRE(parsedFile.LineCount() == 4);
     CHECK(parsedFile.RawLine(1).empty());
     CHECK(parsedFile.RawLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
@@ -931,8 +928,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1162,8 +1158,7 @@ TEST_CASE(
         "2026-01-02 INFO recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1254,8 +1249,7 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     const TestLogFile file("regex_header_anchor_bad_static.log");
     file.Write("2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n");
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 

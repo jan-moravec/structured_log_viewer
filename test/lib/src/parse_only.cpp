@@ -2,7 +2,6 @@
 #include "parse_only.hpp"
 
 #include "loglib/core/internal/path_encoding.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/parse/format_detection.hpp"
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/parse/parsers/json_parser.hpp"
@@ -88,14 +87,14 @@ LogData BufferingSink::TakeData()
     {
         if (!mLineOffsets.empty())
         {
-            mSource->File().AppendLineOffsets(mLineOffsets);
+            mSource->AppendLineOffsets(mLineOffsets);
             mLineOffsets.clear();
         }
         if (!mMultiLineSpans.empty())
         {
             for (const auto &span : mMultiLineSpans)
             {
-                mSource->File().RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
+                mSource->RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
             }
             mMultiLineSpans.clear();
         }
@@ -126,7 +125,7 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
 
     // The sink owns the FileLineSource for the duration of the parse. TakeData moves it into the LogData, so the
     // back-pointers of the rows stay valid.
-    auto fileSource = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file));
+    auto fileSource = std::make_unique<FileLineSource>(file);
     FileLineSource *sourceRaw = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
 

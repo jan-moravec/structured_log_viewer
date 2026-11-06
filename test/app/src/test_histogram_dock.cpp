@@ -14,7 +14,6 @@
 #include "qt_streaming_log_sink.hpp"
 
 #include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
@@ -153,8 +152,7 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
     QVERIFY(finishedSpy.isValid());
 
-    auto file = std::make_unique<loglib::LogFile>(path.toStdString());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(path.toStdString());
     loglib::FileLineSource *parseSource = fileSource.get();
     const loglib::StopToken stopToken = model.BeginStreamingForSyncTest(std::move(fileSource));
 

@@ -35,7 +35,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
@@ -447,8 +446,7 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
     run.model = std::make_unique<LogModel>(nullptr, theme);
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
-    auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     const loglib::StopToken stopToken = run.model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -482,8 +480,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
     run.model = std::make_unique<LogModel>(nullptr, theme);
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
-    auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     const loglib::StopToken stopToken = run.model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -515,8 +512,7 @@ std::unique_ptr<LogModel> RunStaticLoadInModel(const QString &fixturePath, const
     auto model = std::make_unique<LogModel>(nullptr, nullptr);
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
 
-    auto fileSource =
-        std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(fixturePath.toStdString()));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -1539,8 +1535,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *parseSource = fileSource.get();
         const loglib::StopToken stopToken = model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -1605,7 +1600,7 @@ private slots:
     // signal, leaving configuration menus disabled.
     static void TestResetAfterBeginStreamingEmitsCompensatingFinished()
     {
-        // Use a tiny in-memory file so BeginStreaming has a valid LogFile
+        // Use a tiny in-memory file so BeginStreaming has a valid FileLineSource
         // to install on the model.
         const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
@@ -1613,8 +1608,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
         // No parser is started, so `EndStreaming` will never fire on its own.
@@ -1636,7 +1630,7 @@ private slots:
     // `DropPendingBatches()` (called *after* `waitForFinished()`), not in
     // `RequestStop()`. Otherwise drain-phase queued lambdas pass the
     // mismatch check and run after `Reset()` has destroyed `mLogTable`
-    // (use-after-free on dangling `LogFile*` + spurious second `streamingFinished`).
+    // (use-after-free on dangling `FileLineSource*` + spurious second `streamingFinished`).
     static void TestResetDuringStreamingDropsDrainPhaseBatch()
     {
         const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
@@ -1645,8 +1639,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
 
         // The parseCallable parks on a CV until the test thread releases it,
@@ -1730,8 +1723,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
 
         std::mutex releaseMutex;
@@ -1940,7 +1932,7 @@ private slots:
     // would read 0 even with rows queued).
     static void TestSinkPauseResumePreservesStaticLineBatches()
     {
-        // Need a real `LogFile` because the `FileLineSource` (and the
+        // Need a real file because the `FileLineSource` (and the
         // model's `LogTable::AppendBatch` path that consumes `lines`) hold
         // pointers into the file. The file's contents don't have to match
         // what we synthesise -- we never call `LogLine::GetValue()` on them
@@ -1957,8 +1949,7 @@ private slots:
         const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
@@ -2414,8 +2405,7 @@ private slots:
         );
 
         LogModel model;
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
@@ -5351,8 +5341,7 @@ private slots:
         const TempJsonFile fixture(lines);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -5728,8 +5717,7 @@ private slots:
         };
         const TempJsonFile firstFixture(firstBatchLines);
         QSignalSpy firstFinishedSpy(model, &LogModel::streamingFinished);
-        auto firstFile = std::make_unique<loglib::LogFile>(firstFixture.Path().toStdString());
-        auto firstSource = std::make_unique<loglib::FileLineSource>(std::move(firstFile));
+        auto firstSource = std::make_unique<loglib::FileLineSource>(firstFixture.Path().toStdString());
         loglib::FileLineSource *firstPtr = firstSource.get();
         const loglib::StopToken firstToken = model->BeginStreamingForSyncTest(std::move(firstSource));
         loglib::ParserOptions firstOpts;
@@ -5753,8 +5741,7 @@ private slots:
         };
         const TempJsonFile secondFixture(secondBatchLines);
         QSignalSpy secondFinishedSpy(model, &LogModel::streamingFinished);
-        auto secondFile = std::make_unique<loglib::LogFile>(secondFixture.Path().toStdString());
-        auto secondSource = std::make_unique<loglib::FileLineSource>(std::move(secondFile));
+        auto secondSource = std::make_unique<loglib::FileLineSource>(secondFixture.Path().toStdString());
         loglib::FileLineSource *secondPtr = secondSource.get();
         const loglib::StopToken secondToken = model->AppendStreaming(std::move(secondSource), {});
         loglib::ParserOptions secondOpts;
@@ -8351,8 +8338,7 @@ private slots:
         QVERIFY(columnsInsertedSpy.isValid());
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         {
@@ -9002,8 +8988,7 @@ private slots:
 
         // Step 3: drive a stream with mixed canonical / aliased values.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9083,8 +9068,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9292,8 +9276,7 @@ private slots:
         // cap. The streaming flush would collapse small fixtures, so
         // we feed `AppendBatch` directly.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9397,8 +9380,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9456,8 +9438,7 @@ private slots:
         model->Table().SetEnumValueCap(2);
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9529,8 +9510,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9617,8 +9597,7 @@ private slots:
         // Two-batch path (mirrors `TestEnumColumnsChangedFiresOnDemote`):
         // batch 2 must trip the cap, so we feed `AppendBatch` directly.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9722,8 +9701,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9837,8 +9815,7 @@ private slots:
         {
             return -1;
         }
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -10476,8 +10453,7 @@ private slots:
         {
             return -1;
         }
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -10591,8 +10567,7 @@ private slots:
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -15596,8 +15571,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17008,8 +16982,7 @@ private slots:
         // Direct `AppendBatch` driving. Stream mode needs
         // `BeginStreaming` first; an empty fixture satisfies it.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17099,8 +17072,7 @@ private slots:
         LogModel modelB;
         const auto installSession = [&](LogModel &model, const std::string &fixtureName) {
             const TempJsonFile emptyFixture(QStringList{});
-            auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-            auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+            auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
             loglib::FileLineSource *sourcePtr = fileSource.get();
             (void)model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17209,8 +17181,7 @@ private slots:
         LogModel model;
         {
             const TempJsonFile emptyFixture(QStringList{});
-            auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-            auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+            auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
             loglib::FileLineSource *sourcePtr = fileSource.get();
             (void)model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17271,8 +17242,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17350,8 +17320,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17469,8 +17438,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17558,8 +17526,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17679,8 +17646,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17755,8 +17721,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17827,8 +17792,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20727,8 +20691,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20819,8 +20782,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20865,8 +20827,7 @@ private slots:
         // Drive via direct `AppendBatch` so the batch boundary is
         // well-defined and the only `rowsInserted` emission is ours.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20954,8 +20915,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21011,8 +20971,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21066,8 +21025,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21126,8 +21084,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21241,8 +21198,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21322,8 +21278,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21400,8 +21355,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21479,8 +21433,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21546,8 +21499,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21653,8 +21605,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21763,8 +21714,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21912,8 +21862,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21970,8 +21919,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -22040,8 +21988,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -22955,8 +22902,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23070,8 +23016,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23120,8 +23065,7 @@ private slots:
         QVERIFY(model != nullptr);
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23338,8 +23282,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23501,8 +23444,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;

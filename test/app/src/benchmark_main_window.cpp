@@ -23,7 +23,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -111,8 +110,7 @@ RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
 
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
 
-    auto file = std::make_unique<loglib::LogFile>(logPath.string());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(logPath.string());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -609,8 +607,7 @@ private:
         chain.filterProxy->SetLogModel(chain.model.get());
 
         QSignalSpy finishedSpy(chain.model.get(), &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(mLogPath.string());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(mLogPath.string());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         chain.model->BeginStreaming(
             std::move(fileSource), [fileSourcePtr, sink = chain.model->Sink()](loglib::StopToken token) {

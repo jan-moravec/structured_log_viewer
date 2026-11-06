@@ -6,7 +6,6 @@
 #include "uuid_utils.hpp"
 
 #include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/query/log_filter.hpp>
@@ -448,8 +447,7 @@ private:
         {
             return false;
         }
-        auto file = std::make_unique<loglib::LogFile>(mLogPath.toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(mLogPath.toStdString());
         loglib::FileLineSource *parseSource = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 

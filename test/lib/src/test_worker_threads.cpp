@@ -1,7 +1,6 @@
 #include "parse_only.hpp"
 
 #include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/worker_threads.hpp>
@@ -36,7 +35,7 @@ public:
 
 std::size_t ParseLineCount(const std::filesystem::path &path)
 {
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(path));
+    auto source = std::make_unique<FileLineSource>(path);
     FileLineSource &sourceRef = *source;
     internal::BufferingSink sink(std::move(source));
     LogfmtParser{}.ParseStreaming(sourceRef, sink, ParserOptions{});

@@ -4,7 +4,6 @@
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_data.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
@@ -691,8 +690,7 @@ TEST_CASE(
         "level=info msg=\"recovered\"\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -718,7 +716,7 @@ TEST_CASE(
     CHECK(m0->contains("main.main()"));
     CHECK(m0->contains("/app/main.go:10"));
 
-    const LogFile &parsedFile = sourcePtr->File();
+    const FileLineSource &parsedFile = *sourcePtr;
     REQUIRE(parsedFile.LineCount() == 5);
     CHECK(parsedFile.RawLine(1) == "\tgoroutine 1 [running]:");
     CHECK(parsedFile.RawLine(2) == "\tmain.main()");
@@ -752,8 +750,7 @@ TEST_CASE(
         "level=info msg=\"recovered\"\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -768,7 +765,7 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    const LogFile &parsedFile = sourcePtr->File();
+    const FileLineSource &parsedFile = *sourcePtr;
     REQUIRE(parsedFile.LineCount() == 4);
     CHECK(parsedFile.RawLine(1).empty());
     CHECK(parsedFile.RawLine(2) == "\tgoroutine 1 [running]:");
@@ -805,8 +802,7 @@ TEST_CASE(
     const LogfmtParser parser(false);
     ParserOptions options;
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto fileSource = std::make_unique<FileLineSource>(std::move(logFile));
+    auto fileSource = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
     parser.ParseStreaming(*sourcePtr, sink, options);

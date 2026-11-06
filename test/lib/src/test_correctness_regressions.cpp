@@ -7,7 +7,6 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/internal/stable_byte_arena.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
@@ -58,7 +57,7 @@ namespace
 class CoalescingFileSink : public LogParseSink
 {
 public:
-    explicit CoalescingFileSink(LogFile &file)
+    explicit CoalescingFileSink(FileLineSource &file)
         : mFile(&file)
     {
     }
@@ -86,14 +85,14 @@ public:
     std::vector<LogLine> lines;
 
 private:
-    LogFile *mFile;
+    FileLineSource *mFile;
     KeyIndex mKeys;
 };
 
 std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std::size_t batchSizeBytes)
 {
-    FileLineSource source(std::make_unique<LogFile>(path));
-    CoalescingFileSink sink(source.File());
+    FileLineSource source(path);
+    CoalescingFileSink sink(source);
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
     LogfmtParser{}.ParseStreaming(source, sink, options);
@@ -110,7 +109,7 @@ std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std:
 ParseResult ParseText(const test_common::TempDir &dir, const LogParser &parser, std::string_view text)
 {
     const std::filesystem::path path = dir.Write("input.log", text);
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(path));
+    auto source = std::make_unique<FileLineSource>(path);
     FileLineSource &sourceRef = *source;
     internal::BufferingSink sink(std::move(source));
     parser.ParseStreaming(sourceRef, sink, ParserOptions{});
@@ -403,7 +402,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
 {
     const test_common::TempDir dir("evict");
     const std::filesystem::path path = dir.Write("history.log", "unused\n");
-    auto fileSource = std::make_unique<FileLineSource>(std::make_unique<LogFile>(path));
+    auto fileSource = std::make_unique<FileLineSource>(path);
     FileLineSource &fileRef = *fileSource;
 
     LogTable table;
@@ -698,7 +697,7 @@ TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicod
         out << "a=1\n";
     }
 
-    CHECK(LogFile(path).Size() == 4);
+    CHECK(FileLineSource(path).StableBytes().size() == 4);
     CHECK(DecompressingByteSource(path).EffectivePath() == path);
     CHECK_NOTHROW(TailingBytesProducer(path, 10));
 

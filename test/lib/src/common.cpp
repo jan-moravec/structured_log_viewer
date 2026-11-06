@@ -1,6 +1,5 @@
 #include "common.hpp"
 
-#include <loglib/core/log_file.hpp>
 #include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -14,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -53,7 +53,7 @@ std::string ResolveScratchPath(std::string filePath)
 }
 
 // Open @p fsPath for binary writing (no '\n' translation, so offsets match
-// `LogFile`), emit the format header if non-empty, and return the stream.
+// `FileLineSource`), emit the format header if non-empty, and return the stream.
 std::ofstream OpenStructuredFile(
     const std::filesystem::path &fsPath, const test_common::LogFormat &format, const test_common::RecordSchema &schema
 )
@@ -218,38 +218,39 @@ TestLogFile::~TestLogFile() noexcept
     std::filesystem::remove(mFsPath, ec);
 }
 
-std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
+std::vector<std::uint64_t> LineEndOffsets(std::string_view text)
 {
-    // Binary stream so streampos matches LogFile's byte offsets on every
-    // platform (no CRLF translation).
-    std::ifstream file(mFsPath, std::ios::binary);
-    auto logFile = std::make_unique<LogFile>(mFsPath);
-
-    // Push one offset per '\n'; for an unterminated last line, push
-    // `fileSize + 1` as the virtual terminator (see LogFile::RawLine).
-    char ch = '\0';
-    std::size_t pos = 0;
-    std::vector<uint64_t> lineEnds;
-    while (file.get(ch))
+    // One offset per line feed; for an unterminated last line, size + 1 is the
+    // virtual terminator (see FileLineSource::RawLine).
+    std::vector<std::uint64_t> lineEnds;
+    for (std::size_t pos = 0; pos < text.size(); ++pos)
     {
-        ++pos;
-        if (ch == '\n')
+        if (text[pos] == '\n')
         {
-            lineEnds.push_back(pos);
+            lineEnds.push_back(pos + 1);
         }
     }
-    if (pos > 0 && ch != '\n')
+    if (!text.empty() && text.back() != '\n')
     {
-        lineEnds.push_back(pos + 1);
+        lineEnds.push_back(text.size() + 1);
     }
-    logFile->AppendLineOffsets(lineEnds);
+    return lineEnds;
+}
 
-    return logFile;
+std::unique_ptr<loglib::FileLineSource> MemorySource(std::string text, std::string_view displayName)
+{
+    return loglib::FileLineSource::FromBytes(std::move(text), std::filesystem::path(displayName));
 }
 
 std::unique_ptr<loglib::FileLineSource> TestLogFile::CreateFileLineSource() const
 {
-    return std::make_unique<loglib::FileLineSource>(CreateLogFile());
+    // Binary stream so the bytes match the mapping on every platform (no CRLF translation).
+    std::ifstream file(mFsPath, std::ios::binary);
+    const std::string content{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+
+    auto source = std::make_unique<loglib::FileLineSource>(mFsPath);
+    source->AppendLineOffsets(LineEndOffsets(content));
+    return source;
 }
 
 std::filesystem::path FindTestTzdata()

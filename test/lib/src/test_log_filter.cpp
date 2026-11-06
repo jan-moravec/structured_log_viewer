@@ -287,7 +287,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
 
     // Append a batch whose value mints a new id past the bitset.
     KeyIndex &keys = table.Keys();
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     table.AppendStreaming(std::move(source));
     RowBatch batch;
@@ -343,7 +343,7 @@ TEST_CASE(
     // Append a batch interning "debug" past the bitset, then verify the
     // stale predicate accepts the new row via the string fallback.
     KeyIndex &keys = table.Keys();
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     table.AppendStreaming(std::move(source));
     RowBatch batch;
@@ -436,7 +436,7 @@ TEST_CASE(
         REQUIRE(predicate.IsFastPathArmed());
 
         KeyIndex &keys = table.Keys();
-        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+        auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
         FileLineSource *sourcePtr = source.get();
         table.AppendStreaming(std::move(source));
         RowBatch batch;
@@ -465,7 +465,7 @@ TEST_CASE(
         REQUIRE(predicate.IsFastPathArmed());
 
         KeyIndex &keys = table.Keys();
-        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+        auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
         FileLineSource *sourcePtr = source.get();
         table.AppendStreaming(std::move(source));
         RowBatch batch;

@@ -9,7 +9,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -220,7 +219,7 @@ inline StructuralBytes ComputeStructuralBytes(const loglib::LogTable &table)
     }
     if (const loglib::FileLineSource *fileSource = data.FrontFileSource())
     {
-        const loglib::LogFile &file = fileSource->File();
+        const loglib::FileLineSource &file = *fileSource;
         result.lineOffsets += file.LineOffsetsMemoryBytes();
         result.ownedStrings += file.OwnedStringsMemoryBytes();
     }
@@ -364,10 +363,10 @@ inline StreamingRunResult RunStreamingFlow(
 
         // Mirror `MainWindow::OpenJsonStreaming`: the parser borrows the
         // same `FileLineSource` the table owns, so Stage C's offsets and
-        // owned-string arena land in the `LogFile` value accesses read
+        // owned-string arena land in the `FileLineSource` value accesses read
         // from. Splitting them would dangle `LogValue`s and under-count
         // structural bytes.
-        auto sourceForTable = std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(logPath));
+        auto sourceForTable = std::make_unique<loglib::FileLineSource>(logPath);
         loglib::FileLineSource *parseSource = sourceForTable.get();
         table.BeginStreaming(std::move(sourceForTable));
 

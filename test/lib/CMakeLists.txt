@@ -39,7 +39,6 @@ add_executable(
     "src/test_log_compare.cpp"
     "src/test_log_data.cpp"
     "src/test_arrival_clock.cpp"
-    "src/test_log_file.cpp"
     "src/test_log_generator_tool.cpp"
     "src/test_log_filter.cpp"
     "src/test_log_line.cpp"

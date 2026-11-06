@@ -5,7 +5,6 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_data.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -120,16 +119,16 @@ TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[cs
     // coalescer snapshots its baseline, so without the explicit
     // hand-off no `newKeys` reach the table and rows show no columns.
     //
-    // Note: build the `FileLineSource` from `make_unique<LogFile>`
-    // directly. `TestLogFile::CreateFileLineSource()` pre-scans the
+    // Note: build the `FileLineSource` directly from the path.
+    // `TestLogFile::CreateFileLineSource()` pre-scans the
     // file's line offsets; the static pipeline also writes its own,
-    // which trips `LogFile::AppendLineOffsets`'s strict-monotonic
+    // which trips `FileLineSource::AppendLineOffsets`'s strict-monotonic
     // debug assert.
     const TestLogFile file("static_columns.csv");
     file.Write("level,message\ninfo,hello\nerror,boom\n");
 
     loglib::LogTable table;
-    auto source = std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(file.GetFilePath()));
+    auto source = std::make_unique<loglib::FileLineSource>(file.GetFilePath());
     loglib::FileLineSource *sourceRaw = source.get();
     table.BeginStreaming(std::move(source));
 
@@ -456,7 +455,7 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     file.Write(content);
 
     loglib::LogTable table;
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourceRaw = source.get();
     table.BeginStreaming(std::move(source));
 

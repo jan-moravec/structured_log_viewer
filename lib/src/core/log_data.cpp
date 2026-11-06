@@ -2,7 +2,6 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/core/log_file.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -184,12 +183,12 @@ void LogData::AppendBatch(
         {
             if (!lineOffsets.empty())
             {
-                fileSource->File().AppendLineOffsets(lineOffsets);
+                fileSource->AppendLineOffsets(lineOffsets);
             }
             // Spans depend on offsets from the same batch.
             for (const auto &span : multiLineSpans)
             {
-                fileSource->File().RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
+                fileSource->RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
             }
         }
     }

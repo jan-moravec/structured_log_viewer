@@ -2,7 +2,6 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
 #include "loglib/parse/internal/classify_bare_scalar.hpp"
@@ -249,7 +248,7 @@ void DecodeCsvBatch(
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
     const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.File().Data();
+    const char *fileBegin = source.StableBytes().data();
 
     const auto batchBytes = static_cast<size_t>(end - cursor);
     const size_t estimatedLines = (batchBytes / 64) + 1;
@@ -505,11 +504,11 @@ void CsvParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, Par
 
 void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    const LogFile &file = source.File();
+    const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
-    const char *fileBegin = file.Data();
-    const size_t fileSize = file.Size();
+    const char *fileBegin = bytes.data();
+    const size_t fileSize = bytes.size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
     // Eagerly find and parse the header. Outputs:

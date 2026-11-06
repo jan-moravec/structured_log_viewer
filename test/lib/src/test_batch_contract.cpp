@@ -2,7 +2,6 @@
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -970,7 +969,7 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
     const TestLogFile file("batch_contract_throwing_static.log");
     file.Write(bytes);
     auto source = file.CreateFileLineSource();
-    const LogFile &logFile = source->File();
+    const FileLineSource &logFile = *source;
     ParserOptions options;
     options.threads = 2;
     ThrowingStageB::Of<Exception> stageB{.throwOnBatch = 2, .exception = std::move(exception)};
@@ -978,7 +977,9 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
         *source,
         sink,
         options,
-        internal::MakeLineAlignedBatcher(logFile.Data(), logFile.Data() + logFile.Size(), 64),
+        internal::MakeLineAlignedBatcher(
+            logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
+        ),
         stageB
     );
 }
@@ -1125,7 +1126,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         const TestLogFile file("batch_contract_sink_throws.log");
         file.Write(bytes);
         auto source = file.CreateFileLineSource();
-        const LogFile &logFile = source->File();
+        const FileLineSource &logFile = *source;
         ThrowingStageB::Of<std::runtime_error> stageB{
             .throwOnBatch = UINT64_MAX,
             .exception = std::runtime_error("unused"),
@@ -1135,7 +1136,9 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
                 *source,
                 sink,
                 ParserOptions{},
-                internal::MakeLineAlignedBatcher(logFile.Data(), logFile.Data() + logFile.Size(), 64),
+                internal::MakeLineAlignedBatcher(
+                    logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
+                ),
                 stageB
             )),
             exports::BrokenPipe
