@@ -357,7 +357,7 @@ inline StreamingRunResult RunStreamingFlow(
     {
         loglib::LogConfigurationManager configManager;
         configManager.Load(configPath.string());
-        loglib::LogTable table(loglib::LogData{}, std::move(configManager));
+        loglib::LogTable table(configManager.Configuration());
         // The benchmarks measure parsing in the machine's zone, as the application does.
         table.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
         table.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());

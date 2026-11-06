@@ -381,46 +381,6 @@ void LogConfigurationManager::SanitizePrintFormats()
     }
 }
 
-void LogConfigurationManager::Update(std::span<const std::string> sortedKeys)
-{
-    EnsureKeyCacheBuilt();
-    for (const std::string &key : sortedKeys)
-    {
-        if (!IsKeyInAnyColumnCached(key))
-        {
-            if (IsTimestampKey(key))
-            {
-                mConfiguration.columns.push_back(
-                    Column{
-                        .header = key,
-                        .keys = {key},
-                        .printFormat = "%F %H:%M:%S",
-                        .type = ColumnType::Time,
-                        .parseFormats = DefaultTimeParseFormats(),
-                    }
-                );
-                // Bubble the freshly-appended timestamp column to
-                // position 0. `MoveColumn` (not an inline swap chain)
-                // so persisted `sort.columnIndex` follows the
-                // rotation. No-op when this is the only column.
-                if (mConfiguration.columns.size() > 1)
-                {
-                    MoveColumn(mConfiguration.columns.size() - 1, 0);
-                }
-            }
-            else
-            {
-                mConfiguration.columns.push_back(
-                    Column{
-                        .header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}
-                    }
-                );
-            }
-            mKeysInColumns.insert(key);
-        }
-    }
-}
-
 void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
 {
     // Append-only; Qt's `beginInsertColumns` expects appends.
@@ -455,8 +415,6 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
 
 bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept
 {
-    // Same no-op conditions as the Time bubble in
-    // `LogConfigurationManager::Update`.
     if (columnIndex >= config.columns.size())
     {
         return false;

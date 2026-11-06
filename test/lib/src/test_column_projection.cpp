@@ -1,3 +1,6 @@
+
+#include "table_from_data.hpp"
+
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
@@ -84,7 +87,7 @@ loglib::LogTable BuildSparseTable()
 
     LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    return {std::move(data), std::move(manager)};
+    return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 
 std::string ExportFormatBytes(

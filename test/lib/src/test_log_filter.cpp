@@ -69,7 +69,7 @@ LogTable BuildEnumTable(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -116,7 +116,7 @@ LogTable BuildStringTable(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -156,7 +156,7 @@ LogTable BuildTimeTable(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -571,7 +571,7 @@ LogTable BuildSingleColumnTable(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -786,7 +786,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -1000,7 +1000,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1090,7 +1090,7 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();

@@ -1,5 +1,6 @@
 #include "common.hpp"
 #include "table_fixture.hpp"
+#include "table_from_data.hpp"
 
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
@@ -15,6 +16,7 @@
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
+#include <loglib/table/table_loader.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -57,7 +59,7 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     manager.Load(testLogConfiguration.GetFilePath());
 
     // Initialize LogTable with the data and configuration
-    LogTable logTable(std::move(logData), std::move(manager));
+    loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
 
     // Verify LogTable correctly initialized with the provided data and configuration
     REQUIRE(logTable.RowCount() == 2);
@@ -80,7 +82,7 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     CHECK(line1.Source()->Path() == testFile.GetFilePath());
 }
 
-TEST_CASE("Update LogTable with new LogData", "[log_table]")
+TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_table]")
 {
     const TestLogFile testFile("log_file.json");
     const TestLogFile newTestFile("new_log_file.json");
@@ -108,7 +110,7 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     manager.Load(testLogConfiguration.GetFilePath());
 
     // Initialize LogTable with the initial data and configuration
-    LogTable logTable(std::move(initialData), std::move(manager));
+    loglib::LogTable logTable = test_common_lib::TableFromData(std::move(initialData), std::move(manager));
 
     // Verify initial state
     REQUIRE(logTable.RowCount() == 1);
@@ -128,8 +130,9 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
 
     LogData newData(std::move(newSource), std::move(newLines), std::move(newKeys));
 
-    // Update the LogTable with the new data
-    logTable.Update(std::move(newData));
+    // Append the new data
+    test_common_lib::AppendData(logTable, std::move(newData));
+    FinishLoading(logTable);
 
     // Verify the LogTable was updated correctly
     REQUIRE(logTable.RowCount() == 2);
@@ -193,7 +196,7 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    LogTable logTable(std::move(logData), std::move(manager));
+    loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     REQUIRE(logTable.RowCount() == 2);
     REQUIRE(logTable.ColumnCount() == 2);
 
@@ -389,12 +392,14 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
     CHECK(table.RowCount() == 0);
 }
 
-// The column → KeyId cache is append-only: `Update()` and `AppendBatch()`
+// The column → KeyId cache is append-only: appending data and `AppendBatch()`
 // may grow it but must never reorder existing columns or insert new ones in
 // the middle. This is the contract that lets the Qt `LogModel` emit
 // `beginInsertColumns` / `endInsertColumns` over the trailing range without
 // invalidating any persistent `QModelIndex` held by the view.
-TEST_CASE("LogTable column to KeyId cache is append-only across Update and AppendBatch", "[log_table][append_only]")
+TEST_CASE(
+    "LogTable column to KeyId cache is append-only across appended data and AppendBatch", "[log_table][append_only]"
+)
 {
     const TestLogFile testFile("append_only.json");
     testFile.Write("");
@@ -407,7 +412,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     KeyIndex &keys = table.Keys();
 
     // Pin every header position observed so far. After each subsequent
-    // Update/AppendBatch the test re-reads the header at each remembered
+    // append the test re-reads the header at each remembered
     // index and asserts it has not moved — that is the invariant we want
     // to lock down end-to-end.
     std::vector<std::string> pinnedHeaders;
@@ -495,10 +500,9 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     pinAndCheck(table);
 }
 
-// Same append-only contract via the legacy `LogTable::Update()` path
-// (used when opening additional files into an already-populated LogTable).
+// Same append-only contract when a further source is added to an already-populated LogTable.
 // Avoids timestamp keys so the auto-promotion reorder stays out of scope.
-TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table][append_only]")
+TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][append_only]")
 {
     const TestLogFile fileA("log_file_initial.json");
     const TestLogFile fileB("log_file_second.json");
@@ -526,12 +530,12 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table(std::move(dataA), std::move(mgr));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(dataA), std::move(mgr));
     REQUIRE(table.ColumnCount() == 2);
     REQUIRE(table.GetHeader(0) == "alpha");
     REQUIRE(table.GetHeader(1) == "beta");
 
-    // Update with a separate LogData that introduces a single new key (gamma).
+    // Append a separate LogData that introduces a single new key (gamma).
     // gamma must land at index 2; alpha and beta keep their positions.
     fileB.Write("b1\n");
     auto sourceB = fileB.CreateFileLineSource();
@@ -542,14 +546,15 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     linesB.emplace_back(LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, *sourceBPtr, 0);
 
     LogData dataB(std::move(sourceB), std::move(linesB), std::move(keysB));
-    table.Update(std::move(dataB));
+    test_common_lib::AppendData(table, std::move(dataB));
+    FinishLoading(table);
 
     REQUIRE(table.ColumnCount() == 3);
     CHECK(table.GetHeader(0) == "alpha");
     CHECK(table.GetHeader(1) == "beta");
     CHECK(table.GetHeader(2) == "gamma");
 
-    // Update with a third LogData that introduces yet another key (delta).
+    // Append a third LogData that introduces yet another key (delta).
     // delta lands at index 3; everything else stays put.
     fileC.Write("c1\n");
     auto sourceC = fileC.CreateFileLineSource();
@@ -560,7 +565,8 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     linesC.emplace_back(LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, *sourceCPtr, 0);
 
     LogData dataC(std::move(sourceC), std::move(linesC), std::move(keysC));
-    table.Update(std::move(dataC));
+    test_common_lib::AppendData(table, std::move(dataC));
+    FinishLoading(table);
 
     REQUIRE(table.ColumnCount() == 4);
     CHECK(table.GetHeader(0) == "alpha");
@@ -715,7 +721,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     // The parser interns the time-column key through BuildTimeColumnSpecs and
@@ -819,7 +825,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     // Pre-populate every key in the KeyIndex once so each AppendBatch is a
@@ -909,7 +915,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     // Pre-populate every key the columns reference except the brand-new one
@@ -1368,7 +1374,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1413,7 +1419,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     // Small cap pins the boundary behaviour without bulk-filling.
     constexpr uint16_t TEST_CAP = 16;
     table.SetEnumValueCap(TEST_CAP);
@@ -1490,7 +1496,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1534,7 +1540,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     constexpr uint16_t TEST_CAP = 4;
     table.SetEnumValueCap(TEST_CAP);
     table.BeginStreaming(std::move(source));
@@ -1593,7 +1599,7 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1698,7 +1704,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1729,9 +1735,9 @@ TEST_CASE(
     CHECK(dict->Size() == 1);
 }
 
-TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged KeyIndex", "[log_table][update][enum]")
+TEST_CASE("Appending data -- snapshot-enum keys are seeded against the merged KeyIndex", "[log_table][append][enum]")
 {
-    // `Update(LogData&&)` must refresh the enum-key snapshot so configured
+    // Appending data must refresh the enum-key snapshot so configured
     // enum columns survive the merge.
     const TestLogFile testFile("enum_update.json");
     testFile.Write("");
@@ -1747,7 +1753,7 @@ TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged 
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
 
     KeyIndex keysA;
     std::vector<LogLine> linesA;
@@ -1756,9 +1762,9 @@ TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged 
     linesA.push_back(MakeLine(keysA, *sourceAPtr, {{"level", std::string("info")}}));
     linesA.push_back(MakeLine(keysA, *sourceAPtr, {{"level", std::string("error")}}));
     LogData dataA(std::move(sourceA), std::move(linesA), std::move(keysA));
-    dataA.MarkTimestampsParsed();
 
-    table.Update(std::move(dataA));
+    test_common_lib::AppendData(table, std::move(dataA));
+    FinishLoading(table);
 
     REQUIRE(table.RowCount() == 4);
     const KeyId levelKey = table.Keys().Find("level");
@@ -1789,7 +1795,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -1840,7 +1846,7 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     // `announceNewKey=true` refreshes the column's KeyId cache after the
@@ -1966,7 +1972,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -2008,7 +2014,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -2134,7 +2140,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -2177,7 +2183,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 6, true));
@@ -2362,7 +2368,7 @@ namespace
 
 /// Build a `LogConfigurationManager` pre-loaded with an auto-detect
 /// candidate column (`Type::Any + autoDetect = true`) for `key`,
-/// bypassing `Update`.
+/// without going through the key list.
 LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 {
     LogConfiguration cfg;
@@ -2402,16 +2408,18 @@ TEST_CASE(
         lines.push_back(MakeLine(keys, *sourcePtr, {{"id", std::string("id-" + std::to_string(i))}}));
     }
     LogData data(std::move(source), std::move(lines), std::move(keys));
-    data.MarkTimestampsParsed();
 
-    LogTable table(std::move(data), MakeUnknownColumnManager("id"));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("id"));
 
     REQUIRE(table.RowCount() == 600);
     REQUIRE(table.ColumnCount() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
 }
 
-TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct small columns are not enums", "[log_table][finalize][enum]")
+TEST_CASE(
+    "LogTable::FinalizeAutoDetection -- small all-distinct columns of a streamed load are enums",
+    "[log_table][finalize][enum]"
+)
 {
     const TestLogFile testFile("enum_finalize_distinct.json");
     testFile.Write("");
@@ -2425,11 +2433,12 @@ TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct small columns are not
         lines.push_back(MakeLine(keys, *sourcePtr, {{"id", std::string(value)}}));
     }
     LogData data(std::move(source), std::move(lines), std::move(keys));
-    data.MarkTimestampsParsed();
 
-    const LogTable table(std::move(data), MakeUnknownColumnManager("id"));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("id"));
 
-    CHECK(table.Configuration().Configuration().columns[0].type != ColumnType::Enumeration);
+    // A stream promotes a column after two rows, so these three distinct values are an enumeration, as in the GUI and
+    // slp. The all-distinct rule of FinalizeAutoDetection only applies to columns that are still undecided.
+    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 }
 
 TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay levels", "[log_table][finalize][enum]")
@@ -2446,9 +2455,8 @@ TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay le
         lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(value)}}));
     }
     LogData data(std::move(source), std::move(lines), std::move(keys));
-    data.MarkTimestampsParsed();
 
-    const LogTable table(std::move(data), MakeUnknownColumnManager("level"));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("level"));
 
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
 }
@@ -2473,9 +2481,8 @@ TEST_CASE(
     lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string("alpha")}}));
     lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string("beta")}}));
     LogData data(std::move(source), std::move(lines), std::move(keys));
-    data.MarkTimestampsParsed();
 
-    LogTable table(std::move(data), MakeUnknownColumnManager("tier"));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("tier"));
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
@@ -2506,9 +2513,8 @@ TEST_CASE(
     std::vector<LogLine> lines;
     lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string("alpha")}}));
     LogData data(std::move(source), std::move(lines), std::move(keys));
-    data.MarkTimestampsParsed();
 
-    LogTable table(std::move(data), MakeUnknownColumnManager("tier"));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("tier"));
 
     REQUIRE(table.RowCount() == 1);
     REQUIRE(table.ColumnCount() == 1);
@@ -2537,9 +2543,8 @@ TEST_CASE(
         lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string(i % 2 == 0 ? "alpha" : "beta")}}));
     }
     LogData data(std::move(source), std::move(lines), std::move(keys));
-    data.MarkTimestampsParsed();
 
-    LogTable table(std::move(data), MakeUnknownColumnManager("tier"));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("tier"));
 
     REQUIRE(table.RowCount() == 100);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
@@ -2653,7 +2658,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -2753,8 +2758,8 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
 {
     // After the drain, the Level column lands at the canonical
     // index in a >2-column config, pushing the previous occupant
-    // outward. (Time bubble lives in the `Update` path and is
-    // covered in `test_log_configuration.cpp`.)
+    // outward. (Time bubbling is covered in
+    // `test_log_configuration.cpp`.)
     const TestLogFile testFile("level_bubble_multi.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -3034,7 +3039,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -3175,7 +3180,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -3230,7 +3235,7 @@ TEST_CASE(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     RowBatch batch;
@@ -3429,7 +3434,7 @@ TEST_CASE(
     LogConfigurationManager manager;
     manager.Load(cfgFile.GetFilePath());
 
-    LogTable table(std::move(logData), std::move(manager));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     REQUIRE(table.RowCount() == values.size());
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Integer);
 
@@ -3497,7 +3502,7 @@ TEST_CASE(
     LogConfigurationManager manager;
     manager.Load(cfgFile.GetFilePath());
 
-    LogTable table(std::move(logData), std::move(manager));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     REQUIRE(table.RowCount() == 32);
 
     table.Configuration().SetColumnTypePair(0, ColumnType::Any, true);
@@ -3565,7 +3570,7 @@ TEST_CASE(
     LogConfigurationManager manager;
     manager.Load(cfgFile.GetFilePath());
 
-    LogTable table(std::move(logData), std::move(manager));
+    loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     const auto resolved = table.RescanColumnForAutoDetection(0);
 
     CHECK(resolved == ColumnType::String);

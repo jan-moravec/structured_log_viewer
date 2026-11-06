@@ -62,7 +62,7 @@ LogTable BuildSingleColumnTable(
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -221,7 +221,7 @@ TEST_CASE("RowOrdering Enumeration uses EnumDictRank and keeps input-index ties"
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -277,7 +277,7 @@ TEST_CASE("RowOrdering Level uses canonical severity, not byte order", "[row_ord
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -320,7 +320,7 @@ TEST_CASE("RowOrdering mixed-column table sorts the requested column only", "[ro
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 

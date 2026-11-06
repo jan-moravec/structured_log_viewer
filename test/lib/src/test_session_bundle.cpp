@@ -1,12 +1,16 @@
+#include "parse_only.hpp"
+
 #include <loglib/core/error.hpp>
 #include <loglib/core/internal/path_encoding.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include "parse_only.hpp"
+#include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
+#include <loglib/table/table_loader.hpp>
 
 #include <test_common/temp_dir.hpp>
 
@@ -142,24 +146,25 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
 
 [[nodiscard]] loglib::LogTable ParseTable(const std::filesystem::path &path)
 {
-    loglib::ParseResult parsed = loglib::ParseFile(path);
-    REQUIRE(parsed.errors.empty());
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    return {std::move(parsed.data), std::move(manager)};
+    loglib::LoadResult loaded = loglib::LoadFile(path);
+    REQUIRE(loaded.errors.empty());
+    return std::move(loaded.table);
 }
 
-/// Parse a table and promote timestamp columns before serialization.
-[[nodiscard]] loglib::LogTable ParseTableWithTimestamps(const std::filesystem::path &path)
+/// Loads several JSON Lines files into one table, one source each.
+[[nodiscard]] loglib::LogTable ParseTables(const std::vector<std::filesystem::path> &paths)
 {
-    loglib::ParseResult parsed = loglib::ParseFile(path);
-    REQUIRE(parsed.errors.empty());
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    loglib::ParseTimestamps(
-        parsed.data, manager.Configuration(), loglib::TimeZoneContext{}, std::chrono::system_clock::now()
-    );
-    return {std::move(parsed.data), std::move(manager)};
+    loglib::LogTable table;
+    const loglib::JsonParser parser;
+    for (const auto &path : paths)
+    {
+        loglib::OpenedFile opened = loglib::OpenFileSource(path);
+        const loglib::ParseOutcome outcome =
+            loglib::ParseIntoTable(table, parser, std::move(opened.source), loglib::ParserOptionsFor(table));
+        REQUIRE(outcome.errors.empty());
+    }
+    loglib::FinishLoading(table);
+    return table;
 }
 
 [[nodiscard]] loglib::DecompressingByteSource DecodeBundle(const std::filesystem::path &path)
@@ -421,14 +426,7 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
         "\n"
     );
 
-    loglib::ParseResult parsedA = loglib::ParseFile(sourceA.Path());
-    loglib::ParseResult parsedB = loglib::ParseFile(sourceB.Path());
-    REQUIRE(parsedA.errors.empty());
-    REQUIRE(parsedB.errors.empty());
-    parsedA.data.Merge(std::move(parsedB.data));
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsedA.data.SortedKeys());
-    loglib::LogTable table(std::move(parsedA.data), std::move(manager));
+    loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configuration.anchors = {
@@ -522,14 +520,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
         "\n"
     );
 
-    loglib::ParseResult parsedA = loglib::ParseFile(sourceA.Path());
-    loglib::ParseResult parsedB = loglib::ParseFile(sourceB.Path());
-    REQUIRE(parsedA.errors.empty());
-    REQUIRE(parsedB.errors.empty());
-    parsedA.data.Merge(std::move(parsedB.data));
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsedA.data.SortedKeys());
-    loglib::LogTable table(std::move(parsedA.data), std::move(manager));
+    loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configuration.anchors = {
@@ -763,7 +754,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
         "\n"
     );
 
-    loglib::LogTable table = ParseTableWithTimestamps(source.Path());
+    loglib::LogTable table = ParseTable(source.Path());
     // Confirm the source table contains typed timestamps.
     REQUIRE(table.Data().Lines().size() == 2);
     const loglib::TimeStamp originalRow0 = std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue("ts"));
@@ -776,7 +767,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     // Confirm the normalized on-disk UTC form.
     CHECK(jsonl.contains(R"("ts":"2025-04-25T12:34:56.123456Z")"));
 
-    loglib::LogTable reloaded = ParseTableWithTimestamps(decoded.EffectivePath());
+    loglib::LogTable reloaded = ParseTable(decoded.EffectivePath());
     REQUIRE(reloaded.Data().Lines().size() == 2);
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[0].GetValue("ts")) == originalRow0);
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue("ts")) == originalRow1);

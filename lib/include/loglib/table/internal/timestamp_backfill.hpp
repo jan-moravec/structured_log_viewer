@@ -2,8 +2,8 @@
  * @brief Parses timestamp columns after the rows already exist.
  *
  * When a column becomes a time column after its rows were parsed, for example because the user changed its type, these
- * functions parse its text and replace it with timestamps. ParseTimestamps does this for every time column of a
- * LogData, and BackfillTimestampColumn does it for one column over a range of rows. Text without an offset is read in
+ * functions parse its text and replace it with timestamps. BackfillTimestampColumn does it for one column over a range
+ * of rows. Text without an offset is read in
  * the given zone, and formats without a year use the reference time. The version taking BackfillErrors::Discard skips
  * building error messages, which keeps the streaming path cheap.
  *
@@ -11,7 +11,6 @@
  */
 #pragma once
 
-#include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/time/time_zone_context.hpp"
@@ -24,17 +23,6 @@
 
 namespace loglib
 {
-
-/**
- * @brief Converts the text of every Type::Time column in logData into timestamps. Returns one message per value that
- * could not be parsed.
- */
-std::vector<std::string> ParseTimestamps(
-    LogData &logData,
-    const LogConfiguration &configuration,
-    const TimeZoneContext &timeZone,
-    std::chrono::system_clock::time_point referenceTime
-);
 
 /**
  * @brief Converts the text of one time column into timestamps, in place.

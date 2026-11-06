@@ -56,7 +56,8 @@ class LogTable
 public:
     LogTable() = default;
 
-    LogTable(LogData data, LogConfigurationManager configuration);
+    /** @brief An empty table that starts with the given column configuration. */
+    explicit LogTable(LogConfiguration configuration);
 
     LogTable(const LogTable &) = delete;
     LogTable &operator=(const LogTable &) = delete;
@@ -65,9 +66,6 @@ public:
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
     ~LogTable() = default;
-
-    /** @brief Replaces the table's data with data, a freshly merged load. */
-    void Update(LogData &&data);
 
     /** @brief Removes all rows and sources. The column configuration is kept. */
     void Reset();
@@ -194,11 +192,10 @@ public:
     /**
      * @brief The rows and sources behind the table.
      *
-     * Change them only through the table's own members (AppendBatch, Update, Reset, EvictPrefixRows). Rows inserted
-     * directly skip the timestamp back-fill and the enumeration pass.
+     * Read only. The table changes them through its own members (AppendBatch, Reset, EvictPrefixRows), which keep the
+     * timestamp back-fill and the enumeration pass in step.
      */
     [[nodiscard]] const LogData &Data() const noexcept;
-    [[nodiscard]] LogData &Data() noexcept;
 
     /**
      * @brief Drops the first count rows.

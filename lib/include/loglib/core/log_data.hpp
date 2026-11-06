@@ -70,13 +70,6 @@ public:
     /** @brief The registered keys in sorted order. Builds a new list, so keep it off hot paths. */
     std::vector<std::string> SortedKeys() const;
 
-    /** @brief True when the parser already converted the time columns, so LogTable can skip its own pass. */
-    bool TimestampsAlreadyParsed() const;
-    void MarkTimestampsParsed();
-
-    /** @brief Moves all rows and sources of other into this one, mapping its keys onto this KeyIndex. */
-    void Merge(LogData other);
-
     /**
      * @brief Appends a parsed batch of rows.
      *
@@ -93,7 +86,6 @@ private:
     std::vector<std::unique_ptr<LineSource>> mSources;
     std::vector<LogLine> mLines;
     KeyIndex mKeys;
-    bool mTimestampsAlreadyParsed = false;
 };
 
 } // namespace loglib

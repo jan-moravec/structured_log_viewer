@@ -99,7 +99,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     const std::vector<std::string> values = {"info", "warn", "error", "debug"};
@@ -161,7 +161,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     // All six canonical aliases so the `LevelRankCache` covers the
@@ -217,7 +217,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
 
-    LogTable table({}, std::move(mgr));
+    loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
     // Pool: a handful of canned messages so the matcher sees both

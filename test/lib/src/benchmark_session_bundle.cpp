@@ -3,14 +3,16 @@
 // so run-over-run numbers are directly comparable. See CONTRIBUTING.md
 // `## Benchmarking` for the PR process.
 
+#include "parse_only.hpp"
+
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include "parse_only.hpp"
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
@@ -118,15 +120,10 @@ loglib::LogTable BuildLargeJsonTable(std::size_t &outBytes, std::size_t &outReco
 
     InitializeTimezoneData();
 
-    const JsonParser parser;
-    ParseResult result = ParseFile(parser, testFile.GetFilePath());
-    REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == outRecordCount);
-
-    LogTable table;
-    table.Update(std::move(result.data));
-    REQUIRE(table.RowCount() == outRecordCount);
-    return table;
+    LoadResult loaded = LoadFile(testFile.GetFilePath());
+    REQUIRE(loaded.errors.empty());
+    REQUIRE(loaded.table.RowCount() == outRecordCount);
+    return std::move(loaded.table);
 }
 
 } // namespace
