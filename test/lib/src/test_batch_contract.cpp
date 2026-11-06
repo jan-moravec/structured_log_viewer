@@ -135,7 +135,7 @@ void ParseAsStream(
     const std::string &bytes,
     std::size_t chunkSize,
     RecordingSink &sink,
-    ParserOptions options = {}
+    const ParserOptions &options = {}
 )
 {
     sink.streamSource =
@@ -159,16 +159,20 @@ TEST_CASE("The last batch of a parse holds the number of lines read", "[batch_co
         std::size_t rows;
     };
     const std::vector<Case> cases = {
-        {"three JSON lines", &json, "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n", 3, 3},
-        {"logfmt records over five physical lines",
-         &logfmt,
-         "level=info msg=first\n  continued line\nlevel=info msg=second\n  more\nlevel=info msg=third\n",
-         5,
-         3},
-        {"no final newline", &json, "{\"a\":1}\n{\"a\":2}", 2, 2},
-        {"trailing blank lines", &json, "{\"a\":1}\n\n\n", 3, 1},
-        {"a bad line", &json, "{\"a\":1}\nnot json\n{\"a\":3}\n", 3, 2},
-        {"empty input", &json, "", 0, 0},
+        {.name = "three JSON lines",
+         .parser = &json,
+         .bytes = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n",
+         .lines = 3,
+         .rows = 3},
+        {.name = "logfmt records over five physical lines",
+         .parser = &logfmt,
+         .bytes = "level=info msg=first\n  continued line\nlevel=info msg=second\n  more\nlevel=info msg=third\n",
+         .lines = 5,
+         .rows = 3},
+        {.name = "no final newline", .parser = &json, .bytes = "{\"a\":1}\n{\"a\":2}", .lines = 2, .rows = 2},
+        {.name = "trailing blank lines", .parser = &json, .bytes = "{\"a\":1}\n\n\n", .lines = 3, .rows = 1},
+        {.name = "a bad line", .parser = &json, .bytes = "{\"a\":1}\nnot json\n{\"a\":3}\n", .lines = 3, .rows = 2},
+        {.name = "empty input", .parser = &json, .bytes = "", .lines = 0, .rows = 0},
     };
 
     for (const Case &c : cases)
@@ -196,7 +200,7 @@ TEST_CASE("The last batch of a parse holds the number of lines read", "[batch_co
 
 TEST_CASE("A stream counts an oversized line that it drops", "[batch_contract][line_count]")
 {
-    std::string bytes = "{\"a\":1}\n" + std::string(200, 'x') + "\n{\"a\":3}\n";
+    const std::string bytes = "{\"a\":1}\n" + std::string(200, 'x') + "\n{\"a\":3}\n";
     ParserOptions options;
     options.maxLineBytes = 64;
     RecordingSink sink;
@@ -432,7 +436,7 @@ namespace
         {
             return "t:" + std::to_string(v.time_since_epoch().count());
         }
-        std::string operator()(std::monostate) const
+        std::string operator()(std::monostate /*unused*/) const
         {
             return "null";
         }
@@ -443,7 +447,7 @@ namespace
 /** One text per row: every key of the parse in key text order, with the value and its type. */
 [[nodiscard]] std::vector<std::string> DescribeRows(RecordingSink &sink)
 {
-    KeyIndex &keys = sink.Keys();
+    const KeyIndex &keys = sink.Keys();
     std::vector<std::pair<std::string, KeyId>> ordered;
     for (const std::string &key : keys.SortedKeys())
     {
@@ -503,7 +507,12 @@ void CheckSame(const Observed &actual, const Observed &expected)
     {
         errors.push_back(std::to_string(error.firstLine) + "-" + std::to_string(error.lastLine) + ": " + error.message);
     }
-    return Observed{sink.LastLineNumber(), std::move(errors), DescribeRows(sink), NewKeysOf(sink)};
+    return Observed{
+        .lastLine = sink.LastLineNumber(),
+        .errors = std::move(errors),
+        .rows = DescribeRows(sink),
+        .newKeys = NewKeysOf(sink),
+    };
 }
 
 /** Parses the bytes as a file for each batch size and as a stream for each chunk size, and compares them all. */
@@ -536,14 +545,14 @@ void CheckStaticAndStreamAgree(const LogParser &parser, const std::string &bytes
     std::string bytes;
     for (int i = 0; i < 60; ++i)
     {
-        bytes += "{\"id\":" + std::to_string(i) + ",\"msg\":\"line " + std::to_string(i) + "\"";
+        bytes += R"({"id":)" + std::to_string(i) + R"(,"msg":"line )" + std::to_string(i) + "\"";
         if (i % 7 == 0)
         {
             bytes += ",\"extra" + std::to_string(i) + "\":true";
         }
         if (i % 11 == 0)
         {
-            bytes += ",\"esc\\u0041\":1.5";
+            bytes += R"(,"esc\u0041":1.5)";
         }
         bytes += "}\n";
         if (i == 20)
@@ -936,6 +945,8 @@ struct ThrowingStageB
         {
             if (token.batchIndex == throwOnBatch)
             {
+                // The tests throw types that are not derived from std::exception on purpose.
+                // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws)
                 throw exception;
             }
             parsed.batchIndex = token.batchIndex;
@@ -958,7 +969,7 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
     const LogFile &logFile = source->File();
     ParserOptions options;
     options.threads = 2;
-    ThrowingStageB::Of<Exception> stageB{2, std::move(exception)};
+    ThrowingStageB::Of<Exception> stageB{.throwOnBatch = 2, .exception = std::move(exception)};
     internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
         *source,
         sink,
@@ -967,6 +978,12 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
         stageB
     );
 }
+
+/** An exception type that is not derived from std::exception. */
+struct NonStdException
+{
+    int code = 0;
+};
 
 /** A streaming decoder that throws on the line "boom" and otherwise emits an empty row. */
 template <class Exception> class ThrowingLineDecoder
@@ -990,6 +1007,7 @@ public:
         outOwnedArena.clear();
         if (line == "boom")
         {
+            // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws)
             throw mException;
         }
         return internal::LineDecodeResult::Emit;
@@ -1049,7 +1067,7 @@ TEST_CASE("A decoder that throws still finishes the sink, once, and the exceptio
     SECTION("an exception that is not a std::exception")
     {
         CountingSink sink;
-        CHECK_THROWS(RunStreamWithThrowingDecoder(sink, 42));
+        CHECK_THROWS(RunStreamWithThrowingDecoder(sink, NonStdException{42}));
         CheckFinishedWithFailureError(sink, "unknown exception");
     }
 }
@@ -1085,7 +1103,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
             bytes += "line " + std::to_string(i) + "\n";
         }
         StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, 4096));
-        ThrowingLineDecoder<int> decoder(0);
+        ThrowingLineDecoder<std::runtime_error> decoder(std::runtime_error("unused"));
         // 250 rows make a batch, so the second batch throws on the sink's second call.
         CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
         CHECK(sink.batchCalls == 2);
@@ -1104,7 +1122,9 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         file.Write(bytes);
         auto source = file.CreateFileLineSource();
         const LogFile &logFile = source->File();
-        ThrowingStageB::Of<int> stageB{UINT64_MAX, 0};
+        ThrowingStageB::Of<std::runtime_error> stageB{
+            .throwOnBatch = UINT64_MAX, .exception = std::runtime_error("unused")
+        };
         CHECK_THROWS_AS(
             (internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
                 *source,
@@ -1122,7 +1142,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
     {
         CountingSink sink(CountingSink::ThrowFrom::OnFinished);
         StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>("one\ntwo\n", 4));
-        ThrowingLineDecoder<int> decoder(0);
+        ThrowingLineDecoder<std::runtime_error> decoder(std::runtime_error("unused"));
         CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
         CHECK(sink.finishedCalls == 1);
         CHECK(sink.batchCalls >= 1);

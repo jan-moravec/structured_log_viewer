@@ -397,7 +397,14 @@ TEST_CASE("exports: JSON Lines writes fields in column order", "[exports][row_ex
 
     table.MoveColumn(0, 3);
     const std::vector<std::string> movedAgain = {
-        "ts", "level", "message", "ok", "count", "ratio", "extra_a", "extra_b"
+        "ts",
+        "level",
+        "message",
+        "ok",
+        "count",
+        "ratio",
+        "extra_a",
+        "extra_b",
     };
     CHECK(exportFirstRow() == movedAgain);
 }

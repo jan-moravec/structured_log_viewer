@@ -183,7 +183,7 @@ struct LineCountRuns
     fileArgs.push_back(path.string());
     auto stdinArgs = common;
     stdinArgs.emplace_back("-");
-    return {RunSlp(fileArgs), slp::test::RunSlpWithStdin(stdinArgs, bytes)};
+    return {.file = RunSlp(fileArgs), .stdinRun = slp::test::RunSlpWithStdin(stdinArgs, bytes)};
 }
 
 void CheckSameLineCount(const std::string &fileName, const std::string &bytes, std::size_t expectedLines)
