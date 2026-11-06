@@ -5,19 +5,18 @@
 #include "text_util.hpp"
 
 #include <loglib/core/error.hpp>
-#include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/source_plan.hpp>
 #include <loglib/ingest/stdin_bytes_producer.hpp>
 #include <loglib/ingest/stdin_peek.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
-#include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/user_paths.hpp>
+#include <loglib/table/table_loader.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -130,45 +129,6 @@ namespace
     return std::unexpected(LoadFail(ExitCode::Usage, std::format("unknown regex template slug '{}'.", slug)));
 }
 
-/** @brief Feeds parsed batches into the table and records parse errors and the number of lines read. */
-class TableSink final : public loglib::LogParseSink
-{
-public:
-    explicit TableSink(LoadedTable &loaded) noexcept
-        : mLoaded(&loaded)
-    {
-    }
-
-    loglib::KeyIndex &Keys() override
-    {
-        return mLoaded->table.Keys();
-    }
-
-    void OnStarted() override
-    {
-    }
-
-    void OnBatch(loglib::RowBatch batch) override
-    {
-        mLastLine = std::max(mLastLine, static_cast<std::uint64_t>(batch.lastLineNumber));
-        for (loglib::ParseError &error : batch.errors)
-        {
-            mLoaded->parseErrors.push_back(std::move(error));
-        }
-        batch.errors.clear();
-        mLoaded->table.AppendBatchArranged(std::move(batch));
-    }
-
-    void OnFinished(bool /*cancelled*/) override
-    {
-        mLoaded->linesConsumed += mLastLine;
-    }
-
-private:
-    LoadedTable *mLoaded;
-    std::uint64_t mLastLine = 0;
-};
-
 /**
  * @brief How one source chooses its parser format.
  *
@@ -231,7 +191,7 @@ public:
         }
         for (const auto &entry : plan)
         {
-            if (auto failure = AddFile(entry.path, false))
+            if (auto failure = AddFile(entry.path))
             {
                 return failure;
             }
@@ -242,7 +202,7 @@ public:
     /** @brief Loads one `.slvbundle`, seeding the configuration from it unless `--config` was given. */
     [[nodiscard]] std::optional<Failure> AddBundle(const std::filesystem::path &path)
     {
-        return AddFile(path, true);
+        return AddFile(path);
     }
 
     /** @brief Loads standard input to its end. */
@@ -281,14 +241,10 @@ public:
         }
 
         auto lineSource = std::make_unique<loglib::StreamLineSource>(std::filesystem::path{"-"}, std::move(producer));
-        loglib::StreamLineSource &source = *lineSource;
-        Attach(std::move(lineSource));
-
-        source.UnreadBytes(std::move(peek));
-        loglib::ParserOptions parserOptions = MakeParserOptions(*mGlobal, *mInput, mRuntime->stop);
+        lineSource->UnreadBytes(std::move(peek));
         try
         {
-            Parse(*format, source, std::move(parserOptions));
+            Parse(*format, std::move(lineSource));
         }
         catch (const std::exception &ex)
         {
@@ -300,12 +256,12 @@ public:
     /** @brief Completes deferred type detection and returns the loaded table. */
     [[nodiscard]] LoadedTable Finish()
     {
-        mLoaded.table.BubbleLevelColumns(mLoaded.table.FinalizeAutoDetection().levelBubbleKeys);
+        loglib::FinishLoading(mLoaded.table);
         return std::move(mLoaded);
     }
 
 private:
-    [[nodiscard]] std::optional<Failure> AddFile(const std::filesystem::path &displayPath, bool bundle)
+    [[nodiscard]] std::optional<Failure> AddFile(const std::filesystem::path &displayPath)
     {
         std::error_code ec;
         if (!std::filesystem::exists(displayPath, ec) || ec)
@@ -319,25 +275,32 @@ private:
 
         try
         {
-            loglib::DecompressingByteSource::Options decompressOptions;
-            decompressOptions.discardFirstLine = bundle;
-            auto decompressor = std::make_shared<loglib::DecompressingByteSource>(
-                displayPath, loglib::DecompressingByteSource::ProgressCallback{}, mRuntime->stop, decompressOptions
-            );
-            if (bundle)
+            loglib::OpenedFile opened;
+            try
             {
-                const auto metadata = loglib::ParseSessionBundleMetadata(decompressor->DiscardedFirstLine());
+                opened = loglib::OpenFileSource(displayPath, loglib::OpenFileOptions{.stopToken = mRuntime->stop});
+            }
+            catch (const loglib::FormatError &ex)
+            {
+                // An unreadable bundle says what is wrong with it. Corrupt compressed data names the source.
+                if (loglib::HasSessionBundleExtension(displayPath))
+                {
+                    throw;
+                }
+                return OpenFailure(displayPath, ex.what());
+            }
+            if (opened.bundle)
+            {
                 // Seed the embedded session before the first BeginStreaming so
                 // column pins and filter defaults apply.
-                if (mFirst && !mInput->config)
+                if (mLoaded.table.Data().Sources().empty() && !mInput->config)
                 {
-                    mLoaded.table.Configuration().SetConfiguration(metadata.configuration);
+                    mLoaded.table.Configuration().SetConfiguration(opened.bundle->configuration);
                     ReportConfigurationWarnings();
                 }
             }
 
-            const std::filesystem::path effective = decompressor->EffectivePath();
-            mLoaded.ownedDecompressors.push_back(decompressor);
+            const std::filesystem::path &effective = opened.effectivePath;
 
             const std::string label = displayPath.string();
             auto format = ResolveFormat(
@@ -352,12 +315,7 @@ private:
                 return std::move(format.error());
             }
 
-            auto logFile = std::make_unique<loglib::LogFile>(effective, displayPath);
-            logFile->AttachLifetimeAnchor(decompressor);
-            auto lineSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
-            loglib::FileLineSource &source = *lineSource;
-            Attach(std::move(lineSource));
-            Parse(*format, source, MakeParserOptions(*mGlobal, *mInput, mRuntime->stop));
+            Parse(*format, std::move(opened.source));
         }
         catch (const loglib::OperationCancelled &)
         {
@@ -435,28 +393,21 @@ private:
         }
     }
 
-    template <typename Source> void Attach(std::unique_ptr<Source> source)
+    template <typename Source> void Parse(const loglib::DetectedFormat &format, std::unique_ptr<Source> source)
     {
-        if (mFirst)
-        {
-            mLoaded.table.BeginStreaming(std::move(source));
-            mFirst = false;
-        }
-        else
-        {
-            mLoaded.table.AppendStreaming(std::move(source));
-        }
-    }
-
-    template <typename Source>
-    void Parse(const loglib::DetectedFormat &format, Source &source, loglib::ParserOptions parserOptions)
-    {
-        // The parser converts the table's Time columns on its worker threads, which is faster than the table doing it.
-        parserOptions.timeColumns = loglib::TimeColumnsOf(mLoaded.table.Configuration().Configuration());
-        parserOptions.defaultSourceTimeZone = mLoaded.table.DefaultSourceTimeZone();
         const auto parser = loglib::MakeParserForFormat(format.format, format.Options(!mInput->noMultilineLogfmt));
-        TableSink sink(mLoaded);
-        parser->ParseStreaming(source, sink, parserOptions);
+        loglib::ParseOutcome outcome = loglib::ParseIntoTable(
+            mLoaded.table,
+            *parser,
+            std::move(source),
+            MakeParserOptions(*mGlobal, *mInput, mLoaded.table, mRuntime->stop)
+        );
+        for (loglib::ParseError &error : outcome.errors)
+        {
+            mLoaded.parseErrors.push_back(std::move(error));
+        }
+        // Each source adds the lines of its own parse, so several sources add up.
+        mLoaded.linesConsumed += outcome.linesConsumed;
     }
 
     [[nodiscard]] std::optional<Failure> StopCheck() const
@@ -478,7 +429,6 @@ private:
     const Console *mConsole;
     const RuntimeContext *mRuntime;
     LoadedTable mLoaded;
-    bool mFirst = true;
 };
 
 } // namespace
@@ -611,11 +561,10 @@ std::expected<std::unique_ptr<loglib::LogParser>, Failure> MakeStreamParser(
 }
 
 loglib::ParserOptions MakeParserOptions(
-    const GlobalOptions &global, const InputOptions &input, const loglib::StopToken &stop
+    const GlobalOptions &global, const InputOptions &input, const loglib::LogTable &table, const loglib::StopToken &stop
 )
 {
-    loglib::ParserOptions parserOptions;
-    parserOptions.stopToken = stop;
+    loglib::ParserOptions parserOptions = loglib::ParserOptionsFor(table, stop);
     parserOptions.threads = global.threads;
     if (input.batchSizeBytes)
     {
