@@ -7,6 +7,7 @@ Thanks for your interest in contributing! This document is the developer referen
 - [Architecture](#architecture)
   - [Project Structure](#project-structure)
   - [Library](#library)
+    - [Error handling](#error-handling)
   - [GUI Application](#gui-application)
   - [Session tabs](#session-tabs)
   - [Static vs Streaming pipelines](#static-vs-streaming-pipelines)
@@ -100,12 +101,25 @@ Several helpers live under `lib/include/loglib/<module>/internal/` and are inten
 - `BufferingSink` (`buffering_sink.hpp`) — the sink behind the `loglib::ParseFile(parser, path)` free helper.
 - `loglib::internal::RunStaticParserPipeline` (`static_parser_pipeline.hpp`) — the TBB three-stage pipeline used for static-file parses; see [Static vs Streaming pipelines](#static-vs-streaming-pipelines).
 - `loglib::internal::RunStreamingParseLoop` (`streaming_parse_loop.hpp`) — the single-threaded read / decode / batch loop used for live tailing.
-- `BatchCoalescer` (`batch_coalescer.hpp`) — shared by both pipelines for the "flush every ~1000 lines or 50 ms / ~250 lines or 100 ms" coalescing and the `newKeys` diff against `KeyIndex`.
+- `BatchCoalescer` (`batch_coalescer.hpp`) — shared by both pipelines for the "flush every ~1000 lines or 50 ms / ~250 lines or 100 ms" coalescing and for announcing each new key once, in the batch where it first appears in the input.
 - `loglib::detail::FileIdentity` (`file_identity.hpp`) — POSIX `(st_dev, st_ino)` / Windows `GetFileInformationByHandle` helper used by `TailingBytesProducer` for rotation detection.
 - `CompactLineDecoder` (`line_decoder.hpp`) — the per-physical-line decoder concept. `LineDecodeResult` has four outcomes: `Emit`, `Skip`, `Error`, and `Continue`. CSV uses `Skip` for its header; logfmt and regex templates can use `Continue`; JSON and CSV never do. Regex workers share immutable compiled code and match limits but own their `pcre2_match_data`.
 - `ClassifyBareScalar` (`classify_bare_scalar.hpp`) — shared inline header with `TryParseFiniteDouble`, `MakeStringCompact`, and `ClassifyBareScalar`. Both `LogfmtParser` and `CsvParser` use it to type unquoted values; inline (not a separate TU) so each parser keeps within-TU inlining regardless of LTO.
-- `SerializeNormalizedJsonRow` (`normalized_json_row.hpp`) — shared typed JSON-object serializer used by JSON Lines row export and session-bundle export so booleans, numbers, timestamps, strings, and missing values have one wire representation.
+- `NormalizedJsonRowWriter` (`normalized_json_row.hpp`) — shared typed JSON-object serializer used by JSON Lines row export and session-bundle export so booleans, numbers, timestamps, strings, and missing values have one wire representation. Fields follow the display order of the table's columns, and a field without a column goes last, ordered by key text.
 - The shared scratch types both pipelines use live in `parse_runtime.hpp`; `timestamp_promotion.hpp` rounds out the set. Pipeline tuning is `ParserOptions::threads` / `batchSizeBytes`.
+
+#### Error handling
+
+The library reports problems in one of four ways, chosen by what failed. `lib/include/loglib/core/error.hpp` holds the exception types.
+
+1. **Parsing user data never throws.** A problem with a line or record is an error in the batch, and a value that does not convert stays text.
+1. **Validating user input returns `std::expected`.** Queries, regex patterns, templates, print formats and timestamp formats return `std::expected<T, E>`, where E holds a message and, when it helps, a position. The same check runs when a configuration or template is loaded.
+1. **Resource failures throw a `loglib::Error`.** Opening, reading and writing files and sockets, decompressing, and reading saved files such as configurations, bundles and template files throw a subclass of `loglib::Error`, which derives from `std::runtime_error`. IoError means a file or socket operation failed and holds the path or endpoint and the system error. FormatError means a saved file or bundle cannot be read. LimitError means a configured limit was reached, such as the decompression size cap.
+1. **Two control exceptions stay outside `loglib::Error`.** OperationCancelled means the stop token fired, and BrokenPipe means the reader of the output went away. A handler for `loglib::Error` does not catch them, and a library catch-all must rethrow them.
+1. **A parse that fails part-way finishes its sink.** The parser reports one error in a last batch, calls OnFinished, and rethrows. A sink that threw is not called again. A cancelled parse calls OnFinished with cancelled set, then rethrows.
+1. **No silent fallback.** When the library replaces a bad value, as with an invalid print format, it reports that through a warnings list the caller can show. The library never catches an error and carries on without reporting it. Destructors and other noexcept cleanup paths may swallow an error, with a comment that says why.
+1. **Programming errors are asserts,** not exceptions. `std::bad_alloc` passes through.
+1. **The application layer catches.** The GUI worker boundary and the `slp` command entry points turn exceptions into messages and exit codes. The library catches only to add context, such as the path, or to keep a contract, such as calling OnFinished.
 
 ### GUI Application
 
@@ -185,7 +199,7 @@ Multi-tab windows are documented in [`doc/session-tabs.md`](doc/session-tabs.md)
 | **Cancellation**      | `ParserOptions::stopToken` only — cooperatively checked at Stage A token boundaries and Stage C flushes.                          | Both `ParserOptions::stopToken` (checked between lines / batches) **and** `BytesProducer::Stop()` (releases I/O parked in `Read` / `WaitForBytes`). Either one alone cannot unblock a worker parked on I/O. |
 | **Eviction**          | Not used (`FileLineSource::SupportsEviction()` is `false`).                                                                       | `LogTable::EvictPrefixRows` calls `StreamLineSource::EvictBefore` on the FIFO-evicted prefix once per `AppendBatch`.                                                                                        |
 
-Both drivers funnel through `BatchCoalescer`, which re-asserts ordering, diffs the `KeyIndex` to find `newKeys` for the batch, and emits `OnStarted` / `OnBatch(RowBatch)` / `OnFinished(cancelled)` to whichever sink is wired in.
+Both drivers funnel through `BatchCoalescer`, which re-asserts ordering, announces each new key once in `newKeys` (the Stage B workers and the streaming loop record the keys they meet, so the order is the order of first appearance in the input), and emits `OnStarted` / `OnBatch(RowBatch)` / `OnFinished(cancelled)` to whichever sink is wired in.
 
 Both drivers share the same **multi-line record** contract:
 
@@ -235,7 +249,7 @@ A JSON log line takes the same path through the codebase whether you opened the 
                 │                                          │
                 └──────────────────┬───────────────────────┘
                                    ▼
-                         BatchCoalescer (newKeys diff,
+                         BatchCoalescer (newKeys announcement,
                          line-number cursor, flush thresholds)
                                    │
                                    ▼ OnBatch(RowBatch)
@@ -280,7 +294,7 @@ A JSON log line takes the same path through the codebase whether you opened the 
 1. **The matching parser driver runs.** `JsonParser::ParseStreaming(FileLineSource&, ...)`, `LogfmtParser::ParseStreaming(FileLineSource&, ...)`, `CsvParser::ParseStreaming(FileLineSource&, ...)`, and `RegexParser::ParseStreaming(FileLineSource&, ...)` all call `internal::RunStaticParserPipeline` with their own Stage A/B lambdas; the `StreamLineSource` overloads call `internal::RunStreamingParseLoop` with a per-line decoder (`JsonLineDecoder` / `LogfmtLineDecoder` / `CsvLineDecoder` / `RegexLineDecoder`). The JSON path uses simdjson via the per-worker scratch (`WorkerScratchBase` + format-specific extension); the logfmt and CSV paths use in-tree state-machine tokenizers (logfmt's ported from `kr/logfmt`, CSV's a strict RFC 4180 reader); the regex path compiles one PCRE2-8 pattern (`pcre2_compile` + `pcre2_jit_compile`) at parse start, shares both the `pcre2_code*` and the matching `pcre2_match_context*` (configured once with the project's match/depth limits) read-only across Stage B workers, and gives each worker its own `pcre2_match_data*` so the JIT match path is fully concurrent and bounded by those configured limits. All four promote configured `Type::Time` columns inline (`PromoteLineTimestamps`) while the freshly-written values are still hot in L1. CSV's Stage B parses the file's first non-blank line as the schema header (registering its line offset like any other line, but emitting no `LogLine`), so the static pipeline itself is unchanged and `LogFile::GetLine(lineId)` stays aligned to the byte stream.
    - **Static (TBB pipeline)** — Stage A (`serial_in_order`) carves the mmap into ~1 MiB byte ranges. Stage B (`parallel`) decodes them. Stage C (`serial_in_order`) assigns absolute line numbers, stitches continuation regions across batch boundaries, and forwards sealed rows.
    - **Streaming loop** — reads 64 KiB chunks, splits physical lines, and defers a continuation-capable row until its boundary is known. `AppendLine` atomically commits joined raw text and owned values. Transient EOF flushes sealed work and parks on `WaitForBytes`; rotation resumes from the replacement file.
-1. **`BatchCoalescer` flushes a `RowBatch`.** Both pipelines coalesce sealed rows (1000 / 50 ms static, 250 / 100 ms streaming), diff `KeyIndex`, and advance the physical-line cursor. Static batches may also carry `localLineOffsets` and `multiLineSpans`.
+1. **`BatchCoalescer` flushes a `RowBatch`.** Both pipelines coalesce sealed rows (1000 / 50 ms static, 250 / 100 ms streaming), announce new keys, and record how many physical lines were read (`lastLineNumber`) and which time keys the parser converted (`convertedTimeKeys`). Static batches may also carry `localLineOffsets` and `multiLineSpans`.
 1. **A sink consumes the batches.** Two `LogParseSink` implementations ship today:
    - `BufferingSink` (declared in `lib/include/loglib/parse/internal/buffering_sink.hpp`) is the sink behind the synchronous `loglib::ParseFile(parser, path)` free helper in `loglib/parse/parse_file.hpp`. It accumulates every batch into a single `LogData` and is what tests and any non-GUI caller that wants a one-shot `LogData` use. Production GUI code never reaches it — both the static-file open path and Stream Mode always stream.
    - `QtStreamingLogSink` is the GUI bridge. Its `OnBatch(RowBatch)` enqueues into a bounded SPSC `BoundedBatchQueue` and lazily posts a single `Drain` lambda per drain epoch; the lambda pulls everything pending in one shot and forwards it to `LogModel::AppendBatch`. The bounded queue is the unified back-pressure point of the lib-app pipeline: when the GUI falls behind the worker parks in `WaitEnqueue`, propagating pressure all the way back to TBB Stage A. The drain lambda drops on a generation mismatch (a fresh `Arm()` or `RequestStop()` invalidates batches from a previous parse). While **Pause** is engaged, the sink routes batches into a bounded paused buffer (FIFO-trimmed against the retention cap, with `PausedDropCount()` tracking the loss) instead of the bounded queue; **Resume** drains the paused buffer in a single coalesced post.
@@ -324,9 +338,9 @@ To teach the viewer a new format (syslog, alternative-delimiter CSV, ...):
    - `stageA(Token& out) -> bool` produces the next token from the source; return `false` at EOF.
    - `stageB(Token, WorkerScratch<UserState>&, KeyIndex&, std::span<const TimeColumnSpec>, ParsedPipelineBatch&)` decodes one token into `parsed.lines` (built via `LogLine{sortedValues, keys, source, lineId}`) and `parsed.errors`. After pushing each line, call `worker.PromoteTimestamps(parsed.lines.back(), timeColumns)` to keep the inline timestamp fast path warm. Use `internal::InternKeyVia(...)` to intern field names through the per-worker cache. Set `parsed.totalLineCount` to the number of source lines consumed (parsed + errored + skipped) so Stage C can advance its line-number cursor.
 
-   The harness owns batch coalescing, the `newKeys` diff, line-number assignment, and stop-token handling — your parser only has to turn bytes into `(KeyId, LogValue)` pairs.
+   The harness owns batch coalescing, the `newKeys` announcements, line-number assignment, and stop-token handling. A parser that interns keys before the pipeline starts, such as CSV with its header, passes them to the driver as `declaredKeys`, so they appear even if no row has a value — your parser only has to turn bytes into `(KeyId, LogValue)` pairs.
 
-1. **Reuse the shared streaming loop** in the `StreamLineSource` overload. `loglib::internal::RunStreamingParseLoop` (`lib/include/loglib/parse/internal/streaming_parse_loop.hpp`) handles `Read`/`WaitForBytes` polling, partial-line carry-over across reads, batch coalescing, the `newKeys` diff, atomic `AppendLine` commits to the source, and inline timestamp promotion. Implement a decoder satisfying `CompactLineDecoder`: return `Emit` for a row, `Skip` for a prelude such as a CSV header, `Error` with a message, or `Continue` to fold the physical line into the pending row. A continuation-capable decoder must also expose `LastContinuationTarget()`.
+1. **Reuse the shared streaming loop** in the `StreamLineSource` overload. `loglib::internal::RunStreamingParseLoop` (`lib/include/loglib/parse/internal/streaming_parse_loop.hpp`) handles `Read`/`WaitForBytes` polling, partial-line carry-over across reads, batch coalescing, the `newKeys` announcements, atomic `AppendLine` commits to the source, and inline timestamp promotion. Implement a decoder satisfying `CompactLineDecoder`: return `Emit` for a row, `Skip` for a prelude such as a CSV header, `Error` with a message, or `Continue` to fold the physical line into the pending row. A continuation-capable decoder must also expose `LastContinuationTarget()`.
 
    ```cpp
    internal::RunStreamingParseLoop(source, decoder, sink, options);

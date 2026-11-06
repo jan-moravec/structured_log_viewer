@@ -95,6 +95,8 @@ Filters, sorts, and exports rows.
 | `--save-session PATH`       | none         | Write the effective full session after the run.  |
 | `--save-columns PATH`       | none         | Write columns and highlight rules only.          |
 
+JSON Lines output lists the fields of each row in the order of the table's columns. A field that has no column comes last, in key order.
+
 ## `slp stats`
 
 | Flag                              | Default               | Meaning                                     |

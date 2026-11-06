@@ -1,5 +1,6 @@
 #pragma once
 
+#include <loglib/core/row_batch.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
 #include <QString>
@@ -286,8 +287,20 @@ struct SessionParseErrorBatch
     /** @brief Group header. */
     QString title;
     /** @brief Error rows in insertion order. */
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
 };
+
+/** @brief Wraps plain messages as errors without a line, for failures that do not belong to a parsed line. */
+[[nodiscard]] inline std::vector<loglib::ParseError> MessagesAsParseErrors(const std::vector<std::string> &messages)
+{
+    std::vector<loglib::ParseError> errors;
+    errors.reserve(messages.size());
+    for (const std::string &message : messages)
+    {
+        errors.push_back(loglib::ParseError{.message = message});
+    }
+    return errors;
+}
 
 /**
  * @brief Stores parse-error presentation state for a session.

@@ -4,14 +4,18 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/log_value.hpp"
+#include "loglib/table/log_table.hpp"
 
 #include <date/date.h>
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numeric>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace loglib::internal
@@ -145,8 +149,80 @@ void AppendValue(std::string &out, const LogValue &value)
 
 } // namespace
 
-void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::string &out)
+namespace
 {
+constexpr std::uint32_t UNRANKED = UINT32_MAX;
+} // namespace
+
+NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table)
+    : mKeys(&table.Data().Keys()), mRankByKey(mKeys->Size(), UNRANKED), mKeyPrefix(mKeys->Size())
+{
+    std::uint32_t next = 0;
+    for (const Column &column : table.Configuration().Configuration().columns)
+    {
+        for (const std::string &key : column.keys)
+        {
+            const KeyId id = mKeys->Find(key);
+            if (id != INVALID_KEY_ID && mRankByKey[id] == UNRANKED)
+            {
+                mRankByKey[id] = next++;
+            }
+        }
+    }
+}
+
+const std::string &NormalizedJsonRowWriter::KeyPrefix(KeyId id)
+{
+    if (id >= mKeyPrefix.size())
+    {
+        mKeyPrefix.resize(static_cast<std::size_t>(id) + 1);
+    }
+    std::string &prefix = mKeyPrefix[id];
+    if (prefix.empty())
+    {
+        prefix.push_back('"');
+        AppendJsonEscaped(prefix, mKeys->KeyOf(id));
+        prefix.append("\":");
+    }
+    return prefix;
+}
+
+void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
+{
+    mRow.clear();
+    for (const auto &[keyId, slot] : line.CompactValues())
+    {
+        if (slot.tag != CompactTag::Monostate)
+        {
+            mRow.push_back(RowField{.id = keyId, .slot = &slot});
+        }
+    }
+
+    // Rows of one table mostly have the same keys, so the order of the previous row usually fits.
+    const bool sameKeys = std::ranges::equal(mRow, mPreviousIds, {}, &RowField::id);
+    if (!sameKeys)
+    {
+        mPreviousIds.clear();
+        for (const RowField &field : mRow)
+        {
+            mPreviousIds.push_back(field.id);
+        }
+        mOrder.resize(mRow.size());
+        std::iota(mOrder.begin(), mOrder.end(), std::uint32_t{0});
+        const auto rankOf = [this](KeyId id) { return id < mRankByKey.size() ? mRankByKey[id] : UNRANKED; };
+        std::ranges::sort(mOrder, [this, &rankOf](std::uint32_t a, std::uint32_t b) {
+            const KeyId idA = mRow[a].id;
+            const KeyId idB = mRow[b].id;
+            const std::uint32_t rankA = rankOf(idA);
+            const std::uint32_t rankB = rankOf(idB);
+            if (rankA != rankB)
+            {
+                return rankA < rankB;
+            }
+            return rankA == UNRANKED && mKeys->KeyOf(idA) < mKeys->KeyOf(idB);
+        });
+    }
+
     // Keep a useful minimum capacity for callers that reuse the buffer.
     if (out.capacity() < ROW_RESERVE_BYTES)
     {
@@ -154,13 +230,10 @@ void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::
     }
     out.push_back('{');
     bool first = true;
-    for (const auto &[keyId, slot] : line.CompactValues())
+    for (const std::uint32_t position : mOrder)
     {
-        if (slot.tag == CompactTag::Monostate)
-        {
-            continue;
-        }
-        const LogValue value = slot.Materialise(line.Source(), line.LineId(), keyId);
+        const RowField &field = mRow[position];
+        const LogValue value = field.slot->Materialise(line.Source(), line.LineId(), field.id);
         if (std::holds_alternative<std::monostate>(value))
         {
             continue;
@@ -170,19 +243,10 @@ void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::
             out.push_back(',');
         }
         first = false;
-        out.push_back('"');
-        AppendJsonEscaped(out, keys.KeyOf(keyId));
-        out.append("\":");
+        out.append(KeyPrefix(field.id));
         AppendValue(out, value);
     }
     out.push_back('}');
-}
-
-std::string SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys)
-{
-    std::string out;
-    SerializeNormalizedJsonRow(line, keys, out);
-    return out;
 }
 
 } // namespace loglib::internal

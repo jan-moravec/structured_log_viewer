@@ -5,7 +5,6 @@
 #include "json_report.hpp"
 #include "load_table.hpp"
 
-#include <loglib/parse/parse_error_text.hpp>
 #include <loglib/table/column_type_health.hpp>
 
 #include <algorithm>
@@ -83,22 +82,21 @@ using reports::ValidateReport;
     report.format = loaded.format ? std::string(FormatName(loaded.format->format)) : "unknown";
     report.rowsProduced = loaded.table.RowCount();
     report.parseErrorCount = loaded.parseErrors.size();
-    report.linesConsumed =
-        loaded.linesConsumed == 0 ? report.rowsProduced + report.parseErrorCount : loaded.linesConsumed;
+    report.linesConsumed = loaded.linesConsumed;
     report.errorRatePercent = ErrorRatePercent(report.parseErrorCount, report.linesConsumed);
 
     const auto listed = static_cast<std::size_t>(std::min<std::uint64_t>(report.parseErrorCount, maxErrors));
     for (std::size_t index = 0; index < listed; ++index)
     {
-        const loglib::ParseErrorLocation location = loglib::LocateParseError(loaded.parseErrors[index]);
-        ValidateError error{.line = std::nullopt, .lastLine = std::nullopt, .message = std::string(location.message)};
-        if (location.firstLine != 0)
+        const loglib::ParseError &parseError = loaded.parseErrors[index];
+        ValidateError error{.line = std::nullopt, .lastLine = std::nullopt, .message = parseError.message};
+        if (parseError.firstLine != 0)
         {
-            error.line = location.firstLine;
+            error.line = parseError.firstLine;
         }
-        if (location.lastLine != location.firstLine)
+        if (parseError.lastLine != parseError.firstLine)
         {
-            error.lastLine = location.lastLine;
+            error.lastLine = parseError.lastLine;
         }
         report.errors.push_back(std::move(error));
     }
@@ -147,7 +145,7 @@ using reports::ValidateReport;
     // Text mode prints each error as the parser worded it.
     for (std::size_t index = 0; index < report.errors.size(); ++index)
     {
-        out << loaded.parseErrors[index] << '\n';
+        out << loglib::FormatParseError(loaded.parseErrors[index]) << '\n';
     }
     if (report.parseErrorCount > report.errors.size())
     {

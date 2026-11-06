@@ -213,7 +213,7 @@ private:
     std::filesystem::path mPath;
 };
 
-loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_t rowCount)
+loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_t rowCount, bool extraFields = false)
 {
     auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.jsonl"), nullptr);
     for (auto &raw : rawLines)
@@ -246,6 +246,12 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
         map["count"] = static_cast<std::int64_t>(i);
         map["ratio"] = static_cast<double>(i) * 0.5;
         map["ok"] = (i % 2 == 0);
+        if (extraFields)
+        {
+            // Fields that no column lists.
+            map["extra_b"] = std::string("b");
+            map["extra_a"] = std::string("a");
+        }
         lines.emplace_back(map, keys, *sourcePtr, i + 1);
     }
 
@@ -345,6 +351,62 @@ TEST_CASE("exports: JSON Lines emits typed values per row", "[exports][row_expor
     REQUIRE(lines[1].contains("\"ratio\":0.5"));
     REQUIRE(lines[0].contains("\\\"world\\\""));
     REQUIRE(lines[0].contains("\\n#0"));
+}
+
+TEST_CASE("exports: JSON Lines writes fields in column order", "[exports][row_exporter]")
+{
+    std::vector<std::string> raws = {"first", "second"};
+    auto table = BuildFixtureTable(std::move(raws), 2, true);
+
+    const auto exportFirstRow = [&table] {
+        std::vector<std::size_t> rows = {0};
+        std::vector<std::size_t> cols = {0, 1, 2, 3, 4, 5};
+        const RowSource source{
+            .table = &table,
+            .sourceRows = rows,
+            .visibleColumns = cols,
+            .includeAllFieldsForJson = true,
+            .includeHeaderRow = false,
+        };
+        MemorySink sink;
+        auto exporter = loglib::exports::MakeExporter(ExportFormat::JsonLines);
+        REQUIRE(exporter != nullptr);
+        exporter->Run(source, sink, loglib::StopToken{});
+        const auto lines = SplitNonEmptyLines(sink.Bytes());
+        REQUIRE(lines.size() == 1);
+        // The keys of the fields, in the order they were written.
+        std::vector<std::string> order;
+        for (const char *key : {"ts", "level", "message", "count", "ratio", "ok", "extra_a", "extra_b"})
+        {
+            const auto position = lines[0].find(std::string("\"") + key + "\":");
+            REQUIRE(position != std::string::npos);
+            order.emplace_back(key);
+        }
+        std::ranges::sort(order, {}, [&lines](const std::string &key) {
+            return lines[0].find(std::string("\"") + key + "\":");
+        });
+        return order;
+    };
+
+    const std::vector<std::string> original = {"ts", "level", "message", "count", "ratio", "ok", "extra_a", "extra_b"};
+    CHECK(exportFirstRow() == original);
+
+    table.MoveColumn(5, 0);
+    const std::vector<std::string> moved = {"ok", "ts", "level", "message", "count", "ratio", "extra_a", "extra_b"};
+    CHECK(exportFirstRow() == moved);
+
+    table.MoveColumn(0, 3);
+    const std::vector<std::string> movedAgain = {
+        "ts",
+        "level",
+        "message",
+        "ok",
+        "count",
+        "ratio",
+        "extra_a",
+        "extra_b",
+    };
+    CHECK(exportFirstRow() == movedAgain);
 }
 
 TEST_CASE("exports: JSON Lines round-trips synthetic rows", "[exports][row_exporter]")

@@ -71,7 +71,7 @@ void Console::Stage(std::string_view stage, std::uint64_t rows, std::chrono::ste
     WriteErr(FormatStageLine(stage, rows, static_cast<std::uint64_t>(elapsed.count())) + '\n');
 }
 
-void Console::ParseErrors(const std::vector<std::string> &errors) const
+void Console::ParseErrors(const std::vector<loglib::ParseError> &errors) const
 {
     if (errors.empty() || mQuiet)
     {
@@ -82,9 +82,9 @@ void Console::ParseErrors(const std::vector<std::string> &errors) const
     );
     if (mVerbose > 0)
     {
-        for (const std::string &error : errors)
+        for (const loglib::ParseError &error : errors)
         {
-            WriteErr(FormatWarningLine(error) + '\n');
+            WriteErr(FormatWarningLine(loglib::FormatParseError(error)) + '\n');
         }
     }
 }

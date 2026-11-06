@@ -190,7 +190,9 @@ loglib::CompactLogValue ExtractRawJsonValue(
 }
 
 /// Per-key simdjson type cache so `value.type()` / `get_number_type()` fire
-/// only on the first occurrence of each key.
+/// only on the first occurrence of each key. The cached number type only picks
+/// the fast path. A fast path accepts a value only when the value's own text
+/// has that type, so a key gets the same cell types on every worker.
 struct ParseCache
 {
     std::vector<simdjson::ondemand::json_type> keyTypes;
@@ -222,7 +224,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
     KeyIndex &keys,
     ParseCache &cache,
     bool sourceIsStable,
-    internal::PerWorkerKeyCache *keyCache,
+    internal::PerWorkerKeyCache &keyCache,
     const char *fileBegin,
     size_t fileSize,
     std::string &ownedArena,
@@ -247,7 +249,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             return result;
         }
 
-        const KeyId keyId = fk.isView ? internal::InternKeyVia(fk.view, keys, keyCache) : keys.GetOrInsert(fk.owned);
+        const KeyId keyId = internal::InternKeyVia(fk.isView ? fk.view : std::string_view(fk.owned), keys, keyCache);
         EnsureCacheCapacity(cache, keyId);
 
         auto value = field.value();
@@ -288,15 +290,25 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                         uint64_t u = 0;
                         if (!value.get(u))
                         {
-                            InsertSorted(result, keyId, loglib::CompactLogValue::MakeUint64(u));
+                            // A value that fits in 64 bits signed is an Int64, as it would be on any other worker.
+                            InsertSorted(
+                                result,
+                                keyId,
+                                u > static_cast<uint64_t>(INT64_MAX)
+                                    ? loglib::CompactLogValue::MakeUint64(u)
+                                    : loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(u))
+                            );
                             continue;
                         }
                         break;
                     }
                     case simdjson::ondemand::number_type::floating_point_number:
                     {
+                        // get(double) also accepts 5, so the text must show a fraction or an exponent.
                         double d = NAN;
-                        if (!value.get(d))
+                        std::string_view token;
+                        if (!value.raw_json_token().get(token) &&
+                            token.find_first_of(".eE") != std::string_view::npos && !value.get(d))
                         {
                             InsertSorted(result, keyId, loglib::CompactLogValue::MakeDouble(d));
                             continue;
@@ -580,7 +592,7 @@ void DecodeJsonBatch(
                 keys,
                 worker.user.cache,
                 sourceIsStable,
-                &worker.keyCache,
+                worker.keyCache,
                 fileBegin,
                 fileSize,
                 parsed.ownedStringsArena,
@@ -671,7 +683,7 @@ public:
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
-        internal::PerWorkerKeyCache *keyCache,
+        internal::PerWorkerKeyCache &keyCache,
         std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut

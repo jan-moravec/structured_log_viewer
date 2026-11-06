@@ -1,3 +1,5 @@
+#include "common.hpp"
+
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/stop_token.hpp>
@@ -45,71 +47,6 @@ using test_common::TempDir;
 
 namespace
 {
-
-/// In-memory producer that returns small chunks, then EOF.
-/// `WaitForBytes` is a no-op because bytes are immediately available.
-class BufferedBytesProducer final : public BytesProducer
-{
-public:
-    explicit BufferedBytesProducer(std::string bytes, std::size_t chunkSize = 64)
-        : mBytes(std::move(bytes)), mChunkSize(chunkSize)
-    {
-    }
-
-    ~BufferedBytesProducer() override
-    {
-        Stop();
-    }
-
-    BufferedBytesProducer(const BufferedBytesProducer &) = delete;
-    BufferedBytesProducer &operator=(const BufferedBytesProducer &) = delete;
-
-    std::size_t Read(std::span<char> buffer) override
-    {
-        const std::scoped_lock lock(mLock);
-        const std::size_t remaining = mBytes.size() - mCursor;
-        if (remaining == 0)
-        {
-            mClosed.store(true, std::memory_order_release);
-            return 0;
-        }
-        const std::size_t give = std::min({remaining, buffer.size(), mChunkSize});
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, give);
-        mCursor += give;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed.store(true, std::memory_order_release);
-        }
-        return give;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed.store(true, std::memory_order_release);
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        const std::scoped_lock lock(mLock);
-        return mClosed.load(std::memory_order_acquire) && mCursor >= mBytes.size();
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "buffered";
-    }
-
-private:
-    mutable std::mutex mLock;
-    std::string mBytes;
-    std::size_t mCursor = 0;
-    std::size_t mChunkSize;
-    std::atomic<bool> mClosed{false};
-};
 
 /// Sink that counts parsed rows; format-specific decoding is tested
 /// elsewhere.
@@ -190,7 +127,7 @@ TEST_CASE("AutoDetectParser routes JSON bytes to a JSON parse", "[AutoDetectPars
 {"level":"error","message":"third"}
 )";
 
-    auto producer = std::make_unique<BufferedBytesProducer>(bytes);
+    auto producer = std::make_unique<InMemoryBytesProducer>(bytes, 64);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;
@@ -206,7 +143,7 @@ TEST_CASE("AutoDetectParser routes logfmt bytes to a logfmt parse", "[AutoDetect
 {
     const std::string bytes = "level=info message=first\nlevel=warn message=second\n";
 
-    auto producer = std::make_unique<BufferedBytesProducer>(bytes);
+    auto producer = std::make_unique<InMemoryBytesProducer>(bytes, 64);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;
@@ -221,7 +158,7 @@ TEST_CASE("AutoDetectParser routes CSV bytes to a CSV parse", "[AutoDetectParser
     // First line is the header, next two are data rows.
     const std::string bytes = "level,message\ninfo,first\nwarn,second\n";
 
-    auto producer = std::make_unique<BufferedBytesProducer>(bytes);
+    auto producer = std::make_unique<InMemoryBytesProducer>(bytes, 64);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;
@@ -235,7 +172,7 @@ TEST_CASE("AutoDetectParser handles an empty producer via JsonParser fallback", 
 {
     // Empty producer -> empty peek -> fall back to JsonParser
     // for a clean "OnFinished(false)" cycle with zero rows.
-    auto producer = std::make_unique<BufferedBytesProducer>(std::string{});
+    auto producer = std::make_unique<InMemoryBytesProducer>(std::string{}, 64);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;
@@ -267,7 +204,7 @@ TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[Aut
     const std::string bytes = "2025-08-07T09:00:00Z INFO svc: first message\n"
                               "2025-08-07T09:00:01Z WARN svc: second message\n";
 
-    auto producer = std::make_unique<BufferedBytesProducer>(bytes);
+    auto producer = std::make_unique<InMemoryBytesProducer>(bytes, 64);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;
@@ -390,7 +327,7 @@ TEST_CASE("AutoDetectParser composes with bytes the caller gave back to the sour
     const std::string carryBytes = R"({"msg":"from-carry"})"
                                    "\n";
 
-    auto producer = std::make_unique<BufferedBytesProducer>(producerBytes);
+    auto producer = std::make_unique<InMemoryBytesProducer>(producerBytes, 64);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
     CollectingSink sink;

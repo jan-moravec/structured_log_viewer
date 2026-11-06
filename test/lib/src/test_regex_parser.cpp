@@ -85,7 +85,7 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("non-empty pattern"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("non-empty pattern"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -97,7 +97,7 @@ TEST_CASE("RegexParser unparsable pattern surfaces error [regex]", "[regex_parse
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("Pattern compile failed"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Pattern compile failed"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -111,7 +111,7 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("named capture groups"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("named capture groups"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -171,8 +171,8 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("line 2"));
-    CHECK(result.errors[0].contains("did not match"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("did not match"));
 }
 
 TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_parser]")
@@ -311,61 +311,6 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
 namespace
 {
 
-/// Single-shot in-memory `BytesProducer` for the live-tail regex
-/// streaming test. Yields the pre-baked bytes once and reports
-/// terminal EOF so the parser exits its drain loop without
-/// parking on `WaitForBytes`. Mirrors `test_json_parser.cpp`.
-class StreamingInMemoryProducer final : public loglib::BytesProducer
-{
-public:
-    explicit StreamingInMemoryProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-            return 0;
-        }
-        const size_t available = mBytes.size() - mCursor;
-        const size_t n = std::min(available, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "in-memory";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 /// `LogParseSink` that records every emitted batch verbatim so
 /// the test can assert on `newKeys`. Owns its `KeyIndex` so the
 /// streaming parser interns into a sink-local index rather than
@@ -397,15 +342,11 @@ struct CollectingStreamSink final : loglib::LogParseSink
 
 } // namespace
 
-// Regression for a live-tail / network-stream bug: the pattern's
-// named capture groups are interned into `KeyIndex` before
-// `RunStreamingParseLoop` starts, but the streaming overload used
-// to drop the pre-intern baseline. `BatchCoalescer` then started
-// its key cursor at the post-intern size, so every flushed batch
-// reported an empty `newKeys` and `LogTable::AppendBatch` never
-// created the columns -- streaming regex sessions ingested rows
-// with no visible columns. Fails on the pre-fix codebase; passes
-// once `newKeyBaseline` is threaded through.
+// The pattern's named capture groups are interned into `KeyIndex` before
+// `RunStreamingParseLoop` starts. The parser passes them as declared keys, so
+// the first batch announces them in `newKeys` and `LogTable::AppendBatch`
+// creates the columns. Without that, streaming regex sessions would ingest
+// rows with no visible columns.
 TEST_CASE(
     "RegexParser streaming surfaces named-group columns via newKeys [regex][stream_line_source]", "[regex_parser]"
 )
@@ -418,7 +359,7 @@ TEST_CASE(
                                 "warn world\n"
                                 "error boom\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -460,9 +401,9 @@ namespace
 /// about is "did the streaming pipeline surface this error at
 /// all" — the batch boundary the coalescer picked is an
 /// implementation detail.
-std::vector<std::string> FlattenSinkErrors(const CollectingStreamSink &sink)
+std::vector<loglib::ParseError> FlattenSinkErrors(const CollectingStreamSink &sink)
 {
-    std::vector<std::string> all;
+    std::vector<loglib::ParseError> all;
     for (const auto &batch : sink.batches)
     {
         for (const auto &err : batch.errors)
@@ -480,12 +421,11 @@ std::vector<std::string> FlattenSinkErrors(const CollectingStreamSink &sink)
 /// block. The payload text is irrelevant on the error paths —
 /// they fail before any line is decoded — but keeping it varied
 /// makes it obvious in stack traces which test tripped.
-std::vector<std::string> RunStreamingParseCollectingErrors(std::string_view pattern, std::string_view payload)
+std::vector<loglib::ParseError> RunStreamingParseCollectingErrors(std::string_view pattern, std::string_view payload)
 {
     const RegexParser parser{std::string{pattern}};
     StreamLineSource source(
-        std::filesystem::path("regex_stream_error.log"),
-        std::make_unique<StreamingInMemoryProducer>(std::string{payload})
+        std::filesystem::path("regex_stream_error.log"), std::make_unique<InMemoryBytesProducer>(std::string{payload})
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -502,13 +442,11 @@ TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][strea
     // means "read pattern from options"; without a
     // `LogConfiguration` on the options the resolved pattern is
     // empty and the parser must fail closed before decoding any
-    // line. Prior to the newKeyBaseline fix the streaming overload
-    // dropped this error entirely because `EmitErrorAndFinish`
-    // wasn't wired for the streaming flush thresholds.
+    // line. The streaming overload reports this error through
+    // `EmitErrorAndFinish` with the streaming flush thresholds.
     const RegexParser parser{std::string{}};
     StreamLineSource source(
-        std::filesystem::path("regex_stream_empty_pattern.log"),
-        std::make_unique<StreamingInMemoryProducer>("one\ntwo\n")
+        std::filesystem::path("regex_stream_empty_pattern.log"), std::make_unique<InMemoryBytesProducer>("one\ntwo\n")
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -517,7 +455,7 @@ TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][strea
     CHECK_FALSE(sink.finishedCancelled);
     const auto errors = FlattenSinkErrors(sink);
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("non-empty pattern"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("non-empty pattern"));
 }
 
 TEST_CASE("RegexParser streaming with unparsable pattern surfaces error [regex][stream_line_source]", "[regex_parser]")
@@ -529,7 +467,7 @@ TEST_CASE("RegexParser streaming with unparsable pattern surfaces error [regex][
     // pipeline or eating the message.
     const auto errors = RunStreamingParseCollectingErrors(R"((?<a)", "one\ntwo\n");
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("Pattern compile failed"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("Pattern compile failed"));
 }
 
 TEST_CASE(
@@ -543,7 +481,7 @@ TEST_CASE(
     // the guard was ever removed).
     const auto errors = RunStreamingParseCollectingErrors(R"(^(\w+)\s+(.*)$)", "info hello\nwarn world\n");
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("named capture groups"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("named capture groups"));
 }
 
 TEST_CASE(
@@ -572,7 +510,7 @@ TEST_CASE(
                                 "\tat com.example.Baz.qux(Baz.java:7)\n"
                                 "info recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -638,7 +576,7 @@ TEST_CASE(
                                 "\n"
                                 "info recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -697,7 +635,7 @@ TEST_CASE(
                                 "  File \"a.py\", line 7\n"
                                 "[INFO] recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -748,14 +686,14 @@ TEST_CASE(
                                 "\tat com.example.Foo.bar(Foo.java:42)\n"
                                 "info recovered\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
 
     std::vector<LogLine *> lines;
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         for (auto &l : b.lines)
@@ -800,7 +738,7 @@ TEST_CASE(
     auto result = ParseFile(parser, file.GetFilePath());
     for (const auto &e : result.errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
@@ -865,7 +803,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -939,7 +877,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -1159,7 +1097,7 @@ TEST_CASE(
                                 "2026-01-02 INFO recovered\n";
 
     StreamLineSource source(
-        std::filesystem::path("anchor_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+        std::filesystem::path("anchor_stream.log"), std::make_unique<InMemoryBytesProducer>(payload)
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -1235,10 +1173,10 @@ TEST_CASE(
     );
 
     LogData data = sink.TakeData();
-    const std::vector<std::string> errors = sink.TakeErrors();
+    const std::vector<loglib::ParseError> errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -1277,7 +1215,7 @@ TEST_CASE(
 
     const std::string payload = "2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n";
     StreamLineSource source(
-        std::filesystem::path("anchor_bad_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+        std::filesystem::path("anchor_bad_stream.log"), std::make_unique<InMemoryBytesProducer>(payload)
     );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
@@ -1294,7 +1232,7 @@ TEST_CASE(
     }
     const auto errors = FlattenSinkErrors(sink);
     REQUIRE(errors.size() == 1);
-    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(loglib::FormatParseError(errors.front()).contains("Header anchor compile failed"));
     CHECK(lines.empty());
 }
 
@@ -1325,9 +1263,9 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     RegexParser{bad.pattern, bad.continuationMode, bad.headerAnchor}.ParseStreaming(*sourcePtr, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
-    const std::vector<std::string> errors = sink.TakeErrors();
+    const std::vector<loglib::ParseError> errors = sink.TakeErrors();
     REQUIRE(errors.size() == 1);
-    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(loglib::FormatParseError(errors.front()).contains("Header anchor compile failed"));
     CHECK(data.Lines().empty());
 }
 
@@ -1358,7 +1296,7 @@ TEST_CASE(
 
         const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
         StreamLineSource source(
-            std::filesystem::path("anchor_ignored.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+            std::filesystem::path("anchor_ignored.log"), std::make_unique<InMemoryBytesProducer>(payload)
         );
         CollectingStreamSink sink;
         parser.ParseStreaming(source, sink, ParserOptions{});

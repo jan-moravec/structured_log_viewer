@@ -1,3 +1,4 @@
+#include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/parse/regex_templates.hpp>
@@ -7,10 +8,14 @@
 #include <test_common/log_generator.hpp>
 #include <test_common/log_record.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -98,6 +103,59 @@ private:
     static constexpr char FILE_PATH[] = "test_file.json";
     std::string mFilePath;
     std::filesystem::path mFsPath;
+};
+
+/// Serves a string through the BytesProducer interface, optionally in chunks of chunkSize bytes, and then reports the
+/// end of the stream. WaitForBytes returns at once because the bytes are always there. Tests that need a producer with
+/// timing keep their own.
+class InMemoryBytesProducer final : public loglib::BytesProducer
+{
+public:
+    explicit InMemoryBytesProducer(std::string bytes, std::size_t chunkSize = std::string::npos)
+        : mBytes(std::move(bytes)), mChunkSize(chunkSize)
+    {
+    }
+
+    std::size_t Read(std::span<char> buffer) override
+    {
+        const std::scoped_lock lock(mLock);
+        if (mStopped)
+        {
+            return 0;
+        }
+        const std::size_t give = std::min({mBytes.size() - mCursor, buffer.size(), mChunkSize});
+        std::copy_n(mBytes.data() + mCursor, give, buffer.data());
+        mCursor += give;
+        return give;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    {
+    }
+
+    void Stop() noexcept override
+    {
+        const std::scoped_lock lock(mLock);
+        mStopped = true;
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        const std::scoped_lock lock(mLock);
+        return mStopped || mCursor >= mBytes.size();
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "in-memory";
+    }
+
+private:
+    mutable std::mutex mLock;
+    std::string mBytes;
+    std::size_t mChunkSize;
+    std::size_t mCursor = 0;
+    bool mStopped = false;
 };
 
 void InitializeTimezoneData();

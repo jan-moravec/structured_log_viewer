@@ -1,3 +1,4 @@
+#include <loglib/core/error.hpp>
 #include <loglib/core/internal/path_encoding.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
@@ -720,21 +721,21 @@ TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destin
 
 TEST_CASE("session bundle metadata rejects malformed envelope versions and excessive rows", "[SessionBundle]")
 {
-    CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("not json"), loglib::SessionBundleReadError);
-    CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("{}"), loglib::SessionBundleReadError);
+    CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("not json"), loglib::FormatError);
+    CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("{}"), loglib::FormatError);
     CHECK_THROWS_AS(
         loglib::ParseSessionBundleMetadata(R"({"__slv_bundle__":{"formatVersion":0,"rowCount":0,"configuration":{}}})"),
-        loglib::SessionBundleVersionError
+        loglib::FormatError
     );
     CHECK_THROWS_AS(
         loglib::ParseSessionBundleMetadata(R"({"__slv_bundle__":{"formatVersion":2,"rowCount":0,"configuration":{}}})"),
-        loglib::SessionBundleVersionError
+        loglib::FormatError
     );
     CHECK_THROWS_AS(
         loglib::ParseSessionBundleMetadata(
             R"({"__slv_bundle__":{"formatVersion":1,"rowCount":1000000001,"configuration":{}}})"
         ),
-        loglib::SessionBundleReadError
+        loglib::FormatError
     );
 }
 

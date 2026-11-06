@@ -54,52 +54,6 @@ std::int64_t Micros(int year, unsigned month, unsigned day, int hour, int minute
     return total.count();
 }
 
-/** @brief Serves a string once and then reports the end of the stream. */
-class StringProducer final : public BytesProducer
-{
-public:
-    explicit StringProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        const size_t n = std::min(mBytes.size() - mCursor, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "string";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 struct CollectingSink final : LogParseSink
 {
     KeyIndex keys;
@@ -135,9 +89,9 @@ struct CollectingSink final : LogParseSink
         return lines;
     }
 
-    [[nodiscard]] std::vector<std::string> Errors() const
+    [[nodiscard]] std::vector<loglib::ParseError> Errors() const
     {
-        std::vector<std::string> errors;
+        std::vector<loglib::ParseError> errors;
         for (const RowBatch &batch : batches)
         {
             errors.insert(errors.end(), batch.errors.begin(), batch.errors.end());
@@ -381,7 +335,9 @@ TEST_CASE("Feb 29 in a syslog timestamp parses with a leap-year reference only",
 
 TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's bytes", "[explicit_time_inputs]")
 {
-    StreamLineSource source(std::filesystem::path("unread.log"), std::make_unique<StringProducer>("{\"n\":3}\n"));
+    StreamLineSource source(
+        std::filesystem::path("unread.log"), std::make_unique<InMemoryBytesProducer>("{\"n\":3}\n")
+    );
 
     SECTION("TakeUnreadBytes returns them in order and empties them")
     {
@@ -440,7 +396,7 @@ TEST_CASE("The logfmt continuation switch belongs to the parser", "[explicit_tim
                                 "\ttab-indented continuation\n";
 
     const auto rowCount = [&payload](const LogParser &parser) {
-        StreamLineSource source(std::filesystem::path("logfmt.log"), std::make_unique<StringProducer>(payload));
+        StreamLineSource source(std::filesystem::path("logfmt.log"), std::make_unique<InMemoryBytesProducer>(payload));
         CollectingSink sink;
         parser.ParseStreaming(source, sink, ParserOptions{});
         REQUIRE(sink.finished);
@@ -487,7 +443,7 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
     CHECK_FALSE(FindTemplateByPattern(restored.regexPattern).has_value());
 
     const RegexParser parser{restored.regexPattern, restored.regexContinuationMode, restored.regexHeaderAnchor};
-    StreamLineSource source(std::filesystem::path("regex.log"), std::make_unique<StringProducer>(payload));
+    StreamLineSource source(std::filesystem::path("regex.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
     REQUIRE(sink.finished);

@@ -169,7 +169,7 @@ public:
                     const std::string_view keyView = field.substr(0, eq);
                     const std::string_view valueView = field.substr(eq + 1);
 
-                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, &worker.keyCache);
+                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, worker.keyCache);
 
                     // Park the value bytes in the per-batch arena and
                     // record an `OwnedString` compact value pointing at
@@ -398,7 +398,7 @@ public:
                     const std::string_view keyView = field.substr(0, eq);
                     const std::string_view valueView = field.substr(eq + 1);
 
-                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, &worker.keyCache);
+                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, worker.keyCache);
 
                     const uint64_t offset = parsed.ownedStringsArena.size();
                     parsed.ownedStringsArena.append(valueView.data(), valueView.size());
@@ -718,7 +718,7 @@ TEST_CASE("Mock parser: per-line errors propagate through RowBatch::errors", "[m
         totalLines += b.lines.size();
         for (const auto &e : b.errors)
         {
-            allErrors.push_back(e);
+            allErrors.push_back(loglib::FormatParseError(e));
         }
     }
     REQUIRE(totalLines == 2);
@@ -771,7 +771,7 @@ TEST_CASE(
     {
         for (const auto &e : b.errors)
         {
-            allErrors.push_back(e);
+            allErrors.push_back(loglib::FormatParseError(e));
         }
     }
     REQUIRE(allErrors.size() == expectedErrorLines.size());
@@ -1025,7 +1025,7 @@ TEST_CASE(
         totalLines += b.lines.size();
         for (const auto &e : b.errors)
         {
-            allErrors.push_back(e);
+            allErrors.push_back(loglib::FormatParseError(e));
         }
     }
     CHECK(totalLines == 1);

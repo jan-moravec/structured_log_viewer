@@ -112,8 +112,8 @@ private:
 /**
  * @brief Thrown when a write reaches a pipe or socket that the reader has closed.
  *
- * It is not a std::runtime_error, so a general I/O handler does not report it. Callers that treat a closed reader as
- * success, as in slp query piped into head, catch it and exit quietly.
+ * It is not a loglib::Error or a std::runtime_error, so a general I/O handler does not report it. Callers that treat a
+ * closed reader as success, as in slp query piped into head, catch it and exit quietly.
  */
 class BrokenPipe : public std::exception
 {

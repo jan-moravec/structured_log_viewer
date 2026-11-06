@@ -18,7 +18,6 @@
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
-#include "loglib/parse/parse_error_text.hpp"
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
@@ -157,48 +156,21 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
 }
 
 /**
- * @brief Parses a live stream line by line for any format.
+ * @brief The body of RunStreamingParseLoop, after the sink was started. It may throw.
  *
- * The loop reads lines from source.Producer() and hands each non-blank line to the decoder, which must satisfy
- * CompactLineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
- * which are sent on after STREAMING_BATCH_FLUSH_LINES lines or STREAMING_BATCH_FLUSH_INTERVAL.
- *
- * It runs on one thread, because a stream delivers thousands of lines per second and a thread pool would not pay off.
- * The source is changed on the parser thread and read by other threads at the same time, and the mutex and deque
- * storage of StreamLineSource make that safe.
- *
- * A Continue result adds the line to the raw text of the pending record and to the field that
- * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
- * waited STREAMING_PENDING_RECORD_MAX_AGE.
- *
- * newKeyBaseline is passed to BatchCoalescer. A parser that adds keys to the index before calling, as the regex parser
- * does for the groups of its pattern, passes the key count from before, so those columns still appear as new keys in
- * the first batch. Parsers that add keys while parsing, such as JSON, logfmt and CSV, leave it empty.
+ * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
  */
 template <class Decoder>
-void RunStreamingParseLoop(
+void RunStreamingParseLoopBody(
     StreamLineSource &source,
     Decoder &decoder,
     LogParseSink &sink,
     const ParserOptions &options,
-    std::optional<size_t> newKeyBaseline = std::nullopt
+    BatchCoalescer &coalescer,
+    size_t &nextLineNumber
 )
 {
-    sink.OnStarted();
-
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL, newKeyBaseline);
-
-    BytesProducer *producer = source.Producer();
-    if (producer == nullptr)
-    {
-        // No producer (e.g. unit tests driving AppendLine directly).
-        // Honour the sink contract with one empty terminal batch.
-        coalescer.Finish(1, false);
-        return;
-    }
-
-    const StopToken stopToken = options.stopToken;
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
         keys,
@@ -206,12 +178,22 @@ void RunStreamingParseLoop(
         options.defaultSourceTimeZone,
         options.referenceTime.value_or(std::chrono::system_clock::now())
     );
-    std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
+    const std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
+    coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumnsSpan));
+
+    BytesProducer *producer = source.Producer();
+    if (producer == nullptr)
+    {
+        // No producer (e.g. unit tests driving AppendLine directly).
+        // Honour the sink contract with one empty terminal batch.
+        coalescer.Finish(0, false);
+        return;
+    }
+
+    const StopToken stopToken = options.stopToken;
 
     WorkerScratchBase promoteScratch;
     promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
-
-    size_t nextLineNumber = 1;
 
     // Bytes that an earlier stage, such as format detection, read from the producer and gave back to the source. They
     // come before anything the producer delivers now.
@@ -259,6 +241,13 @@ void RunStreamingParseLoop(
     };
     std::optional<PendingRecord> pending;
 
+    // Announces the keys the decoder met since the last call. This runs before every flush, so a batch always lists the
+    // keys of its rows. A key is recorded once for the whole stream, because the loop never starts a new key batch.
+    auto announceSeenKeys = [&] {
+        coalescer.AddSeenKeys(promoteScratch.keyCache.firstSeen);
+        promoteScratch.keyCache.firstSeen.clear();
+    };
+
     // Reject invalid targets before buffering to keep memory bounded.
     auto canAcceptContinuation = [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
         if (key == INVALID_KEY_ID)
@@ -298,20 +287,28 @@ void RunStreamingParseLoop(
         {
             return;
         }
-        std::string msg;
         if (orphanRunFirstLine == orphanRunLastLine)
         {
-            msg = FormatLineError(orphanRunFirstLine, "Orphaned continuation line.");
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = orphanRunFirstLine,
+                    .lastLine = orphanRunFirstLine,
+                    .message = "Orphaned continuation line.",
+                }
+            );
         }
         else
         {
-            msg = FormatLineRangeError(
-                orphanRunFirstLine,
-                orphanRunLastLine,
-                fmt::format("{} orphaned continuation lines dropped.", orphanRunLastLine - orphanRunFirstLine + 1)
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = orphanRunFirstLine,
+                    .lastLine = orphanRunLastLine,
+                    .message = fmt::format(
+                        "{} orphaned continuation lines dropped.", orphanRunLastLine - orphanRunFirstLine + 1
+                    ),
+                }
             );
         }
-        coalescer.Pending().errors.emplace_back(std::move(msg));
         orphanRunFirstLine = 0;
         orphanRunLastLine = 0;
     };
@@ -339,23 +336,30 @@ void RunStreamingParseLoop(
                 const std::string_view reason = outcome == ContinuationSpliceOutcome::MissingTarget
                                                     ? "target field is not present in the record"
                                                     : "target field is not a string";
-                coalescer.Pending().errors.emplace_back(
-                    FormatLineError(rec.startLineNumber, fmt::format("Continuation lines dropped: {}.", reason))
+                coalescer.Pending().errors.push_back(
+                    ParseError{
+                        .firstLine = rec.startLineNumber,
+                        .lastLine = rec.startLineNumber,
+                        .message = fmt::format("Continuation lines dropped: {}.", reason),
+                    }
                 );
             }
         }
         // Trailing blanks remain between-record separators.
         if (rec.droppedContinuationLines > 0)
         {
-            coalescer.Pending().errors.emplace_back(FormatLineError(
-                rec.startLineNumber,
-                fmt::format(
-                    "Continuation lines dropped ({} line{}): target field is not present in the record or is not a "
-                    "string.",
-                    rec.droppedContinuationLines,
-                    rec.droppedContinuationLines == 1 ? "" : "s"
-                )
-            ));
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = rec.startLineNumber,
+                    .lastLine = rec.startLineNumber,
+                    .message = fmt::format(
+                        "Continuation lines dropped ({} line{}): target field is not present in the record or is not "
+                        "a string.",
+                        rec.droppedContinuationLines,
+                        rec.droppedContinuationLines == 1 ? "" : "s"
+                    ),
+                }
+            );
         }
 
         std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
@@ -391,11 +395,13 @@ void RunStreamingParseLoop(
         }
 
         const LineDecodeResult result =
-            decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
+            decoder.DecodeCompact(trimmed, keys, promoteScratch.keyCache, compactValues, ownedArena, lineError);
         if (result == LineDecodeResult::Error)
         {
             flushOrphanRun();
-            coalescer.Pending().errors.emplace_back(FormatLineError(lineNumber, lineError));
+            coalescer.Pending().errors.push_back(
+                ParseError{.firstLine = lineNumber, .lastLine = lineNumber, .message = lineError}
+            );
             return;
         }
         if (result == LineDecodeResult::Skip)
@@ -516,8 +522,12 @@ void RunStreamingParseLoop(
         if (carry.size() > maxLineBytes)
         {
             flushOrphanRun();
-            coalescer.Pending().errors.emplace_back(
-                FormatLineError(nextLineNumber, fmt::format("Line exceeds the {}-byte limit; dropped.", maxLineBytes))
+            coalescer.Pending().errors.push_back(
+                ParseError{
+                    .firstLine = nextLineNumber,
+                    .lastLine = nextLineNumber,
+                    .message = fmt::format("Line exceeds the {}-byte limit; dropped.", maxLineBytes),
+                }
             );
             ++nextLineNumber;
             carry.clear();
@@ -529,7 +539,8 @@ void RunStreamingParseLoop(
     if (!carry.empty() && !stopToken.StopRequested())
     {
         scanCarry();
-        coalescer.TryFlush(false);
+        announceSeenKeys();
+        coalescer.TryFlush(false, nextLineNumber - 1);
     }
 
     bool reachedEof = false;
@@ -562,7 +573,8 @@ void RunStreamingParseLoop(
                         commitPending();
                     }
                 }
-                coalescer.TryFlush(false);
+                announceSeenKeys();
+                coalescer.TryFlush(false, nextLineNumber - 1);
                 producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
                 continue;
             }
@@ -570,7 +582,8 @@ void RunStreamingParseLoop(
 
         scanCarry();
 
-        coalescer.TryFlush(false);
+        announceSeenKeys();
+        coalescer.TryFlush(false, nextLineNumber - 1);
     }
 
     if (!carry.empty() && !stopToken.StopRequested())
@@ -584,7 +597,56 @@ void RunStreamingParseLoop(
     flushOrphanRun();
     commitPending();
 
-    coalescer.Finish(nextLineNumber, stopToken.StopRequested());
+    announceSeenKeys();
+    coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
+}
+
+/**
+ * @brief Parses a live stream line by line for any format.
+ *
+ * The loop reads lines from source.Producer() and hands each non-blank line to the decoder, which must satisfy
+ * CompactLineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
+ * which are sent on after STREAMING_BATCH_FLUSH_LINES lines or STREAMING_BATCH_FLUSH_INTERVAL.
+ *
+ * It runs on one thread, because a stream delivers thousands of lines per second and a thread pool would not pay off.
+ * The source is changed on the parser thread and read by other threads at the same time, and the mutex and deque
+ * storage of StreamLineSource make that safe.
+ *
+ * A Continue result adds the line to the raw text of the pending record and to the field that
+ * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
+ * waited STREAMING_PENDING_RECORD_MAX_AGE.
+ *
+ * The loop announces the keys that decoders look up through the worker key cache, before each flush, and the
+ * declaredKeys before the first row. A parser that interns its keys before calling, as the regex parser does for the
+ * groups of its pattern, passes them as declaredKeys, so those columns appear even if no row has a value.
+ *
+ * When the loop throws, the sink still gets one last batch with an error that says so, and OnFinished, and the
+ * exception goes on to the caller. See BatchCoalescer::FinishAfterException.
+ */
+template <class Decoder>
+void RunStreamingParseLoop(
+    StreamLineSource &source,
+    Decoder &decoder,
+    LogParseSink &sink,
+    const ParserOptions &options,
+    std::span<const KeyId> declaredKeys = {}
+)
+{
+    sink.OnStarted();
+
+    BatchCoalescer coalescer(sink, sink.Keys(), STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL);
+    coalescer.AddSeenKeys(declaredKeys);
+    size_t nextLineNumber = 1;
+
+    try
+    {
+        RunStreamingParseLoopBody(source, decoder, sink, options, coalescer, nextLineNumber);
+    }
+    catch (...)
+    {
+        coalescer.FinishAfterException(nextLineNumber - 1, std::current_exception());
+        throw;
+    }
 }
 
 } // namespace loglib::internal

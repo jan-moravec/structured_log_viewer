@@ -2316,6 +2316,9 @@ private:
      * @param errors The errors to append.
      * @param originatingSession The owning session, or `nullptr` for the active session.
      */
+    void ShowParsedErrors(
+        const QString &title, const std::vector<loglib::ParseError> &errors, LogSession *originatingSession = nullptr
+    );
     void ShowParseErrors(
         const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession = nullptr
     );

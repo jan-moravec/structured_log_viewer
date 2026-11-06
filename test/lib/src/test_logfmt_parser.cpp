@@ -147,7 +147,7 @@ TEST_CASE("Unterminated quoted value reports a parse error [logfmt]", "[logfmt_p
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("Unterminated quoted value"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Unterminated quoted value"));
 }
 
 TEST_CASE("Bare key with no '=' is treated as null [logfmt]", "[logfmt_parser]")
@@ -248,8 +248,8 @@ TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_p
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].contains("line 2"));
-    CHECK(result.errors[0].contains("Not a logfmt record"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("Not a logfmt record"));
     REQUIRE(result.data.Lines().size() == 2);
 }
 
@@ -392,57 +392,6 @@ TEST_CASE(
 namespace
 {
 
-class InMemoryProducer final : public loglib::BytesProducer
-{
-public:
-    explicit InMemoryProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-            return 0;
-        }
-        const size_t available = mBytes.size() - mCursor;
-        const size_t n = std::min(available, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "in-memory";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 struct CollectingStreamSink final : loglib::LogParseSink
 {
     loglib::KeyIndex keys;
@@ -497,7 +446,7 @@ TEST_CASE(
                                 "\t\tmain.go:42 +0x0\n"
                                 "level=info msg=\"after trace\"\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -550,7 +499,7 @@ TEST_CASE(
     const std::string payload = "level=info msg=\"first record\"\n"
                                 "\ttab-indented continuation\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser(false);
@@ -576,7 +525,7 @@ TEST_CASE(
     const std::string payload = "\torphan indented at start\n"
                                 "level=info msg=\"first real record\"\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -586,14 +535,14 @@ TEST_CASE(
     auto lines = FlattenLines(sink.batches);
     REQUIRE(lines.size() == 1);
 
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         errors.insert(errors.end(), b.errors.begin(), b.errors.end());
     }
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("line 1"));
-    CHECK(errors[0].contains("Orphaned continuation line"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("line 1"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("Orphaned continuation line"));
 }
 
 TEST_CASE(
@@ -610,7 +559,7 @@ TEST_CASE(
                                 "\torphan 5\n"
                                 "level=info msg=\"first real record\"\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -620,14 +569,14 @@ TEST_CASE(
     auto lines = FlattenLines(sink.batches);
     REQUIRE(lines.size() == 1);
 
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         errors.insert(errors.end(), b.errors.begin(), b.errors.end());
     }
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("lines 1-5"));
-    CHECK(errors[0].contains("5 orphaned continuation lines"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("lines 1-5"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("5 orphaned continuation lines"));
 }
 
 TEST_CASE(
@@ -640,7 +589,7 @@ TEST_CASE(
                                 "\torphan 2\n"
                                 "\torphan 3\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -650,14 +599,14 @@ TEST_CASE(
     auto lines = FlattenLines(sink.batches);
     REQUIRE(lines.empty());
 
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &b : sink.batches)
     {
         errors.insert(errors.end(), b.errors.begin(), b.errors.end());
     }
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].contains("lines 1-3"));
-    CHECK(errors[0].contains("3 orphaned continuation lines"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("lines 1-3"));
+    CHECK(loglib::FormatParseError(errors[0]).contains("3 orphaned continuation lines"));
 }
 
 TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfmt_parser][stream_line_source]")
@@ -668,7 +617,7 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
                                 "\tone continuation line\n"
                                 "\tanother one\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
@@ -704,7 +653,7 @@ TEST_CASE(
     const auto result = ParseFile(parser, file.GetFilePath());
     for (const auto &e : result.errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
@@ -754,7 +703,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
@@ -815,7 +764,7 @@ TEST_CASE(
     const auto errors = sink.TakeErrors();
     for (const auto &e : errors)
     {
-        UNSCOPED_INFO("parse error: " << e);
+        UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
     }
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);

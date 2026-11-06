@@ -1,5 +1,7 @@
+#include "common.hpp"
 #include "table_fixture.hpp"
 #include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/internal/stable_byte_arena.hpp>
 #include <loglib/core/key_index.hpp>
@@ -122,42 +124,6 @@ LogTable TableOf(LogData data)
     return {std::move(data), std::move(configuration)};
 }
 
-/// Serves fixed bytes, then reports terminal EOF.
-class FixedBytesProducer final : public BytesProducer
-{
-public:
-    explicit FixedBytesProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        const size_t count = std::min(buffer.size(), mBytes.size() - mOffset);
-        std::copy_n(mBytes.data() + mOffset, count, buffer.data());
-        mOffset += count;
-        return count;
-    }
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-    void Stop() noexcept override
-    {
-    }
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mOffset == mBytes.size();
-    }
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "fixed";
-    }
-
-private:
-    std::string mBytes;
-    size_t mOffset = 0;
-};
-
 class CollectingSink : public LogParseSink
 {
 public:
@@ -179,7 +145,7 @@ public:
 
     KeyIndex keys;
     std::vector<LogLine> lines;
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
 };
 
 template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 60s)
@@ -306,9 +272,9 @@ TEST_CASE("Malformed JSON values fail the line instead of dropping fields", "[js
     );
     CHECK(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 3);
-    CHECK(result.errors[0].starts_with("Error on line 2:"));
-    CHECK(result.errors[1].starts_with("Error on line 3:"));
-    CHECK(result.errors[2].starts_with("Error on line 4:"));
+    CHECK(loglib::FormatParseError(result.errors[0]).starts_with("Error on line 2:"));
+    CHECK(loglib::FormatParseError(result.errors[1]).starts_with("Error on line 3:"));
+    CHECK(loglib::FormatParseError(result.errors[2]).starts_with("Error on line 4:"));
 }
 
 TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser][malformed][stream]")
@@ -316,22 +282,22 @@ TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser]
     // The first line caches each key's type, so later lines cover both decode paths.
     StreamLineSource source(
         "<test>",
-        std::make_unique<FixedBytesProducer>("{\"b\":true,\"s\":\"ok\",\"n\":1}\n"
-                                             "{\"b\":truex}\n"
-                                             "{\"s\":\"bad\\q\"}\n"
-                                             "{\"fresh\":truex}\n"
-                                             "{\"other\":\"bad\\q\"}\n"
-                                             "{\"num\":1e999}\n"
-                                             "{\"null\":nul}\n"
-                                             "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
+        std::make_unique<InMemoryBytesProducer>("{\"b\":true,\"s\":\"ok\",\"n\":1}\n"
+                                                "{\"b\":truex}\n"
+                                                "{\"s\":\"bad\\q\"}\n"
+                                                "{\"fresh\":truex}\n"
+                                                "{\"other\":\"bad\\q\"}\n"
+                                                "{\"num\":1e999}\n"
+                                                "{\"null\":nul}\n"
+                                                "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
     );
     CollectingSink sink;
     JsonParser{}.ParseStreaming(source, sink, ParserOptions{});
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 6);
-    CHECK(sink.errors[0].starts_with("Error on line 2:"));
-    CHECK(sink.errors[5].starts_with("Error on line 7:"));
+    CHECK(loglib::FormatParseError(sink.errors[0]).starts_with("Error on line 2:"));
+    CHECK(loglib::FormatParseError(sink.errors[5]).starts_with("Error on line 7:"));
 }
 
 TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed]")
@@ -377,7 +343,7 @@ TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
     CHECK(result.data.Keys().Find("ts") != INVALID_KEY_ID);
     CHECK(result.data.Keys().Find("\xEF\xBB\xBFts") == INVALID_KEY_ID);
 
-    StreamLineSource source("<test>", std::make_unique<FixedBytesProducer>("\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n"));
+    StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>("\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n"));
     CollectingSink sink;
     LogfmtParser{}.ParseStreaming(source, sink, ParserOptions{});
     CHECK(sink.lines.size() == 2);
@@ -524,7 +490,7 @@ TEST_CASE("An outlier timestamp widens histogram buckets instead of allocating",
 TEST_CASE("The stream loop drops an oversized line and resumes after it", "[stream][limits]")
 {
     std::string bytes = "a=1\n" + std::string(100000, 'x') + "\na=2\n";
-    StreamLineSource source("<test>", std::make_unique<FixedBytesProducer>(std::move(bytes)));
+    StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>(std::move(bytes)));
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
@@ -532,7 +498,7 @@ TEST_CASE("The stream loop drops an oversized line and resumes after it", "[stre
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 1);
-    CHECK(sink.errors[0].starts_with("Error on line 2:"));
+    CHECK(loglib::FormatParseError(sink.errors[0]).starts_with("Error on line 2:"));
     CHECK(source.RawLine(2) == "a=2");
 }
 
@@ -544,7 +510,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
         bytes += "  continuation line\n";
     }
     bytes += "a=second\n";
-    StreamLineSource source("<test>", std::make_unique<FixedBytesProducer>(std::move(bytes)));
+    StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>(std::move(bytes)));
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
@@ -553,7 +519,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
     CHECK(sink.lines.size() == 2);
     CHECK(source.RawLine(1).size() <= 2 * options.maxLineBytes);
     REQUIRE(sink.errors.size() == 1);
-    CHECK(sink.errors[0].find("Continuation lines dropped") != std::string::npos);
+    CHECK(loglib::FormatParseError(sink.errors[0]).find("Continuation lines dropped") != std::string::npos);
 }
 
 TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBytesProducer][rotation]")
@@ -721,7 +687,7 @@ TEST_CASE("Session bundle metadata rejects a very deep filter tree", "[session_b
     tree += R"({"kind":"leaf","rule":{"type":"string","columnKeys":["n"],"matchType":"contains","filterString":"1"}})";
     tree += std::string(DEPTH, '}');
     const std::string json = R"({"bundle":{"configuration":{"expression":)" + tree + "}}}";
-    CHECK_THROWS_AS(ParseSessionBundleMetadata(json), SessionBundleReadError);
+    CHECK_THROWS_AS(ParseSessionBundleMetadata(json), FormatError);
 }
 
 TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode]")

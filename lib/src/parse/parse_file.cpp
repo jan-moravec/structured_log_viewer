@@ -49,7 +49,7 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
     parser.ParseStreaming(*sourceRaw, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
-    std::vector<std::string> errors = sink.TakeErrors();
+    std::vector<ParseError> errors = sink.TakeErrors();
     return ParseResult{.data = std::move(data), .errors = std::move(errors)};
 }
 

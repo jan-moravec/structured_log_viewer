@@ -31,6 +31,7 @@ loglib::StopToken QtStreamingLogSink::Arm()
     // worker, so no producer can be racing this clear.
     mPending.Reset();
     mDrainScheduled.store(false, std::memory_order_release);
+    mOnFinishedCalled.store(false, std::memory_order_release);
     mPaused.store(false, std::memory_order_release);
     mPausedDropCount.store(0, std::memory_order_release);
     mActive = true;
@@ -268,6 +269,7 @@ void QtStreamingLogSink::OnBatch(loglib::RowBatch batch)
 
 void QtStreamingLogSink::OnFinished(bool cancelled)
 {
+    mOnFinishedCalled.store(true, std::memory_order_release);
     const uint64_t gen = mGeneration.load(std::memory_order_acquire);
     QMetaObject::invokeMethod(
         this,
@@ -353,8 +355,12 @@ loglib::RowBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::RowBatch
     out.newKeys.reserve(newKeyCount);
     out.multiLineSpans.reserve(multiLineSpanCount);
     out.firstLineNumber = batches.front().firstLineNumber;
+    out.lastLineNumber = batches.back().lastLineNumber;
+    // Every batch of one parse carries the same converted time keys.
+    out.convertedTimeKeys = batches.front().convertedTimeKeys;
     for (auto &batch : batches)
     {
+        Q_ASSERT(batch.convertedTimeKeys == out.convertedTimeKeys);
         std::ranges::move(batch.lines, std::back_inserter(out.lines));
         std::ranges::move(batch.localLineOffsets, std::back_inserter(out.localLineOffsets));
         std::ranges::move(batch.errors, std::back_inserter(out.errors));

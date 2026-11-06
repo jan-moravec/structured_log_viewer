@@ -20,6 +20,29 @@ namespace loglib
 {
 
 /**
+ * @brief One problem a parser found, with the physical lines it refers to.
+ *
+ * Lines are counted from 1 for files and streams alike. Both are 0 when the error has no line, as for a parser that
+ * could not start. A single line has firstLine equal to lastLine.
+ */
+struct ParseError
+{
+    std::uint64_t firstLine = 0;
+    std::uint64_t lastLine = 0;
+    std::string message;
+
+    friend bool operator==(const ParseError &, const ParseError &) = default;
+};
+
+/**
+ * @brief The text shown to users for an error.
+ *
+ * It is "Error on line N: message" for one line, "Error on lines N-M: message" for a range, and the message alone when
+ * the error has no line.
+ */
+[[nodiscard]] std::string FormatParseError(const ParseError &error);
+
+/**
  * @brief One batch of output that a parser hands to a LogParseSink.
  *
  * A batch without rows is valid, even if it has errors or new keys. The parser always sends a last batch before
@@ -33,7 +56,7 @@ struct RowBatch
 {
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
-    std::vector<std::string> errors;
+    std::vector<ParseError> errors;
     std::vector<std::string> newKeys;
     /**
      * @brief The line ranges of multi-line records in a file source. A consumer must append localLineOffsets before it
@@ -48,6 +71,20 @@ struct RowBatch
      * it does not refer to a particular line.
      */
     size_t firstLineNumber = 0;
+    /**
+     * @brief The number of the last physical line read when the batch was sent, counting from 1.
+     *
+     * Every line up to it is accounted for: a row, an error, a blank line, a continuation, or part of a record held
+     * for the next batch. It is 0 before the first line. The last batch of a parse holds the total line count, the
+     * same for a file and for a stream.
+     */
+    size_t lastLineNumber = 0;
+    /**
+     * @brief The key ids of the time columns the parser converted, sorted and without duplicates.
+     *
+     * It is the same for every batch of one parse. The table converts the other time columns itself.
+     */
+    std::vector<KeyId> convertedTimeKeys;
 };
 
 } // namespace loglib

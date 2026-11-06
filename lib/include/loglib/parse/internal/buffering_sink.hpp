@@ -41,8 +41,8 @@ public:
 
     /** @brief Returns the collected data. Call it once, after OnFinished. */
     LogData TakeData();
-    /** @brief Returns the collected error messages. */
-    std::vector<std::string> TakeErrors();
+    /** @brief Returns the collected errors. */
+    std::vector<ParseError> TakeErrors();
 
 private:
     std::unique_ptr<FileLineSource> mSource;
@@ -50,7 +50,7 @@ private:
     std::vector<LogLine> mLines;
     std::vector<uint64_t> mLineOffsets;
     std::vector<MultiLineRecordSpan> mMultiLineSpans;
-    std::vector<std::string> mErrors;
+    std::vector<ParseError> mErrors;
     bool mFinished = false;
 };
 

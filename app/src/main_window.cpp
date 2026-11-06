@@ -30,6 +30,7 @@
 #include <loglib/core/ascii_case.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
@@ -4398,13 +4399,13 @@ void MainWindow::OnStreamingFinished(LogSession *origin, StreamingResult result)
         const size_t cut = std::min(origin->StreamingErrorsCut(), allErrors.size());
         if (cut < allErrors.size())
         {
-            const std::vector<std::string> thisFileErrors(
+            const std::vector<loglib::ParseError> thisFileErrors(
                 allErrors.begin() + static_cast<std::ptrdiff_t>(cut), allErrors.end()
             );
             const QString title = origin->StreamingFileName().isEmpty()
                                       ? tr("Error Parsing Logs")
                                       : tr("Error Parsing Logs \u2014 %1").arg(origin->StreamingFileName());
-            ShowParseErrors(title, thisFileErrors, origin);
+            ShowParsedErrors(title, thisFileErrors, origin);
         }
         origin->SetStreamingErrorsCut(allErrors.size());
     }
@@ -5184,12 +5185,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         {
             bundleMetadata.emplace(loglib::ParseSessionBundleMetadata(dbs->DiscardedFirstLine()));
         }
-        catch (const loglib::SessionBundleVersionError &e)
-        {
-            errorEntry = tr("Cannot open session bundle '%1': %2")
-                             .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
-        }
-        catch (const loglib::SessionBundleReadError &e)
+        catch (const loglib::FormatError &e)
         {
             errorEntry = tr("'%1' is not a valid session bundle: %2")
                              .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
@@ -8445,6 +8441,14 @@ void MainWindow::ShowParseErrors(
     const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession
 )
 {
+    ShowParsedErrors(title, MessagesAsParseErrors(errors), originatingSession);
+}
+
+void MainWindow::ShowParsedErrors(
+    const QString &title, const std::vector<loglib::ParseError> &errors, LogSession *originatingSession
+)
+
+{
     if (errors.empty())
     {
         return;
@@ -8465,7 +8469,7 @@ void MainWindow::ShowParseErrors(
     // session) or only into the originating session's log
     // (background session).
     LogSession *originating = originatingSession != nullptr ? originatingSession : mSession;
-    mParseErrorsDock->AppendErrorsForSession(originating, title, errors);
+    mParseErrorsDock->AppendParseErrorsForSession(originating, title, errors);
     if (originating != nullptr && originating != mParseErrorsDock->BoundSession())
     {
         originating->QueueParseErrorsRaise();

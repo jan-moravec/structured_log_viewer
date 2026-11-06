@@ -2,23 +2,22 @@
  * @brief Groups parsed lines into batches for the sink.
  *
  * Sending one batch per line would swamp the sink, so the coalescer collects lines and flushes them when enough have
- * built up or enough time has passed. It also records which keys are new in each batch and always sends a final batch
+ * built up or enough time has passed. It also collects the keys the batch announces and always sends a final batch
  * before finishing. Both the static pipeline and the live-stream loop use it.
  *
  * This is part of the parse module.
  */
 #pragma once
 
+#include "loglib/core/key_index.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
 
 #include <chrono>
 #include <cstddef>
-#include <optional>
-
-namespace loglib
-{
-class KeyIndex;
-}
+#include <exception>
+#include <span>
+#include <utility>
+#include <vector>
 
 namespace loglib::internal
 {
@@ -27,25 +26,17 @@ namespace loglib::internal
  * @brief Collects parsed lines into batches and sends them to a sink when enough have piled up or enough time has
  * passed.
  *
- * Both the static pipeline and the streaming loop use it. It holds the batch being built and remembers how many keys
- * the sink has already been told about, so each batch can list only the new keys. A pipeline adds content through
+ * Both the static pipeline and the streaming loop use it. It holds the batch being built and remembers which keys the
+ * sink has been told about, so each key is announced once, in the batch where it first came up. The caller says which
+ * keys a batch holds through AddSeenKeys, in the order they first appear in the input. A pipeline adds content through
  * Pending and calls TryFlush with false to send a batch when a threshold is reached. Finish always sends a last batch,
  * which can be empty, and then calls OnFinished, so the sink gets its usual calls even when a parse ends early.
  */
 class BatchCoalescer
 {
 public:
-    /**
-     * @param newKeyBaseline The key count to start counting new keys from. By default it is the current size of the
-     * index. A parser that adds keys before the pipeline starts, such as the CSV parser with its header, passes the
-     * count from before, so those columns still appear as new keys.
-     */
     BatchCoalescer(
-        LogParseSink &sink,
-        KeyIndex &keys,
-        size_t flushLines,
-        std::chrono::milliseconds flushInterval,
-        std::optional<size_t> newKeyBaseline = std::nullopt
+        LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval
     ) noexcept;
 
     BatchCoalescer(const BatchCoalescer &) = delete;
@@ -66,34 +57,62 @@ public:
      */
     void Prime(size_t firstLineNumber) noexcept;
 
+    /** @brief Sets the converted time keys that every batch carries. Call it once, before the first flush. */
+    void SetConvertedTimeKeys(std::vector<KeyId> keys)
+    {
+        mConvertedTimeKeys = std::move(keys);
+    }
+
     [[nodiscard]] bool IsPrimed() const noexcept
     {
         return mPrimed;
     }
 
-    /** @brief Appends the keys added since the last call to out, and remembers that they were reported. */
-    void DrainNewKeysInto(RowBatch &out);
+    /**
+     * @brief Announces keys in the pending batch, in the order given. A key that an earlier call announced is skipped.
+     * The ids must belong to the key index of the sink.
+     */
+    void AddSeenKeys(std::span<const KeyId> ids);
 
     /**
      * @brief Sends the pending batch if a threshold was reached, or always when force is set. Returns true if a batch
      * was sent.
      *
-     * An empty batch is not sent for a threshold, but the time of the last flush is still updated.
+     * lastLineNumber is the number of the last physical line the caller has read, and becomes the batch's
+     * lastLineNumber. An empty batch is not sent for a threshold, but the time of the last flush is still updated.
      */
-    bool TryFlush(bool force);
+    bool TryFlush(bool force, size_t lastLineNumber);
 
     /**
-     * @brief Sends a last batch, which is empty if nothing is pending, and then calls OnFinished with wasCancelled. An
-     * empty batch gets fallbackLineNumber as its first line.
+     * @brief Sends a last batch, which is empty if nothing is pending, and then calls OnFinished with wasCancelled.
+     *
+     * lastLineNumber is the total number of physical lines read. An empty batch starts at the line after it.
      */
-    void Finish(size_t fallbackLineNumber, bool wasCancelled);
+    void Finish(size_t lastLineNumber, bool wasCancelled);
+
+    /**
+     * @brief Keeps the sink contract when a parse threw. Call it from the handler of the exception, then rethrow.
+     *
+     * For OperationCancelled it finishes the sink as cancelled. For any other exception it adds one error without a
+     * line, "Streaming parse failed: " and the message, to the last batch and finishes the sink. It does nothing when
+     * the sink itself threw, because a sink that threw is not called again, or when the sink was finished already.
+     * lastLineNumber is the number of lines read so far.
+     */
+    void FinishAfterException(size_t lastLineNumber, std::exception_ptr error);
 
 private:
+    /** Sends a batch to the sink and remembers whether the sink threw. */
+    void SendBatch(RowBatch batch);
+
     LogParseSink &mSink;
     KeyIndex &mKeys;
     RowBatch mPending;
     bool mPrimed = false;
-    size_t mPrevKeyCount;
+    /** One bit per key id: set once the key is in the newKeys of some batch. */
+    std::vector<bool> mAnnounced;
+    bool mSinkThrew = false;
+    bool mFinished = false;
+    std::vector<KeyId> mConvertedTimeKeys;
     size_t mFlushLines;
     std::chrono::milliseconds mFlushInterval;
     std::chrono::steady_clock::time_point mLastFlush;

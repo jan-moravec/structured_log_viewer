@@ -47,7 +47,7 @@ loglib::ParseResult ParseWithSink(const std::filesystem::path &path, const logli
     loglib::internal::BufferingSink sink(std::move(source));
     loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
     loglib::LogData data = sink.TakeData();
-    std::vector<std::string> errors = sink.TakeErrors();
+    std::vector<loglib::ParseError> errors = sink.TakeErrors();
     return loglib::ParseResult{.data = std::move(data), .errors = std::move(errors)};
 }
 } // namespace
@@ -245,8 +245,8 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     REQUIRE(result.errors.size() == 2);
     const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
     const std::string expectedB = "Error on line " + std::to_string(INVALID_LINE_NUMBER_B);
-    CHECK(result.errors[0].contains(expectedA));
-    CHECK(result.errors[1].contains(expectedB));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains(expectedA));
+    CHECK(loglib::FormatParseError(result.errors[1]).contains(expectedB));
 }
 
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
@@ -1209,61 +1209,6 @@ TEST_CASE(
 namespace
 {
 
-/// Single-shot in-memory `BytesProducer` for the `StreamLineSource`-based
-/// streaming-parser test. Yields the test's pre-baked bytes once and
-/// then reports terminal EOF so the parser exits its drain loop
-/// without parking on `WaitForBytes`.
-class InMemoryProducer final : public loglib::BytesProducer
-{
-public:
-    explicit InMemoryProducer(std::string bytes)
-        : mBytes(std::move(bytes))
-    {
-    }
-
-    size_t Read(std::span<char> buffer) override
-    {
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-            return 0;
-        }
-        const size_t available = mBytes.size() - mCursor;
-        const size_t n = std::min(available, buffer.size());
-        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
-        mCursor += n;
-        if (mCursor >= mBytes.size())
-        {
-            mClosed = true;
-        }
-        return n;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-    }
-
-    void Stop() noexcept override
-    {
-        mClosed = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mClosed;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "in-memory";
-    }
-
-private:
-    std::string mBytes;
-    size_t mCursor = 0;
-    bool mClosed = false;
-};
-
 /// Captures `OnBatch` deliveries for the streaming-parser unit test
 /// without depending on Qt. Owns the `KeyIndex` (parser interns keys
 /// here) and the move-collected `RowBatch`es so the test can
@@ -1309,7 +1254,7 @@ TEST_CASE(
                                 R"({"k":"three","n":3})"
                                 "\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const JsonParser parser;
@@ -1368,7 +1313,7 @@ TEST_CASE(
                                 R"({"k":"second"})"
                                 "\n";
 
-    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryBytesProducer>(payload));
 
     CollectingStreamSink sink;
     const JsonParser parser;
@@ -1377,7 +1322,7 @@ TEST_CASE(
     REQUIRE(sink.finished);
 
     size_t goodLines = 0;
-    std::vector<std::string> errors;
+    std::vector<loglib::ParseError> errors;
     for (auto &batch : sink.batches)
     {
         goodLines += batch.lines.size();
@@ -1385,8 +1330,8 @@ TEST_CASE(
     }
     CHECK(goodLines == 2);
     REQUIRE(errors.size() == 1);
-    INFO(errors.front());
+    INFO(loglib::FormatParseError(errors.front()));
     // Absolute line number 2 is the bad line; the surrounding "Error on
     // line N:" wrapper is composed by the streaming pipeline.
-    CHECK(errors.front().contains("Error on line 2:"));
+    CHECK(loglib::FormatParseError(errors.front()).contains("Error on line 2:"));
 }

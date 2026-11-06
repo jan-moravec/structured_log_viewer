@@ -4,6 +4,7 @@
 #include "session_config.hpp"
 #include "text_util.hpp"
 
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -14,7 +15,6 @@
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/parse/parse_error_text.hpp>
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/user_paths.hpp>
@@ -130,7 +130,7 @@ namespace
     return std::unexpected(LoadFail(ExitCode::Usage, std::format("unknown regex template slug '{}'.", slug)));
 }
 
-/** @brief Feeds parsed batches into the table and records parse errors and line coverage. */
+/** @brief Feeds parsed batches into the table and records parse errors and the number of lines read. */
 class TableSink final : public loglib::LogParseSink
 {
 public:
@@ -150,21 +150,9 @@ public:
 
     void OnBatch(loglib::RowBatch batch) override
     {
-        std::uint64_t &consumed = mLoaded->linesConsumed;
-        // `firstLineNumber` is a start cursor: every line before it was consumed,
-        // but the line it names may not exist (an empty terminal batch carries
-        // the cursor one past the last line).
-        if (batch.firstLineNumber != 0)
+        mLastLine = std::max(mLastLine, static_cast<std::uint64_t>(batch.lastLineNumber));
+        for (loglib::ParseError &error : batch.errors)
         {
-            consumed = std::max(consumed, static_cast<std::uint64_t>(batch.firstLineNumber) - std::uint64_t{1});
-        }
-        for (const loglib::LogLine &line : batch.lines)
-        {
-            consumed = std::max(consumed, static_cast<std::uint64_t>(line.LineId()) + std::uint64_t{1});
-        }
-        for (std::string &error : batch.errors)
-        {
-            consumed = std::max(consumed, loglib::LocateParseError(error).lastLine);
             mLoaded->parseErrors.push_back(std::move(error));
         }
         batch.errors.clear();
@@ -173,10 +161,12 @@ public:
 
     void OnFinished(bool /*cancelled*/) override
     {
+        mLoaded->linesConsumed += mLastLine;
     }
 
 private:
     LoadedTable *mLoaded;
+    std::uint64_t mLastLine = 0;
 };
 
 /**
@@ -373,15 +363,11 @@ private:
         {
             return CancelledFailure();
         }
-        catch (const loglib::DecompressionSizeCapExceeded &ex)
+        catch (const loglib::LimitError &ex)
         {
             return LoadFail(ExitCode::Input, ex.what());
         }
-        catch (const loglib::SessionBundleVersionError &ex)
-        {
-            return LoadFail(ExitCode::Input, ex.what());
-        }
-        catch (const loglib::SessionBundleReadError &ex)
+        catch (const loglib::FormatError &ex)
         {
             return LoadFail(ExitCode::Input, ex.what());
         }
@@ -465,7 +451,7 @@ private:
     template <typename Source>
     void Parse(const loglib::DetectedFormat &format, Source &source, loglib::ParserOptions parserOptions)
     {
-        // The table skips columns it expects the parser to have converted, so the parser gets the table's Time columns.
+        // The parser converts the table's Time columns on its worker threads, which is faster than the table doing it.
         parserOptions.timeColumns = loglib::TimeColumnsOf(mLoaded.table.Configuration().Configuration());
         parserOptions.defaultSourceTimeZone = mLoaded.table.DefaultSourceTimeZone();
         const auto parser = loglib::MakeParserForFormat(format.format, format.Options(!mInput->noMultilineLogfmt));

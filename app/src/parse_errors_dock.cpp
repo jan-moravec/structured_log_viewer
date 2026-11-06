@@ -10,6 +10,7 @@
 #include <QFont>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
@@ -41,6 +42,20 @@ constexpr int OVERFLOW_FOOTER_ROLE = Qt::UserRole + 1;
 /// Slack on the scrollbar's `max - value`; inside this band we treat
 /// the user as "still at the tail" and auto-follow new batches.
 constexpr int AUTO_FOLLOW_TAIL_SLACK_PX = 4;
+
+/// The first and last line an error refers to, for a later jump to the line. Both are 0 when the error has no line.
+constexpr int FIRST_LINE_ROLE = Qt::UserRole + 2;
+constexpr int LAST_LINE_ROLE = Qt::UserRole + 3;
+
+QListWidgetItem *MakeErrorItem(const QIcon &icon, const loglib::ParseError &error)
+{
+    const QString text = QString::fromStdString(loglib::FormatParseError(error));
+    auto *item = new QListWidgetItem(icon, text);
+    item->setToolTip(text);
+    item->setData(FIRST_LINE_ROLE, static_cast<qulonglong>(error.firstLine));
+    item->setData(LAST_LINE_ROLE, static_cast<qulonglong>(error.lastLine));
+    return item;
+}
 } // namespace
 
 ParseErrorsDock::ParseErrorsDock(QWidget *parent)
@@ -101,11 +116,23 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
 
 void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::string> &errors)
 {
-    AppendErrorsForSession(nullptr, title, errors);
+    AppendParseErrorsForSession(nullptr, title, MessagesAsParseErrors(errors));
+}
+
+void ParseErrorsDock::AppendParseErrors(const QString &title, const std::vector<loglib::ParseError> &errors)
+{
+    AppendParseErrorsForSession(nullptr, title, errors);
 }
 
 void ParseErrorsDock::AppendErrorsForSession(
     LogSession *originating, const QString &title, const std::vector<std::string> &errors
+)
+{
+    AppendParseErrorsForSession(originating, title, MessagesAsParseErrors(errors));
+}
+
+void ParseErrorsDock::AppendParseErrorsForSession(
+    LogSession *originating, const QString &title, const std::vector<loglib::ParseError> &errors
 )
 {
     if (errors.empty())
@@ -176,8 +203,7 @@ void ParseErrorsDock::AppendErrorsForSession(
 
     for (size_t i = errorsBegin; i < errors.size(); ++i)
     {
-        auto *item = new QListWidgetItem(warningIcon, QString::fromStdString(errors[i]));
-        item->setToolTip(QString::fromStdString(errors[i]));
+        auto *item = MakeErrorItem(warningIcon, errors[i]);
         item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         mList->addItem(item);
         ++mErrorCount;
@@ -329,7 +355,7 @@ LogSession *ParseErrorsDock::BoundSession() const noexcept
 }
 
 void ParseErrorsDock::MirrorAppendIntoShadow(
-    const QString &title, const std::vector<std::string> &errors, size_t errorsBegin
+    const QString &title, const std::vector<loglib::ParseError> &errors, size_t errorsBegin
 )
 {
     SessionParseErrorBatch batch;
@@ -343,7 +369,7 @@ void ParseErrorsDock::MirrorAppendIntoShadow(
 }
 
 void ParseErrorsDock::AppendErrorsIntoSessionLog(
-    LogSession *session, const QString &title, const std::vector<std::string> &errors
+    LogSession *session, const QString &title, const std::vector<loglib::ParseError> &errors
 )
 {
     if (session == nullptr || errors.empty())
@@ -475,8 +501,7 @@ void ParseErrorsDock::ReplayLogIntoVisibleList(const SessionParseErrorLog &log)
         mList->addItem(headerItem);
         for (const auto &error : batch.errors)
         {
-            auto *item = new QListWidgetItem(warningIcon, QString::fromStdString(error));
-            item->setToolTip(QString::fromStdString(error));
+            auto *item = MakeErrorItem(warningIcon, error);
             item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
             mList->addItem(item);
             ++mErrorCount;

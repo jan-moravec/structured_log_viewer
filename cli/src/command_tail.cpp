@@ -463,7 +463,7 @@ public:
         return mFailure;
     }
 
-    [[nodiscard]] const std::vector<std::string> &ParseErrors() const noexcept
+    [[nodiscard]] const std::vector<loglib::ParseError> &ParseErrors() const noexcept
     {
         return mErrors;
     }
@@ -665,7 +665,7 @@ private:
     TextLayout mLayout;
     slp::Failure mSessionError;
     std::optional<slp::Failure> mFailure;
-    std::vector<std::string> mErrors;
+    std::vector<loglib::ParseError> mErrors;
     std::size_t mNextRow = 0;
     std::uint64_t mEmitted = 0;
     bool mDone = false;

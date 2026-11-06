@@ -10,6 +10,7 @@
 #include <format>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using slp::test::FixturesDir;
 using slp::test::RequireGolden;
@@ -146,5 +147,81 @@ TEST_CASE("slp validate counts physical lines without the trailing newline", "[c
         INFO("stderr:\n" << result.err);
         REQUIRE(result.exitCode == 0);
         CHECK(result.out.contains(std::format("\"linesConsumed\": {},", LINE_COUNT)));
+    }
+}
+
+namespace
+{
+
+/// Runs slp validate on @p bytes once as a file and once as standard input, and returns both JSON reports.
+struct LineCountRuns
+{
+    slp::test::CommandResult file;
+    slp::test::CommandResult stdinRun;
+};
+
+[[nodiscard]] LineCountRuns ValidateFileAndStdin(const std::string &fileName, const std::string &bytes)
+{
+    const auto path = ScratchRoot() / fileName;
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        REQUIRE(static_cast<bool>(output));
+        output << bytes;
+    }
+    const std::vector<std::string> common = {
+        "validate",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--output-format",
+        "json",
+        "--format",
+        "auto",
+    };
+    auto fileArgs = common;
+    fileArgs.push_back(path.string());
+    auto stdinArgs = common;
+    stdinArgs.emplace_back("-");
+    return {.file = RunSlp(fileArgs), .stdinRun = slp::test::RunSlpWithStdin(stdinArgs, bytes)};
+}
+
+void CheckSameLineCount(const std::string &fileName, const std::string &bytes, std::size_t expectedLines)
+{
+    const auto runs = ValidateFileAndStdin(fileName, bytes);
+    const std::string expected = std::format("\"linesConsumed\": {},", expectedLines);
+    INFO("file stdout:\n" << runs.file.out << "\nfile stderr:\n" << runs.file.err);
+    INFO("stdin stdout:\n" << runs.stdinRun.out << "\nstdin stderr:\n" << runs.stdinRun.err);
+    CHECK(runs.file.out.contains(expected));
+    CHECK(runs.stdinRun.out.contains(expected));
+}
+
+} // namespace
+
+TEST_CASE("slp validate counts the same lines for a file and for standard input", "[cli][e2e][validate]")
+{
+    SECTION("three JSON lines")
+    {
+        CheckSameLineCount("lines3.jsonl", "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n", 3);
+    }
+    SECTION("logfmt records that span five physical lines")
+    {
+        CheckSameLineCount(
+            "lines5.log",
+            "level=info msg=first\n  continued line\nlevel=info msg=second\n  more\nlevel=info msg=third\n",
+            5
+        );
+    }
+    SECTION("no final newline")
+    {
+        CheckSameLineCount("lines2.jsonl", "{\"a\":1}\n{\"a\":2}", 2);
+    }
+    SECTION("trailing blank lines")
+    {
+        CheckSameLineCount("lines3blank.jsonl", "{\"a\":1}\n\n\n", 3);
+    }
+    SECTION("a bad line counts as a line")
+    {
+        CheckSameLineCount("lines3bad.jsonl", "{\"a\":1}\nnot json\n{\"a\":3}\n", 3);
     }
 }

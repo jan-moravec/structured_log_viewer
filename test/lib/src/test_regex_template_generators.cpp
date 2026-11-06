@@ -68,7 +68,7 @@ ParseResult RoundTripThroughTemplate(
     CHECK(result.errors.empty());
     if (!result.errors.empty())
     {
-        FAIL("First error: " << result.errors.front());
+        FAIL("First error: " << loglib::FormatParseError(result.errors.front()));
     }
     REQUIRE(result.data.Lines().size() == records.size());
     return result;

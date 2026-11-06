@@ -635,7 +635,6 @@ void WriteSessionBundle(
     }
 
     const auto &lines = table.Data().Lines();
-    const auto &keys = table.Data().Keys();
     if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
     {
         throw std::length_error(
@@ -679,6 +678,7 @@ void WriteSessionBundle(
         writer.Write(metadata);
 
         // Reuse row storage across the hot loop.
+        internal::NormalizedJsonRowWriter rowWriter(table);
         std::string rowBuffer;
         for (std::size_t row = 0; row < lines.size(); ++row)
         {
@@ -687,7 +687,7 @@ void WriteSessionBundle(
                 PollStop(options.stopToken);
             }
             rowBuffer.clear();
-            internal::SerializeNormalizedJsonRow(lines[row], keys, rowBuffer);
+            rowWriter.Append(lines[row], rowBuffer);
             if (rowBuffer.size() > MAX_RECORD_BYTES)
             {
                 throw std::length_error("Session bundle row exceeds the 256 MiB limit");

@@ -1,7 +1,10 @@
 #include "loglib/parse/internal/batch_coalescer.hpp"
 
 #include "loglib/core/key_index.hpp"
+#include "loglib/core/stop_token.hpp"
 
+#include <algorithm>
+#include <exception>
 #include <string>
 #include <utility>
 
@@ -9,15 +12,10 @@ namespace loglib::internal
 {
 
 BatchCoalescer::BatchCoalescer(
-    LogParseSink &sink,
-    KeyIndex &keys,
-    size_t flushLines,
-    std::chrono::milliseconds flushInterval,
-    std::optional<size_t> newKeyBaseline
+    LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval
 ) noexcept
     : mSink(sink),
       mKeys(keys),
-      mPrevKeyCount(newKeyBaseline.value_or(keys.Size())),
       mFlushLines(flushLines),
       mFlushInterval(flushInterval),
       mLastFlush(std::chrono::steady_clock::now())
@@ -33,21 +31,23 @@ void BatchCoalescer::Prime(size_t firstLineNumber) noexcept
     }
 }
 
-void BatchCoalescer::DrainNewKeysInto(RowBatch &out)
+void BatchCoalescer::AddSeenKeys(std::span<const KeyId> ids)
 {
-    const size_t currentKeyCount = mKeys.Size();
-    if (currentKeyCount > mPrevKeyCount)
+    for (const KeyId id : ids)
     {
-        out.newKeys.reserve(out.newKeys.size() + (currentKeyCount - mPrevKeyCount));
-        for (size_t i = mPrevKeyCount; i < currentKeyCount; ++i)
+        if (id >= mAnnounced.size())
         {
-            out.newKeys.emplace_back(mKeys.KeyOf(static_cast<KeyId>(i)));
+            mAnnounced.resize(std::max<size_t>(static_cast<size_t>(id) + 1, mAnnounced.size() * 2), false);
         }
-        mPrevKeyCount = currentKeyCount;
+        if (!mAnnounced[id])
+        {
+            mAnnounced[id] = true;
+            mPending.newKeys.emplace_back(mKeys.KeyOf(id));
+        }
     }
 }
 
-bool BatchCoalescer::TryFlush(bool force)
+bool BatchCoalescer::TryFlush(bool force, size_t lastLineNumber)
 {
     const auto now = std::chrono::steady_clock::now();
     if (!force)
@@ -60,7 +60,7 @@ bool BatchCoalescer::TryFlush(bool force)
         }
         // Threshold reached but nothing to ship: tick the timer and
         // skip rather than burden the sink with an empty batch.
-        const bool hasContent = !mPending.lines.empty() || !mPending.errors.empty() || mKeys.Size() > mPrevKeyCount;
+        const bool hasContent = !mPending.lines.empty() || !mPending.errors.empty() || !mPending.newKeys.empty();
         if (!hasContent)
         {
             mLastFlush = now;
@@ -68,37 +68,88 @@ bool BatchCoalescer::TryFlush(bool force)
         }
     }
 
-    DrainNewKeysInto(mPending);
-    mSink.OnBatch(std::move(mPending));
+    mPending.lastLineNumber = lastLineNumber;
+    mPending.convertedTimeKeys = mConvertedTimeKeys;
+    SendBatch(std::move(mPending));
     mPending = RowBatch{};
     mPrimed = false;
     mLastFlush = now;
     return true;
 }
 
-void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
+void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
 {
     const bool hasContent =
-        mPrimed || mKeys.Size() > mPrevKeyCount || !mPending.errors.empty() || !mPending.localLineOffsets.empty();
+        mPrimed || !mPending.newKeys.empty() || !mPending.errors.empty() || !mPending.localLineOffsets.empty();
     if (hasContent)
     {
         if (!mPrimed)
         {
-            Prime(fallbackLineNumber);
+            Prime(lastLineNumber + 1);
         }
-        DrainNewKeysInto(mPending);
-        mSink.OnBatch(std::move(mPending));
+        mPending.lastLineNumber = lastLineNumber;
+        mPending.convertedTimeKeys = mConvertedTimeKeys;
+        SendBatch(std::move(mPending));
         mPending = RowBatch{};
         mPrimed = false;
     }
     else
     {
         RowBatch tail;
-        tail.firstLineNumber = fallbackLineNumber;
-        DrainNewKeysInto(tail);
-        mSink.OnBatch(std::move(tail));
+        tail.firstLineNumber = lastLineNumber + 1;
+        tail.lastLineNumber = lastLineNumber;
+        tail.convertedTimeKeys = mConvertedTimeKeys;
+        SendBatch(std::move(tail));
     }
-    mSink.OnFinished(wasCancelled);
+    mFinished = true;
+    try
+    {
+        mSink.OnFinished(wasCancelled);
+    }
+    catch (...)
+    {
+        mSinkThrew = true;
+        throw;
+    }
+}
+
+void BatchCoalescer::FinishAfterException(size_t lastLineNumber, std::exception_ptr error)
+{
+    if (mSinkThrew || mFinished)
+    {
+        return;
+    }
+    try
+    {
+        std::rethrow_exception(std::move(error));
+    }
+    catch (const OperationCancelled &)
+    {
+        Finish(lastLineNumber, true);
+    }
+    catch (const std::exception &ex)
+    {
+        mPending.errors.push_back(ParseError{.message = std::string("Streaming parse failed: ") + ex.what()});
+        Finish(lastLineNumber, false);
+    }
+    catch (...)
+    {
+        mPending.errors.push_back(ParseError{.message = "Streaming parse failed: unknown exception"});
+        Finish(lastLineNumber, false);
+    }
+}
+
+void BatchCoalescer::SendBatch(RowBatch batch)
+{
+    try
+    {
+        mSink.OnBatch(std::move(batch));
+    }
+    catch (...)
+    {
+        mSinkThrew = true;
+        throw;
+    }
 }
 
 } // namespace loglib::internal

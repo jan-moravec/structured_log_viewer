@@ -19,7 +19,6 @@
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
-#include "loglib/parse/parse_error_text.hpp"
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
@@ -50,8 +49,8 @@ constexpr size_t STATIC_BATCH_FLUSH_LINES = 1000;
 constexpr auto STATIC_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(50);
 
 /**
- * @brief An error from decoding one line. relativeLine counts from 1 inside the batch, and Stage C turns it into
- * "Error on line N: ..." with the absolute line number.
+ * @brief An error from decoding one line. relativeLine counts from 1 inside the batch, and Stage C turns it into a
+ * ParseError with the absolute line number.
  */
 struct ParsedLineError
 {
@@ -68,6 +67,9 @@ struct ParsedPipelineBatch
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
+    /** @brief The keys this batch met first, in the order the decoder met them. Stage C announces them in batch order.
+     */
+    std::vector<KeyId> firstSeenKeys;
     /**
      * @brief Staging area for the decoded strings of the batch. Stage C appends it to the file's arena and shifts the
      * offsets of the lines in one pass.
@@ -238,22 +240,15 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
 }
 
 /**
- * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
+ * @brief The body of RunStaticParserPipeline, after the sink was started. It may throw.
  *
- * - Stage A runs in order and cuts the file into batches. It stops cutting when the stop token fires.
- * - Stage B runs in parallel and decodes the batches. It gives every row its source and a line id counted inside the
- *   batch, and converts the time columns.
- * - Stage C runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena of the
- *   file, coalesces batches, finds the new keys and calls the sink.
- *
- * newKeyBaseline is passed to BatchCoalescer. A parser that adds its keys before the pipeline starts passes the key
- * count from before. By default it is the current size of the index.
+ * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
  */
 // The two callables are taken as forwarding references so that lvalues and rvalues both work without a move at the call
 // site. They are used many times inside the pipeline, so they are deliberately not forwarded, because forwarding an
 // rvalue more than once would be undefined behavior. The related warnings are suppressed below.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
-void RunStaticParserPipeline(
+void RunStaticParserPipelineBody(
     FileLineSource &source,
     LogParseSink &sink,
     const ParserOptions &options,
@@ -261,32 +256,13 @@ void RunStaticParserPipeline(
     StageADriver &&stageADriver,
     // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     StageBDecoder &&stageBDecoder,
-    std::optional<size_t> newKeyBaseline = std::nullopt
+    BatchCoalescer &coalescer,
+    size_t &nextLineNumber
 )
 {
     LogFile &file = source.File();
 
-    sink.OnStarted();
-
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline);
-
-    // Sink contract: at least one OnBatch before OnFinished on
-    // every early-exit path.
-    if (options.stopToken.StopRequested())
-    {
-        coalescer.Finish(1, true);
-        return;
-    }
-
-    if (file.Size() == 0 || file.Data() == nullptr)
-    {
-        coalescer.Finish(1, false);
-        return;
-    }
-
-    const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
-    file.ReserveLineOffsets(file.Size() / 100);
 
     const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
         keys,
@@ -295,9 +271,26 @@ void RunStaticParserPipeline(
         options.referenceTime.value_or(std::chrono::system_clock::now())
     );
 
-    oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
+    coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumns));
 
-    size_t nextLineNumber = 1;
+    // Sink contract: at least one OnBatch before OnFinished on
+    // every early-exit path.
+    if (options.stopToken.StopRequested())
+    {
+        coalescer.Finish(0, true);
+        return;
+    }
+
+    if (file.Size() == 0 || file.Data() == nullptr)
+    {
+        coalescer.Finish(0, false);
+        return;
+    }
+
+    const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
+    file.ReserveLineOffsets(file.Size() / 100);
+
+    oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 
     // Stage C holds a batch's open final record until the next batch
     // determines whether more continuation text follows. Line offsets are
@@ -335,8 +328,10 @@ void RunStaticParserPipeline(
         WorkerScratch<UserState> &worker = workers.local();
         worker.EnsureTimeColumnCapacity(timeColumnsSpan.size());
 
+        worker.keyCache.BeginBatch();
         ParsedPipelineBatch parsed;
         stageBDecoder(std::move(token), worker, keys, timeColumnsSpan, parsed);
+        parsed.firstSeenKeys = worker.keyCache.TakeFirstSeen();
 
         return parsed;
     };
@@ -435,9 +430,8 @@ void RunStaticParserPipeline(
             held.reset();
         }
 
-        // Compose absolute "Error on line N: ..." here so error and
-        // line numbering stay in lockstep with ShiftLineId above.
-        auto formatErrorsInto = [&](std::vector<std::string> &out) {
+        // Build the absolute ParseErrors here so error and line numbering stay in lockstep with ShiftLineId above.
+        auto moveErrorsInto = [&](std::vector<ParseError> &out) {
             if (parsed.errors.empty())
             {
                 return;
@@ -445,7 +439,8 @@ void RunStaticParserPipeline(
             out.reserve(out.size() + parsed.errors.size());
             for (auto &err : parsed.errors)
             {
-                out.push_back(FormatLineError(err.relativeLine + lineNumberDelta, err.body));
+                const std::uint64_t line = err.relativeLine + lineNumberDelta;
+                out.push_back(ParseError{.firstLine = line, .lastLine = line, .message = std::move(err.body)});
             }
             parsed.errors.clear();
         };
@@ -469,6 +464,7 @@ void RunStaticParserPipeline(
         }
 
         RowBatch &pending = coalescer.Pending();
+        coalescer.AddSeenKeys(parsed.firstSeenKeys);
 
         // Prime with the earliest record represented in this output.
         if (heldLineToEmit.has_value())
@@ -509,11 +505,11 @@ void RunStaticParserPipeline(
                 std::make_move_iterator(spansThisBatch.end())
             );
         }
-        formatErrorsInto(pending.errors);
+        moveErrorsInto(pending.errors);
 
         nextLineNumber += parsed.totalLineCount;
 
-        coalescer.TryFlush(false);
+        coalescer.TryFlush(false, nextLineNumber - 1);
         if (batchHasNewRecords)
         {
             held = std::move(newHeld);
@@ -547,7 +543,57 @@ void RunStaticParserPipeline(
         held.reset();
     }
 
-    coalescer.Finish(nextLineNumber, stopToken.StopRequested());
+    coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
+}
+
+/**
+ * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
+ *
+ * - Stage A runs in order and cuts the file into batches. It stops cutting when the stop token fires.
+ * - Stage B runs in parallel and decodes the batches. It gives every row its source and a line id counted inside the
+ *   batch, and converts the time columns.
+ * - Stage C runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena of the
+ *   file, coalesces batches, announces the new keys and calls the sink.
+ *
+ * Stage B records the keys it meets first in each batch, and Stage C announces them in batch order, so the new keys
+ * come in the order they first appear in the file, however the workers were scheduled. declaredKeys are announced
+ * before the first row. A parser that interns its keys before the pipeline starts, such as CSV with its header, passes
+ * them there so they appear even if no row has a value.
+ *
+ * When the parse throws, the sink still gets one last batch with an error that says so, and OnFinished, and the
+ * exception goes on to the caller. See BatchCoalescer::FinishAfterException. TBB cancels the pipeline and rethrows a
+ * stage's exception on the calling thread, so the sink is never called from two threads at once.
+ */
+// The callables are forwarded as lvalues to the body, which uses them many times.
+template <class Token, class UserState, class StageADriver, class StageBDecoder>
+void RunStaticParserPipeline(
+    FileLineSource &source,
+    LogParseSink &sink,
+    const ParserOptions &options,
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+    StageADriver &&stageADriver,
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+    StageBDecoder &&stageBDecoder,
+    std::span<const KeyId> declaredKeys = {}
+)
+{
+    sink.OnStarted();
+
+    BatchCoalescer coalescer(sink, sink.Keys(), STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL);
+    coalescer.AddSeenKeys(declaredKeys);
+    size_t nextLineNumber = 1;
+
+    try
+    {
+        RunStaticParserPipelineBody<Token, UserState>(
+            source, sink, options, stageADriver, stageBDecoder, coalescer, nextLineNumber
+        );
+    }
+    catch (...)
+    {
+        coalescer.FinishAfterException(nextLineNumber - 1, std::current_exception());
+        throw;
+    }
 }
 
 } // namespace loglib::internal

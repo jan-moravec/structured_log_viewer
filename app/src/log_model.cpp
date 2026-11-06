@@ -288,28 +288,33 @@ loglib::BytesProducer *LogModel::ActiveProducer() noexcept
 namespace
 {
 
-/// Run @p workerBody and turn any escaping exception into a synthetic
-/// terminal `OnBatch` + `OnFinished(false)` so the GUI watchdog always
-/// observes a `finished()` regardless of how the worker exited.
+/// Run @p workerBody and make sure the sink is finished once, however the worker exits. The library finishes the sink
+/// itself when a parse throws, so this only steps in when the exception came from code before the parse, such as the
+/// parser factory: it sends one terminal error batch and `OnFinished(false)`, so the GUI watchdog always observes a
+/// `finished()`.
 template <class Body> void RunParserWorkerWithBoundary(QtStreamingLogSink *sink, Body &&workerBody)
 {
+    const auto finishWithError = [sink](std::string message) {
+        if (sink->OnFinishedCalled())
+        {
+            return;
+        }
+        loglib::RowBatch errorBatch;
+        errorBatch.errors.push_back(loglib::ParseError{.message = std::move(message)});
+        sink->OnBatch(std::move(errorBatch));
+        sink->OnFinished(false);
+    };
     try
     {
         std::forward<Body>(workerBody)();
     }
     catch (const std::exception &e)
     {
-        loglib::RowBatch errorBatch;
-        errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
-        sink->OnBatch(std::move(errorBatch));
-        sink->OnFinished(false);
+        finishWithError(std::string("Streaming parse failed: ") + e.what());
     }
     catch (...)
     {
-        loglib::RowBatch errorBatch;
-        errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
-        sink->OnBatch(std::move(errorBatch));
-        sink->OnFinished(false);
+        finishWithError("Streaming parse failed: unknown exception");
     }
 }
 
@@ -2158,7 +2163,7 @@ QtStreamingLogSink *LogModel::Sink()
     return mSink;
 }
 
-const std::vector<std::string> &LogModel::StreamingErrors() const
+const std::vector<loglib::ParseError> &LogModel::StreamingErrors() const
 {
     // Surface back-pressure shutdown drops as synthetic error strings
     // so the post-session dialog reports incomplete output. Materialised
@@ -2170,9 +2175,12 @@ const std::vector<std::string> &LogModel::StreamingErrors() const
         if (dropped != mLastReportedShutdownDropCount)
         {
             const std::size_t delta = dropped - mLastReportedShutdownDropCount;
-            mStreamingErrors.emplace_back(
-                std::string("Lost ") + std::to_string(delta) + (delta == 1 ? " parsed batch" : " parsed batches") +
-                " between the parser and the GUI when the stream was stopped (back-pressure shutdown)."
+            mStreamingErrors.push_back(
+                loglib::ParseError{
+                    .message = std::string("Lost ") + std::to_string(delta) +
+                               (delta == 1 ? " parsed batch" : " parsed batches") +
+                               " between the parser and the GUI when the stream was stopped (back-pressure shutdown).",
+                }
             );
             mLastReportedShutdownDropCount = dropped;
         }

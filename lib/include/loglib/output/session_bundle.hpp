@@ -60,20 +60,6 @@ struct SessionBundleMetadata
     LogConfiguration configuration;
 };
 
-/** @brief Thrown when a bundle has a format version this build does not read. */
-class SessionBundleVersionError : public std::runtime_error
-{
-public:
-    using std::runtime_error::runtime_error;
-};
-
-/** @brief Thrown when the metadata line of a bundle is missing or invalid. */
-class SessionBundleReadError : public std::runtime_error
-{
-public:
-    using std::runtime_error::runtime_error;
-};
-
 /**
  * @brief Writes the metadata and every row of the table as lines of JSON, in one zstd frame with a checksum.
  *
@@ -88,8 +74,8 @@ void WriteSessionBundle(
 );
 
 /**
- * @brief Reads and checks the first line of a bundle. Throws SessionBundleVersionError or SessionBundleReadError if it
- * is not valid.
+ * @brief Reads and checks the first line of a bundle. Throws FormatError if it is not valid, including a format
+ * version this build does not read.
  */
 [[nodiscard]] SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json);
 

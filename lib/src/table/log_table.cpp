@@ -46,8 +46,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mReferenceTime(other.mReferenceTime),
       mReferenceTimeFixed(other.mReferenceTimeFixed),
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
-      mStageBSnapshotTimeKeys(std::move(other.mStageBSnapshotTimeKeys)),
-      mPostSnapshotTimeKeys(std::move(other.mPostSnapshotTimeKeys)),
+      mTableConvertedTimeKeys(std::move(other.mTableConvertedTimeKeys)),
       mEnum(std::move(other.mEnum))
 {
     RewireSourceRegistries();
@@ -66,8 +65,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mReferenceTime = other.mReferenceTime;
     mReferenceTimeFixed = other.mReferenceTimeFixed;
     mColumnKeyIds = std::move(other.mColumnKeyIds);
-    mStageBSnapshotTimeKeys = std::move(other.mStageBSnapshotTimeKeys);
-    mPostSnapshotTimeKeys = std::move(other.mPostSnapshotTimeKeys);
+    mTableConvertedTimeKeys = std::move(other.mTableConvertedTimeKeys);
     mEnum = std::move(other.mEnum);
     RewireSourceRegistries();
     return *this;
@@ -96,8 +94,7 @@ void LogTable::Update(LogData &&data)
 void LogTable::Reset()
 {
     mData = LogData{};
-    mStageBSnapshotTimeKeys.clear();
-    mPostSnapshotTimeKeys.clear();
+    mTableConvertedTimeKeys.clear();
     mEnum.Clear();
     RefreshColumnKeyIds();
     mEnum.RefreshSnapshot(mData, mConfiguration);
@@ -131,7 +128,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
     }
 
     RewireSourceRegistries();
-    RefreshSnapshotTimeKeys();
+    mTableConvertedTimeKeys.clear();
     mEnum.RefreshSnapshot(mData, mConfiguration);
     RefreshColumnKeyIds();
 }
@@ -181,7 +178,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             continue;
         }
 
-        bool stageBHandled = false;
+        bool parserConverted = false;
         bool firstObservation = false;
         bool needsSliceBackfill = false;
         std::vector<KeyId> columnKeyIds;
@@ -194,12 +191,12 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             {
                 continue;
             }
-            if (mStageBSnapshotTimeKeys.contains(id))
+            if (std::ranges::contains(batch.convertedTimeKeys, id))
             {
-                stageBHandled = true;
+                parserConverted = true;
                 continue;
             }
-            if (mPostSnapshotTimeKeys.contains(id))
+            if (mTableConvertedTimeKeys.contains(id))
             {
                 needsSliceBackfill = true;
             }
@@ -209,7 +206,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             }
         }
 
-        if (stageBHandled)
+        if (parserConverted)
         {
             continue;
         }
@@ -227,7 +224,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             {
                 if (id != INVALID_KEY_ID)
                 {
-                    mPostSnapshotTimeKeys.insert(id);
+                    mTableConvertedTimeKeys.insert(id);
                 }
             }
             if (!firstBackfilled.has_value())
@@ -491,25 +488,6 @@ void LogTable::RefreshColumnKeyIds()
 void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys)
 {
     internal::RefreshColumnKeyIdsForKeys(mColumnKeyIds, mConfiguration.Configuration(), mData.Keys(), newKeys);
-}
-
-void LogTable::RefreshSnapshotTimeKeys()
-{
-    mStageBSnapshotTimeKeys.clear();
-    mPostSnapshotTimeKeys.clear();
-    const auto &columns = mConfiguration.Configuration().columns;
-    for (const auto &column : columns)
-    {
-        if (column.type != ColumnType::Time)
-        {
-            continue;
-        }
-        for (const std::string &key : column.keys)
-        {
-            const KeyId id = mData.Keys().GetOrInsert(key);
-            mStageBSnapshotTimeKeys.insert(id);
-        }
-    }
 }
 
 void LogTable::RewireSourceRegistries()

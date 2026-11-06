@@ -3,6 +3,7 @@
 #include "loglib/time/time_zone_context.hpp"
 #include "loglib/time/timestamp_parsing.hpp"
 
+#include <algorithm>
 #include <span>
 #include <string>
 #include <utility>
@@ -41,6 +42,18 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
         result.push_back(std::move(spec));
     }
     return result;
+}
+
+std::vector<KeyId> ConvertedTimeKeys(std::span<const TimeColumnSpec> specs)
+{
+    std::vector<KeyId> keys;
+    for (const TimeColumnSpec &spec : specs)
+    {
+        keys.insert(keys.end(), spec.keyIds.begin(), spec.keyIds.end());
+    }
+    std::ranges::sort(keys);
+    keys.erase(std::ranges::unique(keys).begin(), keys.end());
+    return keys;
 }
 
 } // namespace loglib::internal

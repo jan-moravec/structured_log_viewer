@@ -3,6 +3,8 @@
 #include "diagnostics.hpp"
 #include "options.hpp"
 
+#include <loglib/core/row_batch.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -96,7 +98,7 @@ public:
      *
      * Nothing is written for no errors or under `--quiet`.
      */
-    void ParseErrors(const std::vector<std::string> &errors) const;
+    void ParseErrors(const std::vector<loglib::ParseError> &errors) const;
 
     /** @brief Writes @p failure's text and returns its exit code. */
     ExitCode Report(const Failure &failure) const;

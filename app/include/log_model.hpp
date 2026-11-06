@@ -218,7 +218,7 @@ public:
     /// Per-line errors collected since the last `Reset`/`BeginStreaming`.
     /// Also appends a synthetic message for any newly-dropped batches
     /// reported by the sink (back-pressure shutdown).
-    const std::vector<std::string> &StreamingErrors() const;
+    const std::vector<loglib::ParseError> &StreamingErrors() const;
 
     /// Whether a streaming session is currently armed.
     [[nodiscard]] bool IsStreamingActive() const noexcept;
@@ -447,7 +447,7 @@ private:
     /// flips off before the queued `OnFinished` reaches the GUI.
     bool mStreamingActive = false;
 
-    mutable std::vector<std::string> mStreamingErrors;
+    mutable std::vector<loglib::ParseError> mStreamingErrors;
 
     /// High-water mark of sink-dropped batches we've already surfaced.
     mutable std::size_t mLastReportedShutdownDropCount = 0;
