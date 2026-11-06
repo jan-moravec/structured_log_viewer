@@ -54,9 +54,7 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
     const auto error = glz::read<internal::LOG_CONFIG_OPTS>(envelope, json);
     if (error)
     {
-        throw FormatError(
-            "Session bundle metadata is malformed: " + glz::format_error(error, std::string(json))
-        );
+        throw FormatError("Session bundle metadata is malformed: " + glz::format_error(error, std::string(json)));
     }
     if (!envelope.bundle.has_value())
     {

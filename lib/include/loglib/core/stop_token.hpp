@@ -106,8 +106,8 @@ private:
 /**
  * @brief Thrown by a long operation that stopped because its StopToken fired.
  *
- * Deliberately not a loglib::Error or a std::runtime_error, so error handlers do not swallow a cancellation. Decompression,
- * exporting and bundle writing all throw it.
+ * Deliberately not a loglib::Error or a std::runtime_error, so error handlers do not swallow a cancellation.
+ * Decompression, exporting and bundle writing all throw it.
  */
 class OperationCancelled : public std::exception
 {
