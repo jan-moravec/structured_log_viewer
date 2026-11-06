@@ -48,9 +48,9 @@ bool IsLogLevelKey(const std::string &key)
 {
     // Known log-level field names. Matched case-insensitively and
     // allocation-free because this fires once per column per batch.
-    // Advisory only -- false positives (e.g. a `length` column matching
-    // `l`) are caught by the dictionary-content check in
-    // `LogTable::MaybePromoteToLevel`.
+    // Advisory only -- false positives (e.g. a length column matching
+    // l) are caught by the dictionary-content check in
+    // LogTable::MaybePromoteToLevel.
     static constexpr std::array<std::string_view, 23> LEVEL_KEYS = {
         // Long-form / classic.
         "level",
@@ -75,10 +75,10 @@ bool IsLogLevelKey(const std::string &key)
         "log_severity",
         "log.severity",
         "logseverity",
-        // Separator variants of `levelname`.
+        // Separator variants of levelname.
         "level_name",
         "level.name",
-        // Serilog `@l`, Datadog @-fields, ...
+        // Serilog @l, Datadog @-fields, ...
         "@level",
     };
     const std::string_view keyView(key);
@@ -174,8 +174,8 @@ constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 struct ColumnsOnlyDocument
 {
     // References (not pointers) so the glaze accessor can't deref
-    // null; `Save` is the only construction site and holds the
-    // source vectors for the synchronous `glz::write` call.
+    // null; Save is the only construction site and holds the
+    // source vectors for the synchronous glz::write call.
     // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::vector<loglib::Column> &columns;
     const std::vector<loglib::HighlightRule> &highlightRules;
@@ -184,8 +184,8 @@ struct ColumnsOnlyDocument
 
 } // namespace
 
-// `value` is glaze's required slot name (same exemption as the
-// canonical meta block in `log_configuration_glaze_meta.hpp`).
+// value is glaze's required slot name (same exemption as the
+// canonical meta block in log_configuration_glaze_meta.hpp).
 // NOLINTBEGIN(readability-identifier-naming)
 template <> struct glz::meta<ColumnsOnlyDocument>
 {
@@ -217,12 +217,12 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
 void LogConfigurationManager::LoadFromString(std::string_view content)
 {
     // Parse into a temporary first: Glaze writes member-by-member,
-    // so reading directly into `mConfiguration` could leave it
+    // so reading directly into mConfiguration could leave it
     // half-populated on a mid-file parse error.
     LogConfiguration parsed;
-    // `LOG_CONFIG_OPTS` (not `glz::read_json`) so
-    // `error_on_unknown_keys=false` lets legacy / forward-compat
-    // schemas load. See the header for the rationale.
+    // LOG_CONFIG_OPTS (not glz::read_json) so
+    // error_on_unknown_keys=false lets files with extra keys load.
+    // See the header for the rationale.
     const auto error = glz::read<LOG_CONFIG_OPTS>(parsed, content);
     if (error)
     {
@@ -272,10 +272,10 @@ void LogConfigurationManager::Save(
         }
     }
 
-    // Atomic write: stream to `<path>.tmp`, flush + check stream
+    // Atomic write: stream to <path>.tmp, flush + check stream
     // state, then rename. Prevents a crash / ENOSPC mid-write from
-    // leaving a truncated `<uuid>.json` the recents index points at.
-    // Stale `.tmp` files are swept by `CleanupOrphanFiles`.
+    // leaving a truncated <uuid>.json the recents index points at.
+    // Stale .tmp files are swept by CleanupOrphanFiles.
     std::filesystem::path tempPath = path;
     tempPath += ".tmp";
     {
@@ -383,7 +383,7 @@ void LogConfigurationManager::SanitizePrintFormats()
 
 void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
 {
-    // Append-only; Qt's `beginInsertColumns` expects appends.
+    // Append-only; Qt's beginInsertColumns expects appends.
     EnsureKeyCacheBuilt();
     for (const std::string &key : newKeys)
     {
@@ -429,7 +429,7 @@ bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex)
     }
     // Multi-Level guard: "first promoted wins" the canonical slot
     // when a payload carries more than one Level-typed key (e.g.
-    // `level` and `severity`). Without this, draining multiple
+    // level and severity). Without this, draining multiple
     // bubbles would shuffle the slot's occupant.
     if (CANONICAL_LEVEL_COLUMN_INDEX < config.columns.size() &&
         config.columns[CANONICAL_LEVEL_COLUMN_INDEX].type == ColumnType::Level)
@@ -464,9 +464,9 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // Filters bind to columns by `LeafRule::columnKeys` (durable
+    // Filters bind to columns by LeafRule::columnKeys (durable
     // across reorders), so no filter remap is required here.
-    // `sort.columnIndex` still tracks the moved column by index,
+    // sort.columnIndex still tracks the moved column by index,
     // so run it through the same permutation.
     const int src = static_cast<int>(srcIndex);
     const int dest = static_cast<int>(destIndex);
@@ -602,7 +602,7 @@ size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::strin
         return 0;
     }
     EnsureKeyCacheBuilt();
-    // Mirrors `AppendKeys`'s skip predicate plus an in-input de-dupe.
+    // Mirrors AppendKeys's skip predicate plus an in-input de-dupe.
     std::unordered_set<std::string_view> alreadyCounted;
     alreadyCounted.reserve(newKeys.size());
     size_t count = 0;

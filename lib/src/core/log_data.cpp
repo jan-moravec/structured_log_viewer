@@ -34,8 +34,8 @@ LogData::LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines,
 LogData::LogData(LogData &&other) noexcept
     : mSources(std::move(other.mSources)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys))
 {
-    // KeyIndex moved address — rebind. `LineSource` heap addresses are
-    // stable across the move, so `mSource` pointers stay valid.
+    // KeyIndex moved address — rebind. LineSource heap addresses are
+    // stable across the move, so mSource pointers stay valid.
     for (auto &line : mLines)
     {
         line.RebindKeys(mKeys);
@@ -164,8 +164,8 @@ void LogData::AppendBatch(
     std::span<const MultiLineRecordSpan> multiLineSpans
 )
 {
-    // No per-batch `reserve` — rely on geometric push_back growth
-    // (some STL impls take `reserve(size+n)` as exact = O(N^2/B)).
+    // No per-batch reserve — rely on geometric push_back growth
+    // (some STL impls take reserve(size+n) as exact = O(N^2/B)).
     if (!lines.empty())
     {
         for (auto &line : lines)

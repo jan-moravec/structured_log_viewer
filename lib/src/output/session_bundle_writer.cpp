@@ -62,7 +62,7 @@ void PollStop(const StopToken &token)
     }
 }
 
-/// Build a sibling staging path unique across concurrent writers.
+// Build a sibling staging path unique across concurrent writers.
 std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destination)
 {
     constexpr unsigned int RANDOM_DEVICE_BITS = 32U;
@@ -105,12 +105,12 @@ enum class ExclusiveOpenStatus
     OtherError,
 };
 
-/// Open @p path for binary writing without replacing an existing file.
+// Open @p path for binary writing without replacing an existing file.
 std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, ExclusiveOpenStatus &outStatus) noexcept
 {
     outStatus = ExclusiveOpenStatus::OtherError;
 #ifdef _WIN32
-    // `HANDLE const` makes the handle value immutable.
+    // HANDLE const makes the handle value immutable.
     // NOLINTNEXTLINE(misc-misplaced-const)
     HANDLE const handle = ::CreateFileW(
         path.native().c_str(),
@@ -129,11 +129,11 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
                         : ExclusiveOpenStatus::OtherError;
         return nullptr;
     }
-    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; `_open_osfhandle` takes intptr_t by design.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; _open_osfhandle takes intptr_t by design.
     const int fd = ::_open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_BINARY);
     if (fd == -1)
     {
-        // `_open_osfhandle` does not take ownership on failure.
+        // _open_osfhandle does not take ownership on failure.
         ::CloseHandle(handle);
         outStatus = ExclusiveOpenStatus::OtherError;
         return nullptr;
@@ -149,7 +149,7 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
     outStatus = ExclusiveOpenStatus::Ok;
     return fp;
 #else
-    // POSIX `open` is variadic by design; `mode` only applies with `O_CREAT`.
+    // POSIX open is variadic by design; mode only applies with O_CREAT.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (fd == -1)
@@ -172,15 +172,13 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
 class FileHandle
 {
 public:
-    /// Take ownership of @p alreadyOpen.
+    // Take ownership of @p alreadyOpen.
     explicit FileHandle(std::filesystem::path path, std::FILE *alreadyOpen)
         : mPath(std::move(path)), mFile(alreadyOpen)
     {
         if (mFile == nullptr)
         {
-            throw IoError(
-                "Session bundle: FileHandle received a null FILE* for '" + internal::PathToUtf8(mPath) + "'"
-            );
+            throw IoError("Session bundle: FileHandle received a null FILE* for '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
@@ -204,7 +202,7 @@ public:
         }
     }
 
-    /// Flush userspace and kernel buffers, then close.
+    // Flush userspace and kernel buffers, then close.
     void Close()
     {
         if (mFile == nullptr)
@@ -224,7 +222,7 @@ public:
     }
 
 private:
-    /// Flush @p file to durable storage.
+    // Flush @p file to durable storage.
     static bool SyncToDisk(std::FILE *file) noexcept
     {
 #ifdef _WIN32
@@ -233,7 +231,7 @@ private:
         {
             return false;
         }
-        // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; `_get_osfhandle` returns intptr_t by design.
+        // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; _get_osfhandle returns intptr_t by design.
         auto *const handle = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
         if (handle == INVALID_HANDLE_VALUE)
         {
@@ -254,7 +252,7 @@ private:
     std::FILE *mFile = nullptr;
 };
 
-/// Open a unique staging file, retrying name collisions.
+// Open a unique staging file, retrying name collisions.
 std::FILE *OpenStagingFileWithRetry(const std::filesystem::path &destination, std::filesystem::path &outTemporary)
 {
     // Multiple attempts also handle stale files from an interrupted run.
@@ -366,9 +364,7 @@ private:
         const std::size_t result = ZSTD_CCtx_setParameter(mContext, parameter, value);
         if (ZSTD_isError(result))
         {
-            throw IoError(
-                std::string("Session bundle: zstd configuration failed: ") + ZSTD_getErrorName(result)
-            );
+            throw IoError(std::string("Session bundle: zstd configuration failed: ") + ZSTD_getErrorName(result));
         }
     }
 
@@ -378,9 +374,7 @@ private:
         const std::size_t result = ZSTD_compressStream2(mContext, &output, &input, directive);
         if (ZSTD_isError(result))
         {
-            throw IoError(
-                std::string("Session bundle: zstd compression failed: ") + ZSTD_getErrorName(result)
-            );
+            throw IoError(std::string("Session bundle: zstd compression failed: ") + ZSTD_getErrorName(result));
         }
         mFile.Write({mOutput.data(), output.pos});
         return result;
@@ -400,9 +394,9 @@ std::string CanonicalizeSourceLocator(const std::filesystem::path &path, const S
     return internal::PathToUtf8(path);
 }
 
-/// Composite key for the anchor index below. Stores by `std::string`
-/// because the canonicalizer returns by value; the bytes must outlive
-/// the insertion loop.
+// Composite key for the anchor index below. Stores by std::string
+// because the canonicalizer returns by value; the bytes must outlive
+// the insertion loop.
 struct AnchorLookupKey
 {
     std::string locator;
@@ -425,10 +419,10 @@ struct AnchorLookupKeyHash
     }
 };
 
-/// One slot per anchor in the wanted-set. `found=false` means the
-/// scan has not yet matched a row; `ambiguous=true` means the same
-/// `(canonical locator, lineId)` matched more than once, so the
-/// anchor cannot resolve to a single dense row and is dropped.
+// One slot per anchor in the wanted-set. found=false means the
+// scan has not yet matched a row; ambiguous=true means the same
+// (canonical locator, lineId) matched more than once, so the
+// anchor cannot resolve to a single dense row and is dropped.
 struct AnchorMatchSlot
 {
     std::uint64_t row = 0;
@@ -436,7 +430,7 @@ struct AnchorMatchSlot
     bool ambiguous = false;
 };
 
-/// Anchor lookup table sized by anchor count, not row count.
+// Anchor lookup table sized by anchor count, not row count.
 using AnchorWantedSet = std::unordered_map<AnchorLookupKey, AnchorMatchSlot, AnchorLookupKeyHash>;
 
 AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
@@ -532,7 +526,7 @@ void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines, con
         }
         else
         {
-            // Duplicate `(locator, lineId)`: drop rather than pick
+            // Duplicate (locator, lineId): drop rather than pick
             // an arbitrary row.
             it->second.ambiguous = true;
         }
@@ -571,11 +565,11 @@ void RemapAnchors(
     configuration.anchors = std::move(remapped);
 }
 
-/// Parse format matching the bundle's normalized UTC timestamps.
+// Parse format matching the bundle's normalized UTC timestamps.
 constexpr std::string_view BUNDLE_TIME_PARSE_FORMAT = "%FT%T";
 
-/// Ensure Time columns can parse the bundle's normalized timestamps.
-/// Prepend the format so the fast ISO parser runs first.
+// Ensure Time columns can parse the bundle's normalized timestamps.
+// Prepend the format so the fast ISO parser runs first.
 void NormalizeTimeColumnParseFormats(LogConfiguration &configuration)
 {
     for (auto &column : configuration.columns)
@@ -600,9 +594,7 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
     const auto error = glz::write_json(configuration, json);
     if (error)
     {
-        throw IoError(
-            "Session bundle: failed to serialize configuration: " + glz::format_error(error, json)
-        );
+        throw IoError("Session bundle: failed to serialize configuration: " + glz::format_error(error, json));
     }
     return json;
 }
@@ -610,7 +602,7 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
 void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesystem::path &destination)
 {
 #ifdef _WIN32
-    // Same-volume staging enables atomic replacement. `FileHandle::Close`
+    // Same-volume staging enables atomic replacement. FileHandle::Close
     // durably flushes the file before this rename.
     const std::error_code moveError = internal::RetryWhileFileBusy([&temporary, &destination] {
         if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
@@ -711,7 +703,7 @@ void WriteBundle(
     try
     {
         FileHandle file(temporary, stagingFile);
-        // Ownership has moved to `FileHandle`.
+        // Ownership has moved to FileHandle.
         stagingFile = nullptr;
         ZstdWriter writer(file, options);
         writer.Write(metadata);

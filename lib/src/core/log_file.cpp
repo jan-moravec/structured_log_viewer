@@ -36,8 +36,8 @@ struct LogFile::Mapping
 namespace
 {
 
-/// Hints sequential read access to the OS (POSIX `posix_madvise` /
-/// Windows `PrefetchVirtualMemory`). Best-effort; failures are ignored.
+// Hints sequential read access to the OS (POSIX posix_madvise /
+// Windows PrefetchVirtualMemory). Best-effort; failures are ignored.
 void HintSequential(const mio::mmap_source &mmap)
 {
     if (mmap.empty())
@@ -47,13 +47,13 @@ void HintSequential(const mio::mmap_source &mmap)
 
 #ifdef _WIN32
     WIN32_MEMORY_RANGE_ENTRY range;
-    // Win32 `PrefetchVirtualMemory` takes non-const `void*`; mapping is read-only.
+    // Win32 PrefetchVirtualMemory takes non-const void*; mapping is read-only.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     range.VirtualAddress = const_cast<char *>(mmap.data());
     range.NumberOfBytes = mmap.size();
     (void)::PrefetchVirtualMemory(::GetCurrentProcess(), 1, &range, 0);
 #elif defined(__unix__) || defined(__APPLE__)
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): POSIX API takes non-const `void*`; mapping is read-only.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): POSIX API takes non-const void*; mapping is read-only.
     (void)::posix_madvise(const_cast<char *>(mmap.data()), mmap.size(), POSIX_MADV_SEQUENTIAL);
 #else
     (void)mmap;
@@ -82,7 +82,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
     }
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
-    // leading offset sentinel below still keeps `GetLineCount() == 0` truthful.
+    // leading offset sentinel below still keeps GetLineCount() == 0 truthful.
     const auto size = std::filesystem::file_size(mStoragePath);
     if (size > 0)
     {
@@ -150,7 +150,7 @@ std::string LogFile::GetLine(size_t lineNumber) const
     }
 
     // Stop offset is one byte past the trailing '\n'. Files without a trailing
-    // newline use `fileSize + 1` as the sentinel; clamp against the mmap size.
+    // newline use fileSize + 1 as the sentinel; clamp against the mmap size.
     size_t length = stopOffset - startOffset - 1;
 
     assert(mMapping);
@@ -238,7 +238,7 @@ void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
 void LogFile::AppendLineOffsets(const std::vector<uint64_t> &offsets)
 {
 #ifndef NDEBUG
-    // Strictly monotonic; consumers read `[offsets[i], offsets[i+1])` slices.
+    // Strictly monotonic; consumers read [offsets[i], offsets[i+1]) slices.
     if (!offsets.empty())
     {
         if (!mLineOffsets.empty())
