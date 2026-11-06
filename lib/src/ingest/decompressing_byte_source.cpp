@@ -452,9 +452,7 @@ public:
         // concatenated members.
         if (::inflateInit2(&mStream, 15 + 32) != Z_OK)
         {
-            throw std::runtime_error(
-                fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath))
-            );
+            throw IoError(fmt::format("Failed to init zlib inflate for '{}'", internal::PathToUtf8(sourcePath)));
         }
     }
     ~ZlibCodec() noexcept
@@ -535,7 +533,7 @@ public:
     {
         if (::BZ2_bzDecompressInit(&mStream, 0, 0) != BZ_OK)
         {
-            throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
+            throw IoError(fmt::format("Failed to init bzip2 for '{}'", internal::PathToUtf8(sourcePath)));
         }
     }
     ~Bzip2Codec() noexcept
@@ -684,7 +682,7 @@ void DecodeXz(
     const lzma_ret initRet = ::lzma_stream_decoder_mt(&strm, &mt);
     if (initRet != LZMA_OK)
     {
-        throw std::runtime_error(
+        throw IoError(
             fmt::format(
                 "Failed to init xz decoder for '{}' (code {})",
                 internal::PathToUtf8(sourcePath),
@@ -780,7 +778,7 @@ void DecodeZstd(
     ZSTD_DCtx *dctx = ::ZSTD_createDCtx();
     if (dctx == nullptr)
     {
-        throw std::runtime_error(fmt::format("Failed to create zstd DCtx for '{}'", internal::PathToUtf8(sourcePath)));
+        throw IoError(fmt::format("Failed to create zstd DCtx for '{}'", internal::PathToUtf8(sourcePath)));
     }
     class ZstdGuard
     {
