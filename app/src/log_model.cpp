@@ -275,14 +275,9 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
 
 loglib::BytesProducer *LogModel::ActiveProducer() noexcept
 {
-    // An appended live tail follows static sources, so prefer the
-    // back stream. Teardown must stop its producer before resetting
-    // the table or an I/O-blocked worker may not unblock.
-    if (loglib::StreamLineSource *streamSource = mLogTable.Data().BackStreamSource(); streamSource != nullptr)
-    {
-        return streamSource->Producer();
-    }
-    return nullptr;
+    // An appended live tail follows static sources, so the table gives the back stream. Teardown must stop its
+    // producer before resetting the table or an I/O-blocked worker may not unblock.
+    return mLogTable.LiveProducer();
 }
 
 namespace

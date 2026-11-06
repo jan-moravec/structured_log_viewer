@@ -35,6 +35,8 @@
 namespace loglib
 {
 
+class BytesProducer;
+
 /**
  * @brief The rows of a log as a table with typed columns, for static files and live streams alike.
  *
@@ -161,6 +163,13 @@ public:
      * columns.
      */
     [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
+
+    /**
+     * @brief The producer of the last live stream source, or null when the table has no stream.
+     *
+     * Use it to stop or watch the live source, for example before the table is reset. The table owns the producer.
+     */
+    [[nodiscard]] BytesProducer *LiveProducer() noexcept;
 
     /** @brief Reserves room for count line offsets in the first source, if it is a file. Other sources ignore it. */
     void ReserveLineOffsets(size_t count);

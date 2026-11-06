@@ -61,6 +61,7 @@ add_executable(
     "src/test_stream_line_source.cpp"
     "src/test_stream_sink.cpp"
     "src/test_stream_stop_teardown.cpp"
+    "src/test_table_loader.cpp"
     "src/test_tailing_bytes_producer.cpp"
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"

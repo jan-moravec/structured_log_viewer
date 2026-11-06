@@ -65,6 +65,7 @@ add_library(
     src/time/timestamp_parsing.cpp
     src/time/user_timestamp.cpp
     src/table/log_table.cpp
+    src/table/table_loader.cpp
     src/output/normalized_json_row.cpp
     src/query/query_parser.cpp
     src/query/query_printer.cpp
@@ -133,6 +134,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/parse/log_parser.hpp
     include/loglib/query/log_string_matcher.hpp
     include/loglib/table/log_table.hpp
+    include/loglib/table/table_loader.hpp
     include/loglib/core/log_value.hpp
     include/loglib/parse/parse_file.hpp
     include/loglib/parse/parser_options.hpp

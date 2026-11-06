@@ -382,6 +382,15 @@ size_t LogTable::RowCount() const
     return mData.Lines().size();
 }
 
+BytesProducer *LogTable::LiveProducer() noexcept
+{
+    if (StreamLineSource *streamSource = mData.BackStreamSource(); streamSource != nullptr)
+    {
+        return streamSource->Producer();
+    }
+    return nullptr;
+}
+
 const LogData &LogTable::Data() const noexcept
 {
     return mData;
