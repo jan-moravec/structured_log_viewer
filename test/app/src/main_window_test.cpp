@@ -135,6 +135,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -562,23 +563,29 @@ EquivalenceFixtures MakeEquivalenceFixtures()
         const std::string message = "message number " + std::to_string(i);
         const bool late = i % 5 == 0;
 
-        fixtures.json += "{\"timestamp\":\"" + time + "\",\"level\":\"" + level + "\",\"service\":\"" + service +
-                         "\",\"n\":" + std::to_string(i) + ",\"msg\":\"" + message + "\"";
+        fixtures.json += std::format(
+            "{{\"timestamp\":\"{}\",\"level\":\"{}\",\"service\":\"{}\",\"n\":{},\"msg\":\"{}\"",
+            time,
+            level,
+            service,
+            i,
+            message
+        );
         if (late)
         {
-            fixtures.json += ",\"late\":" + std::to_string(i * 2);
+            fixtures.json += std::format(",\"late\":{}", i * 2);
         }
         fixtures.json += "}\n";
 
-        fixtures.logfmt += "timestamp=" + time + " level=" + level + " service=" + service + " n=" + std::to_string(i) +
-                           " msg=\"" + message + "\"";
+        fixtures.logfmt +=
+            std::format("timestamp={} level={} service={} n={} msg=\"{}\"", time, level, service, i, message);
         if (late)
         {
-            fixtures.logfmt += " late=" + std::to_string(i * 2);
+            fixtures.logfmt += std::format(" late={}", i * 2);
         }
         fixtures.logfmt += "\n";
 
-        fixtures.csv += time + "," + level + "," + service + "," + std::to_string(i) + "," + message + "\n";
+        fixtures.csv += std::format("{},{},{},{},{}\n", time, level, service, i, message);
     }
     return fixtures;
 }
@@ -1050,21 +1057,21 @@ private slots:
             std::unique_ptr<loglib::LogParser> parser;
         };
         std::vector<Case> cases;
-        cases.push_back(
-            {"json",
-             WriteEquivalenceFixture(directory, "equivalence.jsonl", fixtures.json),
-             std::make_unique<loglib::JsonParser>()}
-        );
-        cases.push_back(
-            {"logfmt",
-             WriteEquivalenceFixture(directory, "equivalence.log", fixtures.logfmt),
-             std::make_unique<loglib::LogfmtParser>()}
-        );
-        cases.push_back(
-            {"csv",
-             WriteEquivalenceFixture(directory, "equivalence.csv", fixtures.csv),
-             std::make_unique<loglib::CsvParser>()}
-        );
+        cases.push_back({
+            .name = "json",
+            .path = WriteEquivalenceFixture(directory, "equivalence.jsonl", fixtures.json),
+            .parser = std::make_unique<loglib::JsonParser>(),
+        });
+        cases.push_back({
+            .name = "logfmt",
+            .path = WriteEquivalenceFixture(directory, "equivalence.log", fixtures.logfmt),
+            .parser = std::make_unique<loglib::LogfmtParser>(),
+        });
+        cases.push_back({
+            .name = "csv",
+            .path = WriteEquivalenceFixture(directory, "equivalence.csv", fixtures.csv),
+            .parser = std::make_unique<loglib::CsvParser>(),
+        });
 
         for (const Case &testCase : cases)
         {

@@ -75,6 +75,7 @@ namespace
 [[nodiscard]] std::vector<std::string> HeadersOf(const LogTable &table)
 {
     std::vector<std::string> headers;
+    headers.reserve(table.ColumnCount());
     for (size_t column = 0; column < table.ColumnCount(); ++column)
     {
         headers.push_back(table.GetHeader(column));
@@ -148,10 +149,10 @@ TEST_CASE("LinesConsumed counts physical lines the same for a file and a stream"
         size_t errors;
     };
     const std::vector<Case> cases = {
-        {&json, JsonRows(3), 3, 0},
-        {&json, JsonRows(3) + "not json\n\n", 5, 1},
-        {&json, "", 0, 0},
-        {&logfmt, LogfmtWithContinuations(), 54, 0},
+        {.parser = &json, .bytes = JsonRows(3), .lines = 3, .errors = 0},
+        {.parser = &json, .bytes = JsonRows(3) + "not json\n\n", .lines = 5, .errors = 1},
+        {.parser = &json, .bytes = "", .lines = 0, .errors = 0},
+        {.parser = &logfmt, .bytes = LogfmtWithContinuations(), .lines = 54, .errors = 0},
     };
 
     for (const Case &testCase : cases)
@@ -206,7 +207,7 @@ TEST_CASE("ParseIntoTable passes on a failure and keeps the rows that arrived", 
             }
             throw std::runtime_error("producer failed");
         }
-        void WaitForBytes(std::chrono::milliseconds) override
+        void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
         {
         }
         void Stop() noexcept override

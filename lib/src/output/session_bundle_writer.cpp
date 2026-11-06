@@ -457,7 +457,7 @@ public:
     {
     }
 
-    [[nodiscard]] std::size_t size() const noexcept
+    [[nodiscard]] std::size_t Size() const noexcept
     {
         return mAll ? mLines->size() : mRows.size();
     }
@@ -472,9 +472,9 @@ public:
         return (*mLines)[mRows[position]];
     }
 
-    [[nodiscard]] bool empty() const noexcept
+    [[nodiscard]] bool Empty() const noexcept
     {
-        return size() == 0;
+        return Size() == 0;
     }
 
 private:
@@ -492,7 +492,7 @@ void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines, con
     // Canonicalize each source once.
     std::unordered_map<const LineSource *, std::string> canonicalCache;
 
-    for (std::size_t row = 0; row < lines.size(); ++row)
+    for (std::size_t row = 0; row < lines.Size(); ++row)
     {
         const LogLine &line = lines[row];
         const auto *source = line.Source();
@@ -666,7 +666,7 @@ void WriteBundle(
     PollStop(options.stopToken);
     assert(!destination.empty() && !destination.filename().empty() && "WriteSessionBundle requires a destination file");
 
-    if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
+    if (lines.Size() > SESSION_BUNDLE_MAX_ROWS)
     {
         throw LimitError(
             "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
@@ -690,7 +690,7 @@ void WriteBundle(
     const std::string configJson = SerializeCompactConfiguration(embedded);
     const std::string metadata =
         R"({"__slv_bundle__":{"formatVersion":)" + std::to_string(SESSION_BUNDLE_FORMAT_VERSION) + R"(,"rowCount":)" +
-        std::to_string(static_cast<std::uint64_t>(lines.size())) + R"(,"configuration":)" + configJson + "}}\n";
+        std::to_string(static_cast<std::uint64_t>(lines.Size())) + R"(,"configuration":)" + configJson + "}}\n";
     if (metadata.size() > MAX_METADATA_BYTES)
     {
         throw LimitError("Session bundle metadata exceeds the 64 MiB limit");
@@ -711,7 +711,7 @@ void WriteBundle(
         // Reuse row storage across the hot loop.
         internal::NormalizedJsonRowWriter rowWriter(table);
         std::string rowBuffer;
-        for (std::size_t row = 0; row < lines.size(); ++row)
+        for (std::size_t row = 0; row < lines.Size(); ++row)
         {
             if ((row % PROGRESS_INTERVAL_ROWS) == 0)
             {
@@ -727,7 +727,7 @@ void WriteBundle(
             writer.Write(rowBuffer);
             if (options.progress && ((row + 1) % PROGRESS_INTERVAL_ROWS) == 0)
             {
-                options.progress(row + 1, lines.size());
+                options.progress(row + 1, lines.Size());
             }
         }
 
@@ -735,10 +735,10 @@ void WriteBundle(
         writer.Finish();
         file.Close();
         // Emit one terminal progress update, including for empty bundles.
-        const bool loopEmittedFinalTick = !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
+        const bool loopEmittedFinalTick = !lines.Empty() && (lines.Size() % PROGRESS_INTERVAL_ROWS) == 0;
         if (options.progress && !loopEmittedFinalTick)
         {
-            options.progress(lines.size(), lines.size());
+            options.progress(lines.Size(), lines.Size());
         }
         ReplaceAtomically(temporary, destination);
     }

@@ -768,7 +768,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     // Confirm the normalized on-disk UTC form.
     CHECK(jsonl.contains(R"("ts":"2025-04-25T12:34:56.123456Z")"));
 
-    loglib::LogTable reloaded = ParseTable(decoded.EffectivePath());
+    const loglib::LogTable reloaded = ParseTable(decoded.EffectivePath());
     REQUIRE(reloaded.Data().Lines().size() == 2);
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[0].GetValue("ts")) == originalRow0);
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue("ts")) == originalRow1);
@@ -852,7 +852,7 @@ TEST_CASE("WriteSessionBundle with a row list writes exactly those rows in that 
         const std::vector<std::size_t> rows = {3, 1, 4};
         loglib::WriteSessionBundle(table, configuration, rows, bundle.Path());
 
-        auto decoded = DecodeBundle(bundle.Path());
+        const auto decoded = DecodeBundle(bundle.Path());
         CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 3);
         CHECK(Read(decoded.EffectivePath()) == "{\"n\":3}\n{\"n\":1}\n{\"n\":4}\n");
         CHECK(table.RowCount() == 5);
@@ -862,7 +862,7 @@ TEST_CASE("WriteSessionBundle with a row list writes exactly those rows in that 
         const TempPath bundle(".slvbundle");
         loglib::WriteSessionBundle(table, configuration, std::span<const std::size_t>{}, bundle.Path());
 
-        auto decoded = DecodeBundle(bundle.Path());
+        const auto decoded = DecodeBundle(bundle.Path());
         CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 0);
         CHECK(Read(decoded.EffectivePath()).empty());
     }
@@ -871,7 +871,7 @@ TEST_CASE("WriteSessionBundle with a row list writes exactly those rows in that 
         const TempPath bundle(".slvbundle");
         loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
-        auto decoded = DecodeBundle(bundle.Path());
+        const auto decoded = DecodeBundle(bundle.Path());
         CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 5);
     }
 }

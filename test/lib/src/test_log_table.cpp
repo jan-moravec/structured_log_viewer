@@ -59,7 +59,7 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     manager.Load(testLogConfiguration.GetFilePath());
 
     // Initialize LogTable with the data and configuration
-    loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
+    const loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
 
     // Verify LogTable correctly initialized with the provided data and configuration
     REQUIRE(logTable.RowCount() == 2);

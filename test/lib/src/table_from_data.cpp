@@ -57,7 +57,7 @@ void AppendData(loglib::LogTable &table, loglib::LogData data)
 
     RowBatch batch;
     batch.lines.reserve(data.Lines().size());
-    for (LogLine &line : data.Lines())
+    for (const LogLine &line : data.Lines())
     {
         std::vector<std::pair<KeyId, CompactLogValue>> remapped;
         for (const auto &entry : line.CompactValues())

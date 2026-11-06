@@ -81,6 +81,7 @@ struct Snapshot
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         std::vector<std::string> cells;
+        cells.reserve(table.ColumnCount());
         for (size_t column = 0; column < table.ColumnCount(); ++column)
         {
             cells.push_back(table.GetFormattedValue(row, column));
@@ -185,7 +186,7 @@ TEST_CASE("OpenFileSource and LoadFile throw only the documented exceptions", "[
     }
     SECTION("FormatError for content no parser accepts")
     {
-        const auto path = dir.Write("unknown.bin", std::string("\x01\x02\x03 not a log \xff\xfe\n\x01\x02\n"));
+        const auto path = dir.Write("unknown.bin", "\x01\x02\x03 not a log \xff\xfe\n\x01\x02\n");
         CHECK_THROWS_AS(LoadFile(path), FormatError);
         CHECK_THROWS_WITH(LoadFile(path), Catch::Matchers::ContainsSubstring("could not be parsed"));
     }
