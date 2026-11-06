@@ -27,6 +27,7 @@ add_executable(
     "src/test_exports.cpp"
     "src/test_explicit_time_inputs.cpp"
     "src/test_file_line_source.cpp"
+    "src/test_file_loading.cpp"
     "src/test_format_detection.cpp"
     "src/test_histogram_bucket_index.cpp"
     "src/test_json_parser.cpp"

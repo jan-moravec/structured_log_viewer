@@ -3,8 +3,8 @@
  *
  * A session bundle is one zstd-compressed file with the extension slvbundle. Its first line holds metadata: the format
  * version, the row count and the configuration. Every following line is one row as normalized JSON. WriteSessionBundle
- * creates a bundle from a LogTable and a configuration. LooksLikeSessionBundle checks a file,
- * ParseSessionBundleMetadata reads the metadata line, and the reading code in the sources loads the rows back.
+ * creates a bundle from a LogTable and a configuration. HasSessionBundleExtension says which paths are bundles,
+ * ParseSessionBundleMetadata reads the metadata line, and OpenFileSource and LoadFile load the rows back.
  *
  * This is part of the output module.
  */
@@ -96,10 +96,12 @@ void WriteSessionBundle(
 [[nodiscard]] SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json);
 
 /**
- * @brief True if the file is zstd data that the decoder accepts. A file that is missing, unreadable or not zstd gives
- * false.
+ * @brief True if the path has the bundle extension, compared without regard to case.
+ *
+ * This is the one rule for what a bundle is. It does not open the file, so a file with this extension that is not a
+ * valid bundle fails when it is opened, not here.
  */
-[[nodiscard]] bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept;
+[[nodiscard]] bool HasSessionBundleExtension(const std::filesystem::path &path);
 
 /** @brief The format version this build writes and reads. Any other version is rejected. */
 constexpr std::uint32_t SESSION_BUNDLE_FORMAT_VERSION = 1;

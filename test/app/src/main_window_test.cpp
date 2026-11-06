@@ -25963,7 +25963,7 @@ private slots:
         // Verify the produced bundle.
         const auto destPath = logapp::QStringToFsPath(destination);
         QVERIFY2(std::filesystem::exists(destPath), "Bundle export must produce the requested destination file.");
-        QVERIFY(loglib::LooksLikeSessionBundle(destPath));
+        QVERIFY(loglib::HasSessionBundleExtension(destPath));
 
         // Parse metadata to catch truncated output.
         loglib::DecompressingByteSource::Options options;

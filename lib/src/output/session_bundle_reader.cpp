@@ -2,13 +2,15 @@
 
 #include "loglib/core/error.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
-#include "loglib/ingest/decompressing_byte_source.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <glaze/glaze.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace loglib::internal
 {
@@ -80,10 +82,12 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
     };
 }
 
-bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept
+bool HasSessionBundleExtension(const std::filesystem::path &path)
 {
-    // Keep sniffing behavior identical to the decoder.
-    return DecompressingByteSource::SniffCodec(file) == DecompressingByteSource::Codec::Zstd;
+    const std::string extension = path.extension().string();
+    return std::ranges::equal(extension, std::string_view(SESSION_BUNDLE_EXTENSION), [](char left, char right) {
+        return std::tolower(static_cast<unsigned char>(left)) == std::tolower(static_cast<unsigned char>(right));
+    });
 }
 
 } // namespace loglib

@@ -204,7 +204,7 @@ TEST_CASE("session bundle v1 exports documented metadata and typed normalized JS
     loglib::LogTable table = ParseTable(source.Path());
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
-    REQUIRE(loglib::LooksLikeSessionBundle(bundle.Path()));
+    REQUIRE(loglib::HasSessionBundleExtension(bundle.Path()));
     auto decoded = DecodeBundle(bundle.Path());
     const std::string &firstLine = decoded.DiscardedFirstLine();
     CHECK(firstLine.starts_with(R"({"__slv_bundle__":{"formatVersion":1,"rowCount":1,"configuration":)"));
@@ -600,7 +600,7 @@ TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBun
     {
         loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundlePath);
         REQUIRE(std::filesystem::exists(bundlePath));
-        CHECK(loglib::LooksLikeSessionBundle(bundlePath));
+        CHECK(loglib::HasSessionBundleExtension(bundlePath));
 
         loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
@@ -686,7 +686,7 @@ TEST_CASE("successful session bundle write atomically replaces destination", "[S
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
     CHECK(Read(bundle.Path()) != "old destination");
-    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    CHECK(loglib::HasSessionBundleExtension(bundle.Path()));
     CHECK_FALSE(bundle.HasStagingFiles());
     auto decoded = DecodeBundle(bundle.Path());
     CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 1);
@@ -711,7 +711,7 @@ TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destin
     loglib::LogTable table = ParseTable(source.Path());
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
-    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    CHECK(loglib::HasSessionBundleExtension(bundle.Path()));
     REQUIRE(std::filesystem::exists(decoy));
     CHECK(Read(decoy) == std::string(DECOY_CONTENTS));
 
@@ -740,20 +740,14 @@ TEST_CASE("session bundle metadata rejects malformed envelope versions and exces
     );
 }
 
-TEST_CASE("LooksLikeSessionBundle distinguishes plain input from produced zstd bundle", "[SessionBundle]")
+TEST_CASE("HasSessionBundleExtension is the one rule for what a bundle is", "[SessionBundle]")
 {
-    const TempPath plain(".jsonl");
-    const TempPath bundle(".slvbundle");
-    Write(
-        plain.Path(),
-        R"({"msg":"plain"})"
-        "\n"
-    );
-    CHECK_FALSE(loglib::LooksLikeSessionBundle(plain.Path()));
-
-    loglib::LogTable table = ParseTable(plain.Path());
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
-    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    CHECK(loglib::HasSessionBundleExtension("session.slvbundle"));
+    CHECK(loglib::HasSessionBundleExtension("dir/SESSION.SLVBundle"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("session.zst"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("session.jsonl"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("slvbundle"));
+    CHECK_FALSE(loglib::HasSessionBundleExtension("session.slvbundle.gz"));
 }
 
 TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBundle]")
