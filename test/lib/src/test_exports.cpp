@@ -230,6 +230,13 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
     lines.reserve(rowCount);
 
     const loglib::TimeStamp t0{std::chrono::microseconds(1700000000000000LL)};
+    if (extraFields)
+    {
+        // Intern the extra keys in a fixed order: a row is an unordered map, so the order of its keys differs by
+        // platform, and the columns the table adds for these keys follow the order they were first seen.
+        static_cast<void>(keys.GetOrInsert("extra_a"));
+        static_cast<void>(keys.GetOrInsert("extra_b"));
+    }
     for (std::size_t i = 0; i < rowCount; ++i)
     {
         loglib::LogMap map;
@@ -379,7 +386,7 @@ TEST_CASE("exports: JSON Lines writes fields in column order", "[exports][row_ex
         REQUIRE(lines.size() == 1);
         // The keys of the fields, in the order they were written.
         std::vector<std::string> order;
-        for (const char *key : {"ts", "level", "message", "count", "ratio", "ok", "extra_b", "extra_a"})
+        for (const char *key : {"ts", "level", "message", "count", "ratio", "ok", "extra_a", "extra_b"})
         {
             const auto position = lines[0].find(std::string("\"") + key + "\":");
             REQUIRE(position != std::string::npos);
@@ -391,11 +398,11 @@ TEST_CASE("exports: JSON Lines writes fields in column order", "[exports][row_ex
         return order;
     };
 
-    const std::vector<std::string> original = {"ts", "level", "message", "count", "ratio", "ok", "extra_b", "extra_a"};
+    const std::vector<std::string> original = {"ts", "level", "message", "count", "ratio", "ok", "extra_a", "extra_b"};
     CHECK(exportFirstRow() == original);
 
     table.MoveColumn(5, 0);
-    const std::vector<std::string> moved = {"ok", "ts", "level", "message", "count", "ratio", "extra_b", "extra_a"};
+    const std::vector<std::string> moved = {"ok", "ts", "level", "message", "count", "ratio", "extra_a", "extra_b"};
     CHECK(exportFirstRow() == moved);
 
     table.MoveColumn(0, 3);
@@ -406,8 +413,8 @@ TEST_CASE("exports: JSON Lines writes fields in column order", "[exports][row_ex
         "ok",
         "count",
         "ratio",
-        "extra_b",
         "extra_a",
+        "extra_b",
     };
     CHECK(exportFirstRow() == movedAgain);
 }
