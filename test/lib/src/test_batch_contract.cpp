@@ -159,16 +159,20 @@ TEST_CASE("The last batch of a parse holds the number of lines read", "[batch_co
         std::size_t rows;
     };
     const std::vector<Case> cases = {
-        {.name = "three JSON lines",
-         .parser = &json,
-         .bytes = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n",
-         .lines = 3,
-         .rows = 3},
-        {.name = "logfmt records over five physical lines",
-         .parser = &logfmt,
-         .bytes = "level=info msg=first\n  continued line\nlevel=info msg=second\n  more\nlevel=info msg=third\n",
-         .lines = 5,
-         .rows = 3},
+        {
+            .name = "three JSON lines",
+            .parser = &json,
+            .bytes = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n",
+            .lines = 3,
+            .rows = 3,
+        },
+        {
+            .name = "logfmt records over five physical lines",
+            .parser = &logfmt,
+            .bytes = "level=info msg=first\n  continued line\nlevel=info msg=second\n  more\nlevel=info msg=third\n",
+            .lines = 5,
+            .rows = 3,
+        },
         {.name = "no final newline", .parser = &json, .bytes = "{\"a\":1}\n{\"a\":2}", .lines = 2, .rows = 2},
         {.name = "trailing blank lines", .parser = &json, .bytes = "{\"a\":1}\n\n\n", .lines = 3, .rows = 1},
         {.name = "a bad line", .parser = &json, .bytes = "{\"a\":1}\nnot json\n{\"a\":3}\n", .lines = 3, .rows = 2},
@@ -946,7 +950,7 @@ struct ThrowingStageB
             if (token.batchIndex == throwOnBatch)
             {
                 // The tests throw types that are not derived from std::exception on purpose.
-                // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws)
+                // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws,cert-err60-cpp)
                 throw exception;
             }
             parsed.batchIndex = token.batchIndex;
@@ -1007,7 +1011,7 @@ public:
         outOwnedArena.clear();
         if (line == "boom")
         {
-            // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws)
+            // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws,cert-err60-cpp)
             throw mException;
         }
         return internal::LineDecodeResult::Emit;
@@ -1123,7 +1127,8 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         auto source = file.CreateFileLineSource();
         const LogFile &logFile = source->File();
         ThrowingStageB::Of<std::runtime_error> stageB{
-            .throwOnBatch = UINT64_MAX, .exception = std::runtime_error("unused")
+            .throwOnBatch = UINT64_MAX,
+            .exception = std::runtime_error("unused"),
         };
         CHECK_THROWS_AS(
             (internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
