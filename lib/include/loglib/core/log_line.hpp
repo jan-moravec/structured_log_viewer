@@ -62,6 +62,9 @@ public:
         size_t lineId
     );
 
+    LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, LineSource &source, size_t lineId);
+    LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues, LineSource &source, size_t lineId);
+
     /** @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests. */
     LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId);
 
@@ -75,6 +78,7 @@ public:
     /** @brief The value of a field, or std::monostate if the row has none. */
     LogValue GetValue(KeyId id) const;
     LogValue GetValue(const std::string &key) const;
+    LogValue GetValue(const KeyIndex &keys, std::string_view key) const;
 
     /**
      * @brief Sets a field. The value should not be a string_view, which could dangle: debug builds assert on it. Use
@@ -91,8 +95,10 @@ public:
 
     /** @brief Sets a field by key name. Throws if the key is unknown. */
     void SetValue(const std::string &key, const LogValue &value);
+    void SetValue(const KeyIndex &keys, std::string_view key, const LogValue &value);
 
     std::vector<std::string> GetKeys() const;
+    std::vector<std::string> GetKeys(const KeyIndex &keys) const;
 
     /** @brief All fields as key and value pairs, sorted by key. Slow. */
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
@@ -101,6 +107,7 @@ public:
     std::span<const std::pair<KeyId, loglib::CompactLogValue>> CompactValues() const noexcept;
 
     LogMap Values() const;
+    LogMap Values(const KeyIndex &keys) const;
 
     /**
      * @brief Points the row at a different KeyIndex, after the index moved or the rows were merged into another one.
