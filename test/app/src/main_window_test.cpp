@@ -583,7 +583,7 @@ EquivalenceFixtures MakeEquivalenceFixtures()
         {
             fixtures.logfmt += std::format(" late={}", i * 2);
         }
-        fixtures.logfmt += "\n";
+        fixtures.logfmt += '\n';
 
         fixtures.csv += std::format("{},{},{},{},{}\n", time, level, service, i, message);
     }
