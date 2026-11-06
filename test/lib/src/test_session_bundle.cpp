@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -844,4 +845,47 @@ TEST_CASE("bundle metadata extraction enforces first-line cap and newline", "[Se
     loglib::DecompressingByteSource::Options normal;
     normal.discardFirstLine = true;
     CHECK_THROWS_AS(loglib::DecompressingByteSource(unterminated.Path(), {}, {}, normal), loglib::FormatError);
+}
+
+TEST_CASE("WriteSessionBundle with a row list writes exactly those rows in that order", "[SessionBundle][row_list]")
+{
+    const TempPath source(".jsonl");
+    std::string content;
+    for (int i = 0; i < 5; ++i)
+    {
+        content += R"({"n":)" + std::to_string(i) + "}\n";
+    }
+    Write(source.Path(), content);
+    loglib::LogTable table = ParseTable(source.Path());
+    REQUIRE(table.RowCount() == 5);
+    const loglib::LogConfiguration configuration = table.Configuration().Configuration();
+
+    SECTION("a list of rows")
+    {
+        const TempPath bundle(".slvbundle");
+        const std::vector<std::size_t> rows = {3, 1, 4};
+        loglib::WriteSessionBundle(table, configuration, rows, bundle.Path());
+
+        auto decoded = DecodeBundle(bundle.Path());
+        CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 3);
+        CHECK(Read(decoded.EffectivePath()) == "{\"n\":3}\n{\"n\":1}\n{\"n\":4}\n");
+        CHECK(table.RowCount() == 5);
+    }
+    SECTION("an empty list writes no rows")
+    {
+        const TempPath bundle(".slvbundle");
+        loglib::WriteSessionBundle(table, configuration, std::span<const std::size_t>{}, bundle.Path());
+
+        auto decoded = DecodeBundle(bundle.Path());
+        CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 0);
+        CHECK(Read(decoded.EffectivePath()).empty());
+    }
+    SECTION("no list writes every row")
+    {
+        const TempPath bundle(".slvbundle");
+        loglib::WriteSessionBundle(table, configuration, bundle.Path());
+
+        auto decoded = DecodeBundle(bundle.Path());
+        CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 5);
+    }
 }

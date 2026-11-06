@@ -18,6 +18,7 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,11 +65,26 @@ struct SessionBundleMetadata
  * @brief Writes the metadata and every row of the table as lines of JSON, in one zstd frame with a checksum.
  *
  * The destination is replaced only after the data has been flushed to disk, so a failed write leaves an existing bundle
- * untouched.
+ * untouched. Failures throw IoError, or LimitError when the row count or a row exceeds the bundle limits.
  */
 void WriteSessionBundle(
     const LogTable &table,
     const LogConfiguration &configuration,
+    const std::filesystem::path &destination,
+    const SessionBundleWriteOptions &options = {}
+);
+
+/**
+ * @brief Writes only the given rows of the table, in the order given, and nothing else.
+ *
+ * The bundle holds exactly rows.size() rows, which can be zero, and its metadata counts them. Anchors in the
+ * configuration are renumbered to the position of their row in the bundle, and an anchor whose row is not in the list
+ * is dropped. Every number must be a valid row of the table. The table is not changed.
+ */
+void WriteSessionBundle(
+    const LogTable &table,
+    const LogConfiguration &configuration,
+    std::span<const std::size_t> rows,
     const std::filesystem::path &destination,
     const SessionBundleWriteOptions &options = {}
 );

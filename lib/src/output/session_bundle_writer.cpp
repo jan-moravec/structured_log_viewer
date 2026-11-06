@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -450,9 +451,45 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
     return wanted;
 }
 
-void PopulateAnchorMatches(
-    AnchorWantedSet &wanted, const std::vector<LogLine> &lines, const SessionBundleWriteOptions &options
-)
+/**
+ * The rows of a bundle: every line of the table, or the lines at a list of row numbers in the order given. Row numbers
+ * in the bundle count the position in this view.
+ */
+class BundleRows
+{
+public:
+    BundleRows(const std::vector<LogLine> &lines, std::span<const std::size_t> rows, bool all)
+        : mLines(&lines), mRows(rows), mAll(all)
+    {
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return mAll ? mLines->size() : mRows.size();
+    }
+
+    [[nodiscard]] const LogLine &operator[](std::size_t position) const
+    {
+        if (mAll)
+        {
+            return (*mLines)[position];
+        }
+        assert(mRows[position] < mLines->size() && "WriteSessionBundle: row number out of range");
+        return (*mLines)[mRows[position]];
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return size() == 0;
+    }
+
+private:
+    const std::vector<LogLine> *mLines;
+    std::span<const std::size_t> mRows;
+    bool mAll;
+};
+
+void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines, const SessionBundleWriteOptions &options)
 {
     if (wanted.empty())
     {
@@ -504,7 +541,7 @@ void PopulateAnchorMatches(
 
 void RemapAnchors(
     LogConfiguration &configuration,
-    const std::vector<LogLine> &lines,
+    const BundleRows &lines,
     std::string_view flattenedLocator,
     const SessionBundleWriteOptions &options
 )
@@ -623,9 +660,13 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
 
 } // namespace
 
-void WriteSessionBundle(
+namespace
+{
+
+void WriteBundle(
     const LogTable &table,
     const LogConfiguration &configuration,
+    const BundleRows &lines,
     const std::filesystem::path &destination,
     const SessionBundleWriteOptions &options
 )
@@ -633,7 +674,6 @@ void WriteSessionBundle(
     PollStop(options.stopToken);
     assert(!destination.empty() && !destination.filename().empty() && "WriteSessionBundle requires a destination file");
 
-    const auto &lines = table.Data().Lines();
     if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
     {
         throw LimitError(
@@ -723,6 +763,31 @@ void WriteSessionBundle(
         std::filesystem::remove(temporary, cleanupError);
         throw;
     }
+}
+
+} // namespace
+
+void WriteSessionBundle(
+    const LogTable &table,
+    const LogConfiguration &configuration,
+    const std::filesystem::path &destination,
+    const SessionBundleWriteOptions &options
+)
+{
+    const BundleRows rows(table.Data().Lines(), {}, true);
+    WriteBundle(table, configuration, rows, destination, options);
+}
+
+void WriteSessionBundle(
+    const LogTable &table,
+    const LogConfiguration &configuration,
+    std::span<const std::size_t> rows,
+    const std::filesystem::path &destination,
+    const SessionBundleWriteOptions &options
+)
+{
+    const BundleRows selected(table.Data().Lines(), rows, false);
+    WriteBundle(table, configuration, selected, destination, options);
 }
 
 } // namespace loglib
