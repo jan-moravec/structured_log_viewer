@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/core/error.hpp>
 #include <loglib/core/log_file.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -53,9 +54,9 @@ TEST_CASE("Read lines from file with CRLF line endings", "[LogFile]")
     CHECK(logFile->GetLine(2) == "Line 3");
 }
 
-TEST_CASE("Throw runtime error when opening a non-existent file", "[LogFile]")
+TEST_CASE("Throw IoError when opening a non-existent file", "[LogFile]")
 {
-    CHECK_THROWS_AS(LogFile("non_existent_file.txt"), std::runtime_error);
+    CHECK_THROWS_AS(LogFile("non_existent_file.txt"), loglib::IoError);
 }
 
 TEST_CASE("LogFile opens an empty file without mapping bytes", "[LogFile]")

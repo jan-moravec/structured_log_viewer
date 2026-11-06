@@ -1,5 +1,6 @@
 #include "loglib/output/session_bundle.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/file_busy_retry.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/core/line_source.hpp"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -175,7 +177,7 @@ public:
     {
         if (mFile == nullptr)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "Session bundle: FileHandle received a null FILE* for '" + internal::PathToUtf8(mPath) + "'"
             );
         }
@@ -197,7 +199,7 @@ public:
     {
         if (!bytes.empty() && std::fwrite(bytes.data(), 1, bytes.size(), mFile) != bytes.size())
         {
-            throw std::runtime_error("Session bundle: short write to '" + internal::PathToUtf8(mPath) + "'");
+            throw IoError("Session bundle: short write to '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
@@ -216,7 +218,7 @@ public:
         mFile = nullptr;
         if (!flushOk || !syncOk || !closeOk)
         {
-            throw std::runtime_error("Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'");
+            throw IoError("Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
@@ -298,7 +300,7 @@ std::FILE *OpenStagingFileWithRetry(const std::filesystem::path &destination, st
     {
         reason += " (staging path collided " + std::to_string(MAX_ATTEMPTS) + " times)";
     }
-    throw std::runtime_error(
+    throw IoError(
         "Session bundle: failed to open staging file for '" + internal::PathToUtf8(destination) + "': " + reason
     );
 }
@@ -311,7 +313,7 @@ public:
     {
         if (mContext == nullptr)
         {
-            throw std::runtime_error("Session bundle: ZSTD_createCCtx failed");
+            throw IoError("Session bundle: ZSTD_createCCtx failed");
         }
         SetParameter(ZSTD_c_compressionLevel, options.compressionLevel);
         SetParameter(ZSTD_c_checksumFlag, 1);
@@ -320,7 +322,7 @@ public:
             const std::size_t result = ZSTD_CCtx_setParameter(mContext, ZSTD_c_nbWorkers, options.totalWorkers);
             if (ZSTD_isError(result))
             {
-                throw std::runtime_error(
+                throw IoError(
                     std::string("Session bundle: zstd worker configuration failed: ") + ZSTD_getErrorName(result)
                 );
             }
@@ -363,7 +365,7 @@ private:
         const std::size_t result = ZSTD_CCtx_setParameter(mContext, parameter, value);
         if (ZSTD_isError(result))
         {
-            throw std::runtime_error(
+            throw IoError(
                 std::string("Session bundle: zstd configuration failed: ") + ZSTD_getErrorName(result)
             );
         }
@@ -375,7 +377,7 @@ private:
         const std::size_t result = ZSTD_compressStream2(mContext, &output, &input, directive);
         if (ZSTD_isError(result))
         {
-            throw std::runtime_error(
+            throw IoError(
                 std::string("Session bundle: zstd compression failed: ") + ZSTD_getErrorName(result)
             );
         }
@@ -561,7 +563,7 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
     const auto error = glz::write_json(configuration, json);
     if (error)
     {
-        throw std::runtime_error(
+        throw IoError(
             "Session bundle: failed to serialize configuration: " + glz::format_error(error, json)
         );
     }
@@ -587,7 +589,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
         const std::string destUtf8 = internal::PathToUtf8(destination);
         if (win32Error == ERROR_SHARING_VIOLATION)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "Session bundle: cannot replace '" + destUtf8 +
                 "' because another program has it open (Windows error 32, ERROR_SHARING_VIOLATION). "
                 "Close the file in the other program (log viewer, editor, antivirus scan, sync client) and try again."
@@ -595,13 +597,13 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
         }
         if (win32Error == ERROR_ACCESS_DENIED)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "Session bundle: cannot replace '" + destUtf8 +
                 "' due to a permissions error (Windows error 5, ERROR_ACCESS_DENIED). "
                 "Check that you can write to the destination folder and that the target file is not read-only."
             );
         }
-        throw std::runtime_error(
+        throw IoError(
             "Session bundle: atomic replacement of '" + destUtf8 + "' failed with Windows error " +
             std::to_string(win32Error)
         );
@@ -611,7 +613,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
     std::filesystem::rename(temporary, destination, error);
     if (error)
     {
-        throw std::runtime_error(
+        throw IoError(
             "Session bundle: atomic replacement of '" + internal::PathToUtf8(destination) +
             "' failed: " + error.message()
         );
@@ -629,15 +631,12 @@ void WriteSessionBundle(
 )
 {
     PollStop(options.stopToken);
-    if (destination.empty() || destination.filename().empty())
-    {
-        throw std::invalid_argument("WriteSessionBundle requires a destination file");
-    }
+    assert(!destination.empty() && !destination.filename().empty() && "WriteSessionBundle requires a destination file");
 
     const auto &lines = table.Data().Lines();
     if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
     {
-        throw std::length_error(
+        throw LimitError(
             "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
         );
     }
@@ -662,7 +661,7 @@ void WriteSessionBundle(
         std::to_string(static_cast<std::uint64_t>(lines.size())) + R"(,"configuration":)" + configJson + "}}\n";
     if (metadata.size() > MAX_METADATA_BYTES)
     {
-        throw std::length_error("Session bundle metadata exceeds the 64 MiB limit");
+        throw LimitError("Session bundle metadata exceeds the 64 MiB limit");
     }
 
     // Open a unique sibling so concurrent exports cannot share staging.
@@ -690,7 +689,7 @@ void WriteSessionBundle(
             rowWriter.Append(lines[row], rowBuffer);
             if (rowBuffer.size() > MAX_RECORD_BYTES)
             {
-                throw std::length_error("Session bundle row exceeds the 256 MiB limit");
+                throw LimitError("Session bundle row exceeds the 256 MiB limit");
             }
             rowBuffer.push_back('\n');
             writer.Write(rowBuffer);

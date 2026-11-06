@@ -839,9 +839,9 @@ TEST_CASE("bundle metadata extraction enforces first-line cap and newline", "[Se
     loglib::DecompressingByteSource::Options capped;
     capped.discardFirstLine = true;
     capped.maxDiscardedFirstLineBytes = 8;
-    CHECK_THROWS_AS(loglib::DecompressingByteSource(oversized.Path(), {}, {}, capped), std::runtime_error);
+    CHECK_THROWS_AS(loglib::DecompressingByteSource(oversized.Path(), {}, {}, capped), loglib::LimitError);
 
     loglib::DecompressingByteSource::Options normal;
     normal.discardFirstLine = true;
-    CHECK_THROWS_AS(loglib::DecompressingByteSource(unterminated.Path(), {}, {}, normal), std::runtime_error);
+    CHECK_THROWS_AS(loglib::DecompressingByteSource(unterminated.Path(), {}, {}, normal), loglib::FormatError);
 }

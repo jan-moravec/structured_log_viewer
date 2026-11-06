@@ -84,7 +84,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     std::ifstream stream(path, std::ios::binary);
     if (!stream.is_open())
     {
-        throw std::runtime_error(fmt::format("Failed to open '{}' for codec sniff", internal::PathToUtf8(path)));
+        throw IoError(fmt::format("Failed to open '{}' for codec sniff", internal::PathToUtf8(path)));
     }
     std::vector<std::uint8_t> out(max);
     stream.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(max));
@@ -144,7 +144,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
     if (ec)
     {
-        throw std::runtime_error(fmt::format("temp_directory_path() failed: {}", ec.message()));
+        throw IoError(fmt::format("temp_directory_path() failed: {}", ec.message()));
     }
 
     // Mix random_device with steady_clock -- random_device alone
@@ -291,7 +291,7 @@ struct OpenExclusiveResult
             break;
         }
     }
-    throw std::runtime_error(
+    throw IoError(
         fmt::format("Failed to create temp file '{}': errno {}", internal::PathToUtf8(lastPath), lastErrno)
     );
 }
@@ -305,7 +305,7 @@ void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::f
     const std::size_t wrote = std::fwrite(data, 1, bytes, out.Get());
     if (wrote != bytes)
     {
-        throw std::runtime_error(
+        throw IoError(
             fmt::format("Short write to temp file '{}' ({} of {} bytes)", internal::PathToUtf8(tempPath), wrote, bytes)
         );
     }
@@ -387,7 +387,7 @@ void DecodeConcatenatedMembers(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+            throw IoError(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         const bool eof = in.eof() || gotSigned == 0;
         codec.SetInput(inBuf.data(), static_cast<std::size_t>(gotSigned));
@@ -432,7 +432,7 @@ void DecodeConcatenatedMembers(
     // Real EOF without a clean member end == truncation.
     if (!memberEnded)
     {
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format(
                 "Unexpected EOF in {} stream '{}' at input byte {}",
                 Codec::NAME,
@@ -491,7 +491,7 @@ public:
     {
         if (::inflateReset(&mStream) != Z_OK)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "zlib inflateReset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
                 )
@@ -510,7 +510,7 @@ public:
         case Z_DATA_ERROR:
         case Z_MEM_ERROR:
         case Z_STREAM_ERROR:
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "zlib inflate error on '{}' at input byte {} (code {})",
                     internal::PathToUtf8(sourcePath),
@@ -575,7 +575,7 @@ public:
         const unsigned pendingAvail = mStream.avail_in;
         if (::BZ2_bzDecompressEnd(&mStream) != BZ_OK || ::BZ2_bzDecompressInit(&mStream, 0, 0) != BZ_OK)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format("bzip2 reset failed on '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed)
             );
         }
@@ -588,7 +588,7 @@ public:
         const int ret = ::BZ2_bzDecompress(&mStream);
         if (ret != BZ_OK && ret != BZ_STREAM_END)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "bzip2 decompress error on '{}' at input byte {} (code {})",
                     internal::PathToUtf8(sourcePath),
@@ -729,7 +729,7 @@ void DecodeXz(
             const auto gotSigned = in.gcount();
             if (gotSigned < 0)
             {
-                throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+                throw IoError(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
             }
             strm.next_in = inBuf.data();
             strm.avail_in = static_cast<std::size_t>(gotSigned);
@@ -748,7 +748,7 @@ void DecodeXz(
         ret = ::lzma_code(&strm, action);
         if (ret != LZMA_OK && ret != LZMA_STREAM_END)
         {
-            throw std::runtime_error(
+            throw FormatError(
                 fmt::format(
                     "xz decode error on '{}' at input byte {} (code {})",
                     internal::PathToUtf8(sourcePath),
@@ -818,7 +818,7 @@ void DecodeZstd(
         const auto gotSigned = in.gcount();
         if (gotSigned < 0)
         {
-            throw std::runtime_error(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
+            throw IoError(fmt::format("Failed to read from '{}'", internal::PathToUtf8(sourcePath)));
         }
         if (gotSigned == 0)
         {
@@ -836,7 +836,7 @@ void DecodeZstd(
             const std::size_t result = ::ZSTD_decompressStream(dctx, &output, &input);
             if (::ZSTD_isError(result) != 0U)
             {
-                throw std::runtime_error(
+                throw FormatError(
                     fmt::format(
                         "zstd decode error on '{}' at input byte {} ({})",
                         internal::PathToUtf8(sourcePath),
@@ -852,7 +852,7 @@ void DecodeZstd(
                 const std::size_t prefixSize = newline == std::string_view::npos ? produced.size() : newline;
                 if (discardedFirstLine.size() + prefixSize > maxDiscardedFirstLineBytes)
                 {
-                    throw std::runtime_error(
+                    throw LimitError(
                         fmt::format(
                             "First decompressed line in '{}' exceeds metadata limit", internal::PathToUtf8(sourcePath)
                         )
@@ -884,7 +884,7 @@ void DecodeZstd(
     {
         // Non-zero result at EOF -> truncated input (last frame
         // not fully consumed).
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format(
                 "Unexpected EOF in zstd stream '{}' at input byte {}", internal::PathToUtf8(sourcePath), consumed
             )
@@ -892,7 +892,7 @@ void DecodeZstd(
     }
     if (!firstLineComplete)
     {
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format("Compressed stream '{}' has no metadata line terminator", internal::PathToUtf8(sourcePath))
         );
     }
@@ -918,13 +918,13 @@ DecompressingByteSource::DecompressingByteSource(
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     if (!std::filesystem::exists(mDisplayPath, ec) || ec)
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist", internal::PathToUtf8(mDisplayPath)));
+        throw IoError(fmt::format("File '{}' does not exist", internal::PathToUtf8(mDisplayPath)));
     }
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(mDisplayPath, ec);
     if (ec)
     {
-        throw std::runtime_error(
+        throw IoError(
             fmt::format("Failed to stat '{}': {}", internal::PathToUtf8(mDisplayPath), ec.message())
         );
     }
@@ -937,7 +937,7 @@ DecompressingByteSource::DecompressingByteSource(
         // instead of silently returning an empty first line.
         if (options.discardFirstLine)
         {
-            throw std::invalid_argument(
+            throw FormatError(
                 fmt::format("Cannot discard first line from empty file '{}'", internal::PathToUtf8(mDisplayPath))
             );
         }
@@ -954,7 +954,7 @@ DecompressingByteSource::DecompressingByteSource(
         // would parse it as row 1.
         if (options.discardFirstLine)
         {
-            throw std::invalid_argument(
+            throw FormatError(
                 fmt::format(
                     "discardFirstLine requires a compressed input; '{}' is not compressed",
                     internal::PathToUtf8(mDisplayPath)
@@ -968,7 +968,7 @@ DecompressingByteSource::DecompressingByteSource(
         // Only the zstd decode path plumbs `discardFirstLine`; fail
         // loudly rather than silently leaving the metadata line in
         // the decoded output.
-        throw std::invalid_argument(
+        throw FormatError(
             fmt::format(
                 "discardFirstLine is only supported for zstd streams; '{}' uses {}",
                 internal::PathToUtf8(mDisplayPath),
@@ -981,7 +981,7 @@ DecompressingByteSource::DecompressingByteSource(
     std::ifstream inStream(mDisplayPath, std::ios::binary);
     if (!inStream.is_open())
     {
-        throw std::runtime_error(
+        throw IoError(
             fmt::format("Failed to open '{}' for decompression", internal::PathToUtf8(mDisplayPath))
         );
     }
@@ -1061,7 +1061,7 @@ DecompressingByteSource::DecompressingByteSource(
         if (std::fflush(outHandle.Get()) != 0)
         {
             const int savedErrno = errno;
-            throw std::runtime_error(
+            throw IoError(
                 fmt::format("Failed to flush temp file '{}': errno {}", internal::PathToUtf8(tempPath), savedErrno)
             );
         }

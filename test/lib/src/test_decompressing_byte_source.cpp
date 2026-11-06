@@ -283,31 +283,31 @@ TEST_CASE("DecompressingByteSource: discardFirstLine rejects non-zstd inputs", "
             REQUIRE(out.is_open());
             out << content;
         }
-        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::FormatError);
     }
     SECTION("empty input")
     {
         const TempBinaryFile fixture(".log");
         fixture.WriteBytes({});
-        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::FormatError);
     }
     SECTION("gzip input")
     {
         const TempBinaryFile fixture(".log.gz");
         fixture.WriteBytes(CompressGzip(content));
-        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::FormatError);
     }
     SECTION("bzip2 input")
     {
         const TempBinaryFile fixture(".log.bz2");
         fixture.WriteBytes(CompressBzip2(content));
-        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::FormatError);
     }
     SECTION("xz input")
     {
         const TempBinaryFile fixture(".log.xz");
         fixture.WriteBytes(CompressXz(content));
-        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::FormatError);
     }
 }
 

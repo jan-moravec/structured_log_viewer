@@ -3,8 +3,9 @@
  *
  * A DecompressingByteSource detects gzip, bzip2, xz and zstd files from their first bytes and decompresses them into an
  * owned temporary file. EffectivePath returns that file, so the rest of the library can map a compressed log like a
- * normal one. Plain files are returned unchanged. It supports cancellation and a cap on the decompressed size, and
- * reports both as exceptions.
+ * normal one. Plain files are returned unchanged. It supports cancellation and a cap on the decompressed size. Failures
+ * are reported as exceptions: IoError for a file or temporary file that cannot be read or written, FormatError for
+ * corrupt or truncated data, LimitError for the size cap and OperationCancelled for a stop.
  *
  * This is part of the ingest module.
  */
@@ -70,7 +71,7 @@ public:
          * @brief Removes the first line from the output and keeps it for DiscardedFirstLine.
          *
          * Only zstd input supports it. Any other input, including a file that is not compressed or is empty, makes the
-         * constructor throw.
+         * constructor throw FormatError.
          */
         bool discardFirstLine = false;
 

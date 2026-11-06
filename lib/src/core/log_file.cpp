@@ -1,5 +1,6 @@
 #include "loglib/core/log_file.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/core/internal/stable_byte_arena.hpp"
 
@@ -77,7 +78,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
 {
     if (!std::filesystem::exists(mStoragePath))
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist.", internal::PathToUtf8(mStoragePath)));
+        throw IoError(fmt::format("File '{}' does not exist.", internal::PathToUtf8(mStoragePath)));
     }
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
@@ -94,7 +95,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
 #endif
         if (ec)
         {
-            throw std::runtime_error(
+            throw IoError(
                 fmt::format("Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message())
             );
         }
