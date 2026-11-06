@@ -345,7 +345,7 @@ void DecodeRegexBatch(
                 {
                     const size_t headerLineId = parsed.lines.back().LineId();
                     parsed.lines.pop_back();
-                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    LogLine rebuilt(std::move(mutableValues), source, headerLineId);
                     parsed.lines.push_back(std::move(rebuilt));
                     tailLastPhysical = relativeLineNumber - 1;
                 }
@@ -400,7 +400,7 @@ void DecodeRegexBatch(
         // `LogLine` requires KeyId order, unlike source-order captures.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
-        LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+        LogLine logLine(std::move(values), source, relativeLineNumber - 1);
         parsed.lines.push_back(std::move(logLine));
         worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
         tailHeaderPhysical = relativeLineNumber - 1;

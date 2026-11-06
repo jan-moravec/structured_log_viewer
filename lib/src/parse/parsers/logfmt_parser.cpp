@@ -485,7 +485,7 @@ void DecodeLogfmtBatch(
                     // Preserve the header line ID while replacing its values.
                     const size_t headerLineId = parsed.lines.back().LineId();
                     parsed.lines.pop_back();
-                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    LogLine rebuilt(std::move(mutableValues), source, headerLineId);
                     parsed.lines.push_back(std::move(rebuilt));
                     tailLastPhysical = relativeLineNumber - 1;
                 }
@@ -553,7 +553,7 @@ void DecodeLogfmtBatch(
                 );
             }
 
-            LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             // Inline promotion: same shape as the JSON parser.

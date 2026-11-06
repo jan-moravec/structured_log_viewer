@@ -190,7 +190,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         {
             for (const std::string &key : kKeys)
             {
-                if (!std::holds_alternative<std::monostate>(line.GetValue(key)))
+                if (!std::holds_alternative<std::monostate>(line.GetValue(data.Keys(), key)))
                 {
                     ++hits;
                 }

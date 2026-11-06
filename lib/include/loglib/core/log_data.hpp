@@ -1,8 +1,9 @@
 /**
  * @brief Container for parsed rows, their keys and their sources.
  *
- * LogData owns the KeyIndex, the list of LineSources and the rows of one log. Every row resolves its keys through the
- * shared index and its text through the source it came from. Parsers fill a LogData and LogTable consumes it.
+ * LogData owns the KeyIndex, the list of LineSources and the rows of one log. The key ids in every row refer to the
+ * shared index, and the text of a row comes from the source it came from. Parsers fill a LogData and LogTable consumes
+ * it.
  *
  * This is part of the core module.
  */
@@ -25,7 +26,7 @@ namespace loglib
 /**
  * @brief The rows, keys and sources of one log, loaded from one or more sources.
  *
- * It owns the canonical KeyIndex, and every LogLine resolves its keys through it. The sources are FileLineSources for
+ * It owns the canonical KeyIndex, and the key ids in every LogLine refer to it. The sources are FileLineSources for
  * static files and StreamLineSources for live streams. Use Sources for generic access and the typed accessors when
  * code needs the file or stream behind a row.
  */
@@ -34,15 +35,15 @@ class LogData
 public:
     LogData();
 
-    /** @brief Builds a LogData from one source and its lines, and points every line at keys. */
+    /** @brief Builds a LogData from one source, its lines and the key index their key ids come from. */
     LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines, KeyIndex keys);
 
     LogData(const LogData &) = delete;
     LogData &operator=(const LogData &) = delete;
 
-    /** @brief Moves the data and points every line at the new KeyIndex. The sources stay at the same address. */
-    LogData(LogData &&other) noexcept;
-    LogData &operator=(LogData &&other) noexcept;
+    /** @brief Moves the data. The sources stay at the same address, and rows resolve keys by id, so they stay valid. */
+    LogData(LogData &&other) noexcept = default;
+    LogData &operator=(LogData &&other) noexcept = default;
     ~LogData() = default;
 
     /** @brief The sources in load order. The first one is the primary source. */

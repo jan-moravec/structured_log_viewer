@@ -968,7 +968,7 @@ namespace
 /// so `LineSource::RawLine` round-trips. Tests expect the source's
 /// next-line id to track @p firstLineId.
 RowBatch MakeStreamBatch(
-    StreamLineSource &streamSource, KeyIndex &keys, KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey
+    StreamLineSource &streamSource, KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey
 )
 {
     RowBatch batch;
@@ -1028,7 +1028,7 @@ TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", 
     {
         const bool declareNewKey = (batchStart == 0);
         AppendFixtureBatch(
-            table, MakeStreamBatch(streamSourceRef, keys, valueKey, batchStart + 1, BATCH_SIZE, declareNewKey)
+            table, MakeStreamBatch(streamSourceRef, valueKey, batchStart + 1, BATCH_SIZE, declareNewKey)
         );
 
         // Mirror `LogModel::AppendBatch`'s post-append trim: any rows past
@@ -1076,9 +1076,7 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
         streamSourceRef.AppendLine("dropped" + std::to_string(i + 1), std::string{});
     }
     streamSourceRef.EvictBefore(headDrop + 1);
-    AppendFixtureBatch(
-        table, MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, CAP, /*declareNewKey=*/true)
-    );
+    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, valueKey, headDrop + 1, CAP, /*declareNewKey=*/true));
 
     REQUIRE(table.RowCount() == CAP);
     CHECK(std::cmp_equal(std::get<int64_t>(table.GetValue(0, 0)), headDrop + 1));
@@ -1097,7 +1095,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, valueKey, 1, 5, /*declareNewKey=*/true));
     REQUIRE(table.RowCount() == 5);
 
     // count == 0: documented well-defined behaviour (no rows removed).
@@ -1113,7 +1111,7 @@ TEST_CASE(
     // After the prior `EvictPrefixRows(5)` the source has cleared lines 1..5,
     // so its next-to-publish lineId is 6 — match it here so `MakeStreamBatch`'s
     // `AppendLine`-publishes-monotonic invariant holds.
-    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, keys, valueKey, 6, 3, /*declareNewKey=*/false));
+    AppendFixtureBatch(table, MakeStreamBatch(streamSourceRef, valueKey, 6, 3, /*declareNewKey=*/false));
     REQUIRE(table.RowCount() == 3);
     table.EvictPrefixRows(99);
     CHECK(table.RowCount() == 0);

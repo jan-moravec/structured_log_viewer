@@ -44,7 +44,8 @@ std::vector<std::string> ConvertTimeColumns(LogData &logData, const LogConfigura
     {
         if (column.type == ColumnType::Time)
         {
-            auto columnErrors = BackfillTimestampColumn(column, logData.Lines(), TimeZoneContext{}, ReferenceNow());
+            auto columnErrors =
+                BackfillTimestampColumn(logData.Keys(), column, logData.Lines(), TimeZoneContext{}, ReferenceNow());
             errors.insert(errors.end(), columnErrors.begin(), columnErrors.end());
         }
     }

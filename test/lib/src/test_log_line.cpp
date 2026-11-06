@@ -142,7 +142,7 @@ TEST_CASE("Set and update values", "[log_line]")
     line.SetValue(keys, newKey, newValue);
 
     REQUIRE(line.Values(keys).size() == 2);
-    CHECK(std::get<std::string>(line.GetValue(newKey)) == newValue);
+    CHECK(std::get<std::string>(line.GetValue(keys, newKey)) == newValue);
 
     resultKeys = line.GetKeys(keys);
     REQUIRE(resultKeys.size() == 2);

@@ -22,38 +22,6 @@ LogData::LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines,
     {
         mSources.push_back(std::move(source));
     }
-
-    // Rebind to the canonical KeyIndex we now own.
-    for (auto &line : mLines)
-    {
-        line.RebindKeys(mKeys);
-    }
-}
-
-LogData::LogData(LogData &&other) noexcept
-    : mSources(std::move(other.mSources)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys))
-{
-    // KeyIndex moved address — rebind. LineSource heap addresses are
-    // stable across the move, so mSource pointers stay valid.
-    for (auto &line : mLines)
-    {
-        line.RebindKeys(mKeys);
-    }
-}
-
-LogData &LogData::operator=(LogData &&other) noexcept
-{
-    if (this != &other)
-    {
-        mSources = std::move(other.mSources);
-        mLines = std::move(other.mLines);
-        mKeys = std::move(other.mKeys);
-        for (auto &line : mLines)
-        {
-            line.RebindKeys(mKeys);
-        }
-    }
-    return *this;
 }
 
 const std::vector<std::unique_ptr<LineSource>> &LogData::Sources() const noexcept
@@ -169,7 +137,6 @@ void LogData::AppendBatch(
     {
         for (auto &line : lines)
         {
-            line.RebindKeys(mKeys);
             mLines.push_back(std::move(line));
         }
     }

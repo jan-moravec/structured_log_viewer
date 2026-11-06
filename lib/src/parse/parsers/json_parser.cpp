@@ -614,7 +614,7 @@ void DecodeJsonBatch(
             // running cursor so `FileLineSource::RawLine(LineId())` indexes
             // `mLineOffsets` correctly. `relativeLineNumber` stays
             // 1-based for human-facing error messages.
-            LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 

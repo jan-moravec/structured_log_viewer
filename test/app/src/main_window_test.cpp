@@ -774,12 +774,7 @@ loglib::StreamLineSource &BeginSyntheticStaticSession(LogModel &model)
 // @p declareNewKey on the first batch in a sequence so
 // `LogTable::PreviewAppend`'s column predictor matches reality.
 loglib::RowBatch MakeSyntheticBatch(
-    loglib::StreamLineSource &streamSource,
-    loglib::KeyIndex &keys,
-    loglib::KeyId valueKey,
-    size_t firstLineId,
-    size_t count,
-    bool declareNewKey
+    loglib::StreamLineSource &streamSource, loglib::KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey
 )
 {
     loglib::RowBatch batch;
@@ -1811,9 +1806,7 @@ private slots:
         for (size_t batchStart = 0; batchStart < totalLines; batchStart += batchSize)
         {
             const bool declareNewKey = (batchStart == 0);
-            model.AppendBatch(
-                MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
-            );
+            model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, batchStart + 1, batchSize, declareNewKey));
         }
 
         QCOMPARE(model.rowCount(), 100);
@@ -1854,7 +1847,7 @@ private slots:
         // collapse drops the head of `batch.lines` before forwarding
         // to `LogTable::AppendBatch`.
         model.AppendBatch(
-            MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/2000, /*declareNewKey=*/true)
+            MakeSyntheticBatch(streamSource, valueKey, /*firstLineId=*/1, /*count=*/2000, /*declareNewKey=*/true)
         );
 
         // Visible rows must equal the cap exactly (the head of the batch
@@ -1900,7 +1893,7 @@ private slots:
             const bool declareNewKey = (b == 0);
             // Direct call to OnBatch from this thread mirrors the worker.
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, firstLineId, static_cast<size_t>(linesPerBatch), declareNewKey
+                streamSource, valueKey, firstLineId, static_cast<size_t>(linesPerBatch), declareNewKey
             ));
         }
 
@@ -2017,12 +2010,12 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         model.SetRetentionCap(1000);
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 100, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 100, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 100);
 
         sink->Pause();
         // 500 paused-buffer rows arrive while paused (visible stays at 100).
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 101, 500, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 101, 500, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), 500);
 
@@ -2289,7 +2282,7 @@ private slots:
         {
             const bool firstBatch = (b == 0);
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
+                streamSource, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
             ));
         }
 
@@ -2355,7 +2348,7 @@ private slots:
         {
             const bool firstBatch = (b == 0);
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
+                streamSource, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
             ));
         }
 
@@ -2504,7 +2497,7 @@ private slots:
 
         const int batchSize = 7;
         model.AppendBatch(MakeSyntheticBatch(
-            streamSource, keys, valueKey, /*firstLineId=*/1, static_cast<size_t>(batchSize), /*declareNewKey=*/true
+            streamSource, valueKey, /*firstLineId=*/1, static_cast<size_t>(batchSize), /*declareNewKey=*/true
         ));
         QCOMPARE(model.rowCount(), batchSize);
 
@@ -2574,7 +2567,7 @@ private slots:
         QVERIFY(sink->IsPaused());
 
         const size_t pausedCount = 8;
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, pausedCount, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, pausedCount, /*declareNewKey=*/true));
         QCOMPARE(sink->PausedLineCount(), pausedCount);
         QCOMPARE(model.rowCount(), 0);
 
@@ -2595,7 +2588,7 @@ private slots:
         // resulting row order matches the input order.
         const size_t followupCount = 4;
         sink->OnBatch(
-            MakeSyntheticBatch(streamSource, keys, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false)
+            MakeSyntheticBatch(streamSource, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false)
         );
         QCoreApplication::processEvents();
         QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount + followupCount);
@@ -2780,7 +2773,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -2848,7 +2841,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -2894,7 +2887,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -2945,7 +2938,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -2998,7 +2991,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -3010,7 +3003,7 @@ private slots:
             qint64(3)
         );
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 4, 2, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 4, 2, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -3049,7 +3042,7 @@ private slots:
         constexpr int K_ROWS = 10'000;
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), K_ROWS);
 
@@ -3129,7 +3122,7 @@ private slots:
         constexpr int K_ROWS = 16;
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->rowCount(), K_ROWS);
 
@@ -3340,7 +3333,7 @@ private slots:
 
         // Seed the model with enough rows that the viewport is
         // genuinely scrollable.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 50, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 50, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 50);
 
@@ -3371,7 +3364,7 @@ private slots:
         // content slides down by the new rows' total height. With
         // preservation the scrollbar advances by that same amount so
         // the previously-visible content stays put.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 51, 5, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 51, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 55);
 
@@ -3430,7 +3423,7 @@ private slots:
         // at the tail edge.
         QVERIFY(tableView->verticalScrollBar()->value() >= tableView->verticalScrollBar()->maximum());
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 10, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 10);
 
@@ -3463,7 +3456,7 @@ private slots:
 
         // Seed scrollable rows, then simulate a user Home press
         // to scroll away from the bottom tail.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3477,7 +3470,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 7, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 7, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
 
         QCOMPARE(tableView->PendingNewRowsForTest(), 7);
@@ -3504,7 +3497,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 20, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3514,12 +3507,12 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 21, 3, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 21, 3, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 3);
         QCOMPARE(pill->Count(), 3);
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 24, 5, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 24, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 8);
         QCOMPARE(pill->Count(), 8);
@@ -3544,7 +3537,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 25, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 25, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3554,7 +3547,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 26, 4, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 26, 4, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 4);
 
@@ -3597,7 +3590,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 40, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 40, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Pin Follow on so the scroll-away assertion below is
@@ -3620,7 +3613,7 @@ private slots:
             "scroll-away must disengage Follow newest before the click test exercises re-engage"
         );
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 41, 6, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 41, 6, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 6);
 
@@ -3682,7 +3675,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Park at the (Bottom) tail, scroll away, then take a
@@ -3695,7 +3688,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 5, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 5);
         QCOMPARE(pill->Count(), 5);
@@ -3751,7 +3744,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 30);
 
@@ -3890,7 +3883,7 @@ private slots:
             "Follow newest engaging must mirror into the view's pending-new-rows suppression flag"
         );
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 25, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 25, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 25);
 
@@ -3900,7 +3893,7 @@ private slots:
 
         // A second batch must also stay silent -- the
         // suppression flag is sticky, not one-shot.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 26, 13, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 26, 13, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 0);
         QCOMPARE(pill->Count(), 0);
@@ -3937,7 +3930,7 @@ private slots:
         followAction->setEnabled(true);
         followAction->setChecked(false);
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3947,7 +3940,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 4, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 4, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 4);
         QCOMPARE(pill->Count(), 4);
@@ -3997,7 +3990,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Sort descending so source-newest (value=30) lands at
@@ -4020,7 +4013,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 8, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 8, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QVERIFY2(
             tableView->PendingNewRowsForTest() > 0,
@@ -4066,7 +4059,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -4076,7 +4069,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 7, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 7, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 7);
 
@@ -4116,7 +4109,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Park scrolled away and accumulate a pending count.
@@ -4127,7 +4120,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 4, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 4, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 4);
 
@@ -4225,7 +4218,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QVERIFY(tableView->model()->rowCount() >= 1);
 
@@ -4486,7 +4479,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, /*firstLineId=*/1, /*count=*/3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model.rowCount(), 3);
 
@@ -4559,7 +4552,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -4613,7 +4606,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -4663,7 +4656,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -4746,7 +4739,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -4817,7 +4810,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -4898,7 +4891,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -4958,7 +4951,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -4993,7 +4986,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 20, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 20);
 
@@ -5024,7 +5017,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 10, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 10);
 
@@ -5643,7 +5636,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
         // Synthetic rows carry only a `value` key -- no time col.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
         QCOMPARE(loglib::FirstTimeColumnIndex(model->Configuration()), -1);
@@ -5793,7 +5786,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
         model->EndStreaming(false);
@@ -6149,7 +6142,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         model->EndStreaming(false);
 
@@ -6178,7 +6171,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model.rowCount(), 4);
 
@@ -6229,7 +6222,7 @@ private slots:
         constexpr size_t CAP = 4;
         model.SetRetentionCap(CAP);
 
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 4);
 
         // Anchor lineIds 1 (evicted), 3 (evicted), 4 (survives).
@@ -6245,7 +6238,7 @@ private slots:
         QCOMPARE(anchors.Count(), static_cast<std::size_t>(3));
 
         // Append lineIds 5..7; evicts 1..3, keeps 4..7.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 5, 3, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 5, 3, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 4);
 
         QCOMPARE(anchors.Count(), static_cast<std::size_t>(1));
@@ -6276,7 +6269,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -6341,7 +6334,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -6392,7 +6385,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -6453,7 +6446,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -6535,7 +6528,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -6598,7 +6591,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -6670,7 +6663,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 1);
 
@@ -6760,7 +6753,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
 
         // Force the dock visible so refresh-gated paths run under
@@ -7419,7 +7412,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
 
         const auto key0 = model->AnchorKeyForRow(0);
@@ -7492,7 +7485,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
 
         const auto key0 = model->AnchorKeyForRow(0);
@@ -7602,7 +7595,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -7747,7 +7740,7 @@ private slots:
         tableView->show();
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 200, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 200, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 200);
 
@@ -7770,7 +7763,7 @@ private slots:
 
         // Push another batch; the slot must not snap the viewport
         // to the bottom (only live-tail sessions follow).
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 201, 200, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 201, 200, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 400);
 
@@ -7929,9 +7922,9 @@ private slots:
         std::thread worker([&]() {
             for (int i = 0; i < TOTAL_BATCHES; ++i)
             {
-                sink->OnBatch(MakeSyntheticBatch(
-                    streamSource, keys, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0
-                ));
+                sink->OnBatch(
+                    MakeSyntheticBatch(streamSource, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0)
+                );
                 enqueuedCount.fetch_add(1, std::memory_order_release);
             }
         });
@@ -7986,13 +7979,13 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         // Pre-fill the queue so the next enqueue blocks.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, /*declareNewKey=*/true));
 
         std::atomic<bool> entered{false};
         std::atomic<bool> finished{false};
         std::thread worker([&]() {
             entered.store(true, std::memory_order_release);
-            sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 2, 1, /*declareNewKey=*/false));
+            sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 2, 1, /*declareNewKey=*/false));
             finished.store(true, std::memory_order_release);
         });
 
@@ -8047,9 +8040,9 @@ private slots:
         std::thread worker([&]() {
             for (int i = 0; i < TOTAL_BATCHES; ++i)
             {
-                sink->OnBatch(MakeSyntheticBatch(
-                    streamSource, keys, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0
-                ));
+                sink->OnBatch(
+                    MakeSyntheticBatch(streamSource, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0)
+                );
             }
             producerDone.store(true, std::memory_order_release);
         });
@@ -23120,7 +23113,7 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         // Seed exactly the cap (no eviction yet) and pin row 50.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 100, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 100, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 100);
 
         RecordDetailDock dock(&model);
@@ -23143,7 +23136,7 @@ private slots:
 
         // Append +50 -> 50 evicted from the front. Lines 51..150
         // survive; pinned line 51 is now at row 0.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 101, 50, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 101, 50, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(dock.CurrentSourceRow(), 0);
         // Content still reflects line 51, not whatever sits at the old index.
@@ -23159,7 +23152,7 @@ private slots:
 
         // Append +100 -> lines 51..150 evicted; only 151..250 survive.
         // The pinned index goes invalid -> placeholder + row -1.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 151, 100, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 151, 100, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(dock.CurrentSourceRow(), -1);
         QVERIFY(!dock.Widget()->Content().valid);
@@ -23184,7 +23177,7 @@ private slots:
 
         loglib::KeyIndex &keys = model.Sink()->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 50, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 50, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 50);
 
         RecordDetailDock dock(&model);
@@ -23195,7 +23188,7 @@ private slots:
         QCOMPARE(initialPlaceholder, DefaultRecordDetailPlaceholder());
 
         // Trigger eviction; placeholder must stay default.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 51, 50, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 51, 50, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 50);
         QCOMPARE(dock.Widget()->Content().placeholderText, DefaultRecordDetailPlaceholder());
         QVERIFY2(
@@ -26045,7 +26038,7 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         constexpr size_t ROW_COUNT = 12;
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, ROW_COUNT, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, ROW_COUNT, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), static_cast<int>(ROW_COUNT));
         QVERIFY(model->IsStreamingActive());

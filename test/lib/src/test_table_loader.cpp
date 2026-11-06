@@ -3,8 +3,10 @@
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>
@@ -361,4 +363,46 @@ TEST_CASE("LiveProducer is the producer of the last stream and null for files", 
 
     ParseIntoTable(table, JsonParser{}, StreamSourceOf(JsonRows(2)), ParserOptionsFor(table));
     CHECK(table.LiveProducer() != nullptr);
+}
+
+TEST_CASE("Rows of every parser resolve their keys through the table's KeyIndex after a move", "[table_loader][keys]")
+{
+    // A row stores key ids only. The names come from the index of the table that owns the row, wherever the table
+    // lives, so moving the table must not break the lookup.
+    const auto check = [](const LogParser &parser, std::string text) {
+        LogTable table;
+        const ParseOutcome outcome =
+            ParseIntoTable(table, parser, MemorySource(std::move(text)), ParserOptionsFor(table));
+        REQUIRE(outcome.errors.empty());
+        REQUIRE(table.RowCount() == 2);
+
+        LogTable moved = std::move(table);
+        LogTable movedAgain;
+        movedAgain = std::move(moved);
+
+        const LogLine &first = movedAgain.Data().Lines()[0];
+        const LogLine &second = movedAgain.Data().Lines()[1];
+        const KeyIndex &keys = movedAgain.Keys();
+        CHECK(AsStringView(first.GetValue(keys, "level")) == std::string_view{"info"});
+        CHECK(AsStringView(second.GetValue(keys, "level")) == std::string_view{"warn"});
+        const std::vector<std::string> names = first.GetKeys(keys);
+        CHECK(std::ranges::find(names, "level") != names.end());
+    };
+
+    SECTION("JSON")
+    {
+        check(JsonParser{}, "{\"level\":\"info\"}\n{\"level\":\"warn\"}\n");
+    }
+    SECTION("logfmt")
+    {
+        check(LogfmtParser{}, "level=info\nlevel=warn\n");
+    }
+    SECTION("CSV")
+    {
+        check(CsvParser{}, "level\ninfo\nwarn\n");
+    }
+    SECTION("regex")
+    {
+        check(RegexParser(R"(^(?<level>\w+)$)"), "info\nwarn\n");
+    }
 }

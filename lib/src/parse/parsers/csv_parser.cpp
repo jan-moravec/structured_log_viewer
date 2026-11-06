@@ -235,7 +235,6 @@ struct CsvWorkerState
 void DecodeCsvBatch(
     const internal::ByteRange &batch,
     internal::WorkerScratch<CsvWorkerState> &worker,
-    KeyIndex &keys,
     FileLineSource &source,
     std::span<const internal::TimeColumnSpec> timeColumns,
     internal::ParsedPipelineBatch &parsed,
@@ -333,7 +332,7 @@ void DecodeCsvBatch(
             // LogLine ctor asserts ascending KeyIds; header order may not be.
             std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
-            LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
@@ -583,12 +582,10 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
     auto stageB = [sourcePtr, &columnKeys, headerLineOffset](
                       internal::ByteRange token,
                       internal::WorkerScratch<CsvWorkerState> &worker,
-                      KeyIndex &keys,
+                      KeyIndex & /*keys*/,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) {
-        DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset);
-    };
+                  ) { DecodeCsvBatch(token, worker, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset); };
 
     // The header columns are interned up front, so the pipeline announces them as declared keys, even for a column
     // that is empty in every row.
