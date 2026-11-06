@@ -14,11 +14,12 @@
 // break synthetic-but-valid lines fails here rather than silently
 // in the wild.
 
+#include "parse_only.hpp"
+
 #include "common.hpp"
 
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_value.hpp>
-#include "parse_only.hpp"
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
 
