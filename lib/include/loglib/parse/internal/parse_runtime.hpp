@@ -148,7 +148,7 @@ template <class UserState> struct WorkerScratch : WorkerScratchBase
  */
 inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache &cache)
 {
-    KeyId id;
+    KeyId id = INVALID_KEY_ID;
     if (const auto it = cache.map.find(key); it != cache.map.end())
     {
         id = it->second;

@@ -94,7 +94,7 @@ void DeduplicateColumnNames(std::vector<std::string> &names)
 /// `DeduplicateColumnNames`).
 template <class InternKey>
 bool ParseHeaderLine(
-    std::string_view headerLine, InternKey &&internKey, std::string &headerScratch, std::vector<KeyId> &columnKeys
+    std::string_view headerLine, const InternKey &internKey, std::string &headerScratch, std::vector<KeyId> &columnKeys
 )
 {
     columnKeys.clear();

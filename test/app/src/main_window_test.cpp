@@ -1162,9 +1162,8 @@ private slots:
 
         auto source =
             std::make_unique<loglib::StreamLineSource>("<throwing>", std::make_unique<ThrowingBytesProducer>());
-        model.BeginStreaming(std::move(source), loglib::ParserOptions{}, [] {
-            return std::make_unique<loglib::JsonParser>();
-        });
+        const loglib::ParserOptions options;
+        model.BeginStreaming(std::move(source), options, [] { return std::make_unique<loglib::JsonParser>(); });
 
         QVERIFY(finishedSpy.wait(60000));
         // Give a second, wrongly sent OnFinished the chance to arrive.
@@ -1188,7 +1187,8 @@ private slots:
 
         auto source =
             std::make_unique<loglib::StreamLineSource>("<throwing>", std::make_unique<ThrowingBytesProducer>());
-        model.BeginStreaming(std::move(source), loglib::ParserOptions{}, ThrowingParserFactory);
+        const loglib::ParserOptions options;
+        model.BeginStreaming(std::move(source), options, ThrowingParserFactory);
 
         QVERIFY(finishedSpy.wait(60000));
         QTest::qWait(100);

@@ -178,7 +178,7 @@ void RunStreamingParseLoopBody(
         options.defaultSourceTimeZone,
         options.referenceTime.value_or(std::chrono::system_clock::now())
     );
-    std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
+    const std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
     coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumnsSpan));
 
     BytesProducer *producer = source.Producer();
@@ -243,7 +243,7 @@ void RunStreamingParseLoopBody(
 
     // Announces the keys the decoder met since the last call. This runs before every flush, so a batch always lists the
     // keys of its rows. A key is recorded once for the whole stream, because the loop never starts a new key batch.
-    auto announceSeenKeys = [&]() {
+    auto announceSeenKeys = [&] {
         coalescer.AddSeenKeys(promoteScratch.keyCache.firstSeen);
         promoteScratch.keyCache.firstSeen.clear();
     };

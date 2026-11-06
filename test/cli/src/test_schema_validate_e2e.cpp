@@ -169,7 +169,15 @@ struct LineCountRuns
         output << bytes;
     }
     const std::vector<std::string> common = {
-        "validate", "--tz", "UTC", "--template-dir", EmptyTemplates(), "--output-format", "json", "--format", "auto"
+        "validate",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        EmptyTemplates(),
+        "--output-format",
+        "json",
+        "--format",
+        "auto",
     };
     auto fileArgs = common;
     fileArgs.push_back(path.string());

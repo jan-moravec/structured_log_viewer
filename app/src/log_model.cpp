@@ -2179,7 +2179,7 @@ const std::vector<loglib::ParseError> &LogModel::StreamingErrors() const
                 loglib::ParseError{
                     .message = std::string("Lost ") + std::to_string(delta) +
                                (delta == 1 ? " parsed batch" : " parsed batches") +
-                               " between the parser and the GUI when the stream was stopped (back-pressure shutdown)."
+                               " between the parser and the GUI when the stream was stopped (back-pressure shutdown).",
                 }
             );
             mLastReportedShutdownDropCount = dropped;

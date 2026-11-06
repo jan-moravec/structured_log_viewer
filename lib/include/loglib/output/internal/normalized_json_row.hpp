@@ -51,7 +51,7 @@ private:
     /** @brief The text that starts a field: the escaped key in quotes and a colon. */
     [[nodiscard]] const std::string &KeyPrefix(KeyId id);
 
-    const KeyIndex &mKeys;
+    const KeyIndex *mKeys;
     /** @brief The rank of each key id, or UNRANKED when no column lists the key. */
     std::vector<std::uint32_t> mRankByKey;
     std::vector<std::string> mKeyPrefix;

@@ -155,14 +155,14 @@ constexpr std::uint32_t UNRANKED = UINT32_MAX;
 } // namespace
 
 NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table)
-    : mKeys(table.Data().Keys()), mRankByKey(mKeys.Size(), UNRANKED), mKeyPrefix(mKeys.Size())
+    : mKeys(&table.Data().Keys()), mRankByKey(mKeys->Size(), UNRANKED), mKeyPrefix(mKeys->Size())
 {
     std::uint32_t next = 0;
     for (const Column &column : table.Configuration().Configuration().columns)
     {
         for (const std::string &key : column.keys)
         {
-            const KeyId id = mKeys.Find(key);
+            const KeyId id = mKeys->Find(key);
             if (id != INVALID_KEY_ID && mRankByKey[id] == UNRANKED)
             {
                 mRankByKey[id] = next++;
@@ -181,7 +181,7 @@ const std::string &NormalizedJsonRowWriter::KeyPrefix(KeyId id)
     if (prefix.empty())
     {
         prefix.push_back('"');
-        AppendJsonEscaped(prefix, mKeys.KeyOf(id));
+        AppendJsonEscaped(prefix, mKeys->KeyOf(id));
         prefix.append("\":");
     }
     return prefix;
@@ -194,7 +194,7 @@ void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
     {
         if (slot.tag != CompactTag::Monostate)
         {
-            mRow.push_back(RowField{keyId, &slot});
+            mRow.push_back(RowField{.id = keyId, .slot = &slot});
         }
     }
 
@@ -219,7 +219,7 @@ void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
             {
                 return rankA < rankB;
             }
-            return rankA == UNRANKED && mKeys.KeyOf(idA) < mKeys.KeyOf(idB);
+            return rankA == UNRANKED && mKeys->KeyOf(idA) < mKeys->KeyOf(idB);
         });
     }
 
