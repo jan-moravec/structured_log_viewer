@@ -76,11 +76,9 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
     RunTimedSamples(
         "Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = testFile.RecordCount()}, [&]() {
-            LogTable table;
             ParseResult result = ParseFile(parser, testFile.GetFilePath());
             REQUIRE(result.data.Lines().size() == testFile.RecordCount());
             REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
         }
     );
 }
