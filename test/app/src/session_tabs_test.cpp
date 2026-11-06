@@ -18,7 +18,7 @@
 #include "workspace_persistence.hpp"
 
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
@@ -158,10 +158,8 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
     jsonl.close();
     try
     {
-        loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(jsonlPath));
-        loglib::LogConfigurationManager manager;
-        manager.Update(parsed.data.SortedKeys());
-        loglib::LogTable table(std::move(parsed.data), std::move(manager));
+        const loglib::LoadResult loaded = loglib::LoadFile(logapp::QStringToFsPath(jsonlPath));
+        const loglib::LogTable &table = loaded.table;
         loglib::LogConfiguration configuration = table.Configuration().Configuration();
         if (configuration.columns.empty())
         {

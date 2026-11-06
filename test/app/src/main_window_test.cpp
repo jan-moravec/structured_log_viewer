@@ -48,7 +48,7 @@
 #include <loglib/ingest/udp_server_producer.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/parse/parse_file.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
@@ -299,10 +299,8 @@ QString WriteBundleFixture(
 )
 {
     const TempJsonFile source(lines);
-    loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(source.Path()));
-    loglib::LogConfigurationManager manager;
-    manager.Update(parsed.data.SortedKeys());
-    loglib::LogTable table(std::move(parsed.data), std::move(manager));
+    const loglib::LoadResult loaded = loglib::LoadFile(logapp::QStringToFsPath(source.Path()));
+    const loglib::LogTable &table = loaded.table;
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
     configure(configuration);
     for (auto &anchor : configuration.anchors)
