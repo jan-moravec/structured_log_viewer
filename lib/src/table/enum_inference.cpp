@@ -180,6 +180,7 @@ void EnumInference::Clear()
     mColumnHealth.clear();
     mLevelRankCache.clear();
     mPendingLevelBubbleKeys.clear();
+    mDemotedLevelValues.clear();
     mLastBatchDemotedKeys.clear();
     mIsStreaming = false;
 }
@@ -191,6 +192,7 @@ void EnumInference::BeginStreaming()
     mColumnHealth.clear();
     mLevelRankCache.clear();
     mPendingLevelBubbleKeys.clear();
+    mDemotedLevelValues.clear();
     mLastBatchDemotedKeys.clear();
     mIsStreaming = true;
 }
@@ -243,6 +245,11 @@ const std::vector<KeyId> &EnumInference::LastBatchDemotedKeys() const noexcept
 void EnumInference::ClearLastBatchDemotedKeys() noexcept
 {
     mLastBatchDemotedKeys.clear();
+}
+
+std::unordered_map<KeyId, LevelValueMap> EnumInference::TakeDemotedLevelValues() noexcept
+{
+    return std::exchange(mDemotedLevelValues, std::unordered_map<KeyId, LevelValueMap>{});
 }
 
 std::vector<KeyId> EnumInference::TakePendingLevelBubbleKeys() noexcept

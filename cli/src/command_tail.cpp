@@ -426,16 +426,11 @@ public:
         {
             return;
         }
-        if (!batch.errors.empty())
-        {
-            mErrors.insert(
-                mErrors.end(),
-                std::make_move_iterator(batch.errors.begin()),
-                std::make_move_iterator(batch.errors.end())
-            );
-            batch.errors.clear();
-        }
-        mTable->AppendBatchArranged(std::move(batch));
+        loglib::LogTable::AppendBatchResult result = mTable->AppendBatch(std::move(batch));
+        mTable->ApplyPlacements(result.placements);
+        mErrors.insert(
+            mErrors.end(), std::make_move_iterator(result.errors.begin()), std::make_move_iterator(result.errors.end())
+        );
         Process(false);
         Evict();
     }
@@ -453,7 +448,7 @@ public:
         }
         if (mNextRow < mTable->RowCount())
         {
-            mTable->BubbleLevelColumns(mTable->FinalizeAutoDetection().levelBubbleKeys);
+            mTable->ApplyPlacements(mTable->FinalizeAutoDetection().placements);
             Process(true);
         }
     }

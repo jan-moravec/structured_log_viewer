@@ -235,6 +235,26 @@ void EnumInference::DemoteColumnFromEnum(
     if (!keyIds.empty())
     {
         const EnumDictionary *dict = mDictionaries.Find(keyIds.front());
+        if (column.type == ColumnType::Level && dict != nullptr)
+        {
+            if (const auto ranksIt = mLevelRankCache.find(keyIds.front()); ranksIt != mLevelRankCache.end())
+            {
+                LevelValueMap values;
+                const std::vector<LogLevel> &ranks = ranksIt->second;
+                const size_t known = std::min<size_t>(ranks.size(), dict->Size());
+                for (size_t valueId = 0; valueId < known; ++valueId)
+                {
+                    if (ranks[valueId] != LogLevel::Unknown)
+                    {
+                        values[ranks[valueId]].emplace_back(dict->Resolve(static_cast<EnumValueId>(valueId)));
+                    }
+                }
+                if (!values.empty())
+                {
+                    mDemotedLevelValues[keyIds.front()] = std::move(values);
+                }
+            }
+        }
         for (auto &line : lines)
         {
             LineSource *source = line.Source();

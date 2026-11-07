@@ -32,6 +32,9 @@ class LogData;
 struct LogConfiguration;
 class LogConfigurationManager;
 
+/** @brief For each level, the raw dictionary values that mapped to it. */
+using LevelValueMap = std::unordered_map<LogLevel, std::vector<std::string>>;
+
 /**
  * @brief Rows a loaded file needs before an undecided column can become an enumeration. Smaller files are decided when
  * the parse ends.
@@ -200,6 +203,15 @@ public:
     [[nodiscard]] const std::vector<KeyId> &LastBatchDemotedKeys() const noexcept;
     void ClearLastBatchDemotedKeys() noexcept;
 
+    /**
+     * @brief Returns the level values of the Level columns demoted since the last call, by canonical key, and forgets
+     * them.
+     *
+     * DemoteColumnFromEnum records the mapping just before it erases the dictionary, which is the last moment it can be
+     * built. Levels without a recognized value are left out, and a column with no recognized value has no entry.
+     */
+    [[nodiscard]] std::unordered_map<KeyId, LevelValueMap> TakeDemotedLevelValues() noexcept;
+
     /** @brief Returns the columns that became Level columns and are waiting to move, and forgets them. */
     [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
 
@@ -296,6 +308,7 @@ private:
     std::vector<KeyId> mLastBatchDemotedKeys;
     std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
     std::vector<KeyId> mPendingLevelBubbleKeys;
+    std::unordered_map<KeyId, LevelValueMap> mDemotedLevelValues;
 };
 
 } // namespace loglib
