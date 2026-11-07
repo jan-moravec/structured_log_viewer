@@ -3,6 +3,7 @@
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/schema/internal/level_column_slot.hpp"
+#include "loglib/table/enum_inference.hpp"
 #include "loglib/table/internal/column_key_id_cache.hpp"
 #include "loglib/table/internal/timestamp_backfill.hpp"
 #include "loglib/time/time_zone_context.hpp"
@@ -24,7 +25,13 @@
 namespace loglib
 {
 
+LogTable::LogTable()
+    : mEnum(std::make_unique<EnumInference>())
+{
+}
+
 LogTable::LogTable(LogConfiguration configuration)
+    : mEnum(std::make_unique<EnumInference>())
 {
     mConfiguration.SetConfiguration(std::move(configuration));
 }
@@ -39,7 +46,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mReferenceTimeFixed(other.mReferenceTimeFixed),
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
       mTableConvertedTimeKeys(std::move(other.mTableConvertedTimeKeys)),
-      mEnum(std::move(other.mEnum))
+      mEnum(std::make_unique<EnumInference>(std::move(*other.mEnum)))
 {
     RewireSourceRegistries();
 }
@@ -58,29 +65,31 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mReferenceTimeFixed = other.mReferenceTimeFixed;
     mColumnKeyIds = std::move(other.mColumnKeyIds);
     mTableConvertedTimeKeys = std::move(other.mTableConvertedTimeKeys);
-    mEnum = std::move(other.mEnum);
+    *mEnum = std::move(*other.mEnum);
     RewireSourceRegistries();
     return *this;
 }
+
+LogTable::~LogTable() = default;
 
 void LogTable::Reset()
 {
     mData = LogData{};
     mTableConvertedTimeKeys.clear();
-    mEnum.Clear();
+    mEnum->Clear();
     RefreshColumnKeyIds();
-    mEnum.RefreshSnapshot(mData, mConfiguration);
+    mEnum->RefreshSnapshot(mData, mConfiguration);
 }
 
 void LogTable::OnConfigurationReloaded()
 {
     RefreshColumnKeyIds();
-    mEnum.RefreshSnapshot(mData, mConfiguration);
+    mEnum->RefreshSnapshot(mData, mConfiguration);
 }
 
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
-    mEnum.BeginStreaming();
+    mEnum->BeginStreaming();
     if (!mReferenceTimeFixed)
     {
         mReferenceTime = std::chrono::system_clock::now();
@@ -98,7 +107,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 
     RewireSourceRegistries();
     mTableConvertedTimeKeys.clear();
-    mEnum.RefreshSnapshot(mData, mConfiguration);
+    mEnum->RefreshSnapshot(mData, mConfiguration);
     RefreshColumnKeyIds();
 }
 
@@ -110,7 +119,7 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
         return;
     }
 
-    source->SetEnumDictionaries(&mEnum.Dictionaries());
+    source->SetEnumDictionaries(&mEnum->Dictionaries());
     mData.Sources().push_back(std::move(source));
 }
 
@@ -126,9 +135,9 @@ bool IsEnumLike(ColumnType type) noexcept
 
 LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 {
-    mEnum.ClearLastBatchDemotedKeys();
-    (void)mEnum.TakePendingLevelBubbleKeys();
-    mEnum.ClearDemotedLevelValues();
+    mEnum->ClearLastBatchDemotedKeys();
+    (void)mEnum->TakePendingLevelBubbleKeys();
+    mEnum->ClearDemotedLevelValues();
 
     AppendBatchResult result;
     result.errors = std::move(batch.errors);
@@ -167,7 +176,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             {
                 continue;
             }
-            const EnumDictionary *dictionary = mEnum.Dictionaries().Find(key);
+            const EnumDictionary *dictionary = mEnum->Dictionaries().Find(key);
             if (dictionary == nullptr)
             {
                 continue;
@@ -280,7 +289,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
         }
     }
 
-    mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
+    mEnum->RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
 
     result.rowsAdded = mData.Lines().size() - oldRowCount;
     result.columnsAdded = mConfiguration.Configuration().columns.size() - oldColumnCount;
@@ -288,9 +297,9 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     {
         result.backfilledColumns = std::make_pair(*firstBackfilled, *lastBackfilled);
     }
-    const std::vector<KeyId> demotedKeys = mEnum.LastBatchDemotedKeys();
-    const std::vector<KeyId> levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
-    for (ParseError &error : mEnum.TakePendingErrors())
+    const std::vector<KeyId> demotedKeys = mEnum->LastBatchDemotedKeys();
+    const std::vector<KeyId> levelBubbleKeys = mEnum->TakePendingLevelBubbleKeys();
+    for (ParseError &error : mEnum->TakePendingErrors())
     {
         result.errors.push_back(std::move(error));
     }
@@ -300,7 +309,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     const bool anyDemotion = !demotedKeys.empty();
     if (anyDemotion)
     {
-        demotedValues = mEnum.TakeDemotedLevelValues();
+        demotedValues = mEnum->TakeDemotedLevelValues();
     }
     const auto &columnsAfter = mConfiguration.Configuration().columns;
 
@@ -309,7 +318,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     std::vector<size_t> demotedColumns;
     for (const EnumColumnSnapshot &entry : enumSnapshot)
     {
-        const EnumDictionary *dictionary = anyDemotion ? mEnum.Dictionaries().Find(entry.key) : entry.dictionary;
+        const EnumDictionary *dictionary = anyDemotion ? mEnum->Dictionaries().Find(entry.key) : entry.dictionary;
         if (dictionary == nullptr)
         {
             EnumColumnEvent event{.column = entry.column, .change = EnumColumnChange::Demoted};
@@ -631,34 +640,34 @@ void LogTable::RewireSourceRegistries()
     {
         if (source != nullptr)
         {
-            source->SetEnumDictionaries(&mEnum.Dictionaries());
+            source->SetEnumDictionaries(&mEnum->Dictionaries());
         }
     }
 }
 
 const EnumDictionaryRegistry &LogTable::EnumDictionaries() const noexcept
 {
-    return mEnum.Dictionaries();
+    return mEnum->Dictionaries();
 }
 
 void LogTable::SetEnumValueCap(uint16_t cap) noexcept
 {
-    mEnum.SetValueCap(cap);
+    mEnum->SetValueCap(cap);
 }
 
 uint16_t LogTable::EnumValueCap() const noexcept
 {
-    return mEnum.ValueCap();
+    return mEnum->ValueCap();
 }
 
 void LogTable::SetEnumValueMaxLen(uint32_t maxLen) noexcept
 {
-    mEnum.SetValueMaxLen(maxLen);
+    mEnum->SetValueMaxLen(maxLen);
 }
 
 uint32_t LogTable::EnumValueMaxLen() const noexcept
 {
-    return mEnum.ValueMaxLen();
+    return mEnum->ValueMaxLen();
 }
 
 std::optional<EnumValueId> LogTable::GetEnumValueId(size_t row, size_t column) const noexcept
@@ -699,7 +708,7 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
     {
         return {};
     }
-    return {.canonicalKey = canonicalKey, .dictionary = mEnum.Dictionaries().Find(canonicalKey)};
+    return {.canonicalKey = canonicalKey, .dictionary = mEnum->Dictionaries().Find(canonicalKey)};
 }
 
 LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex) const
@@ -714,13 +723,13 @@ LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex)
 
 ColumnType LogTable::RescanColumnForAutoDetection(size_t columnIndex)
 {
-    return mEnum.RescanColumn(mData, mConfiguration, mColumnKeyIds, columnIndex);
+    return mEnum->RescanColumn(mData, mConfiguration, mColumnKeyIds, columnIndex);
 }
 
 LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
 {
     FinalizeResult result;
-    (void)mEnum.TakeDemotedLevelValues();
+    (void)mEnum->TakeDemotedLevelValues();
 
     std::vector<ColumnType> typesBefore;
     {
@@ -732,11 +741,11 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
         }
     }
 
-    result.promotedToEnumeration = mEnum.Finalize(mData, mConfiguration);
-    const std::vector<KeyId> levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
-    result.errors = mEnum.TakePendingErrors();
+    result.promotedToEnumeration = mEnum->Finalize(mData, mConfiguration);
+    const std::vector<KeyId> levelBubbleKeys = mEnum->TakePendingLevelBubbleKeys();
+    result.errors = mEnum->TakePendingErrors();
 
-    auto demotedValues = mEnum.TakeDemotedLevelValues();
+    auto demotedValues = mEnum->TakeDemotedLevelValues();
     const auto &columnsAfter = mConfiguration.Configuration().columns;
     for (size_t columnIndex = 0; columnIndex < typesBefore.size() && columnIndex < columnsAfter.size(); ++columnIndex)
     {
@@ -786,7 +795,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
             const KeyId canonical = mData.Keys().Find(col.keys.front());
             if (canonical != INVALID_KEY_ID)
             {
-                mEnum.EraseTracker(canonical);
+                mEnum->EraseTracker(canonical);
             }
         }
     }
@@ -819,7 +828,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     case ColumnType::Enumeration:
     case ColumnType::Level:
     {
-        mEnum.RefreshSnapshot(mData, mConfiguration);
+        mEnum->RefreshSnapshot(mData, mConfiguration);
         RefreshColumnKeyIds();
         if (column.keys.empty())
         {
@@ -830,22 +839,22 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             break;
         }
-        EnumColumnHealth &health = mEnum.HealthFor(canonical);
+        EnumColumnHealth &health = mEnum->HealthFor(canonical);
         const bool previousWasEnumLike = previousType == ColumnType::Enumeration || previousType == ColumnType::Level;
         if (!previousWasEnumLike)
         {
             health = EnumColumnHealth{};
         }
-        if (!mEnum.EncodeColumnRangeAsEnum(
+        if (!mEnum->EncodeColumnRangeAsEnum(
                 mData, mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health
             ))
         {
-            mEnum.DemoteColumnFromEnum(mData, mConfiguration, columnIndex, /*recordForBatch=*/false);
+            mEnum->DemoteColumnFromEnum(mData, mConfiguration, columnIndex, /*recordForBatch=*/false);
             return;
         }
         if (column.type == ColumnType::Level)
         {
-            mEnum.RefreshLevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
+            mEnum->RefreshLevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
         }
         break;
     }
@@ -871,14 +880,14 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             break;
         }
-        if (mEnum.Dictionaries().Find(canonical) != nullptr)
+        if (mEnum->Dictionaries().Find(canonical) != nullptr)
         {
             const auto targetType = column.type;
             mConfiguration.SetColumnType(columnIndex, ColumnType::Enumeration);
-            mEnum.DemoteColumnFromEnum(mData, mConfiguration, columnIndex, /*recordForBatch=*/false);
+            mEnum->DemoteColumnFromEnum(mData, mConfiguration, columnIndex, /*recordForBatch=*/false);
             mConfiguration.SetColumnType(columnIndex, targetType);
         }
-        mEnum.EraseHealthAndLevelCache(canonical);
+        mEnum->EraseHealthAndLevelCache(canonical);
         break;
     }
     }
@@ -954,7 +963,7 @@ std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex)
 
 std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t columnIndex) const noexcept
 {
-    const auto *ranks = mEnum.LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
+    const auto *ranks = mEnum->LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
     if (ranks == nullptr)
     {
         return std::nullopt;
@@ -973,7 +982,7 @@ std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t colum
 
 const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const noexcept
 {
-    return mEnum.LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
+    return mEnum->LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
 }
 
 std::string LogTable::FormatLogValue(const std::string &format, const LogValue &value) const

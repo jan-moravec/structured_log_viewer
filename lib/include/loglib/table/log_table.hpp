@@ -18,7 +18,6 @@
 #include "loglib/core/row_batch.hpp"
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/column_type_health.hpp"
-#include "loglib/table/enum_inference.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <chrono>
@@ -36,6 +35,7 @@ namespace loglib
 {
 
 class BytesProducer;
+class EnumInference;
 
 /** @brief What happened to the dictionary or type of an enumeration column. */
 enum class EnumColumnChange
@@ -113,7 +113,7 @@ struct ColumnMove
 class LogTable
 {
 public:
-    LogTable() = default;
+    LogTable();
 
     /** @brief An empty table that starts with the given column configuration. */
     explicit LogTable(LogConfiguration configuration);
@@ -124,7 +124,7 @@ public:
     /** @brief Moves the table and points every owned LineSource at the moved enumeration dictionaries. */
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
-    ~LogTable() = default;
+    ~LogTable();
 
     /** @brief Removes all rows and sources. The column configuration is kept. */
     void Reset();
@@ -469,7 +469,7 @@ private:
      * @brief Type inference, enumeration encoding and the level cache. It owns the dictionaries, which LineSources
      * borrow.
      */
-    EnumInference mEnum;
+    std::unique_ptr<EnumInference> mEnum;
 
     /** @brief Scratch for AppendBatch, kept between calls so a steady stream does not allocate. */
     std::vector<EnumColumnSnapshot> mEnumSnapshot;
