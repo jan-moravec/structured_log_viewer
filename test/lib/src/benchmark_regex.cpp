@@ -505,16 +505,4 @@ TEST_CASE(
         << " MB/s => " << bestRatio << "x best speedup"
     );
 
-    // Best-of-N ratio: the intrinsic speedup the dedicated-anchor
-    // path provides when the runner isn't stalling on OS noise. The
-    // 1.03x target is documented in the multi-line-records PR (#83)
-    // test plan. Asserting against `bestRatio` (rather than
-    // `meanRatio`) matches the `min_element`-based CHECK convention
-    // in `benchmark_log_filter.cpp` and, combined with the 24
-    // samples per config above, survives the shared-runner variance
-    // that flaked the mean-based gate on macos-15 (run 31089238430,
-    // mean 1.020x) and on MSVC-Release (mean 0.993x on a noisy
-    // sample, mean 1.229x on a clean one, best-of-24 ratio measured
-    // at 1.040-1.121x across six back-to-back local runs).
-    CHECK(bestRatio >= 1.03);
 }

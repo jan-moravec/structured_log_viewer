@@ -325,12 +325,6 @@ TEST_CASE("RowPredicate enum filter walks 1'000'000 rows under 100ms", "[.][benc
         "EnumRowPredicate over " << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
                                  << ", high=" << Ms(high).count() << "), accepted=" << accepted
     );
-
-    // Generous ceiling; the GUI's hard freeze symptom was several
-    // seconds. Hitting >100 ms here suggests the fast path regressed
-    // back to a per-row allocation, which is the regression we
-    // explicitly designed against.
-    CHECK(Ms(low).count() < 100.0);
 }
 
 TEST_CASE(
@@ -393,13 +387,6 @@ TEST_CASE(
                                            << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
                                            << "), accepted=" << accepted
     );
-
-    // Generous ceiling. The callback itself is `std::string::find`
-    // on a short needle; the per-row cost is dominated by the table
-    // lookup, not the substring scan. Going above 200 ms here flags
-    // a regression in either the variant access or the table
-    // bookkeeping.
-    CHECK(Ms(low).count() < 200.0);
 }
 
 TEST_CASE(
@@ -451,11 +438,6 @@ TEST_CASE(
         "CompareRows enum sort over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
                                       << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count() << ")"
     );
-
-    // O(N log N) compares of a uint16_t rank should be well under a
-    // second on a modern desktop; previous QVariant-mediated paths took
-    // several seconds in the GUI for the same input.
-    CHECK(Ms(low).count() < 1500.0);
 
     // Sanity: the sort really did produce ascending ranks.
     for (size_t i = 1; i < indices.size(); ++i)
@@ -524,13 +506,6 @@ TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms
                                               << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
                                               << "), accepted=" << accepted
     );
-
-    // Sequential reference lands ~16 ms on the dev box; the parallel
-    // pass should stay within ~6x that even on a single-core CI
-    // runner (TBB falls back to sequential without worker threads).
-    // 100 ms tolerates CI variance while catching order-of-magnitude
-    // regressions.
-    CHECK(Ms(low).count() < 100.0);
 }
 
 TEST_CASE(
@@ -580,13 +555,6 @@ TEST_CASE(
                                                                   << " ms (low=" << Ms(low).count()
                                                                   << ", high=" << Ms(high).count() << ")"
     );
-
-    // Sequential `std::ranges::sort + CompareRows` reference lands
-    // ~148 ms on the dev box; parallel + pre-materialised rank is
-    // ~68 ms. 500 ms is the CI ceiling: a regression past it means
-    // either rank pre-materialisation broke or `tbb::parallel_sort`
-    // collapsed back to sequential.
-    CHECK(Ms(low).count() < 500.0);
 
     // Sanity: ascending rank order with input-index tie-break
     // (`SortPermutationByColumn` documents this stability).
@@ -665,12 +633,6 @@ TEST_CASE(
         << ", high=" << Ms(high).count() << ")"
     );
 
-    // Level uses `uint8_t` ordinals (enum uses `uint16_t`); per-row
-    // work is slightly cheaper but `tbb::parallel_sort` dominates.
-    // Local ~30 ms; 500 ms CI ceiling matches the enum sibling and
-    // catches a loss of parallelism or rank caching.
-    CHECK(Ms(low).count() < 500.0);
-
     // Sanity: canonical severity non-decreasing with input-index
     // tie-break. Go through `GetLevelForRow` (the public API the
     // GUI uses) rather than the rank cache directly.
@@ -733,17 +695,6 @@ TEST_CASE(
                                        << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count() << ")"
     );
 
-    // `CompareLevel` is heavier per call than `CompareEnum` with a
-    // precomputed `EnumDictRank` (a `GetLevelForRow` per side vs. an
-    // indexed array read). Ceiling 3000 ms vs. the enum sibling's
-    // 1500 ms. The `low` of `SAMPLES=3` runs jitters ~17% run-to-run
-    // on the GitHub Actions Linux runner (observed 1916 -> 2252 ms
-    // across consecutive runs), so the headroom over the typical
-    // ~2000 ms low is intentional. Breaking it usually means
-    // `GetLevelForRow` fell off the cache or the canonical-name
-    // resolve regressed.
-    CHECK(Ms(low).count() < 3000.0);
-
     // Sanity: ascending canonical-severity order via `GetLevelForRow`.
     for (size_t i = 1; i < indices.size(); ++i)
     {
@@ -773,7 +724,7 @@ TEST_CASE(
 //      collapses via word-parallel `&` / `|` / `~`.
 //
 // Numbers are `WARN`-reported so CI logs surface the run-to-run
-// distribution; the `CHECK` is a coarse regression guard.
+// distribution. Speed is judged by comparing runs, not by a limit here.
 
 namespace
 {
@@ -858,15 +809,6 @@ TEST_CASE(
                                                       << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
                                                       << "), accepted=" << accepted
     );
-
-    // A flat `And` stays on the visit path -- `ShouldUseBitsetPath`
-    // requires an `Or` or a `Not`, because short-circuit evaluation
-    // strictly dominates materialising four bitsets here. The
-    // envelope is therefore one enum leaf over every row plus a
-    // rapidly-shrinking tail. Historical numbers on the dev box are
-    // ~40 ms; 200 ms gives CI runners room without hiding a
-    // regression.
-    CHECK(Ms(low).count() < 200.0);
 }
 
 TEST_CASE(
@@ -937,11 +879,4 @@ TEST_CASE(
         << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
         << ", high=" << Ms(high).count() << "), accepted=" << accepted
     );
-
-    // Bitset path is where the OR-heavy workload's headline win
-    // comes from: word-parallel AND/OR of packed bitsets. 200 ms
-    // leaves ~5x headroom over the observed ~40 ms on the dev
-    // box; regressing past it usually means the bitset path fell
-    // back to visit or the leaf-materialisation lost concurrency.
-    CHECK(Ms(low).count() < 200.0);
 }
