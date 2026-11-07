@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 template <typename T> class QFutureWatcher;
@@ -474,6 +475,25 @@ private:
     /// of every `AppendBatch`.
     std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
         mLastBatchLevelDemoteMapping;
+
+    /// Moves @p errors onto the streaming error list.
+    void AppendStreamingErrors(std::vector<loglib::ParseError> &errors);
+
+    /// Emits `enumColumnsChanged` for each library event in order. When
+    /// @p backfilledColumns is set and @p rowCount is positive, the
+    /// back-fill `dataChanged` goes out before the first event the
+    /// back-fill caused, or after all events when there is none. A Demoted
+    /// Level event stores its mapping in `mLastBatchLevelDemoteMapping`
+    /// first.
+    void EmitEnumEvents(
+        std::vector<loglib::EnumColumnEvent> &events,
+        const std::optional<std::pair<size_t, size_t>> &backfilledColumns,
+        int rowCount
+    );
+
+    /// Resolves each placement just before its move and applies it with the
+    /// matching Qt column-move signals.
+    void ApplyPlacementsWithSignals(const std::vector<loglib::ColumnPlacement> &placements);
 
     /// Per-column health cache, parallel to `Configuration().columns`.
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
