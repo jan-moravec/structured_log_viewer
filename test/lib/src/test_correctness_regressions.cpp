@@ -509,7 +509,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
     CHECK(loglib::FormatParseError(sink.errors[0]).find("Continuation lines dropped") != std::string::npos);
 }
 
-TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBytesProducer][rotation]")
+TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBytesProducer][rotation][fs-events]")
 {
     const test_common::TempDir dir("rotate");
     const std::filesystem::path path = dir.Write("app.log", "one\n");
@@ -536,7 +536,7 @@ TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBy
     producer.Stop();
 }
 
-TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytesProducer][limits]")
+TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytesProducer][limits][fs-events]")
 {
     const test_common::TempDir dir("tail_limit");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -561,7 +561,7 @@ TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytes
     producer.Stop();
 }
 
-TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[TailingBytesProducer][limits]")
+TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[TailingBytesProducer][limits][fs-events]")
 {
     const test_common::TempDir dir("tail_queue");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -592,7 +592,7 @@ TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[
     producer.Stop();
 }
 
-TEST_CASE("Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation]")
+TEST_CASE("Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation][fs-events]")
 {
     const test_common::TempDir dir("tail_rotate_queue");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -631,7 +631,7 @@ TEST_CASE("Tailing does not read a rotated file past the queue limit", "[Tailing
     producer.Stop();
 }
 
-TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[TailingBytesProducer][rotation]")
+TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[TailingBytesProducer][rotation][fs-events]")
 {
     const test_common::TempDir dir("tail_rotate_partial");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -679,7 +679,7 @@ TEST_CASE("Session bundle metadata rejects a very deep filter tree", "[session_b
     CHECK_THROWS_AS(ParseSessionBundleMetadata(json), FormatError);
 }
 
-TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode]")
+TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode][fs-events]")
 {
     const test_common::TempDir dir("unicode");
     const std::filesystem::path path = dir.Path() / std::filesystem::path(u8"日本語.log");

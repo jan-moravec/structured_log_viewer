@@ -43,7 +43,7 @@ std::string DrainUntil(TcpServerProducer &producer, size_t target, std::chrono::
 
 } // namespace
 
-TEST_CASE("TcpServerProducer: single client send-receive", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: single client send-receive", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -58,7 +58,7 @@ TEST_CASE("TcpServerProducer: single client send-receive", "[tcp_producer]")
     REQUIRE(drained == "hello\nworld\n");
 }
 
-TEST_CASE("TcpServerProducer: drops an oversized line and resumes after it", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: drops an oversized line and resumes after it", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -75,7 +75,7 @@ TEST_CASE("TcpServerProducer: drops an oversized line and resumes after it", "[t
     CHECK(producer.DroppedByteCount() > 0);
 }
 
-TEST_CASE("TcpServerProducer: per-session carry preserves line boundaries with two clients", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: per-session carry preserves line boundaries with two clients", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -101,7 +101,7 @@ TEST_CASE("TcpServerProducer: per-session carry preserves line boundaries with t
     REQUIRE((drained == "AAAAAAAA\nBBBBBBBB\n" || drained == "BBBBBBBB\nAAAAAAAA\n"));
 }
 
-TEST_CASE("TcpServerProducer: client disconnect flushes partial-line carry", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: client disconnect flushes partial-line carry", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -118,7 +118,7 @@ TEST_CASE("TcpServerProducer: client disconnect flushes partial-line carry", "[t
     REQUIRE(producer.TotalClientsAccepted() == 1);
 }
 
-TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -156,7 +156,7 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
     REQUIRE(producer.ActiveClientCount() == 2);
 }
 
-TEST_CASE("TcpServerProducer: Stop() unblocks WaitForBytes", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: Stop() unblocks WaitForBytes", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -176,7 +176,7 @@ TEST_CASE("TcpServerProducer: Stop() unblocks WaitForBytes", "[tcp_producer]")
     producer.Stop(); // idempotent
 }
 
-TEST_CASE("TcpServerProducer: DisplayName starts with tcp:// scheme", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: DisplayName starts with tcp:// scheme", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -186,7 +186,7 @@ TEST_CASE("TcpServerProducer: DisplayName starts with tcp:// scheme", "[tcp_prod
     REQUIRE(display.ends_with(std::to_string(producer.BoundPort())));
 }
 
-TEST_CASE("TcpServerProducer: invalid bind address throws", "[tcp_producer]")
+TEST_CASE("TcpServerProducer: invalid bind address throws", "[tcp_producer][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "not-a-host";

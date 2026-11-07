@@ -134,7 +134,7 @@ TailingBytesProducer::Options TestOptions()
 // A worker parked in `WaitForBytes` on an idle producer must observe
 // `BytesProducer::Stop()` and unwind within 500 ms. The timed window
 // covers Stop() -> RequestStop() -> thread join -> OnFinished.
-TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown]")
+TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("idle.log");
@@ -177,7 +177,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
 // A worker mid-decoding a 100 KiB buffered batch must still observe
 // Stop within 500 ms. The parser checks the stop-token at every line
 // boundary, so worst case is one line decode plus Stop-then-join.
-TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stream_stop_teardown]")
+TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stream_stop_teardown][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("buffered.log");

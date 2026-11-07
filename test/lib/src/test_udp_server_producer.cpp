@@ -47,7 +47,7 @@ std::string DrainUntil(UdpServerProducer &producer, size_t target, std::chrono::
 
 } // namespace
 
-TEST_CASE("UdpServerProducer: receives single datagram and queues bytes", "[udp_producer]")
+TEST_CASE("UdpServerProducer: receives single datagram and queues bytes", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -64,7 +64,7 @@ TEST_CASE("UdpServerProducer: receives single datagram and queues bytes", "[udp_
     REQUIRE(producer.DatagramCount() >= 1);
 }
 
-TEST_CASE("UdpServerProducer: appends synthetic newline only when missing", "[udp_producer]")
+TEST_CASE("UdpServerProducer: appends synthetic newline only when missing", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -78,7 +78,7 @@ TEST_CASE("UdpServerProducer: appends synthetic newline only when missing", "[ud
     REQUIRE(drained == "with-newline\nwithout-newline\n");
 }
 
-TEST_CASE("UdpServerProducer: multi-line datagrams pass through verbatim", "[udp_producer]")
+TEST_CASE("UdpServerProducer: multi-line datagrams pass through verbatim", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -91,7 +91,7 @@ TEST_CASE("UdpServerProducer: multi-line datagrams pass through verbatim", "[udp
     REQUIRE(drained == "line-a\nline-b\nline-c\n");
 }
 
-TEST_CASE("UdpServerProducer: many datagrams interleave in arrival order", "[udp_producer]")
+TEST_CASE("UdpServerProducer: many datagrams interleave in arrival order", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -114,7 +114,7 @@ TEST_CASE("UdpServerProducer: many datagrams interleave in arrival order", "[udp
     REQUIRE(newlines >= COUNT * 9 / 10);
 }
 
-TEST_CASE("UdpServerProducer: Stop() unblocks WaitForBytes", "[udp_producer]")
+TEST_CASE("UdpServerProducer: Stop() unblocks WaitForBytes", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
@@ -136,14 +136,14 @@ TEST_CASE("UdpServerProducer: Stop() unblocks WaitForBytes", "[udp_producer]")
     producer.Stop();
 }
 
-TEST_CASE("UdpServerProducer: invalid bind address throws", "[udp_producer]")
+TEST_CASE("UdpServerProducer: invalid bind address throws", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "not-a-host";
     REQUIRE_THROWS_AS(UdpServerProducer(opts), std::system_error);
 }
 
-TEST_CASE("UdpServerProducer: DisplayName reflects bound port", "[udp_producer]")
+TEST_CASE("UdpServerProducer: DisplayName reflects bound port", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";

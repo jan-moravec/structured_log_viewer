@@ -184,7 +184,7 @@ TailingBytesProducer::Options FastPollOptions()
 
 } // namespace
 
-TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small file", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small file", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("preset_lines.log");
@@ -220,7 +220,7 @@ TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small fil
     CHECK(source.DisplayName() == expected.string());
 }
 
-TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("short.log");
@@ -244,7 +244,7 @@ TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingByt
 // `pollInterval` elapses. We stretch `Prefill` with many small
 // backwards reads so the test thread reliably parks before the
 // pre-fill bytes land — exposing a missing notify.
-TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("notify_prefill.log");
@@ -287,7 +287,7 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
 
 TEST_CASE(
     "TailingBytesProducer pre-fill aborts gracefully on a file with no newlines within the scan budget",
-    "[TailingBytesProducer]"
+    "[TailingBytesProducer][fs-events]"
 )
 {
     // 2 MiB file with no newlines and a 128 KiB scan budget must not
@@ -326,7 +326,7 @@ TEST_CASE(
     CHECK(!post.contains("xxxxx"));
 }
 
-TEST_CASE("TailingBytesProducer detects growth across many small writes", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer detects growth across many small writes", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("growth.log");
@@ -356,7 +356,7 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
     }
 }
 
-TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[TailingBytesProducer][rotation]")
+TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[TailingBytesProducer][rotation][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("rotate.log");
@@ -391,7 +391,7 @@ TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[Tai
     CHECK(source.RotationCount() >= 1);
 }
 
-TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingBytesProducer][rotation]")
+TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingBytesProducer][rotation][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("copytrunc.log");
@@ -422,7 +422,7 @@ TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingB
     CHECK(rotationFires.load(std::memory_order_acquire) >= 1);
 }
 
-TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytesProducer][rotation]")
+TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytesProducer][rotation][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("inplace_trunc.log");
@@ -450,7 +450,7 @@ TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytes
 
 TEST_CASE(
     "TailingBytesProducer keeps ingesting while the consumer is paused (rotation included)",
-    "[TailingBytesProducer][rotation]"
+    "[TailingBytesProducer][rotation][fs-events]"
 )
 {
     const TempDir dir;
@@ -483,7 +483,7 @@ TEST_CASE(
     CHECK(lines[3] == "q2");
 }
 
-TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingBytesProducer][rotation]")
+TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingBytesProducer][rotation][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("partial_rot.log");
@@ -515,7 +515,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     CHECK(!post.contains("incomplete"));
 }
 
-TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("partial_stop.log");
@@ -542,7 +542,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
     CHECK(source.IsClosed());
 }
 
-TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle file", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle file", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("idle.log");
@@ -570,7 +570,7 @@ TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle fil
     CHECK(elapsed < ScaledMs(5000ms));
 }
 
-TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[TailingBytesProducer][rotation]")
+TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[TailingBytesProducer][rotation][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("debounce.log");
@@ -620,7 +620,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
     CHECK(rotationFires.load(std::memory_order_acquire) == 1);
 }
 
-TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("does_not_exist.log");
@@ -628,7 +628,7 @@ TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesP
     CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), std::system_error);
 }
 
-TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", "[TailingBytesProducer]")
+TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("simple.log");
@@ -651,7 +651,7 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
 }
 
 TEST_CASE(
-    "TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status]"
+    "TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status][fs-events]"
 )
 {
     // When the watched file disappears the source transitions to

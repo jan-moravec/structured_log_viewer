@@ -178,7 +178,7 @@ std::string DrainUntil(TcpServerProducer &producer, size_t target, std::chrono::
 
 } // namespace
 
-TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tcp_producer][tls]")
+TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tcp_producer][tls][network]")
 {
     const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
@@ -210,7 +210,7 @@ TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tc
     REQUIRE(drained.empty());
 }
 
-TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cert", "[tcp_producer][tls]")
+TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cert", "[tcp_producer][tls][network]")
 {
     const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
@@ -234,7 +234,7 @@ TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cer
     REQUIRE(producer.TotalClientsAccepted() == 1);
 }
 
-TEST_CASE("TcpServerProducer (TLS): missing cert file fails fast in ctor", "[tcp_producer][tls]")
+TEST_CASE("TcpServerProducer (TLS): missing cert file fails fast in ctor", "[tcp_producer][tls][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";
