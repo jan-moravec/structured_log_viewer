@@ -157,7 +157,19 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             {
                 continue;
             }
-            const KeyId key = CanonicalKeyOf(mData.Keys(), column);
+            // The cached ids give the same key as CanonicalKeyOf without hashing the key names on every batch.
+            KeyId key = INVALID_KEY_ID;
+            if (columnIndex < mColumnKeyIds.size())
+            {
+                for (const KeyId id : mColumnKeyIds[columnIndex])
+                {
+                    if (id != INVALID_KEY_ID)
+                    {
+                        key = id;
+                        break;
+                    }
+                }
+            }
             if (key == INVALID_KEY_ID)
             {
                 continue;
