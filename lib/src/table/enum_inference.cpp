@@ -9,7 +9,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <chrono>
+#include <cassert>
 #include <cstdint>
 #include <optional>
 #include <ranges>
@@ -73,6 +73,19 @@ bool ValuesRepeatOrAreLevels(const EnumCandidateTracker &tracker, const Column &
 }
 
 } // namespace
+
+KeyId CanonicalKeyOf(const KeyIndex &keys, const Column &column)
+{
+    for (const std::string &key : column.keys)
+    {
+        const KeyId id = keys.Find(key);
+        if (id != INVALID_KEY_ID)
+        {
+            return id;
+        }
+    }
+    return INVALID_KEY_ID;
+}
 
 bool EnumColumnHealth::ShouldDemote(double tolerance, size_t minSamples) const noexcept
 {
@@ -167,6 +180,8 @@ void EnumInference::Clear()
     mColumnHealth.clear();
     mLevelRankCache.clear();
     mPendingLevelBubbleKeys.clear();
+    mDemotedLevelValues.clear();
+    mPendingErrors.clear();
     mLastBatchDemotedKeys.clear();
     mIsStreaming = false;
 }
@@ -178,6 +193,7 @@ void EnumInference::BeginStreaming()
     mColumnHealth.clear();
     mLevelRankCache.clear();
     mPendingLevelBubbleKeys.clear();
+    mDemotedLevelValues.clear();
     mLastBatchDemotedKeys.clear();
     mIsStreaming = true;
 }
@@ -232,6 +248,38 @@ void EnumInference::ClearLastBatchDemotedKeys() noexcept
     mLastBatchDemotedKeys.clear();
 }
 
+void EnumInference::ClearDemotedLevelValues() noexcept
+{
+    mDemotedLevelValues.clear();
+}
+
+std::unordered_map<KeyId, LevelValueMap> EnumInference::TakeDemotedLevelValues() noexcept
+{
+    return std::exchange(mDemotedLevelValues, std::unordered_map<KeyId, LevelValueMap>{});
+}
+
+std::vector<ParseError> EnumInference::TakePendingErrors() noexcept
+{
+    return std::exchange(mPendingErrors, std::vector<ParseError>{});
+}
+
+void EnumInference::ReportAliasFailure(
+    const KeyIndex &keys, const KeyId canonical, const KeyId alias, const std::string &header
+)
+{
+    assert(false && "an enumeration key could not join the dictionary of its column");
+    mPendingErrors.push_back(
+        ParseError{
+            .message = fmt::format(
+                "Column '{}': key '{}' cannot share the values of key '{}'",
+                header,
+                keys.KeyOf(alias),
+                keys.KeyOf(canonical)
+            ),
+        }
+    );
+}
+
 std::vector<KeyId> EnumInference::TakePendingLevelBubbleKeys() noexcept
 {
     return std::exchange(mPendingLevelBubbleKeys, std::vector<KeyId>{});
@@ -277,14 +325,7 @@ void EnumInference::RefreshSnapshot(LogData &data, const LogConfigurationManager
             {
                 if (!mDictionaries.Alias(*canonical, id))
                 {
-                    fmt::print(
-                        stderr,
-                        "[loglib] RefreshSnapshotEnumKeys: failed to alias key {} onto canonical {} for column "
-                        "'{}'\n",
-                        static_cast<uint32_t>(id),
-                        static_cast<uint32_t>(*canonical),
-                        column.header
-                    );
+                    ReportAliasFailure(data.Keys(), *canonical, id, column.header);
                 }
             }
         }

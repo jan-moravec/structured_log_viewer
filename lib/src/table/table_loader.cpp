@@ -57,12 +57,12 @@ void TableSink::OnStarted()
 void TableSink::OnBatch(RowBatch batch)
 {
     mLinesConsumed = std::max(mLinesConsumed, static_cast<std::uint64_t>(batch.lastLineNumber));
-    for (ParseError &error : batch.errors)
+    LogTable::AppendBatchResult result = mTable->AppendBatch(std::move(batch));
+    mTable->ApplyPlacements(result.placements);
+    for (ParseError &error : result.errors)
     {
         mErrors.push_back(std::move(error));
     }
-    batch.errors.clear();
-    mTable->AppendBatchArranged(std::move(batch));
 }
 
 void TableSink::OnFinished(bool cancelled)
@@ -110,7 +110,7 @@ ParseOutcome ParseIntoTable(
 
 void FinishLoading(LogTable &table)
 {
-    table.BubbleLevelColumns(table.FinalizeAutoDetection().levelBubbleKeys);
+    table.ApplyPlacements(table.FinalizeAutoDetection().placements);
 }
 
 } // namespace loglib

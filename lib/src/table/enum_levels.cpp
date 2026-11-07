@@ -43,15 +43,7 @@ void EnumInference::MaybePromoteToLevel(LogData &data, LogConfigurationManager &
         return;
     }
 
-    KeyId canonical = INVALID_KEY_ID;
-    for (const std::string &key : snapshotColumn().keys)
-    {
-        canonical = data.Keys().Find(key);
-        if (canonical != INVALID_KEY_ID)
-        {
-            break;
-        }
-    }
+    const KeyId canonical = CanonicalKeyOf(data.Keys(), snapshotColumn());
     if (canonical == INVALID_KEY_ID)
     {
         return;
@@ -104,15 +96,7 @@ void EnumInference::RefreshLevelRankCache(
         return;
     }
 
-    KeyId canonical = INVALID_KEY_ID;
-    for (const std::string &key : column.keys)
-    {
-        canonical = data.Keys().Find(key);
-        if (canonical != INVALID_KEY_ID)
-        {
-            break;
-        }
-    }
+    const KeyId canonical = CanonicalKeyOf(data.Keys(), column);
     if (canonical == INVALID_KEY_ID)
     {
         return;
@@ -148,11 +132,11 @@ const std::vector<LogLevel> *EnumInference::LevelRankCache(
         return nullptr;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != ColumnType::Level || column.keys.empty())
+    if (column.type != ColumnType::Level)
     {
         return nullptr;
     }
-    const KeyId canonical = data.Keys().Find(column.keys.front());
+    const KeyId canonical = CanonicalKeyOf(data.Keys(), column);
     if (canonical == INVALID_KEY_ID)
     {
         return nullptr;

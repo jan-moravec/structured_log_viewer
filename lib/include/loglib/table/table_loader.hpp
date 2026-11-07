@@ -51,7 +51,7 @@ public:
 
     void OnStarted() override;
 
-    /** @brief Keeps the errors, then appends the rows with LogTable::AppendBatchArranged. */
+    /** @brief Appends the rows, applies the column moves the append asks for and keeps the batch errors. */
     void OnBatch(RowBatch batch) override;
 
     void OnFinished(bool cancelled) override;

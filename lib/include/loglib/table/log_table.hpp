@@ -27,6 +27,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -35,6 +36,65 @@ namespace loglib
 {
 
 class BytesProducer;
+
+/** @brief What happened to the dictionary or type of an enumeration column. */
+enum class EnumColumnChange
+{
+    /** The dictionary gained values. */
+    Grew,
+    /** The column became an Enumeration or Level column, or an Enumeration column became a Level column. */
+    Promoted,
+    /** The column stopped being an Enumeration or Level column. */
+    Demoted,
+};
+
+/**
+ * @brief One change to an enumeration column, as reported by AppendBatch and FinalizeAutoDetection.
+ *
+ * The events of one call come in the order a viewer must announce them: the columns that were enumerations before the
+ * call in index order, then columns demoted within the call, then columns promoted by a back-fill. Every column index
+ * is valid as the table is when the call returns, before any placement is applied. A caller that applies placements
+ * must handle the events first.
+ */
+struct EnumColumnEvent
+{
+    size_t column = 0;
+    EnumColumnChange change = EnumColumnChange::Grew;
+
+    /** True for a promotion found in the columns that the call back-filled. A viewer announces the back-fill first. */
+    bool causedByBackfill = false;
+
+    /**
+     * For a Demoted Level column: the raw dictionary values each level had before the column was demoted, so saved
+     * level filters can be turned into value filters. Empty for every other event.
+     */
+    std::unordered_map<LogLevel, std::vector<std::string>> levelValuesBeforeDemotion;
+};
+
+/** @brief A column that should move because of what a batch added or decided. See LogTable::ResolvePlacement. */
+struct ColumnPlacement
+{
+    enum class Kind
+    {
+        /** Move a new time column to index 0. */
+        TimeToFront,
+        /** Move a column that became a Level column to CANONICAL_LEVEL_COLUMN_INDEX, unless another Level column holds
+         * it. */
+        LevelToCanonicalSlot,
+    };
+
+    Kind kind = Kind::TimeToFront;
+
+    /** The first key of the column. A key stays valid when other columns move, an index does not. */
+    KeyId key = INVALID_KEY_ID;
+};
+
+/** @brief A column move from one index to another, as MoveColumn takes it. */
+struct ColumnMove
+{
+    size_t from = 0;
+    size_t to = 0;
+};
 
 /**
  * @brief The rows of a log as a table with typed columns, for static files and live streams alike.
@@ -82,24 +142,39 @@ public:
      */
     void AppendStreaming(std::unique_ptr<LineSource> source);
 
-    /** @brief What one AppendBatch call changed beyond the new rows. */
+    /**
+     * @brief What one AppendBatch call changed beyond the new rows.
+     *
+     * A viewer announces enumEvents in order, then resolves and applies each placement in order. Placements are not
+     * finished moves, because each move shifts the columns after it and the Level rule looks at the layout at that
+     * moment. Resolve a placement just before applying it.
+     */
     struct AppendBatchResult
     {
+        size_t rowsAdded = 0;
+        size_t columnsAdded = 0;
+
         /** @brief Inclusive [firstColumn, lastColumn] back-filled by the batch, or nullopt. */
         std::optional<std::pair<size_t, size_t>> backfilledColumns;
 
+        /** @brief Changes to enumeration columns, in the order a viewer announces them. */
+        std::vector<EnumColumnEvent> enumEvents;
+
+        /** @brief Column moves, in the order they are applied: new time columns first, then new Level columns. */
+        std::vector<ColumnPlacement> placements;
+
+        /** @brief The errors of the batch, moved out of it. They include problems the table found while appending. */
+        std::vector<ParseError> errors;
+
         /**
-         * @brief Canonical KeyIds of columns demoted away from Type::Enumeration by the batch. Includes the silent
-         * case where a column was promoted and demoted within the same batch, which a before and after comparison of
-         * dictionary sizes cannot see.
+         * @brief Canonical KeyIds of columns demoted away from Type::Enumeration by the batch. Only LogModel reads it;
+         * other callers use enumEvents.
          */
         std::vector<KeyId> demotedKeys;
 
         /**
-         * @brief Canonical KeyIds of columns the batch flipped to Type::Level. The bubble to
-         * CANONICAL_LEVEL_COLUMN_INDEX is left to the caller, which moves each column itself so a view can announce
-         * every move before it happens. Re-resolve each KeyId to its current column index before moving, because
-         * earlier moves can shift later targets.
+         * @brief Canonical KeyIds of columns the batch flipped to Type::Level. Only LogModel reads it; other callers
+         * use placements.
          */
         std::vector<KeyId> levelBubbleKeys;
     };
@@ -108,8 +183,8 @@ public:
      * @brief Adds a streamed batch of rows to the table.
      *
      * New keys in the batch become new columns, and new time columns are filled in for the rows already in the table.
-     * The result lists what else changed: columns that must move and columns that stopped being enumerations. The
-     * caller must act on it.
+     * The result reports every column change: enumeration events, the moves the new columns ask for and the batch
+     * errors. Handle the events, then apply the placements with ApplyPlacements or one by one with ResolvePlacement.
      */
     [[nodiscard]] AppendBatchResult AppendBatch(RowBatch batch);
 
@@ -137,27 +212,30 @@ public:
      *
      * The result holds the indices of Type::Time columns in ascending order, skipping index 0. Moving each one to index
      * 0 in that order keeps the later indices valid. A streaming consumer passes the column count from before
-     * AppendBatch, so new time columns come first as they do after a static load.
+     * AppendBatch, so new time columns come first as they do after a static load. Only LogModel calls it; other callers
+     * use placements.
      */
     [[nodiscard]] std::vector<size_t> TimeColumnsToFront(size_t firstColumn) const;
 
     /**
-     * @brief Adds a batch and arranges the columns, without any notification.
+     * @brief The move a placement needs now, or nothing if its column is missing or already in place.
      *
-     * It runs AppendBatch, moves each new time column to the front, then moves the new level columns. A host that must
-     * announce every move calls AppendBatch and the move steps itself.
+     * It reads the current layout, so call it just before applying the move.
      */
-    void AppendBatchArranged(RowBatch batch);
+    [[nodiscard]] std::optional<ColumnMove> ResolvePlacement(const ColumnPlacement &placement) const;
+
+    /** @brief Resolves and applies each placement in order, without any notification. */
+    void ApplyPlacements(std::span<const ColumnPlacement> placements);
 
     /**
      * @brief Moves each column named in keys to CANONICAL_LEVEL_COLUMN_INDEX, unless ShouldBubbleLevelColumn says it
-     * should stay.
+     * should stay. Only LogModel and tests call it; other callers use ApplyPlacements.
      */
     void BubbleLevelColumns(std::span<const KeyId> keys);
 
     /**
      * @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
-     * columns.
+     * columns. Only LogModel and the table itself call it.
      */
     [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
 
@@ -283,24 +361,31 @@ public:
     /** @brief Finds the canonical key and the dictionary of a column. Any miss gives a default-constructed lookup. */
     [[nodiscard]] EnumColumnLookup ResolveEnumColumn(size_t columnIndex) const noexcept;
 
-    /**
-     * @brief What FinalizeAutoDetection changed.
-     */
+    /** @brief What FinalizeAutoDetection changed. Handle it as described for AppendBatchResult. */
     struct FinalizeResult
     {
         /** @brief True if at least one column became an enumeration. */
         bool promotedToEnumeration = false;
 
-        /** @brief Columns that became Level columns. Move them as described for AppendBatchResult. */
+        /** @brief Changes to enumeration columns, in index order. */
+        std::vector<EnumColumnEvent> enumEvents;
+
+        /** @brief Level columns that should move to CANONICAL_LEVEL_COLUMN_INDEX. */
+        std::vector<ColumnPlacement> placements;
+
+        /** @brief Problems the table found while deciding column types. */
+        std::vector<ParseError> errors;
+
+        /** @brief Canonical KeyIds of columns that became Level columns. Only LogModel reads it. */
         std::vector<KeyId> levelBubbleKeys;
     };
 
     /**
      * @brief Finishes type detection when a parse or stream ends.
      *
-     * Columns that are still undecided are promoted to enumerations where the evidence allows. Columns of type Any
-     * with auto-detect on get a final type, or stay as they are when there is too little data. Calling it again does
-     * nothing more. The caller must act on the result.
+     * Columns that are still undecided are promoted to enumerations where the evidence allows. Columns of type Any with
+     * auto-detect on get a final type, or stay as they are when there is too little data. Calling it again does nothing
+     * more. The caller must act on the result.
      */
     [[nodiscard]] FinalizeResult FinalizeAutoDetection();
 
@@ -384,6 +469,18 @@ private:
     /** @brief Points every owned LineSource at the enumeration dictionaries. */
     void RewireSourceRegistries();
 
+    /**
+     * @brief An Enumeration or Level column as it was before a batch: enough to tell afterwards what happened to it.
+     */
+    struct EnumColumnSnapshot
+    {
+        KeyId key = INVALID_KEY_ID;
+        const EnumDictionary *dictionary = nullptr;
+        size_t column = 0;
+        uint16_t sizeBefore = 0;
+        ColumnType typeBefore = ColumnType::Any;
+    };
+
     LogData mData;
     LogConfigurationManager mConfiguration;
 
@@ -406,6 +503,9 @@ private:
      * borrow.
      */
     EnumInference mEnum;
+
+    /** @brief Scratch for AppendBatch, kept between calls so a steady stream does not allocate. */
+    std::vector<EnumColumnSnapshot> mEnumSnapshot;
 };
 
 } // namespace loglib
