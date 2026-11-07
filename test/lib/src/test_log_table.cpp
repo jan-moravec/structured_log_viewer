@@ -346,7 +346,6 @@ TEST_CASE("LogTable::ApplyPlacements moves a new time column to the front", "[lo
         table.AppendBatch(BuildRowBatch(keys, *sourcePtr, {{{"msg", std::string("first")}}}, 0, 1)).placements
     );
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.TimeColumnsToFront(0).empty());
 
     const TimeStamp ts = std::chrono::time_point_cast<std::chrono::microseconds>(
         std::chrono::sys_days{std::chrono::year{2024} / std::chrono::January / 15}
@@ -362,7 +361,6 @@ TEST_CASE("LogTable::ApplyPlacements moves a new time column to the front", "[lo
     REQUIRE(table.ColumnCount() == 2);
     CHECK(table.GetHeader(0) == "timestamp");
     CHECK(table.GetHeader(1) == "msg");
-    CHECK(table.TimeColumnsToFront(0).empty());
 }
 
 TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log_table][append_batch]")
@@ -2718,7 +2716,7 @@ TEST_CASE(
 )
 {
     // `MaybePromoteToLevel` queues the bubble; the consumer
-    // bubbles it via `BubbleLevelColumns`. Asserting both
+    // moves it when the placements are applied. Asserting both
     // halves blocks a regression to silent in-`AppendBatch`
     // rotation that would desync Qt's column-keyed state.
     const TestLogFile testFile("level_bubble.json");
@@ -2751,7 +2749,7 @@ TEST_CASE(
 
     // Drain via the static-load / test entry point. The app's
     // streaming consumer wraps this in `begin/endMoveColumns`.
-    table.BubbleLevelColumns(appendResult101.levelBubbleKeys);
+    table.ApplyPlacements(appendResult101.placements);
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
     CHECK(table.Configuration().Configuration().columns[1].header == "level");
@@ -2795,7 +2793,7 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     CHECK(table.Configuration().Configuration().columns[3].type == ColumnType::Level);
 
     // Drain: `level` lands at index 1, `col_b` / `col_c` shift right.
-    table.BubbleLevelColumns(appendResult102.levelBubbleKeys);
+    table.ApplyPlacements(appendResult102.placements);
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 4);
     CHECK(table.Configuration().Configuration().columns[0].header == "col_a");
@@ -2858,7 +2856,7 @@ TEST_CASE(
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
-    table.BubbleLevelColumns(appendResult103.levelBubbleKeys);
+    table.ApplyPlacements(appendResult103.placements);
 
     const auto &columns = table.Configuration().Configuration().columns;
     REQUIRE(columns.size() == 3);
@@ -2914,9 +2912,11 @@ TEST_CASE(
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != loglib::INVALID_KEY_ID);
 
-    const std::vector<KeyId> pending = appendResult10.levelBubbleKeys;
-    REQUIRE(pending.size() == 1);
-    CHECK(pending.front() == levelKey);
+    const auto levelPlacements =
+        std::ranges::count_if(appendResult10.placements, [&](const ColumnPlacement &placement) {
+            return placement.kind == ColumnPlacement::Kind::LevelToCanonicalSlot && placement.key == levelKey;
+        });
+    CHECK(levelPlacements == 1);
 }
 
 TEST_CASE(
@@ -2955,12 +2955,14 @@ TEST_CASE(
     REQUIRE(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != loglib::INVALID_KEY_ID);
-    const std::vector<KeyId> pending = appendResult11.levelBubbleKeys;
-    REQUIRE(pending.size() == 1);
-    CHECK(pending.front() == levelKey);
+    const auto levelPlacements =
+        std::ranges::count_if(appendResult11.placements, [&](const ColumnPlacement &placement) {
+            return placement.kind == ColumnPlacement::Kind::LevelToCanonicalSlot && placement.key == levelKey;
+        });
+    CHECK(levelPlacements == 1);
 
     // Drain must no-op on the already-canonical column.
-    table.BubbleLevelColumns(appendResult104.levelBubbleKeys);
+    table.ApplyPlacements(appendResult104.placements);
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
     CHECK(table.Configuration().Configuration().columns[1].header == "level");
@@ -3386,14 +3388,18 @@ TEST_CASE(
     REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
 
     // The streaming detector left the demote vector clean.
-    CHECK(appendResult12.demotedKeys.empty());
+    CHECK(std::ranges::none_of(appendResult12.enumEvents, [](const EnumColumnEvent &event) {
+        return event.change == EnumColumnChange::Demoted;
+    }));
 
     // User picks Type::String -- `OnUserChangedColumnType` runs the
     // demote walk but must NOT show up in the next batch result.
     table.Configuration().SetColumnTypePair(0, ColumnType::String, false);
     table.OnUserChangedColumnType(0, ColumnType::Enumeration);
     CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
-    CHECK(table.AppendBatch(RowBatch{}).demotedKeys.empty());
+    CHECK(std::ranges::none_of(table.AppendBatch(RowBatch{}).enumEvents, [](const EnumColumnEvent &event) {
+        return event.change == EnumColumnChange::Demoted;
+    }));
 }
 
 TEST_CASE(

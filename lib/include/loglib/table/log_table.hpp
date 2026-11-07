@@ -18,7 +18,6 @@
 #include "loglib/core/row_batch.hpp"
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/column_type_health.hpp"
-#include "loglib/table/enum_inference.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <chrono>
@@ -36,6 +35,7 @@ namespace loglib
 {
 
 class BytesProducer;
+class EnumInference;
 
 /** @brief What happened to the dictionary or type of an enumeration column. */
 enum class EnumColumnChange
@@ -113,7 +113,7 @@ struct ColumnMove
 class LogTable
 {
 public:
-    LogTable() = default;
+    LogTable();
 
     /** @brief An empty table that starts with the given column configuration. */
     explicit LogTable(LogConfiguration configuration);
@@ -124,7 +124,7 @@ public:
     /** @brief Moves the table and points every owned LineSource at the moved enumeration dictionaries. */
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
-    ~LogTable() = default;
+    ~LogTable();
 
     /** @brief Removes all rows and sources. The column configuration is kept. */
     void Reset();
@@ -165,18 +165,6 @@ public:
 
         /** @brief The errors of the batch, moved out of it. They include problems the table found while appending. */
         std::vector<ParseError> errors;
-
-        /**
-         * @brief Canonical KeyIds of columns demoted away from Type::Enumeration by the batch. Only LogModel reads it;
-         * other callers use enumEvents.
-         */
-        std::vector<KeyId> demotedKeys;
-
-        /**
-         * @brief Canonical KeyIds of columns the batch flipped to Type::Level. Only LogModel reads it; other callers
-         * use placements.
-         */
-        std::vector<KeyId> levelBubbleKeys;
     };
 
     /**
@@ -208,16 +196,6 @@ public:
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
     /**
-     * @brief Lists the time columns that belong at the front, among the columns from firstColumn on.
-     *
-     * The result holds the indices of Type::Time columns in ascending order, skipping index 0. Moving each one to index
-     * 0 in that order keeps the later indices valid. A streaming consumer passes the column count from before
-     * AppendBatch, so new time columns come first as they do after a static load. Only LogModel calls it; other callers
-     * use placements.
-     */
-    [[nodiscard]] std::vector<size_t> TimeColumnsToFront(size_t firstColumn) const;
-
-    /**
      * @brief The move a placement needs now, or nothing if its column is missing or already in place.
      *
      * It reads the current layout, so call it just before applying the move.
@@ -226,18 +204,6 @@ public:
 
     /** @brief Resolves and applies each placement in order, without any notification. */
     void ApplyPlacements(std::span<const ColumnPlacement> placements);
-
-    /**
-     * @brief Moves each column named in keys to CANONICAL_LEVEL_COLUMN_INDEX, unless ShouldBubbleLevelColumn says it
-     * should stay. Only LogModel and tests call it; other callers use ApplyPlacements.
-     */
-    void BubbleLevelColumns(std::span<const KeyId> keys);
-
-    /**
-     * @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
-     * columns. Only LogModel and the table itself call it.
-     */
-    [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
 
     /**
      * @brief The producer of the last live stream source, or null when the table has no stream.
@@ -375,9 +341,6 @@ public:
 
         /** @brief Problems the table found while deciding column types. */
         std::vector<ParseError> errors;
-
-        /** @brief Canonical KeyIds of columns that became Level columns. Only LogModel reads it. */
-        std::vector<KeyId> levelBubbleKeys;
     };
 
     /**
@@ -457,6 +420,10 @@ public:
     LogConfigurationManager &Configuration();
 
 private:
+    /** @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
+     * columns. */
+    [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
+
     /**
      * @brief Formats a cell with the column's print format and the display zone. It does not throw: a print format that
      * the value does not accept gives the value's plain text.
@@ -502,7 +469,7 @@ private:
      * @brief Type inference, enumeration encoding and the level cache. It owns the dictionaries, which LineSources
      * borrow.
      */
-    EnumInference mEnum;
+    std::unique_ptr<EnumInference> mEnum;
 
     /** @brief Scratch for AppendBatch, kept between calls so a steady stream does not allocate. */
     std::vector<EnumColumnSnapshot> mEnumSnapshot;

@@ -4,6 +4,7 @@
 #include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/core/log_data.hpp"
+#include "loglib/schema/internal/level_column_slot.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <fmt/format.h>

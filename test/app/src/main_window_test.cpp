@@ -9669,6 +9669,155 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Records every `enumColumnsChanged`, `dataChanged` and `columnsMoved`
+    // signal over a scripted stream and compares the whole sequence with a
+    // fixed expectation, so the order of the signals cannot drift.
+    void TestStreamSignalSequenceIsStable()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+        model->Table().SetEnumValueCap(3);
+
+        QStringList recorded;
+        const auto reasonName = [](EnumColumnsChangeReason reason) {
+            switch (reason)
+            {
+            case EnumColumnsChangeReason::Grew:
+                return QStringLiteral("Grew");
+            case EnumColumnsChangeReason::Promoted:
+                return QStringLiteral("Promoted");
+            case EnumColumnsChangeReason::Demoted:
+                return QStringLiteral("Demoted");
+            }
+            return QStringLiteral("?");
+        };
+        QObject context;
+        connect(model, &LogModel::enumColumnsChanged, &context, [&](EnumColumnsChangeReason reason, int column) {
+            QString line = QStringLiteral("enum %1 %2").arg(reasonName(reason)).arg(column);
+            if (reason == EnumColumnsChangeReason::Demoted && model->LastBatchLevelDemoteMappingFor(column) != nullptr)
+            {
+                line += QStringLiteral(" with level mapping");
+            }
+            recorded.append(line);
+        });
+        connect(
+            model,
+            &QAbstractItemModel::dataChanged,
+            &context,
+            [&](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> &roles) {
+                recorded.append(QStringLiteral("data r%1-%2 c%3-%4 roles=%5")
+                                    .arg(topLeft.row())
+                                    .arg(bottomRight.row())
+                                    .arg(topLeft.column())
+                                    .arg(bottomRight.column())
+                                    .arg(roles.size()));
+            }
+        );
+        connect(
+            model,
+            &QAbstractItemModel::columnsMoved,
+            &context,
+            [&](const QModelIndex &, int start, int end, const QModelIndex &, int destination) {
+                recorded.append(QStringLiteral("moved %1-%2 to %3").arg(start).arg(end).arg(destination));
+            }
+        );
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        using Fields = std::vector<std::pair<std::string, std::string>>;
+        const auto makeBatch = [&](size_t firstLine, const std::vector<Fields> &rows) {
+            loglib::RowBatch batch;
+            batch.firstLineNumber = firstLine;
+            for (const Fields &row : rows)
+            {
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                for (const auto &[key, value] : row)
+                {
+                    if (keys.Find(key) == loglib::INVALID_KEY_ID)
+                    {
+                        batch.newKeys.push_back(key);
+                    }
+                    values.emplace_back(keys.GetOrInsert(key), loglib::LogValue(value));
+                }
+                batch.lines.emplace_back(std::move(values), *sourcePtr, 0);
+            }
+            return batch;
+        };
+
+        // Batch 1: "category" becomes an enum.
+        model->AppendBatch(makeBatch(1, {{{"msg", "a"}, {"category", "info"}}, {{"msg", "b"}, {"category", "info"}}}));
+        recorded.append(QStringLiteral("--- batch 2"));
+        // Batch 2: "category" grows; "kind" arrives and is back-filled.
+        model->AppendBatch(makeBatch(
+            3,
+            {
+                {{"msg", "c"}, {"category", "warn"}, {"kind", "x"}},
+                {{"msg", "d"}, {"category", "warn"}, {"kind", "x"}},
+                {{"msg", "e"}, {"category", "info"}, {"kind", "x"}},
+            }
+        ));
+        recorded.append(QStringLiteral("--- batch 3"));
+        // Batch 3: a level column arrives and moves to its slot.
+        model->AppendBatch(makeBatch(
+            6,
+            {
+                {{"msg", "f"}, {"category", "info"}, {"kind", "x"}, {"level", "info"}},
+                {{"msg", "g"}, {"category", "info"}, {"kind", "x"}, {"level", "warn"}},
+                {{"msg", "h"}, {"category", "info"}, {"kind", "x"}, {"level", "info"}},
+            }
+        ));
+        recorded.append(QStringLiteral("--- batch 4"));
+        // Batch 4: the level column overflows the cap and demotes.
+        model->AppendBatch(makeBatch(
+            9,
+            {
+                {{"msg", "i"}, {"category", "info"}, {"kind", "x"}, {"level", "error"}},
+                {{"msg", "j"}, {"category", "info"}, {"kind", "x"}, {"level", "debug"}},
+                {{"msg", "k"}, {"category", "info"}, {"kind", "x"}, {"level", "trace"}},
+            }
+        ));
+        recorded.append(QStringLiteral("--- batch 5"));
+        // Batch 5: two time columns arrive in one batch.
+        model->AppendBatch(makeBatch(
+            12,
+            {
+                {{"msg", "l"}, {"timestamp", "2024-01-01T00:00:00Z"}, {"time", "2024-01-01T00:00:01Z"}},
+                {{"msg", "m"}, {"timestamp", "2024-01-01T00:00:02Z"}, {"time", "2024-01-01T00:00:03Z"}},
+            }
+        ));
+        recorded.append(QStringLiteral("--- finish"));
+        model->EndStreaming(false);
+        QCoreApplication::processEvents();
+
+        const QStringList expected{
+            QStringLiteral("data r0-1 c0-1 roles=3"),
+            QStringLiteral("enum Promoted 0"),
+            QStringLiteral("enum Promoted 1"),
+            QStringLiteral("--- batch 2"),
+            QStringLiteral("enum Demoted 0"),
+            QStringLiteral("enum Grew 1"),
+            QStringLiteral("data r0-4 c0-2 roles=3"),
+            QStringLiteral("enum Promoted 2"),
+            QStringLiteral("--- batch 3"),
+            QStringLiteral("data r0-7 c3-3 roles=3"),
+            QStringLiteral("enum Promoted 3"),
+            QStringLiteral("moved 3-3 to 1"),
+            QStringLiteral("--- batch 4"),
+            QStringLiteral("enum Demoted 1 with level mapping"),
+            QStringLiteral("data r0-10 c1-1 roles=3"),
+            QStringLiteral("--- batch 5"),
+            QStringLiteral("data r0-12 c4-5 roles=3"),
+            QStringLiteral("moved 4-4 to 0"),
+            QStringLiteral("moved 5-5 to 0"),
+            QStringLiteral("--- finish"),
+        };
+        QCOMPARE(recorded.join(QLatin1Char('\n')), expected.join(QLatin1Char('\n')));
+    }
+
     // Regression: the `EnumDictRank` cache is keyed by canonical
     // `KeyId`, not column index, so a column reorder no longer
     // requires a `columnsMoved` invalidation hook -- the cached rank
