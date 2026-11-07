@@ -141,6 +141,15 @@ struct EnumColumnHealth
 [[nodiscard]] bool IsEnumPassEligible(const Column &column) noexcept;
 
 /**
+ * @brief The key under which a column's dictionary, health count and level cache are stored: the first of its keys that
+ * the key index knows, or INVALID_KEY_ID if none is known yet.
+ *
+ * Every store and every read of that state goes through this function, so a column whose first configured key appears
+ * after one of its aliases still finds its own state.
+ */
+[[nodiscard]] KeyId CanonicalKeyOf(const KeyIndex &keys, const Column &column);
+
+/**
  * @brief Decides which columns are enumerations and keeps the dictionaries and level cache that follow from it.
  *
  * LogTable owns one. It owns the dictionaries, the candidate trackers, the health counts, the level rank cache and the

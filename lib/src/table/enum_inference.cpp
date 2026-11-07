@@ -74,6 +74,19 @@ bool ValuesRepeatOrAreLevels(const EnumCandidateTracker &tracker, const Column &
 
 } // namespace
 
+KeyId CanonicalKeyOf(const KeyIndex &keys, const Column &column)
+{
+    for (const std::string &key : column.keys)
+    {
+        const KeyId id = keys.Find(key);
+        if (id != INVALID_KEY_ID)
+        {
+            return id;
+        }
+    }
+    return INVALID_KEY_ID;
+}
+
 bool EnumColumnHealth::ShouldDemote(double tolerance, size_t minSamples) const noexcept
 {
     if (totalSlots < minSamples)
