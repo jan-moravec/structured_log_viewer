@@ -32,7 +32,7 @@ TEST_CASE("Parse logfmt log file via ParseFile auto-detect", "[parse_file]")
     ParseResult result = ParseFile(testFile.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("msg")) == std::string_view{"hello"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "msg")) == std::string_view{"hello"});
 }
 
 TEST_CASE("Parse CSV log file via ParseFile auto-detect", "[parse_file]")
@@ -43,7 +43,7 @@ TEST_CASE("Parse CSV log file via ParseFile auto-detect", "[parse_file]")
     ParseResult result = ParseFile(testFile.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("msg")) == std::string_view{"hello"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "msg")) == std::string_view{"hello"});
 }
 
 TEST_CASE("Parse regex log file via ParseFile auto-detect", "[parse_file]")
@@ -61,8 +61,8 @@ TEST_CASE("Parse regex log file via ParseFile auto-detect", "[parse_file]")
     ParseResult result = ParseFile(testFile.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("hostname")) == std::string_view{"host-a"});
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("program")) == std::string_view{"systemd"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-a"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
 }
 
 TEST_CASE("ParseFile auto-detect rejects nonexistent or invalid file", "[parse_file]")

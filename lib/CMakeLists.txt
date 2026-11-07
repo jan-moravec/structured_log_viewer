@@ -50,7 +50,6 @@ add_library(
     src/clang_tidy_stubs/glaze_options.cpp
     src/query/log_compare.cpp
     src/core/log_data.cpp
-    src/core/log_file.cpp
     src/query/log_filter.cpp
     src/query/log_filter_evaluator.cpp
     src/core/log_level.cpp
@@ -124,7 +123,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/query/log_compare.hpp
     include/loglib/schema/log_configuration.hpp
     include/loglib/core/log_data.hpp
-    include/loglib/core/log_file.hpp
     include/loglib/query/log_filter.hpp
     include/loglib/core/log_level.hpp
     include/loglib/core/log_line.hpp
@@ -208,8 +206,8 @@ target_link_libraries(
     # Repository warning flags stay PRIVATE so installing or consuming loglib
     # does not export this project's `project_warnings` policy to downstream
     # targets.
-    # mio backs `LogFile` mapping; the public header holds an incomplete
-    # `Mapping` type, so mio stays PRIVATE.
+    # mio backs the FileLineSource mapping; the public header holds an
+    # incomplete `Backing` type, so mio stays PRIVATE.
     # date/tz backs `TimeZoneContext` and timestamp parsing; no `date::`
     # type appears in supported signatures.
     # simdjson, glaze, and fmt are confined to implementation files and

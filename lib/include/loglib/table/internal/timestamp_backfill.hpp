@@ -11,6 +11,7 @@
  */
 #pragma once
 
+#include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/time/time_zone_context.hpp"
@@ -27,10 +28,12 @@ namespace loglib
 /**
  * @brief Converts the text of one time column into timestamps, in place.
  *
- * The column must have type Type::Time. Pass a sub-span of the rows to convert only a slice, for example the rows of a
- * streamed batch. Returns one message per value that could not be parsed.
+ * The column must have type Type::Time. keyIndex is the index that the key ids of the rows come from. Pass a sub-span
+ * of the rows to convert only a slice, for example the rows of a streamed batch. Returns one message per value that
+ * could not be parsed.
  */
 std::vector<std::string> BackfillTimestampColumn(
+    const KeyIndex &keyIndex,
     const Column &column,
     std::span<LogLine> lines,
     const TimeZoneContext &timeZone,
@@ -45,6 +48,7 @@ enum class BackfillErrors : uint8_t
 
 /** @brief Same as BackfillTimestampColumn, but does not report which values failed to parse. */
 void BackfillTimestampColumn(
+    const KeyIndex &keyIndex,
     const Column &column,
     std::span<LogLine> lines,
     const TimeZoneContext &timeZone,

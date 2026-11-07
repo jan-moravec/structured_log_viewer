@@ -2,7 +2,6 @@
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -26,7 +25,6 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <memory>
@@ -94,9 +92,8 @@ public:
         return rows;
     }
 
-    // The rows point into the source, which points into the file, so they live as long as the sink and are declared
-    // first. The batches are destroyed before them.
-    std::unique_ptr<TestLogFile> file;
+    // The rows point into the source, so it lives as long as the sink and is declared first. The batches are destroyed
+    // before it.
     std::unique_ptr<FileLineSource> fileSource;
     std::unique_ptr<StreamLineSource> streamSource;
     std::vector<RowBatch> batches;
@@ -118,11 +115,7 @@ void ParseAsFile(
     unsigned int threads = 0
 )
 {
-    // Every call gets its own file, because the sinks of earlier calls may still map theirs.
-    static std::atomic<unsigned> counter{0};
-    sink.file = std::make_unique<TestLogFile>(std::to_string(counter.fetch_add(1)) + "_" + fileName);
-    sink.file->Write(bytes);
-    sink.fileSource = sink.file->CreateFileLineSource();
+    sink.fileSource = MemorySource(bytes, fileName);
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
     options.threads = threads;
@@ -300,9 +293,7 @@ constexpr const char *TIME_LINES = "{\"ts\":\"2026-01-15 12:00:00\"}\n{\"ts\":\"
 /** Parses TIME_LINES into a table and checks the time cells. Returns whether the table had to convert a column. */
 [[nodiscard]] bool ParseTimeLinesIntoTable(bool passTimeColumns)
 {
-    const TestLogFile file("batch_contract_time.jsonl");
-    file.Write(TIME_LINES);
-    auto source = file.CreateFileLineSource();
+    auto source = MemorySource(TIME_LINES, "batch_contract_time.jsonl");
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -344,9 +335,7 @@ TEST_CASE("Every batch lists the time keys the parser converted", "[batch_contra
     SECTION("a file")
     {
         RecordingSink sink;
-        const TestLogFile file("batch_contract_time_keys.jsonl");
-        file.Write(bytes);
-        auto source = file.CreateFileLineSource();
+        auto source = MemorySource(bytes, "batch_contract_time_keys.jsonl");
         JsonParser{}.ParseStreaming(*source, sink, options);
         REQUIRE_FALSE(sink.batches.empty());
         const KeyId ts = sink.Keys().Find("ts");
@@ -776,9 +765,7 @@ struct TableFacts
 
 [[nodiscard]] TableFacts ParseIntoTable(const std::string &bytes, unsigned int threads, std::size_t batchSizeBytes)
 {
-    const TestLogFile file("batch_contract_determinism_" + std::to_string(threads) + ".jsonl");
-    file.Write(bytes);
-    auto source = file.CreateFileLineSource();
+    auto source = MemorySource(bytes, "batch_contract_determinism_" + std::to_string(threads) + ".jsonl");
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -967,10 +954,8 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
     {
         bytes += "line " + std::to_string(i) + "\n";
     }
-    const TestLogFile file("batch_contract_throwing_static.log");
-    file.Write(bytes);
-    auto source = file.CreateFileLineSource();
-    const LogFile &logFile = source->File();
+    auto source = MemorySource(bytes, "batch_contract_throwing_static.log");
+    const FileLineSource &logFile = *source;
     ParserOptions options;
     options.threads = 2;
     ThrowingStageB::Of<Exception> stageB{.throwOnBatch = 2, .exception = std::move(exception)};
@@ -978,7 +963,9 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
         *source,
         sink,
         options,
-        internal::MakeLineAlignedBatcher(logFile.Data(), logFile.Data() + logFile.Size(), 64),
+        internal::MakeLineAlignedBatcher(
+            logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
+        ),
         stageB
     );
 }
@@ -1122,10 +1109,8 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         {
             bytes += "line " + std::to_string(i) + "\n";
         }
-        const TestLogFile file("batch_contract_sink_throws.log");
-        file.Write(bytes);
-        auto source = file.CreateFileLineSource();
-        const LogFile &logFile = source->File();
+        auto source = MemorySource(bytes, "batch_contract_sink_throws.log");
+        const FileLineSource &logFile = *source;
         ThrowingStageB::Of<std::runtime_error> stageB{
             .throwOnBatch = UINT64_MAX,
             .exception = std::runtime_error("unused"),
@@ -1135,7 +1120,9 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
                 *source,
                 sink,
                 ParserOptions{},
-                internal::MakeLineAlignedBatcher(logFile.Data(), logFile.Data() + logFile.Size(), 64),
+                internal::MakeLineAlignedBatcher(
+                    logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
+                ),
                 stageB
             )),
             exports::BrokenPipe

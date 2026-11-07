@@ -3,3 +3,9 @@
 3bb12179cb334bc464cfc877a0abf88bf454c450
 # Rename StreamedBatch to RowBatch.
 1ec06b87dc98f28f691cb161067c267363c9434b
+# Rename LogFile members to the names LineSource uses.
+a397c3985f93a2fd8f1c1b7107f908596913c3b2
+# Parse the parser test fixtures from memory (scripted).
+7dde17da1bc295c756cd49aab1643c4e5cd9e021
+# Pass the KeyIndex to name-keyed row accessors in the tests (scripted).
+48e3f50ec69b8bc83c5e8cf3b3611cdc6b6e9760

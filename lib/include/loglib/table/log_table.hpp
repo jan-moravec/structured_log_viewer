@@ -14,7 +14,6 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/row_batch.hpp"
 #include "loglib/schema/log_configuration.hpp"

@@ -367,7 +367,7 @@ void RunStreamingParseLoopBody(
         });
 
         const size_t lineId = source.AppendLine(std::move(rec.rawText), std::move(rec.ownedArena));
-        LogLine logLine(std::move(rec.compactValues), keys, source, lineId);
+        LogLine logLine(std::move(rec.compactValues), source, lineId);
         // Promote only after all continuations have joined the record.
         promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
         coalescer.Prime(rec.startLineNumber);

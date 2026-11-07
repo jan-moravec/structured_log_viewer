@@ -2,7 +2,6 @@
 #include "qt_streaming_log_sink.hpp"
 
 #include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
@@ -81,8 +80,7 @@ namespace
         return false;
     }
 
-    auto file = std::make_unique<loglib::LogFile>(FixturePath());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(FixturePath());
     loglib::FileLineSource *parseSource = fileSource.get();
     const loglib::StopToken stopToken = model.BeginStreamingForSyncTest(std::move(fileSource));
 

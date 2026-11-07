@@ -2,7 +2,6 @@
 #include "parse_only.hpp"
 
 #include <loglib/core/error.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -726,14 +725,14 @@ TEST_CASE("DecompressingByteSource: move-assign releases previous temp file", "[
 }
 
 TEST_CASE(
-    "DecompressingByteSource: LogFile::AttachLifetimeAnchor unlinks temp on LogFile destruction",
-    "[DecompressingByteSource][LogFile][anchor-lifetime]"
+    "DecompressingByteSource: FileLineSource::AttachLifetimeAnchor unlinks temp on FileLineSource destruction",
+    "[DecompressingByteSource][FileLineSource][anchor-lifetime]"
 )
 {
     // Mirrors `MainWindow::ContinueOpenAfterPrepared`: wrap the DBS
-    // in a shared_ptr, attach as a `LogFile` lifetime anchor. The
+    // in a shared_ptr, attach as a `FileLineSource` lifetime anchor. The
     // anchor must be destroyed AFTER the mmap unmap or Windows
-    // silently leaks the temp file. Uses a real DBS + real LogFile.
+    // silently leaks the temp file. Uses a real DBS + real FileLineSource.
     const std::string payload = SampleContent(4 * 1024);
     const auto compressed = CompressGzip(payload);
     const TempBinaryFile fixture(".log.gz");
@@ -746,13 +745,13 @@ TEST_CASE(
         tempPath = dbs->EffectivePath();
         REQUIRE(std::filesystem::exists(tempPath));
 
-        auto logFile = std::make_unique<loglib::LogFile>(tempPath);
+        auto logFile = std::make_unique<loglib::FileLineSource>(tempPath);
         logFile->AttachLifetimeAnchor(std::move(dbs));
 
-        // Alive LogFile -> temp file survives (mmap holds a handle).
+        // Alive FileLineSource -> temp file survives (mmap holds a handle).
         CHECK(std::filesystem::exists(tempPath));
     }
-    // LogFile destroyed: mmap unmapped first (member order), then
+    // FileLineSource destroyed: mmap unmapped first (member order), then
     // the anchor's dtor ran the DBS's ReleaseTempFile().
     CHECK(!std::filesystem::exists(tempPath));
 }
@@ -764,7 +763,7 @@ TEST_CASE(
     // `SniffCodec` gates the sync-vs-async decision in
     // `StreamNextPendingFile`. Must be noexcept on any input and
     // collapse any I/O failure to `Codec::None` so the downstream
-    // `LogFile` ctor emits the canonical open error.
+    // `FileLineSource` ctor emits the canonical open error.
     using Codec = DecompressingByteSource::Codec;
 
     // Empty file: cannot hold any codec's header.
@@ -800,7 +799,7 @@ TEST_CASE("DecompressingByteSource: CodecName maps every enum value", "[Decompre
 // Integration: compressed input -> DecompressingByteSource ->
 // ParseFile(JsonParser). Row + error counts must match the
 // uncompressed reference. Mirrors MainWindow's sniff + decompress +
-// LogFile + parse flow.
+// FileLineSource + parse flow.
 TEST_CASE("DecompressingByteSource: row-count parity with ParseFile", "[DecompressingByteSource][ParseFile]")
 {
     constexpr std::size_t LINE_COUNT = 5000;

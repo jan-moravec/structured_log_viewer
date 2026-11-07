@@ -47,22 +47,19 @@ public:
      *
      * A string view that points into the source's stable bytes is stored as a slice; other strings are copied.
      */
-    LogLine(
-        std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LineSource &source, size_t lineId
-    );
+    LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, LineSource &source, size_t lineId);
 
     /**
      * @brief Builds a row from values that are already compact and sorted by key. OwnedString offsets must already be
      * relative to the source's arena. This is the fast path.
      */
-    LogLine(
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
-        const KeyIndex &keys,
-        LineSource &source,
-        size_t lineId
-    );
+    LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues, LineSource &source, size_t lineId);
 
-    /** @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests. */
+    /**
+     * @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests.
+     *
+     * The row does not keep keys. Pass the same index to the name-keyed accessors later.
+     */
     LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId);
 
     LogLine(const LogLine &) = delete;
@@ -74,7 +71,14 @@ public:
 
     /** @brief The value of a field, or std::monostate if the row has none. */
     LogValue GetValue(KeyId id) const;
-    LogValue GetValue(const std::string &key) const;
+
+    /**
+     * @brief The value of a field by key name, or std::monostate if the key is unknown or the row has no such field.
+     *
+     * Slow, because it looks the name up in keys. It is meant for tests and debugging. The index must be the one that
+     * the key ids of the row come from.
+     */
+    LogValue GetValue(const KeyIndex &keys, std::string_view key) const;
 
     /**
      * @brief Sets a field. The value should not be a string_view, which could dangle: debug builds assert on it. Use
@@ -89,10 +93,19 @@ public:
      */
     void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
-    /** @brief Sets a field by key name. Throws if the key is unknown. */
-    void SetValue(const std::string &key, const LogValue &value);
+    /**
+     * @brief Sets a field by key name. Throws if the key is not in keys.
+     *
+     * Slow, meant for tests and debugging.
+     */
+    void SetValue(const KeyIndex &keys, std::string_view key, const LogValue &value);
 
-    std::vector<std::string> GetKeys() const;
+    /**
+     * @brief The names of the fields of the row, sorted by key id.
+     *
+     * Slow, meant for tests and debugging. Debug builds assert that every key id is below the size of keys.
+     */
+    std::vector<std::string> GetKeys(const KeyIndex &keys) const;
 
     /** @brief All fields as key and value pairs, sorted by key. Slow. */
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
@@ -100,14 +113,12 @@ public:
     /** @brief The compact storage itself, for code that walks every field on a hot path. */
     std::span<const std::pair<KeyId, loglib::CompactLogValue>> CompactValues() const noexcept;
 
-    LogMap Values() const;
-
     /**
-     * @brief Points the row at a different KeyIndex, after the index moved or the rows were merged into another one.
+     * @brief All fields by key name.
+     *
+     * Slow, meant for tests and debugging. Debug builds assert that every key id is below the size of keys.
      */
-    void RebindKeys(const KeyIndex &keys);
-
-    const KeyIndex &Keys() const;
+    LogMap Values(const KeyIndex &keys) const;
 
     /** @brief The source that holds this row's bytes. Never null. */
     [[nodiscard]] LineSource *Source() const noexcept;
@@ -148,9 +159,14 @@ private:
     void SetCompact(KeyId id, loglib::CompactLogValue compact);
 
     loglib::CompactLineFields mValues;
-    const KeyIndex *mKeys = nullptr;
     LineSource *mSource = nullptr;
     size_t mLineId = 0;
 };
+
+// A log holds millions of rows, and every filter, sort and export scans them in order. A row is 32 bytes: its fields
+// (16 bytes), the source pointer (8 bytes) and the line id (8 bytes). Two rows then fit in one cache line of 64 bytes.
+// A new member would add its size to every row of every log.
+inline constexpr size_t LOG_LINE_EXPECTED_BYTES = 32;
+static_assert(sizeof(LogLine) == LOG_LINE_EXPECTED_BYTES, "LogLine must stay 32 bytes");
 
 } // namespace loglib

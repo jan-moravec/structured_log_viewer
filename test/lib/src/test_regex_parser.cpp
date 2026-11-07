@@ -4,7 +4,6 @@
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_data.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -76,13 +75,14 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
     // A RegexParser with an empty pattern fails closed.
     // Parsing must not crash; it surfaces one error and ends cleanly.
     const RegexParser parser{std::string{}};
-    const TestLogFile file("regex_no_pattern.log");
-    file.Write(
-        "Apr 28 04:02:03 host-a systemd: System starting\n"
-        "Apr 28 04:02:04 host-a systemd: another line\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "Apr 28 04:02:03 host-a systemd: System starting\n"
+            "Apr 28 04:02:04 host-a systemd: another line\n"
+        )
+    );
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("non-empty pattern"));
     CHECK(result.data.Lines().empty());
@@ -91,10 +91,8 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
 TEST_CASE("RegexParser unparsable pattern surfaces error [regex]", "[regex_parser]")
 {
     const RegexParser parser(R"((?<a)"); // dangling group
-    const TestLogFile file("regex_bad_pattern.log");
-    file.Write("anything\nat all\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("anything\nat all\n"));
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("Pattern compile failed"));
     CHECK(result.data.Lines().empty());
@@ -105,10 +103,8 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
     // Anonymous groups don't map to columns; refuse rather than
     // producing schemaless rows.
     const RegexParser parser(R"(^(\w+)\s+(.*)$)");
-    const TestLogFile file("regex_no_groups.log");
-    file.Write("a b\nc d\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("a b\nc d\n"));
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("named capture groups"));
     CHECK(result.data.Lines().empty());
@@ -118,16 +114,14 @@ TEST_CASE("RegexParser parses well-formed lines [regex]", "[regex_parser]")
 {
     // Simple `LEVEL message` shape; named groups map to columns.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
-    const TestLogFile file("regex_parse_minimal.log");
-    file.Write("info hello\nerror boom\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("info hello\nerror boom\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("message")) == std::string_view{"hello"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue("level")) == std::string_view{"error"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue("message")) == std::string_view{"boom"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "message")) == std::string_view{"hello"});
+    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "level")) == std::string_view{"error"});
+    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "message")) == std::string_view{"boom"});
 }
 
 TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
@@ -135,39 +129,41 @@ TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
     // `ClassifyBareScalar` promotes numeric / bool captures the
     // same way it does for CSV / logfmt bare cells.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<code>\d+)\s+(?<ratio>\S+)\s+(?<ok>\S+)$)");
-    const TestLogFile file("regex_typing.log");
-    file.Write(
-        "info 200 0.75 true\n"
-        "warn 404 -1.5 false\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "info 200 0.75 true\n"
+            "warn 404 -1.5 false\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(std::get<std::uint64_t>(row0.GetValue("code")) == 200U);
-    CHECK(std::get<double>(row0.GetValue("ratio")) == Catch::Approx(0.75));
-    CHECK(std::get<bool>(row0.GetValue("ok")) == true);
+    CHECK(std::get<std::uint64_t>(row0.GetValue(result.data.Keys(), "code")) == 200U);
+    CHECK(std::get<double>(row0.GetValue(result.data.Keys(), "ratio")) == Catch::Approx(0.75));
+    CHECK(std::get<bool>(row0.GetValue(result.data.Keys(), "ok")) == true);
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(std::get<std::uint64_t>(row1.GetValue("code")) == 404U);
-    CHECK(std::get<double>(row1.GetValue("ratio")) == Catch::Approx(-1.5));
-    CHECK(std::get<bool>(row1.GetValue("ok")) == false);
+    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "code")) == 404U);
+    CHECK(std::get<double>(row1.GetValue(result.data.Keys(), "ratio")) == Catch::Approx(-1.5));
+    CHECK(std::get<bool>(row1.GetValue(result.data.Keys(), "ok")) == false);
 }
 
 TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_parser]")
 {
     // Non-match is per-line; the rest of the file still parses.
     const RegexParser parser(R"(^(?<level>\w+):(?<message>.+)$)");
-    const TestLogFile file("regex_non_matching.log");
-    file.Write(
-        "info:hello\n"
-        "this line does not match\n"
-        "error:boom\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "info:hello\n"
+            "this line does not match\n"
+            "error:boom\n"
+        )
+    );
     REQUIRE(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 1);
     CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
@@ -181,24 +177,25 @@ TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_
     // monostate (not the empty string), matching CSV's "missing
     // trailing cell" behaviour.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
-    const TestLogFile file("regex_optional.log");
-    file.Write(
-        "systemd: System starting\n"
-        "configd[17]: network changed\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "systemd: System starting\n"
+            "configd[17]: network changed\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(AsStringView(row0.GetValue("program")) == std::string_view{"systemd"});
-    CHECK(std::holds_alternative<std::monostate>(row0.GetValue("pid")));
-    CHECK_FALSE(row0.Values().contains("pid"));
+    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
+    CHECK(std::holds_alternative<std::monostate>(row0.GetValue(result.data.Keys(), "pid")));
+    CHECK_FALSE(row0.Values(result.data.Keys()).contains("pid"));
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(AsStringView(row1.GetValue("program")) == std::string_view{"configd"});
-    CHECK(std::get<std::uint64_t>(row1.GetValue("pid")) == 17U);
+    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "program")) == std::string_view{"configd"});
+    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "pid")) == 17U);
 }
 
 TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template [regex]", "[regex_parser]")
@@ -216,11 +213,11 @@ TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template 
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     // Columns from the syslog template.
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("hostname")) == std::string_view{"host-a"});
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("program")) == std::string_view{"systemd"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue("hostname")) == std::string_view{"host-b"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue("program")) == std::string_view{"CRON"});
-    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue("pid")) == 1234U);
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-a"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
+    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-b"});
+    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "program")) == std::string_view{"CRON"});
+    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "pid")) == 1234U);
 }
 
 TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]")
@@ -241,22 +238,20 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     // If Regex had won, there'd be no `level` JSON column.
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
 }
 
 TEST_CASE("RegexParser captures named groups as values [regex]", "[regex_parser]")
 {
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
-    const TestLogFile file("regex_tostring.log");
-    file.Write("info hello world\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("info hello world\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
     const auto &line = result.data.Lines()[0];
-    CHECK(AsStringView(line.GetValue("level")) == std::string_view{"info"});
-    CHECK(AsStringView(line.GetValue("message")) == std::string_view{"hello world"});
+    CHECK(AsStringView(line.GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
+    CHECK(AsStringView(line.GetValue(result.data.Keys(), "message")) == std::string_view{"hello world"});
 }
 
 TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[regex_parser]")
@@ -281,7 +276,7 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
     auto result = ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue("hostname")) == std::string_view{"host-a"});
+    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-a"});
 }
 
 TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[regex_parser]")
@@ -293,10 +288,8 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
     // before `level` must intern `message` first, not the
     // alphabetical permutation.
     const RegexParser parser(R"(^(?<message>[^|]*)\|(?<level>\w+)$)");
-    const TestLogFile file("regex_tostring_order.log");
-    file.Write("hello world|info\n");
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(parser, MemorySource("hello world|info\n"));
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -726,15 +719,15 @@ TEST_CASE(
 
     const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
 
-    const TestLogFile file("regex_static_multiline.log");
-    file.Write(
-        "error boom\n"
-        "\tat com.example.Foo.bar(Foo.java:42)\n"
-        "\tat com.example.Baz.qux(Baz.java:7)\n"
-        "info recovered\n"
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "error boom\n"
+            "\tat com.example.Foo.bar(Foo.java:42)\n"
+            "\tat com.example.Baz.qux(Baz.java:7)\n"
+            "info recovered\n"
+        )
     );
-
-    auto result = ParseFile(parser, file.GetFilePath());
     for (const auto &e : result.errors)
     {
         UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
@@ -791,8 +784,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -818,12 +810,12 @@ TEST_CASE(
     CHECK(m0->contains("Baz.java:7"));
     CHECK(m0->contains("Wibble.java:99"));
 
-    const LogFile &parsedFile = sourcePtr->File();
-    REQUIRE(parsedFile.GetLineCount() == 5);
-    CHECK(parsedFile.GetLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
-    CHECK(parsedFile.GetLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
-    CHECK(parsedFile.GetLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
-    CHECK(parsedFile.GetLine(4) == "info recovered");
+    const FileLineSource &parsedFile = *sourcePtr;
+    REQUIRE(parsedFile.LineCount() == 5);
+    CHECK(parsedFile.RawLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.RawLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
+    CHECK(parsedFile.RawLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
+    CHECK(parsedFile.RawLine(4) == "info recovered");
 
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("error boom"));
@@ -865,8 +857,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -881,11 +872,11 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    const LogFile &parsedFile = sourcePtr->File();
-    REQUIRE(parsedFile.GetLineCount() == 4);
-    CHECK(parsedFile.GetLine(1).empty());
-    CHECK(parsedFile.GetLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
-    CHECK(parsedFile.GetLine(3) == "info recovered");
+    const FileLineSource &parsedFile = *sourcePtr;
+    REQUIRE(parsedFile.LineCount() == 4);
+    CHECK(parsedFile.RawLine(1).empty());
+    CHECK(parsedFile.RawLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.RawLine(3) == "info recovered");
 
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("error boom"));
@@ -931,8 +922,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1048,25 +1038,26 @@ TEST_CASE("RegexParser leaves optional groups that did not match empty [regex]",
     // the natural fixture: line 1 leaves `pid` absent, line 2
     // fills it.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
-    const TestLogFile file("regex_tostring_monostate.log");
-    file.Write(
-        "systemd: System starting\n"
-        "configd[17]: network changed\n"
-    );
 
-    auto result = ParseFile(parser, file.GetFilePath());
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "systemd: System starting\n"
+            "configd[17]: network changed\n"
+        )
+    );
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(AsStringView(row0.GetValue("program")) == std::string_view{"systemd"});
-    CHECK(AsStringView(row0.GetValue("message")) == std::string_view{"System starting"});
-    CHECK(std::holds_alternative<std::monostate>(row0.GetValue("pid")));
+    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
+    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "message")) == std::string_view{"System starting"});
+    CHECK(std::holds_alternative<std::monostate>(row0.GetValue(result.data.Keys(), "pid")));
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(AsStringView(row1.GetValue("program")) == std::string_view{"configd"});
-    CHECK(AsStringView(row1.GetValue("message")) == std::string_view{"network changed"});
-    CHECK_FALSE(std::holds_alternative<std::monostate>(row1.GetValue("pid")));
+    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "program")) == std::string_view{"configd"});
+    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "message")) == std::string_view{"network changed"});
+    CHECK_FALSE(std::holds_alternative<std::monostate>(row1.GetValue(result.data.Keys(), "pid")));
 }
 
 TEST_CASE(
@@ -1162,8 +1153,7 @@ TEST_CASE(
         "2026-01-02 INFO recovered\n"
     );
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1254,8 +1244,7 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     const TestLogFile file("regex_header_anchor_bad_static.log");
     file.Write("2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n");
 
-    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
-    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1307,7 +1296,7 @@ TEST_CASE(
         {
             for (auto &l : b.lines)
             {
-                const auto value = l.GetValue("message");
+                const auto value = l.GetValue(sink.Keys(), "message");
                 const auto m = AsStringView(value);
                 REQUIRE(m.has_value());
                 joined.emplace_back(*m);

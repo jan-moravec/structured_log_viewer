@@ -5,7 +5,6 @@
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/internal/pcre2_support.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
 #include "loglib/parse/internal/classify_bare_scalar.hpp"

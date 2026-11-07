@@ -32,7 +32,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -4536,7 +4535,7 @@ void MainWindow::OnStreamingFinished(LogSession *origin, StreamingResult result)
         // worker, but defensively cancel any decompression that
         // might be queued behind the failed parse so it doesn't
         // inject into the teardown that follows. Per-file anchor
-        // lifetimes stay attached to their LogFiles; a session-wide
+        // lifetimes stay attached to their FileLineSources; a session-wide
         // clear here would risk unlinking temp files still backing
         // mmap'd rows from previously-successful appends.
         CancelInFlightDecompressionFor(origin);
@@ -4582,11 +4581,11 @@ void MainWindow::StreamNextPendingFile(LogSession *origin)
         // Content-based codec sniff (single source of truth for the
         // codec table). Uncompressed / empty / unreadable paths
         // return `None` and take the fast path below; genuine open
-        // failures surface via `LogFile`'s ctor further down.
+        // failures surface via `FileLineSource`'s ctor further down.
         //
         // Runs on the GUI thread. 6 bytes off a local disk is
         // sub-millisecond, but a stalled network share can block.
-        // `LogFile`'s open below has the same property, so this
+        // `FileLineSource`'s open below has the same property, so this
         // isn't the tightest link -- if remote I/O becomes a
         // supported use-case, fold both into the async worker.
         // Preserve non-ASCII Windows paths during codec detection and open.
@@ -4653,10 +4652,10 @@ bool MainWindow::ContinueOpenAfterPrepared(
 
     // Open on the GUI thread so any I/O failure surfaces alongside
     // the queue drain rather than through the async future.
-    std::unique_ptr<loglib::LogFile> logFile;
+    std::unique_ptr<loglib::FileLineSource> fileSource;
     try
     {
-        logFile = std::make_unique<loglib::LogFile>(effectivePath, logapp::QStringToFsPath(originalPath));
+        fileSource = std::make_unique<loglib::FileLineSource>(effectivePath, logapp::QStringToFsPath(originalPath));
     }
     catch (const std::exception &e)
     {
@@ -4683,15 +4682,15 @@ bool MainWindow::ContinueOpenAfterPrepared(
         return false;
     }
 
-    // Bind the anchor to this specific LogFile: on destruction, mmap
-    // unmaps first (declaration order in LogFile), then the anchor's
+    // Bind the anchor to this specific FileLineSource: on destruction, mmap
+    // unmaps first (declaration order in FileLineSource), then the anchor's
     // dtor unlinks the temp file -- the Windows-safe order. A
     // session-scoped vector clear could yank a temp file out from
     // under still-live mmaps. See `AttachLifetimeAnchor` for the
     // ordering contract.
     if (decompressionAnchor)
     {
-        logFile->AttachLifetimeAnchor(std::move(decompressionAnchor));
+        fileSource->AttachLifetimeAnchor(std::move(decompressionAnchor));
     }
 
     auto cfg = std::make_shared<const loglib::LogConfiguration>(model->Configuration());
@@ -4755,7 +4754,6 @@ bool MainWindow::ContinueOpenAfterPrepared(
         UpdateWindowTitle();
     }
 
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     QtStreamingLogSink *sink = model->Sink();
 
@@ -5326,7 +5324,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     const std::filesystem::path effectivePath =
         dbs ? dbs->EffectivePath() : logapp::QStringToFsPath(origin->DecompressionOriginalPath());
 
-    // Transfer temp-file ownership to the mapped `LogFile`.
+    // Transfer temp-file ownership to the mapped `FileLineSource`.
     const bool armedParseWorker =
         ContinueOpenAfterPrepared(origin, origin->DecompressionOriginalPath(), effectivePath, std::move(dbs));
     // Clear scratch fields BEFORE the follow-up drain (see the

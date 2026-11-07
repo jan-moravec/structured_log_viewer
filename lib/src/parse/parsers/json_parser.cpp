@@ -2,7 +2,6 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
 #include "loglib/parse/internal/line_decoder.hpp"
@@ -22,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -508,7 +508,7 @@ void DecodeJsonBatch(
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
     const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.File().Data();
+    const char *fileBegin = source.StableBytes().data();
 
     const auto batchBytes = static_cast<size_t>(end - cursor);
     const size_t estimatedLines = (batchBytes / 64) + 1;
@@ -530,7 +530,7 @@ void DecodeJsonBatch(
             line.remove_suffix(1);
         }
 
-        // `GetLine` subtracts 1 (the '\n'); for an unterminated final
+        // `RawLine` subtracts 1 (the '\n'); for an unterminated final
         // line push `fileSize + 1` so we don't lop off the last char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -611,10 +611,10 @@ void DecodeJsonBatch(
             }
 
             // 0-based intra-batch offset; Stage C shifts by the
-            // running cursor so `LogFile::GetLine(LineId())` indexes
+            // running cursor so `FileLineSource::RawLine(LineId())` indexes
             // `mLineOffsets` correctly. `relativeLineNumber` stays
             // 1-based for human-facing error messages.
-            LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 
@@ -773,11 +773,11 @@ void JsonParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, Pa
 
 void JsonParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    const LogFile &file = source.File();
+    const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
-    const char *fileBegin = file.Data();
-    const size_t fileSize = file.Size();
+    const char *fileBegin = bytes.data();
+    const size_t fileSize = bytes.size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
     auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 

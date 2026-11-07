@@ -185,7 +185,7 @@ TEST_CASE("AutoDetectParser handles an empty producer via JsonParser fallback", 
 
 TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood", "[AutoDetectParser]")
 {
-    // FileLineSource construction requires a LogFile which is
+    // Building a FileLineSource is
     // heavyweight to set up in unit tests. Instead, cover the
     // file-side branch by asserting that the same detection
     // logic (`DetectFormatForPath`) reaches the right verdict on

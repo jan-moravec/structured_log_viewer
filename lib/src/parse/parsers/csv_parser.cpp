@@ -2,7 +2,6 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
 #include "loglib/parse/internal/classify_bare_scalar.hpp"
@@ -236,7 +235,6 @@ struct CsvWorkerState
 void DecodeCsvBatch(
     const internal::ByteRange &batch,
     internal::WorkerScratch<CsvWorkerState> &worker,
-    KeyIndex &keys,
     FileLineSource &source,
     std::span<const internal::TimeColumnSpec> timeColumns,
     internal::ParsedPipelineBatch &parsed,
@@ -249,7 +247,7 @@ void DecodeCsvBatch(
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
     const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.File().Data();
+    const char *fileBegin = source.StableBytes().data();
 
     const auto batchBytes = static_cast<size_t>(end - cursor);
     const size_t estimatedLines = (batchBytes / 64) + 1;
@@ -270,7 +268,7 @@ void DecodeCsvBatch(
         std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
         line = StripCr(line);
 
-        // `GetLine` subtracts 1 for the '\n'; pad by 1 on an unterminated
+        // `RawLine` subtracts 1 for the '\n'; pad by 1 on an unterminated
         // last line so the final byte isn't lost.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -334,7 +332,7 @@ void DecodeCsvBatch(
             // LogLine ctor asserts ascending KeyIds; header order may not be.
             std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
-            LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
@@ -505,11 +503,11 @@ void CsvParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, Par
 
 void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    const LogFile &file = source.File();
+    const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
-    const char *fileBegin = file.Data();
-    const size_t fileSize = file.Size();
+    const char *fileBegin = bytes.data();
+    const size_t fileSize = bytes.size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
     // Eagerly find and parse the header. Outputs:
@@ -584,12 +582,10 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
     auto stageB = [sourcePtr, &columnKeys, headerLineOffset](
                       internal::ByteRange token,
                       internal::WorkerScratch<CsvWorkerState> &worker,
-                      KeyIndex &keys,
+                      KeyIndex & /*keys*/,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) {
-        DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset);
-    };
+                  ) { DecodeCsvBatch(token, worker, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset); };
 
     // The header columns are interned up front, so the pipeline announces them as declared keys, even for a column
     // that is empty in every row.

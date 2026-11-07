@@ -7,7 +7,6 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/internal/stable_byte_arena.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
@@ -58,7 +57,7 @@ namespace
 class CoalescingFileSink : public LogParseSink
 {
 public:
-    explicit CoalescingFileSink(LogFile &file)
+    explicit CoalescingFileSink(FileLineSource &file)
         : mFile(&file)
     {
     }
@@ -86,14 +85,14 @@ public:
     std::vector<LogLine> lines;
 
 private:
-    LogFile *mFile;
+    FileLineSource *mFile;
     KeyIndex mKeys;
 };
 
 std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std::size_t batchSizeBytes)
 {
-    FileLineSource source(std::make_unique<LogFile>(path));
-    CoalescingFileSink sink(source.File());
+    FileLineSource source(path);
+    CoalescingFileSink sink(source);
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
     LogfmtParser{}.ParseStreaming(source, sink, options);
@@ -110,7 +109,7 @@ std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std:
 ParseResult ParseText(const test_common::TempDir &dir, const LogParser &parser, std::string_view text)
 {
     const std::filesystem::path path = dir.Write("input.log", text);
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(path));
+    auto source = std::make_unique<FileLineSource>(path);
     FileLineSource &sourceRef = *source;
     internal::BufferingSink sink(std::move(source));
     parser.ParseStreaming(sourceRef, sink, ParserOptions{});
@@ -305,7 +304,7 @@ TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed
     const ParseResult result = ParseText(dir, JsonParser{}, "{\"id\":123456789012345678901234567890}\n");
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    const LogValue value = result.data.Lines()[0].GetValue(std::string("id"));
+    const LogValue value = result.data.Lines()[0].GetValue(result.data.Keys(), "id");
     const auto text = AsStringView(value);
     REQUIRE(text.has_value());
     CHECK(*text == "123456789012345678901234567890");
@@ -321,8 +320,8 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
     );
     REQUIRE(result.data.Lines().size() == 1);
     const LogLine &line = result.data.Lines()[0];
-    const auto text = [&line](const char *key) {
-        const LogValue value = line.GetValue(std::string(key));
+    const auto text = [&line, &result](const char *key) {
+        const LogValue value = line.GetValue(result.data.Keys(), key);
         return std::string(AsStringView(value).value_or("<not a string>"));
     };
     CHECK(text("zip") == "007");
@@ -330,9 +329,9 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
     CHECK(text("neg") == "-007");
     CHECK(text("small") == "-99999999999999999999");
     CHECK(text("plus") == "+5");
-    CHECK(std::holds_alternative<uint64_t>(line.GetValue(std::string("n"))));
-    CHECK(std::holds_alternative<double>(line.GetValue(std::string("f"))));
-    CHECK(std::holds_alternative<uint64_t>(line.GetValue(std::string("z"))));
+    CHECK(std::holds_alternative<uint64_t>(line.GetValue(result.data.Keys(), "n")));
+    CHECK(std::holds_alternative<double>(line.GetValue(result.data.Keys(), "f")));
+    CHECK(std::holds_alternative<uint64_t>(line.GetValue(result.data.Keys(), "z")));
 }
 
 TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
@@ -403,7 +402,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
 {
     const test_common::TempDir dir("evict");
     const std::filesystem::path path = dir.Write("history.log", "unused\n");
-    auto fileSource = std::make_unique<FileLineSource>(std::make_unique<LogFile>(path));
+    auto fileSource = std::make_unique<FileLineSource>(path);
     FileLineSource &fileRef = *fileSource;
 
     LogTable table;
@@ -414,7 +413,7 @@ TEST_CASE("Evicting rows trims each source by its own line ids", "[log_table][re
     const auto makeLine = [&](LineSource &source, size_t lineId, const char *text) {
         std::vector<std::pair<KeyId, LogValue>> values;
         values.emplace_back(valueKey, LogValue{std::string(text)});
-        return LogLine(std::move(values), keys, source, lineId);
+        return LogLine(std::move(values), source, lineId);
     };
 
     RowBatch fileBatch;
@@ -698,7 +697,7 @@ TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicod
         out << "a=1\n";
     }
 
-    CHECK(LogFile(path).Size() == 4);
+    CHECK(FileLineSource(path).StableBytes().size() == 4);
     CHECK(DecompressingByteSource(path).EffectivePath() == path);
     CHECK_NOTHROW(TailingBytesProducer(path, 10));
 

@@ -11,7 +11,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/stop_token.hpp>
@@ -191,7 +190,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         {
             for (const std::string &key : kKeys)
             {
-                if (!std::holds_alternative<std::monostate>(line.GetValue(key)))
+                if (!std::holds_alternative<std::monostate>(line.GetValue(data.Keys(), key)))
                 {
                     ++hits;
                 }
@@ -330,7 +329,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     const double fastPathFraction =
         totalStringValues == 0 ? 0.0 : static_cast<double>(mmapSliceValues) / static_cast<double>(totalStringValues);
     // One vector heap allocation per line (the compact-pair vector), plus
-    // *zero* per owned string (those are coalesced in the `LogFile`
+    // *zero* per owned string (those are coalesced in the `FileLineSource`
     // arena post-stream — the per-batch arena is freed when Stage C ends).
     const size_t allocUpperBound = lineCount;
 
@@ -365,7 +364,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     table.SetDisplayTimeZone(ProcessDefaultTimeZone());
     table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
 
-    auto sourceForTable = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    auto sourceForTable = std::make_unique<FileLineSource>(testFile.GetFilePath());
     FileLineSource *parseSource = sourceForTable.get();
     table.BeginStreaming(std::move(sourceForTable));
 
@@ -473,7 +472,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 
     for (int i = 0; i < ITERATIONS; ++i)
     {
-        FileLineSource source(std::make_unique<LogFile>(testFile.GetFilePath()));
+        FileLineSource source(testFile.GetFilePath());
         LatencySink sink;
         ParserOptions opts;
         opts.stopToken = sink.stop.GetToken();

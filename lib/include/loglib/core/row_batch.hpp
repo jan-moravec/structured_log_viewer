@@ -50,7 +50,7 @@ struct ParseError
  *
  * lines holds the parsed rows, for static files and live streams alike. Each row knows its LineSource, so reading it is
  * the same for both. localLineOffsets is filled only by the file pipeline, and is appended to the line offsets of the
- * LogFile. The streaming loop leaves it empty.
+ * FileLineSource. The streaming loop leaves it empty.
  */
 struct RowBatch
 {
@@ -60,7 +60,7 @@ struct RowBatch
     std::vector<std::string> newKeys;
     /**
      * @brief The line ranges of multi-line records in a file source. A consumer must append localLineOffsets before it
-     * registers these spans on the LogFile.
+     * registers these spans on the FileLineSource.
      */
     std::vector<MultiLineRecordSpan> multiLineSpans;
     /**

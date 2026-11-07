@@ -2,7 +2,6 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
 #include "loglib/parse/internal/classify_bare_scalar.hpp"
@@ -19,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -395,7 +395,7 @@ void DecodeLogfmtBatch(
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
     const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.File().Data();
+    const char *fileBegin = source.StableBytes().data();
 
     if (fileBegin == nullptr || cursor == nullptr || end == nullptr || cursor == end)
     {
@@ -436,7 +436,7 @@ void DecodeLogfmtBatch(
             line.remove_prefix(UTF8_BOM.size());
         }
 
-        // `GetLine` subtracts 1 (the '\n'); for an unterminated last
+        // `RawLine` subtracts 1 (the '\n'); for an unterminated last
         // line push `fileSize + 1` so we don't lose the final char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -485,7 +485,7 @@ void DecodeLogfmtBatch(
                     // Preserve the header line ID while replacing its values.
                     const size_t headerLineId = parsed.lines.back().LineId();
                     parsed.lines.pop_back();
-                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    LogLine rebuilt(std::move(mutableValues), source, headerLineId);
                     parsed.lines.push_back(std::move(rebuilt));
                     tailLastPhysical = relativeLineNumber - 1;
                 }
@@ -553,7 +553,7 @@ void DecodeLogfmtBatch(
                 );
             }
 
-            LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             // Inline promotion: same shape as the JSON parser.
@@ -725,11 +725,11 @@ void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, 
 
 void LogfmtParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    const LogFile &file = source.File();
+    const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
-    const char *fileBegin = file.Data();
-    const size_t fileSize = file.Size();
+    const char *fileBegin = bytes.data();
+    const size_t fileSize = bytes.size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
     auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
 

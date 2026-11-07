@@ -124,11 +124,11 @@ TEST_CASE(
     size_t withModule = 0;
     for (const LogLine &line : result.data.Lines())
     {
-        const LogValue level = line.GetValue("level");
+        const LogValue level = line.GetValue(result.data.Keys(), "level");
         const auto levelView = AsStringView(level);
         REQUIRE(levelView.has_value());
         CHECK_FALSE(levelView->contains(':'));
-        if (std::holds_alternative<std::string_view>(line.GetValue("module")))
+        if (std::holds_alternative<std::string_view>(line.GetValue(result.data.Keys(), "module")))
         {
             ++withModule;
         }

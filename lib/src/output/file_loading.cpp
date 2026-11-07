@@ -2,7 +2,6 @@
 
 #include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/parse/format_detection.hpp"
 #include "loglib/parse/log_parser.hpp"
 #include "loglib/parse/parsers/json_parser.hpp"
@@ -36,10 +35,9 @@ OpenedFile OpenFileSource(const std::filesystem::path &path, const OpenFileOptio
     }
 
     opened.effectivePath = decompressor->EffectivePath();
-    auto logFile = std::make_unique<LogFile>(opened.effectivePath, path);
+    opened.source = std::make_unique<FileLineSource>(opened.effectivePath, path);
     // The file is unmapped first and the temporary copy is deleted after it.
-    logFile->AttachLifetimeAnchor(std::move(decompressor));
-    opened.source = std::make_unique<FileLineSource>(std::move(logFile));
+    opened.source->AttachLifetimeAnchor(std::move(decompressor));
     return opened;
 }
 

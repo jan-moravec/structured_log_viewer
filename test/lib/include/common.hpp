@@ -92,11 +92,11 @@ public:
 
     const std::string &GetFilePath() const;
     void Write(const std::string &content) const;
-    std::unique_ptr<loglib::LogFile> CreateLogFile() const;
 
-    /// Convenience helper that wraps `CreateLogFile()` in a
-    /// `FileLineSource`. Used by tests that need to pass a `LineSource&`
-    /// into a `LogLine` ctor.
+    /// Maps the file and records its line offsets, as a parse would. Used by
+    /// tests that need to pass a `LineSource&` into a `LogLine` ctor. A parse
+    /// of such a source asserts, because the offsets are already there; use
+    /// the path constructor of `FileLineSource` for that.
     std::unique_ptr<loglib::FileLineSource> CreateFileLineSource() const;
 
 private:
@@ -104,6 +104,16 @@ private:
     std::string mFilePath;
     std::filesystem::path mFsPath;
 };
+
+/// The offsets a parser records for text: one past each line feed, and for a last line without a line feed, the text
+/// size plus one.
+[[nodiscard]] std::vector<std::uint64_t> LineEndOffsets(std::string_view text);
+
+/// A file source over text held in memory, for tests that would otherwise write a temporary file only to parse it. It
+/// has no line offsets yet, so a parse fills them in, just as it does for a mapped file.
+[[nodiscard]] std::unique_ptr<loglib::FileLineSource> MemorySource(
+    std::string text, std::string_view displayName = "memory.log"
+);
 
 /// Serves a string through the BytesProducer interface, optionally in chunks of chunkSize bytes, and then reports the
 /// end of the stream. WaitForBytes returns at once because the bytes are always there. Tests that need a producer with

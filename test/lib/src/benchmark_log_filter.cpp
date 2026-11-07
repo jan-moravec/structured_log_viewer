@@ -22,7 +22,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
@@ -61,7 +60,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
     std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-    return {std::move(sorted), keys, source, 0};
+    return {std::move(sorted), source, 0};
 }
 
 struct LargeTable
@@ -82,7 +81,7 @@ struct LargeTable
 /// benchmarks below.
 LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std::string_view columnKey)
 {
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -144,7 +143,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
 /// by the level-sort benchmarks below.
 LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
 {
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -200,7 +199,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
 /// `CallbackStringRowPredicate` benchmark below.
 LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
 {
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;

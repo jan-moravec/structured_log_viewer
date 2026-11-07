@@ -25,6 +25,7 @@ namespace
  * is set.
  */
 bool MakeBackfillState(
+    const KeyIndex &keyIndex,
     const Column &column,
     std::span<LogLine> lines,
     const TimeZoneContext &timeZone,
@@ -39,7 +40,6 @@ bool MakeBackfillState(
         return false;
     }
 
-    const KeyIndex &keyIndex = lines.front().Keys();
     internal::TimeColumnSpec spec;
     spec.keyIds.reserve(column.keys.size());
     for (const std::string &key : column.keys)
@@ -67,6 +67,7 @@ bool MakeBackfillState(
  * empty.
  */
 void BackfillColumnLoop(
+    const KeyIndex &keyIndex,
     const Column &column,
     std::span<LogLine> lines,
     const TimeZoneContext &timeZone,
@@ -77,7 +78,7 @@ void BackfillColumnLoop(
     std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
     std::vector<internal::LastTimestampBytesHit> bytesHits;
-    if (!MakeBackfillState(column, lines, timeZone, referenceTime, specs, lastValid, bytesHits))
+    if (!MakeBackfillState(keyIndex, column, lines, timeZone, referenceTime, specs, lastValid, bytesHits))
     {
         return;
     }
@@ -100,6 +101,7 @@ void BackfillColumnLoop(
 } // namespace
 
 std::vector<std::string> BackfillTimestampColumn(
+    const KeyIndex &keyIndex,
     const Column &column,
     std::span<LogLine> lines,
     const TimeZoneContext &timeZone,
@@ -107,11 +109,12 @@ std::vector<std::string> BackfillTimestampColumn(
 )
 {
     std::vector<std::string> errors;
-    BackfillColumnLoop(column, lines, timeZone, referenceTime, &errors);
+    BackfillColumnLoop(keyIndex, column, lines, timeZone, referenceTime, &errors);
     return errors;
 }
 
 void BackfillTimestampColumn(
+    const KeyIndex &keyIndex,
     const Column &column,
     std::span<LogLine> lines,
     const TimeZoneContext &timeZone,
@@ -120,7 +123,7 @@ void BackfillTimestampColumn(
 )
 {
     static_cast<void>(discardErrors);
-    BackfillColumnLoop(column, lines, timeZone, referenceTime, nullptr);
+    BackfillColumnLoop(keyIndex, column, lines, timeZone, referenceTime, nullptr);
 }
 
 } // namespace loglib

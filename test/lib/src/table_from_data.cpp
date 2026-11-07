@@ -66,7 +66,7 @@ void AppendData(loglib::LogTable &table, loglib::LogData data)
         }
         std::ranges::sort(remapped, [](const auto &a, const auto &b) { return a.first < b.first; });
         assert(line.Source() != nullptr);
-        batch.lines.emplace_back(std::move(remapped), table.Keys(), *line.Source(), line.LineId());
+        batch.lines.emplace_back(std::move(remapped), *line.Source(), line.LineId());
     }
     batch.newKeys = std::move(newKeys);
     (void)table.AppendBatch(std::move(batch));

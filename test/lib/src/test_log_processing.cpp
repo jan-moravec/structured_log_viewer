@@ -44,7 +44,8 @@ std::vector<std::string> ConvertTimeColumns(LogData &logData, const LogConfigura
     {
         if (column.type == ColumnType::Time)
         {
-            auto columnErrors = BackfillTimestampColumn(column, logData.Lines(), TimeZoneContext{}, ReferenceNow());
+            auto columnErrors =
+                BackfillTimestampColumn(logData.Keys(), column, logData.Lines(), TimeZoneContext{}, ReferenceNow());
             errors.insert(errors.end(), columnErrors.begin(), columnErrors.end());
         }
     }
@@ -126,10 +127,10 @@ TEST_CASE("Converting time columns accepts different formats", "[log_processing]
 
     const TimeStamp timestamp{std::chrono::microseconds{1745584496000000}};
 
-    CHECK(std::get<TimeStamp>(logData.Lines()[0].GetValue("key")) == timestamp);
-    CHECK(std::get<TimeStamp>(logData.Lines()[1].GetValue("key")) == timestamp);
-    CHECK(std::get<TimeStamp>(logData.Lines()[2].GetValue("key")) == timestamp);
-    CHECK(std::get<TimeStamp>(logData.Lines()[3].GetValue("key")) == timestamp);
+    CHECK(std::get<TimeStamp>(logData.Lines()[0].GetValue(logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(logData.Lines()[1].GetValue(logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(logData.Lines()[2].GetValue(logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(logData.Lines()[3].GetValue(logData.Keys(), "key")) == timestamp);
 }
 
 TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")

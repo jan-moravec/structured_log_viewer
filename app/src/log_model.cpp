@@ -233,7 +233,7 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     std::optional<size_t> reserveCount;
     if (auto *fileSource = dynamic_cast<loglib::FileLineSource *>(source.get()); fileSource != nullptr)
     {
-        reserveCount = fileSource->File().Size() / BYTES_PER_LINE_RESERVE_HINT;
+        reserveCount = fileSource->StableBytes().size() / BYTES_PER_LINE_RESERVE_HINT;
     }
 
     // Drop cache entries for the about-to-be-released sources.
@@ -354,7 +354,7 @@ loglib::StopToken LogModel::AppendStreaming(
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
     // Reserve before splicing in to keep per-batch offset inserts O(1).
-    const size_t reserveCount = source->File().Size() / 100;
+    const size_t reserveCount = source->StableBytes().size() / 100;
     mLogTable.AppendStreaming(std::move(source));
     mLogTable.ReserveLineOffsets(reserveCount);
 

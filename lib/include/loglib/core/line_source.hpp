@@ -59,8 +59,10 @@ public:
     [[nodiscard]] virtual const std::filesystem::path &Path() const noexcept = 0;
 
     /**
-     * @brief The text of a line without its line ending. Throws std::out_of_range if the line was evicted or does not
-     * exist yet.
+     * @brief The text of a line without its line ending.
+     *
+     * A stream source throws std::out_of_range if the line was evicted or does not exist yet. A file source asserts on
+     * a line past the end, because that is a programming error.
      */
     [[nodiscard]] virtual std::string RawLine(size_t lineId) const = 0;
 

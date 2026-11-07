@@ -27,13 +27,13 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     KeyIndex keys;
     const LogLine line(map, keys, *source, 1);
 
-    REQUIRE(line.Values().size() == map.size());
-    CHECK(std::get<std::string>(line.GetValue("key1")) == "value1");
-    CHECK(std::get<uint64_t>(line.GetValue("key2")) == 42);
-    CHECK(std::get<int64_t>(line.GetValue("key3")) == -12);
-    CHECK(std::get<double>(line.GetValue("key4")) == Catch::Approx(3.14));
-    CHECK(std::get<bool>(line.GetValue("key5")) == true);
-    CHECK(std::holds_alternative<std::monostate>(line.GetValue("key6")));
+    REQUIRE(line.Values(keys).size() == map.size());
+    CHECK(std::get<std::string>(line.GetValue(keys, "key1")) == "value1");
+    CHECK(std::get<uint64_t>(line.GetValue(keys, "key2")) == 42);
+    CHECK(std::get<int64_t>(line.GetValue(keys, "key3")) == -12);
+    CHECK(std::get<double>(line.GetValue(keys, "key4")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(line.GetValue(keys, "key5")) == true);
+    CHECK(std::holds_alternative<std::monostate>(line.GetValue(keys, "key6")));
 
     REQUIRE(line.Source() != nullptr);
     // `TestLogFile` resolves the fixture under a per-process scratch dir, so
@@ -43,7 +43,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(line.LineId() == 1);
     CHECK(line.Source()->RawLine(line.LineId()) == "efgh");
 
-    auto resultKeys = line.GetKeys();
+    auto resultKeys = line.GetKeys(keys);
     REQUIRE(resultKeys.size() == map.size());
     CHECK(std::ranges::find(resultKeys, "key1") != resultKeys.end());
     CHECK(std::ranges::find(resultKeys, "key2") != resultKeys.end());
@@ -52,7 +52,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(std::ranges::find(resultKeys, "key5") != resultKeys.end());
     CHECK(std::ranges::find(resultKeys, "key6") != resultKeys.end());
 
-    const LogMap resultMap = line.Values();
+    const LogMap resultMap = line.Values(keys);
 
     REQUIRE(resultMap.size() == map.size());
 
@@ -89,9 +89,9 @@ TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]"
     KeyIndex keys;
     const LogLine emptyLine(emptyMap, keys, *source, 0);
 
-    auto resultKeys = emptyLine.GetKeys();
+    const auto resultKeys = emptyLine.GetKeys(keys);
     CHECK(resultKeys.empty());
-    CHECK(emptyLine.Values().empty());
+    CHECK(emptyLine.Values(keys).empty());
 }
 
 TEST_CASE("LogLine returns monostate for empty and non-existent key", "[log_line]")
@@ -104,11 +104,11 @@ TEST_CASE("LogLine returns monostate for empty and non-existent key", "[log_line
     KeyIndex keys;
     const LogLine line(map, keys, *source, 0);
 
-    CHECK(std::holds_alternative<std::monostate>(line.GetValue("")));
-    CHECK(std::holds_alternative<std::monostate>(line.GetValue("non_existent_key")));
+    CHECK(std::holds_alternative<std::monostate>(line.GetValue(keys, "")));
+    CHECK(std::holds_alternative<std::monostate>(line.GetValue(keys, "non_existent_key")));
 
-    CHECK(std::get<std::string>(line.GetValue("key1")) == "value1");
-    CHECK(std::get<uint64_t>(line.GetValue("key2")) == 42);
+    CHECK(std::get<std::string>(line.GetValue(keys, "key1")) == "value1");
+    CHECK(std::get<uint64_t>(line.GetValue(keys, "key2")) == 42);
 }
 
 TEST_CASE("Set and update values", "[log_line]")
@@ -121,16 +121,16 @@ TEST_CASE("Set and update values", "[log_line]")
     KeyIndex keys;
     LogLine line(map, keys, *source, 0);
 
-    CHECK(std::get<std::string>(line.GetValue("existingKey")) == "initialValue");
-    CHECK(line.Values().size() == 1);
+    CHECK(std::get<std::string>(line.GetValue(keys, "existingKey")) == "initialValue");
+    CHECK(line.Values(keys).size() == 1);
 
     const std::string updatedValue = "updatedValue";
-    line.SetValue("existingKey", updatedValue);
+    line.SetValue(keys, "existingKey", updatedValue);
 
-    CHECK(std::get<std::string>(line.GetValue("existingKey")) == updatedValue);
-    CHECK(line.Values().size() == 1);
+    CHECK(std::get<std::string>(line.GetValue(keys, "existingKey")) == updatedValue);
+    CHECK(line.Values(keys).size() == 1);
 
-    auto resultKeys = line.GetKeys();
+    auto resultKeys = line.GetKeys(keys);
     REQUIRE(resultKeys.size() == 1);
     CHECK(resultKeys[0] == "existingKey");
 
@@ -139,12 +139,12 @@ TEST_CASE("Set and update values", "[log_line]")
     const std::string newKey = "newKey";
     const std::string newValue = "newValue";
     static_cast<void>(keys.GetOrInsert(newKey));
-    line.SetValue(newKey, newValue);
+    line.SetValue(keys, newKey, newValue);
 
-    REQUIRE(line.Values().size() == 2);
-    CHECK(std::get<std::string>(line.GetValue(newKey)) == newValue);
+    REQUIRE(line.Values(keys).size() == 2);
+    CHECK(std::get<std::string>(line.GetValue(keys, newKey)) == newValue);
 
-    resultKeys = line.GetKeys();
+    resultKeys = line.GetKeys(keys);
     REQUIRE(resultKeys.size() == 2);
     CHECK(std::ranges::find(resultKeys, newKey) != resultKeys.end());
 }
@@ -299,23 +299,23 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     sorted.emplace_back(ownedKey, LogValue{std::string{"owned-bytes"}});
     sorted.emplace_back(intKey, LogValue{int64_t{99}});
 
-    const LogLine line(std::move(sorted), keys, *source, 0);
+    const LogLine line(std::move(sorted), *source, 0);
 
     // Fast vs. slow path must round-trip the same alternative.
     const LogValue fastView = line.GetValue(viewKey);
-    const LogValue slowView = line.GetValue(std::string("view-key"));
+    const LogValue slowView = line.GetValue(keys, "view-key");
     REQUIRE(LogValueEquivalent(fastView, slowView));
     REQUIRE(AsStringView(fastView).has_value());
     CHECK(*AsStringView(fastView) == "view-bytes");
 
     const LogValue fastOwned = line.GetValue(ownedKey);
-    const LogValue slowOwned = line.GetValue(std::string("owned-key"));
+    const LogValue slowOwned = line.GetValue(keys, "owned-key");
     REQUIRE(LogValueEquivalent(fastOwned, slowOwned));
     REQUIRE(AsStringView(fastOwned).has_value());
     CHECK(*AsStringView(fastOwned) == "owned-bytes");
 
     const LogValue fastInt = line.GetValue(intKey);
-    const LogValue slowInt = line.GetValue(std::string("int-key"));
+    const LogValue slowInt = line.GetValue(keys, "int-key");
     REQUIRE(std::holds_alternative<int64_t>(fastInt));
     REQUIRE(std::holds_alternative<int64_t>(slowInt));
     CHECK(std::get<int64_t>(fastInt) == 99);

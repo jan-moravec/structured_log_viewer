@@ -68,7 +68,7 @@ Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit an
 ## Walkthrough: from a line to an exported row
 
 1. **Choose the files.** `ingest/source_plan.hpp` turns the selected paths into the files to open, adding rotated siblings if wanted. `ingest/decompressing_byte_source.hpp` unpacks compressed files first. `output/file_loading.hpp` does this and the next step for a path in OpenFileSource, and LoadFile goes all the way to a table.
-1. **Map the bytes.** `core/log_file.hpp` memory-maps the file and `core/file_line_source.hpp` serves its bytes. For a live source, `ingest/tailing_bytes_producer.hpp` or another producer delivers bytes and `core/stream_line_source.hpp` keeps the lines.
+1. **Map the bytes.** `core/file_line_source.hpp` memory-maps the file, or holds bytes given from memory, and serves them. For a live source, `ingest/tailing_bytes_producer.hpp` or another producer delivers bytes and `core/stream_line_source.hpp` keeps the lines.
 1. **Pick the format.** `parse/format_detection.hpp` sniffs the first bytes and `MakeParserForFormat` builds the parser from `parse/parsers/`.
 1. **Parse.** For a file, `parse/internal/static_parser_pipeline.hpp` splits the bytes into batches and decodes them on worker threads. For a live stream, `parse/internal/streaming_parse_loop.hpp` does the same on one thread. Each line becomes a `core/log_line.hpp` made of `core/compact_log_value.hpp` fields, with keys interned by `core/key_index.hpp`. Time columns are converted on the way with `time/timestamp_parsing.hpp`. The parser does not touch the table. It writes rows, copied text and keys to three different places, described in [Data flow and threads](#data-flow-and-threads).
 1. **Deliver.** `parse/internal/batch_coalescer.hpp` groups lines into `core/row_batch.hpp` batches and hands them to a `parse/log_parse_sink.hpp`.
@@ -81,10 +81,10 @@ Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit an
 A parser produces three kinds of output, and each goes to a different place for a reason. Do not merge them into one path: the split is what lets other threads read rows while parsing continues.
 
 - **Rows** go in batches (`core/row_batch.hpp`) to a LogParseSink, which usually appends them to a LogTable.
-- **Copied text** is text that cannot be a view into the input, such as decoded escapes or joined continuation lines. For a file, the pipeline's last stage appends it to the byte arena of the LogFile, which never moves its bytes, so a row can point at its final offset while other threads read. For a live stream, the streaming loop hands the raw line and its copied text to StreamLineSource, which stores them under its lock.
+- **Copied text** is text that cannot be a view into the input, such as decoded escapes or joined continuation lines. For a file, the pipeline's last stage appends it to the byte arena of the FileLineSource, which never moves its bytes, so a row can point at its final offset while other threads read. For a live stream, the streaming loop hands the raw line and its copied text to StreamLineSource, which stores them under its lock.
 - **Keys** go into the KeyIndex that the sink lends through Keys. It is safe to share between threads, and a key id stays valid for the life of the index.
 
-The line offsets of a file travel in the batch and are added to the LogFile by whoever appends the batch to a LogData, because the offset vector is a plain vector and is not safe to grow while another thread reads it. Line ranges of multi-line records are registered after the offsets of the same batch.
+The line offsets of a file travel in the batch and are added to the FileLineSource by whoever appends the batch to a LogData, because the offset vector is a plain vector and is not safe to grow while another thread reads it. Line ranges of multi-line records are registered after the offsets of the same batch.
 
 ### Which thread does what
 
@@ -117,6 +117,6 @@ Supported headers are `LOGLIB_PUBLIC_HEADERS` in [`lib/CMakeLists.txt`](CMakeLis
 ## v1 boundary decisions
 
 - Timezone type: `TimeZoneContext`. `Load` throws `std::runtime_error` on invalid tzdata or zone.
-- `LogFile` hides the mapping backend behind an incomplete type and an out-of-line destructor.
+- `FileLineSource` hides the mapping backend behind an incomplete type and an out-of-line destructor.
 - Configuration groups: `Column` / `ColumnType`, `Source` / `SourceLocator`, `Sort` / `SessionView`, `AnchorEntry`, `HighlightRule`. JSON remains flat on `LogConfiguration`.
 - Table collaborators: `EnumInference`, `ColumnTypeHealth`, and `internal::RefreshColumnKeyIds`. `LogTable` remains the row facade.

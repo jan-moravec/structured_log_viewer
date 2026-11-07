@@ -117,13 +117,13 @@ std::int64_t ParsedTimestampMicros(const std::string &content, const ParserOptio
 {
     const TestLogFile file("explicit_time_input.json");
     file.Write(content);
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
     JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
     const LogData data = sink.TakeData();
     REQUIRE(data.Lines().size() >= 1);
-    const LogValue value = data.Lines()[0].GetValue("ts");
+    const LogValue value = data.Lines()[0].GetValue(data.Keys(), "ts");
     const auto *stamp = std::get_if<TimeStamp>(&value);
     REQUIRE(stamp != nullptr);
     return stamp->time_since_epoch().count();
@@ -282,7 +282,7 @@ TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole p
     const auto parseYears = [&content](std::chrono::system_clock::time_point reference) {
         const TestLogFile file("explicit_time_reference.json");
         file.Write(content);
-        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file.GetFilePath()));
+        auto source = std::make_unique<FileLineSource>(file.GetFilePath());
         FileLineSource *sourcePtr = source.get();
         internal::BufferingSink sink(std::move(source));
         ParserOptions options;
@@ -293,7 +293,7 @@ TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole p
         std::vector<std::int64_t> micros;
         for (const LogLine &line : data.Lines())
         {
-            const LogValue value = line.GetValue("ts");
+            const LogValue value = line.GetValue(data.Keys(), "ts");
             const auto *stamp = std::get_if<TimeStamp>(&value);
             REQUIRE(stamp != nullptr);
             micros.push_back(stamp->time_since_epoch().count());
@@ -361,7 +361,7 @@ TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's b
         REQUIRE(lines.size() == 3);
         for (std::size_t i = 0; i < lines.size(); ++i)
         {
-            const LogValue value = lines[i]->GetValue("n");
+            const LogValue value = lines[i]->GetValue(sink.Keys(), "n");
             const auto *number = std::get_if<std::int64_t>(&value);
             REQUIRE(number != nullptr);
             CHECK(*number == static_cast<std::int64_t>(i + 1));
@@ -381,8 +381,8 @@ TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's b
 
         const auto lines = sink.Lines();
         REQUIRE(lines.size() == 3);
-        const LogValue first = lines[0]->GetValue("n");
-        const LogValue last = lines[2]->GetValue("n");
+        const LogValue first = lines[0]->GetValue(sink.Keys(), "n");
+        const LogValue last = lines[2]->GetValue(sink.Keys(), "n");
         REQUIRE(std::get_if<std::int64_t>(&first) != nullptr);
         REQUIRE(std::get_if<std::int64_t>(&last) != nullptr);
         CHECK(*std::get_if<std::int64_t>(&first) == 1);

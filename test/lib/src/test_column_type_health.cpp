@@ -1,7 +1,6 @@
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/schema/column_schema.hpp>
@@ -73,7 +72,7 @@ TEST_CASE("ComputeColumnTypeHealth is a stateless walk of borrowed rows", "[colu
 {
     const TestLogFile testFile("column_type_health_direct.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
     LineSource &sourceRef = *source;
 
     KeyIndex keys;
@@ -86,7 +85,7 @@ TEST_CASE("ComputeColumnTypeHealth is a stateless walk of borrowed rows", "[colu
             sorted.emplace_back(keys.GetOrInsert(field.first), std::move(field.second));
         }
         std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-        return LogLine(std::move(sorted), keys, sourceRef, lines.size());
+        return LogLine(std::move(sorted), sourceRef, lines.size());
     };
 
     lines.push_back(makeLine({{"value", LogValue{static_cast<int64_t>(1)}}}));

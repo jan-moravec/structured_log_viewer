@@ -182,6 +182,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
         if (firstObservation)
         {
             BackfillTimestampColumn(
+                mData.Keys(),
                 column,
                 std::span<LogLine>(mData.Lines()),
                 mDefaultSourceTimeZone,
@@ -208,7 +209,9 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
                 const std::span<LogLine> slice(
                     mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount
                 );
-                BackfillTimestampColumn(column, slice, mDefaultSourceTimeZone, mReferenceTime, BackfillErrors::Discard);
+                BackfillTimestampColumn(
+                    mData.Keys(), column, slice, mDefaultSourceTimeZone, mReferenceTime, BackfillErrors::Discard
+                );
             }
         }
     }
@@ -252,7 +255,7 @@ void LogTable::ReserveLineOffsets(size_t count)
     }
     if (FileLineSource *fileSource = mData.FrontFileSource(); fileSource != nullptr)
     {
-        fileSource->File().ReserveLineOffsets(count);
+        fileSource->ReserveLineOffsets(count);
     }
 }
 
@@ -601,6 +604,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
             mConfiguration.SetColumnParseFormats(columnIndex, DefaultTimeParseFormats());
         }
         BackfillTimestampColumn(
+            mData.Keys(),
             mConfiguration.Configuration().columns[columnIndex],
             std::span<LogLine>(mData.Lines()),
             mDefaultSourceTimeZone,

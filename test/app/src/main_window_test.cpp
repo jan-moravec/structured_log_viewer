@@ -35,7 +35,6 @@
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
-#include <loglib/core/log_file.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
@@ -447,8 +446,7 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
     run.model = std::make_unique<LogModel>(nullptr, theme);
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
-    auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     const loglib::StopToken stopToken = run.model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -482,8 +480,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
     run.model = std::make_unique<LogModel>(nullptr, theme);
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
-    auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     const loglib::StopToken stopToken = run.model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -515,8 +512,7 @@ std::unique_ptr<LogModel> RunStaticLoadInModel(const QString &fixturePath, const
     auto model = std::make_unique<LogModel>(nullptr, nullptr);
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
 
-    auto fileSource =
-        std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(fixturePath.toStdString()));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -778,12 +774,7 @@ loglib::StreamLineSource &BeginSyntheticStaticSession(LogModel &model)
 // @p declareNewKey on the first batch in a sequence so
 // `LogTable::PreviewAppend`'s column predictor matches reality.
 loglib::RowBatch MakeSyntheticBatch(
-    loglib::StreamLineSource &streamSource,
-    loglib::KeyIndex &keys,
-    loglib::KeyId valueKey,
-    size_t firstLineId,
-    size_t count,
-    bool declareNewKey
+    loglib::StreamLineSource &streamSource, loglib::KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey
 )
 {
     loglib::RowBatch batch;
@@ -801,7 +792,7 @@ loglib::RowBatch MakeSyntheticBatch(
         Q_UNUSED(publishedId);
         std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
         compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
-        batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
+        batch.lines.emplace_back(std::move(compactValues), streamSource, lineId);
     }
     return batch;
 }
@@ -1539,8 +1530,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *parseSource = fileSource.get();
         const loglib::StopToken stopToken = model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -1605,7 +1595,7 @@ private slots:
     // signal, leaving configuration menus disabled.
     static void TestResetAfterBeginStreamingEmitsCompensatingFinished()
     {
-        // Use a tiny in-memory file so BeginStreaming has a valid LogFile
+        // Use a tiny in-memory file so BeginStreaming has a valid FileLineSource
         // to install on the model.
         const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
@@ -1613,8 +1603,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
         // No parser is started, so `EndStreaming` will never fire on its own.
@@ -1636,7 +1625,7 @@ private slots:
     // `DropPendingBatches()` (called *after* `waitForFinished()`), not in
     // `RequestStop()`. Otherwise drain-phase queued lambdas pass the
     // mismatch check and run after `Reset()` has destroyed `mLogTable`
-    // (use-after-free on dangling `LogFile*` + spurious second `streamingFinished`).
+    // (use-after-free on dangling `FileLineSource*` + spurious second `streamingFinished`).
     static void TestResetDuringStreamingDropsDrainPhaseBatch()
     {
         const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
@@ -1645,8 +1634,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
 
         // The parseCallable parks on a CV until the test thread releases it,
@@ -1670,7 +1658,7 @@ private slots:
                 const loglib::KeyId keyId = keys.GetOrInsert("a");
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-                loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
+                loglib::LogLine line(std::move(values), *sourcePtr, 1);
                 loglib::RowBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
@@ -1730,8 +1718,7 @@ private slots:
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
 
         std::mutex releaseMutex;
@@ -1752,7 +1739,7 @@ private slots:
                 const loglib::KeyId keyId = keys.GetOrInsert("a");
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-                loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
+                loglib::LogLine line(std::move(values), *sourcePtr, 1);
                 loglib::RowBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
@@ -1819,9 +1806,7 @@ private slots:
         for (size_t batchStart = 0; batchStart < totalLines; batchStart += batchSize)
         {
             const bool declareNewKey = (batchStart == 0);
-            model.AppendBatch(
-                MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
-            );
+            model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, batchStart + 1, batchSize, declareNewKey));
         }
 
         QCOMPARE(model.rowCount(), 100);
@@ -1862,7 +1847,7 @@ private slots:
         // collapse drops the head of `batch.lines` before forwarding
         // to `LogTable::AppendBatch`.
         model.AppendBatch(
-            MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/2000, /*declareNewKey=*/true)
+            MakeSyntheticBatch(streamSource, valueKey, /*firstLineId=*/1, /*count=*/2000, /*declareNewKey=*/true)
         );
 
         // Visible rows must equal the cap exactly (the head of the batch
@@ -1908,7 +1893,7 @@ private slots:
             const bool declareNewKey = (b == 0);
             // Direct call to OnBatch from this thread mirrors the worker.
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, firstLineId, static_cast<size_t>(linesPerBatch), declareNewKey
+                streamSource, valueKey, firstLineId, static_cast<size_t>(linesPerBatch), declareNewKey
             ));
         }
 
@@ -1940,7 +1925,7 @@ private slots:
     // would read 0 even with rows queued).
     static void TestSinkPauseResumePreservesStaticLineBatches()
     {
-        // Need a real `LogFile` because the `FileLineSource` (and the
+        // Need a real file because the `FileLineSource` (and the
         // model's `LogTable::AppendBatch` path that consumes `lines`) hold
         // pointers into the file. The file's contents don't have to match
         // what we synthesise -- we never call `LogLine::GetValue()` on them
@@ -1957,8 +1942,7 @@ private slots:
         const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
@@ -1989,7 +1973,7 @@ private slots:
                     (static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch)) + static_cast<size_t>(i) + size_t{1};
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
-                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
+                batch.lines.emplace_back(std::move(values), *sourcePtr, lineNumber);
                 cursorOffset += 16;
                 batch.localLineOffsets.push_back(static_cast<uint64_t>(cursorOffset));
             }
@@ -2026,12 +2010,12 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         model.SetRetentionCap(1000);
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 100, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 100, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 100);
 
         sink->Pause();
         // 500 paused-buffer rows arrive while paused (visible stays at 100).
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 101, 500, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 101, 500, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), 500);
 
@@ -2298,7 +2282,7 @@ private slots:
         {
             const bool firstBatch = (b == 0);
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
+                streamSource, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
             ));
         }
 
@@ -2364,7 +2348,7 @@ private slots:
         {
             const bool firstBatch = (b == 0);
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
+                streamSource, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
             ));
         }
 
@@ -2414,8 +2398,7 @@ private slots:
         );
 
         LogModel model;
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
@@ -2446,7 +2429,7 @@ private slots:
                 const size_t lineNumber = i + 1;
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineNumber)});
-                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
+                batch.lines.emplace_back(std::move(values), *sourcePtr, lineNumber);
                 batch.localLineOffsets.push_back(lineNumber * 16);
             }
             sink->OnBatch(std::move(batch));
@@ -2474,7 +2457,7 @@ private slots:
                 static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
                 std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
                 compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
-                batch.lines.emplace_back(std::move(compactValues), keys, liveTailSource, lineId);
+                batch.lines.emplace_back(std::move(compactValues), liveTailSource, lineId);
             }
             sink->OnBatch(std::move(batch));
         }
@@ -2514,7 +2497,7 @@ private slots:
 
         const int batchSize = 7;
         model.AppendBatch(MakeSyntheticBatch(
-            streamSource, keys, valueKey, /*firstLineId=*/1, static_cast<size_t>(batchSize), /*declareNewKey=*/true
+            streamSource, valueKey, /*firstLineId=*/1, static_cast<size_t>(batchSize), /*declareNewKey=*/true
         ));
         QCOMPARE(model.rowCount(), batchSize);
 
@@ -2584,7 +2567,7 @@ private slots:
         QVERIFY(sink->IsPaused());
 
         const size_t pausedCount = 8;
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, pausedCount, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, pausedCount, /*declareNewKey=*/true));
         QCOMPARE(sink->PausedLineCount(), pausedCount);
         QCOMPARE(model.rowCount(), 0);
 
@@ -2605,7 +2588,7 @@ private slots:
         // resulting row order matches the input order.
         const size_t followupCount = 4;
         sink->OnBatch(
-            MakeSyntheticBatch(streamSource, keys, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false)
+            MakeSyntheticBatch(streamSource, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false)
         );
         QCoreApplication::processEvents();
         QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount + followupCount);
@@ -2790,7 +2773,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -2858,7 +2841,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -2904,7 +2887,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -2955,7 +2938,7 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -3008,7 +2991,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -3020,7 +3003,7 @@ private slots:
             qint64(3)
         );
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 4, 2, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 4, 2, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -3059,7 +3042,7 @@ private slots:
         constexpr int K_ROWS = 10'000;
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), K_ROWS);
 
@@ -3139,7 +3122,7 @@ private slots:
         constexpr int K_ROWS = 16;
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->rowCount(), K_ROWS);
 
@@ -3350,7 +3333,7 @@ private slots:
 
         // Seed the model with enough rows that the viewport is
         // genuinely scrollable.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 50, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 50, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 50);
 
@@ -3381,7 +3364,7 @@ private slots:
         // content slides down by the new rows' total height. With
         // preservation the scrollbar advances by that same amount so
         // the previously-visible content stays put.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 51, 5, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 51, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 55);
 
@@ -3440,7 +3423,7 @@ private slots:
         // at the tail edge.
         QVERIFY(tableView->verticalScrollBar()->value() >= tableView->verticalScrollBar()->maximum());
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 10, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 10);
 
@@ -3473,7 +3456,7 @@ private slots:
 
         // Seed scrollable rows, then simulate a user Home press
         // to scroll away from the bottom tail.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3487,7 +3470,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 7, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 7, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
 
         QCOMPARE(tableView->PendingNewRowsForTest(), 7);
@@ -3514,7 +3497,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 20, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3524,12 +3507,12 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 21, 3, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 21, 3, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 3);
         QCOMPARE(pill->Count(), 3);
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 24, 5, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 24, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 8);
         QCOMPARE(pill->Count(), 8);
@@ -3554,7 +3537,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 25, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 25, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3564,7 +3547,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 26, 4, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 26, 4, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 4);
 
@@ -3607,7 +3590,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 40, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 40, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Pin Follow on so the scroll-away assertion below is
@@ -3630,7 +3613,7 @@ private slots:
             "scroll-away must disengage Follow newest before the click test exercises re-engage"
         );
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 41, 6, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 41, 6, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 6);
 
@@ -3692,7 +3675,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Park at the (Bottom) tail, scroll away, then take a
@@ -3705,7 +3688,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 5, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 5);
         QCOMPARE(pill->Count(), 5);
@@ -3761,7 +3744,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 30);
 
@@ -3900,7 +3883,7 @@ private slots:
             "Follow newest engaging must mirror into the view's pending-new-rows suppression flag"
         );
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 25, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 25, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 25);
 
@@ -3910,7 +3893,7 @@ private slots:
 
         // A second batch must also stay silent -- the
         // suppression flag is sticky, not one-shot.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 26, 13, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 26, 13, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 0);
         QCOMPARE(pill->Count(), 0);
@@ -3947,7 +3930,7 @@ private slots:
         followAction->setEnabled(true);
         followAction->setChecked(false);
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -3957,7 +3940,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 4, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 4, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(tableView->PendingNewRowsForTest(), 4);
         QCOMPARE(pill->Count(), 4);
@@ -4007,7 +3990,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Sort descending so source-newest (value=30) lands at
@@ -4030,7 +4013,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 8, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 8, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QVERIFY2(
             tableView->PendingNewRowsForTest() > 0,
@@ -4076,7 +4059,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         QScrollBar *vbar = tableView->verticalScrollBar();
@@ -4086,7 +4069,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 7, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 7, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 7);
 
@@ -4126,7 +4109,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 30, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
 
         // Park scrolled away and accumulate a pending count.
@@ -4137,7 +4120,7 @@ private slots:
         vbar->triggerAction(QAbstractSlider::SliderToMinimum);
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 4, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 31, 4, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(pill->Count(), 4);
 
@@ -4235,7 +4218,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QVERIFY(tableView->model()->rowCount() >= 1);
 
@@ -4496,7 +4479,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, /*firstLineId=*/1, /*count=*/3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model.rowCount(), 3);
 
@@ -4569,7 +4552,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -4623,7 +4606,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -4673,7 +4656,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -4756,7 +4739,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -4827,7 +4810,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -4908,7 +4891,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -4968,7 +4951,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 5, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -5003,7 +4986,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 20, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 20);
 
@@ -5034,7 +5017,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 10, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 10);
 
@@ -5351,8 +5334,7 @@ private slots:
         const TempJsonFile fixture(lines);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -5654,7 +5636,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
         // Synthetic rows carry only a `value` key -- no time col.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
         QCOMPARE(loglib::FirstTimeColumnIndex(model->Configuration()), -1);
@@ -5728,8 +5710,7 @@ private slots:
         };
         const TempJsonFile firstFixture(firstBatchLines);
         QSignalSpy firstFinishedSpy(model, &LogModel::streamingFinished);
-        auto firstFile = std::make_unique<loglib::LogFile>(firstFixture.Path().toStdString());
-        auto firstSource = std::make_unique<loglib::FileLineSource>(std::move(firstFile));
+        auto firstSource = std::make_unique<loglib::FileLineSource>(firstFixture.Path().toStdString());
         loglib::FileLineSource *firstPtr = firstSource.get();
         const loglib::StopToken firstToken = model->BeginStreamingForSyncTest(std::move(firstSource));
         loglib::ParserOptions firstOpts;
@@ -5753,8 +5734,7 @@ private slots:
         };
         const TempJsonFile secondFixture(secondBatchLines);
         QSignalSpy secondFinishedSpy(model, &LogModel::streamingFinished);
-        auto secondFile = std::make_unique<loglib::LogFile>(secondFixture.Path().toStdString());
-        auto secondSource = std::make_unique<loglib::FileLineSource>(std::move(secondFile));
+        auto secondSource = std::make_unique<loglib::FileLineSource>(secondFixture.Path().toStdString());
         loglib::FileLineSource *secondPtr = secondSource.get();
         const loglib::StopToken secondToken = model->AppendStreaming(std::move(secondSource), {});
         loglib::ParserOptions secondOpts;
@@ -5806,7 +5786,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
         model->EndStreaming(false);
@@ -6162,7 +6142,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         model->EndStreaming(false);
 
@@ -6191,7 +6171,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model.rowCount(), 4);
 
@@ -6242,7 +6222,7 @@ private slots:
         constexpr size_t CAP = 4;
         model.SetRetentionCap(CAP);
 
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 4);
 
         // Anchor lineIds 1 (evicted), 3 (evicted), 4 (survives).
@@ -6258,7 +6238,7 @@ private slots:
         QCOMPARE(anchors.Count(), static_cast<std::size_t>(3));
 
         // Append lineIds 5..7; evicts 1..3, keeps 4..7.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 5, 3, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 5, 3, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 4);
 
         QCOMPARE(anchors.Count(), static_cast<std::size_t>(1));
@@ -6289,7 +6269,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 4, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 4);
 
@@ -6354,7 +6334,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -6405,7 +6385,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -6466,7 +6446,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -6548,7 +6528,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -6611,7 +6591,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -6683,7 +6663,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 1);
 
@@ -6773,7 +6753,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
 
         // Force the dock visible so refresh-gated paths run under
@@ -7432,7 +7412,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
 
         const auto key0 = model->AnchorKeyForRow(0);
@@ -7505,7 +7485,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, true));
         QCoreApplication::processEvents();
 
         const auto key0 = model->AnchorKeyForRow(0);
@@ -7615,7 +7595,7 @@ private slots:
         QVERIFY(sink != nullptr);
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 2, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
@@ -7760,7 +7740,7 @@ private slots:
         tableView->show();
         QCoreApplication::processEvents();
 
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 200, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 200, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 200);
 
@@ -7783,7 +7763,7 @@ private slots:
 
         // Push another batch; the slot must not snap the viewport
         // to the bottom (only live-tail sessions follow).
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 201, 200, /*declareNewKey=*/false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 201, 200, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 400);
 
@@ -7942,9 +7922,9 @@ private slots:
         std::thread worker([&]() {
             for (int i = 0; i < TOTAL_BATCHES; ++i)
             {
-                sink->OnBatch(MakeSyntheticBatch(
-                    streamSource, keys, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0
-                ));
+                sink->OnBatch(
+                    MakeSyntheticBatch(streamSource, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0)
+                );
                 enqueuedCount.fetch_add(1, std::memory_order_release);
             }
         });
@@ -7999,13 +7979,13 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         // Pre-fill the queue so the next enqueue blocks.
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 1, /*declareNewKey=*/true));
 
         std::atomic<bool> entered{false};
         std::atomic<bool> finished{false};
         std::thread worker([&]() {
             entered.store(true, std::memory_order_release);
-            sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 2, 1, /*declareNewKey=*/false));
+            sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 2, 1, /*declareNewKey=*/false));
             finished.store(true, std::memory_order_release);
         });
 
@@ -8060,9 +8040,9 @@ private slots:
         std::thread worker([&]() {
             for (int i = 0; i < TOTAL_BATCHES; ++i)
             {
-                sink->OnBatch(MakeSyntheticBatch(
-                    streamSource, keys, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0
-                ));
+                sink->OnBatch(
+                    MakeSyntheticBatch(streamSource, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0)
+                );
             }
             producerDone.store(true, std::memory_order_release);
         });
@@ -8351,8 +8331,7 @@ private slots:
         QVERIFY(columnsInsertedSpy.isValid());
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         {
@@ -9002,8 +8981,7 @@ private slots:
 
         // Step 3: drive a stream with mixed canonical / aliased values.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9011,7 +8989,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("lvl"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
         {
             loglib::RowBatch batch;
@@ -9083,8 +9061,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9292,8 +9269,7 @@ private slots:
         // cap. The streaming flush would collapse small fixtures, so
         // we feed `AppendBatch` directly.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9309,7 +9285,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: 2x "info" promotes `level` (stream threshold = 2).
@@ -9397,8 +9373,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9406,7 +9381,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1 promotes "category" (stream threshold = 2).
@@ -9456,8 +9431,7 @@ private slots:
         model->Table().SetEnumValueCap(2);
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9468,7 +9442,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // One batch, five rows: the candidate scan early-bails after
@@ -9529,8 +9503,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9543,7 +9516,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: 2x `info` + 1x `warn` promotes through Enumeration
@@ -9617,8 +9590,7 @@ private slots:
         // Two-batch path (mirrors `TestEnumColumnsChangedFiresOnDemote`):
         // batch 2 must trip the cap, so we feed `AppendBatch` directly.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9629,7 +9601,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: two "info" rows promote `level`. Dict size 1;
@@ -9722,8 +9694,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -9837,8 +9808,7 @@ private slots:
         {
             return -1;
         }
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -10476,8 +10446,7 @@ private slots:
         {
             return -1;
         }
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -10591,8 +10560,7 @@ private slots:
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -15596,8 +15564,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -15610,7 +15577,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         {
@@ -17008,8 +16975,7 @@ private slots:
         // Direct `AppendBatch` driving. Stream mode needs
         // `BeginStreaming` first; an empty fixture satisfies it.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17017,7 +16983,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: dict_v1 = {"info" -> 0, "warn" -> 1}.
@@ -17099,8 +17065,7 @@ private slots:
         LogModel modelB;
         const auto installSession = [&](LogModel &model, const std::string &fixtureName) {
             const TempJsonFile emptyFixture(QStringList{});
-            auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-            auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+            auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
             loglib::FileLineSource *sourcePtr = fileSource.get();
             (void)model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17108,7 +17073,7 @@ private slots:
             const auto makeLine = [&](const std::string &value) {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-                return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+                return loglib::LogLine{std::move(values), *sourcePtr, 0};
             };
 
             loglib::RowBatch batch;
@@ -17209,8 +17174,7 @@ private slots:
         LogModel model;
         {
             const TempJsonFile emptyFixture(QStringList{});
-            auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-            auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+            auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
             loglib::FileLineSource *sourcePtr = fileSource.get();
             (void)model.BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17218,7 +17182,7 @@ private slots:
             const auto makeLine = [&](const std::string &value) {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
-                return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+                return loglib::LogLine{std::move(values), *sourcePtr, 0};
             };
             loglib::RowBatch batch;
             batch.firstLineNumber = 1;
@@ -17271,8 +17235,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17350,8 +17313,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17469,8 +17431,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17558,8 +17519,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17679,8 +17639,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17755,8 +17714,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -17827,8 +17785,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20727,8 +20684,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20819,8 +20775,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20865,8 +20820,7 @@ private slots:
         // Drive via direct `AppendBatch` so the batch boundary is
         // well-defined and the only `rowsInserted` emission is ours.
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -20886,7 +20840,7 @@ private slots:
             {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keys.GetOrInsert("msg"), loglib::LogValue(std::string("msg-") + std::to_string(i)));
-                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, static_cast<size_t>(i));
+                batch.lines.emplace_back(std::move(values), *sourcePtr, static_cast<size_t>(i));
             }
             model->AppendBatch(std::move(batch));
         }
@@ -20954,8 +20908,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21011,8 +20964,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21066,8 +21018,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21126,8 +21077,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21241,8 +21191,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21322,8 +21271,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21400,8 +21348,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21479,8 +21426,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21546,8 +21492,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21555,7 +21500,7 @@ private slots:
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("mycol"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: one row keeps `mycol` below
@@ -21653,8 +21598,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21662,12 +21606,12 @@ private slots:
         const auto makeColARow = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("colA"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
         const auto makeColBRow = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
             values.emplace_back(keys.GetOrInsert("colB"), loglib::LogValue(value));
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: promote colA to Enumeration via the streaming
@@ -21763,8 +21707,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         const TempJsonFile emptyFixture(QStringList{});
-        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(emptyFixture.Path().toStdString());
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21776,7 +21719,7 @@ private slots:
             {
                 values.emplace_back(keys.GetOrInsert(k), loglib::LogValue(v));
             }
-            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            return loglib::LogLine{std::move(values), *sourcePtr, 0};
         };
 
         // Batch 1: `colA` gets exactly one presence (stays a
@@ -21912,8 +21855,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -21970,8 +21912,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -22040,8 +21981,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
 
@@ -22955,8 +22895,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23070,8 +23009,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23120,8 +23058,7 @@ private slots:
         QVERIFY(model != nullptr);
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23176,7 +23113,7 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         // Seed exactly the cap (no eviction yet) and pin row 50.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 100, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 100, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 100);
 
         RecordDetailDock dock(&model);
@@ -23199,7 +23136,7 @@ private slots:
 
         // Append +50 -> 50 evicted from the front. Lines 51..150
         // survive; pinned line 51 is now at row 0.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 101, 50, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 101, 50, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(dock.CurrentSourceRow(), 0);
         // Content still reflects line 51, not whatever sits at the old index.
@@ -23215,7 +23152,7 @@ private slots:
 
         // Append +100 -> lines 51..150 evicted; only 151..250 survive.
         // The pinned index goes invalid -> placeholder + row -1.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 151, 100, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 151, 100, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(dock.CurrentSourceRow(), -1);
         QVERIFY(!dock.Widget()->Content().valid);
@@ -23240,7 +23177,7 @@ private slots:
 
         loglib::KeyIndex &keys = model.Sink()->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 50, /*declareNewKey=*/true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 50, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 50);
 
         RecordDetailDock dock(&model);
@@ -23251,7 +23188,7 @@ private slots:
         QCOMPARE(initialPlaceholder, DefaultRecordDetailPlaceholder());
 
         // Trigger eviction; placeholder must stay default.
-        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 51, 50, /*declareNewKey=*/false));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, valueKey, 51, 50, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 50);
         QCOMPARE(dock.Widget()->Content().placeholderText, DefaultRecordDetailPlaceholder());
         QVERIFY2(
@@ -23338,8 +23275,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -23501,8 +23437,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
@@ -26103,7 +26038,7 @@ private slots:
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
         constexpr size_t ROW_COUNT = 12;
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, ROW_COUNT, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, ROW_COUNT, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), static_cast<int>(ROW_COUNT));
         QVERIFY(model->IsStreamingActive());

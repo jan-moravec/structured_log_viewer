@@ -3,7 +3,6 @@
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/internal/pcre2_support.hpp"
-#include "loglib/core/log_file.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/stream_line_source.hpp"
 #include "loglib/parse/internal/classify_bare_scalar.hpp"
@@ -27,6 +26,7 @@
 #include <numeric>
 #include <optional>
 #include <shared_mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -249,7 +249,7 @@ void DecodeRegexBatch(
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
     const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.File().Data();
+    const char *fileBegin = source.StableBytes().data();
     const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
 
     const auto batchBytes = static_cast<size_t>(end - cursor);
@@ -287,7 +287,7 @@ void DecodeRegexBatch(
         }
 
         // Pad by 1 on an unterminated last line so the final
-        // byte isn't lost on `LogFile::GetLine` round-trips
+        // byte isn't lost on `FileLineSource::RawLine` round-trips
         // (matches the CSV pipeline).
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1U : 0U);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -345,7 +345,7 @@ void DecodeRegexBatch(
                 {
                     const size_t headerLineId = parsed.lines.back().LineId();
                     parsed.lines.pop_back();
-                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    LogLine rebuilt(std::move(mutableValues), source, headerLineId);
                     parsed.lines.push_back(std::move(rebuilt));
                     tailLastPhysical = relativeLineNumber - 1;
                 }
@@ -400,7 +400,7 @@ void DecodeRegexBatch(
         // `LogLine` requires KeyId order, unlike source-order captures.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
-        LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
+        LogLine logLine(std::move(values), source, relativeLineNumber - 1);
         parsed.lines.push_back(std::move(logLine));
         worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
         tailHeaderPhysical = relativeLineNumber - 1;
@@ -649,9 +649,9 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
     // An empty pattern fails with the same error as the streaming overload.
     const std::string &pattern = mPattern;
 
-    const LogFile &file = source.File();
-    const char *fileBegin = file.Data();
-    const size_t fileSize = file.Size();
+    const std::span<const char> bytes = source.StableBytes();
+    const char *fileBegin = bytes.data();
+    const size_t fileSize = bytes.size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
     if (pattern.empty())
