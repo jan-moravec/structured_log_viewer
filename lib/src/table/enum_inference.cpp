@@ -248,6 +248,11 @@ void EnumInference::ClearLastBatchDemotedKeys() noexcept
     mLastBatchDemotedKeys.clear();
 }
 
+void EnumInference::ClearDemotedLevelValues() noexcept
+{
+    mDemotedLevelValues.clear();
+}
+
 std::unordered_map<KeyId, LevelValueMap> EnumInference::TakeDemotedLevelValues() noexcept
 {
     return std::exchange(mDemotedLevelValues, std::unordered_map<KeyId, LevelValueMap>{});

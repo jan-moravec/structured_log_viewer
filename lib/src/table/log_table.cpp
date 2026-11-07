@@ -120,6 +120,7 @@ namespace
 struct EnumColumnSnapshot
 {
     KeyId key = INVALID_KEY_ID;
+    const EnumDictionary *dictionary = nullptr;
     size_t column = 0;
     uint16_t sizeBefore = 0;
     ColumnType typeBefore = ColumnType::Any;
@@ -136,7 +137,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 {
     mEnum.ClearLastBatchDemotedKeys();
     (void)mEnum.TakePendingLevelBubbleKeys();
-    (void)mEnum.TakeDemotedLevelValues();
+    mEnum.ClearDemotedLevelValues();
 
     AppendBatchResult result;
     result.errors = std::move(batch.errors);
@@ -180,7 +181,11 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
                 continue;
             }
             enumSnapshot.push_back(
-                {.key = key, .column = columnIndex, .sizeBefore = dictionary->Size(), .typeBefore = column.type}
+                {.key = key,
+                 .dictionary = dictionary,
+                 .column = columnIndex,
+                 .sizeBefore = dictionary->Size(),
+                 .typeBefore = column.type}
             );
         }
     }
@@ -298,14 +303,21 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
         result.errors.push_back(std::move(error));
     }
 
-    auto demotedValues = mEnum.TakeDemotedLevelValues();
+    // Level values exist only if a dictionary was erased, and an erase is always recorded in demotedKeys.
+    std::unordered_map<KeyId, LevelValueMap> demotedValues;
+    const bool anyDemotion = !result.demotedKeys.empty();
+    if (anyDemotion)
+    {
+        demotedValues = mEnum.TakeDemotedLevelValues();
+    }
     const auto &columnsAfter = mConfiguration.Configuration().columns;
 
-    // Columns that were enumerations before the batch, in index order.
+    // Columns that were enumerations before the batch, in index order. Dictionaries stay at their address until they
+    // are erased, so the recorded pointer is looked up again only when the batch demoted a column.
     std::vector<size_t> demotedColumns;
     for (EnumColumnSnapshot &entry : enumSnapshot)
     {
-        const EnumDictionary *dictionary = mEnum.Dictionaries().Find(entry.key);
+        const EnumDictionary *dictionary = anyDemotion ? mEnum.Dictionaries().Find(entry.key) : entry.dictionary;
         if (dictionary == nullptr)
         {
             EnumColumnEvent event{.column = entry.column, .change = EnumColumnChange::Demoted};

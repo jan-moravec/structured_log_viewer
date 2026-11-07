@@ -213,6 +213,9 @@ public:
      */
     [[nodiscard]] std::unordered_map<KeyId, LevelValueMap> TakeDemotedLevelValues() noexcept;
 
+    /** @brief Forgets the recorded level values without taking them. */
+    void ClearDemotedLevelValues() noexcept;
+
     /**
      * @brief Returns the problems found since the last call, and forgets them.
      *
