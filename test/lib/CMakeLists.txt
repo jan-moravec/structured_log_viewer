@@ -29,6 +29,7 @@ add_executable(
     "src/test_enum_inference.cpp"
     "src/test_exports.cpp"
     "src/test_explicit_time_inputs.cpp"
+    "src/test_file_busy_retry.cpp"
     "src/test_file_line_source.cpp"
     "src/test_file_loading.cpp"
     "src/test_format_detection.cpp"

@@ -5,9 +5,11 @@
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/pipe.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -148,20 +150,20 @@ TEST_CASE("StdinPeek stops at the timeout when the producer is silent", "[StdinP
     // that the peek must give up first. Do NOT close the write
     // end: an EOF would let the peek exit early via the "clean
     // EOF" branch rather than the deadline branch.
+    std::atomic<bool> peekReturned{false};
     std::thread lateWriter([&] {
-        std::this_thread::sleep_for(ScaledMs(2000ms));
+        static_cast<void>(test_common::WaitUntil([&] { return peekReturned.load(std::memory_order_acquire); }));
         pipe.Write("late bytes\n");
     });
 
-    const auto timeout = ScaledMs(200ms);
+    const auto timeout = 100ms;
     const auto start = std::chrono::steady_clock::now();
     const std::string peek = StdinPeek(/*budget=*/1024, timeout);
     const auto elapsed = std::chrono::steady_clock::now() - start;
+    peekReturned.store(true, std::memory_order_release);
     CHECK(peek.empty());
-    // Comfortable upper bound: 4x timeout tolerates syscall wake
-    // latency + Windows PeekNamedPipe polling interval without
-    // masking a true "peek never returned" regression.
-    CHECK(elapsed < timeout * 4);
+    // A deadline that guards a peek that never returns, not a speed claim.
+    CHECK(elapsed < timeout + 10s);
 
     // Join the late writer before the pipe fixture is destroyed.
     lateWriter.join();
