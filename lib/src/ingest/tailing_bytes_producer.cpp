@@ -267,6 +267,7 @@ public:
     void SetRotationCallback(const std::function<void()> &callback);
     void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] size_t RotationCount() const noexcept;
+    [[nodiscard]] size_t PollCount() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
     /// Called from the efsw thread. Wakes the worker.
@@ -316,6 +317,7 @@ private:
     std::atomic<bool> mStopRequested{false};
     std::atomic<bool> mWorkerExited{false};
     std::atomic<size_t> mRotationCount{0};
+    std::atomic<size_t> mPollCount{0};
     std::atomic<size_t> mDroppedByteCount{0};
 
     // Separate mutex so we never call user callbacks while holding the
@@ -545,6 +547,11 @@ size_t TailingBytesProducerImpl::RotationCount() const noexcept
     return mRotationCount.load(std::memory_order_acquire);
 }
 
+size_t TailingBytesProducerImpl::PollCount() const noexcept
+{
+    return mPollCount.load(std::memory_order_acquire);
+}
+
 size_t TailingBytesProducerImpl::DroppedByteCount() const noexcept
 {
     return mDroppedByteCount.load(std::memory_order_acquire);
@@ -595,6 +602,8 @@ void TailingBytesProducerImpl::WorkerMain()
         {
             break;
         }
+
+        mPollCount.fetch_add(1, std::memory_order_acq_rel);
 
         if (!didWork)
         {
@@ -1037,6 +1046,11 @@ void TailingBytesProducer::SetStatusCallback(const std::function<void(SourceStat
 size_t TailingBytesProducer::RotationCount() const noexcept
 {
     return mImpl->RotationCount();
+}
+
+size_t TailingBytesProducer::PollCount() const noexcept
+{
+    return mImpl->PollCount();
 }
 
 size_t TailingBytesProducer::DroppedByteCount() const noexcept
