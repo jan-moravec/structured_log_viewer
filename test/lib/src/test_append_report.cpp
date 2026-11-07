@@ -527,6 +527,7 @@ TEST_CASE("The append report equals the GUI rules when a column grows and then d
     const auto kinds = [](std::vector<std::string> values, size_t first) {
         return [values = std::move(values), first](KeyIndex &keys, LineSource &source) {
             std::vector<Fields> rows;
+            rows.reserve(values.size());
             for (const std::string &value : values)
             {
                 rows.push_back({{"kind", value}});
@@ -796,6 +797,7 @@ TEST_CASE(
 
     const auto rowsOf = [](const std::vector<std::string> &values) {
         std::vector<Fields> rows;
+        rows.reserve(values.size());
         for (const std::string &value : values)
         {
             rows.push_back({{"kind", value}});
