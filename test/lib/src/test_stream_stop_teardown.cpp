@@ -157,8 +157,8 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
     // Let the worker drain pre-fill and park in WaitForBytes so we measure the typical idle path (Stop is correct
-    // either way). The producer has finished two passes once the pre-fill line is parsed and the parser has no more.
-    REQUIRE(test_common::WaitUntil([&] { return sink.rowCount.load(std::memory_order_acquire) >= 1; }));
+    // either way). Two passes of the producer mean its pre-fill is queued and the parser has had them to read.
+    REQUIRE(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }));
     REQUIRE(test_common::WaitForPasses(*producerPtr, 2));
 
     const auto stopStart = std::chrono::steady_clock::now();

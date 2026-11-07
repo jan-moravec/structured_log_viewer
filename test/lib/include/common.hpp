@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -115,14 +116,26 @@ private:
     std::string text, std::string_view displayName = "memory.log"
 );
 
-/// Serves a string through the BytesProducer interface, optionally in chunks of chunkSize bytes, and then reports the
-/// end of the stream. WaitForBytes returns at once because the bytes are always there. Tests that need a producer with
-/// timing keep their own.
+/// Serves a string through the BytesProducer interface, optionally in chunks of chunkSize bytes. Parser and detection
+/// tests use it to feed bytes without a socket or a file.
+///
+/// By default the stream ends after the last byte, and WaitForBytes returns at once because the bytes are always there.
+/// With Ending::OnStop the stream stays open until Stop, which models a live source that is idle. Then WaitForBytes
+/// blocks until Append, Stop or the timeout, and WaitCalls counts the calls so a test can wait until the reader is
+/// parked in a wait.
 class InMemoryBytesProducer final : public loglib::BytesProducer
 {
 public:
-    explicit InMemoryBytesProducer(std::string bytes, std::size_t chunkSize = std::string::npos)
-        : mBytes(std::move(bytes)), mChunkSize(chunkSize)
+    enum class Ending : std::uint8_t
+    {
+        AfterLastByte,
+        OnStop,
+    };
+
+    explicit InMemoryBytesProducer(
+        std::string bytes, std::size_t chunkSize = std::string::npos, Ending ending = Ending::AfterLastByte
+    )
+        : mBytes(std::move(bytes)), mChunkSize(chunkSize), mEnding(ending)
     {
     }
 
@@ -139,20 +152,26 @@ public:
         return give;
     }
 
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    void WaitForBytes(std::chrono::milliseconds timeout) override
     {
+        std::unique_lock lock(mLock);
+        ++mWaitCalls;
+        mCv.wait_for(lock, timeout, [&] { return mStopped || mCursor < mBytes.size() || ClosedLocked(); });
     }
 
     void Stop() noexcept override
     {
-        const std::scoped_lock lock(mLock);
-        mStopped = true;
+        {
+            const std::scoped_lock lock(mLock);
+            mStopped = true;
+        }
+        mCv.notify_all();
     }
 
     [[nodiscard]] bool IsClosed() const noexcept override
     {
         const std::scoped_lock lock(mLock);
-        return mStopped || mCursor >= mBytes.size();
+        return mStopped || ClosedLocked();
     }
 
     [[nodiscard]] std::string DisplayName() const override
@@ -160,11 +179,46 @@ public:
         return "in-memory";
     }
 
+    /// Makes more bytes readable and wakes a reader parked in WaitForBytes.
+    void Append(std::string_view more)
+    {
+        {
+            const std::scoped_lock lock(mLock);
+            mBytes.append(more);
+        }
+        mCv.notify_all();
+    }
+
+    /// Ends the stream after the bytes appended so far, as the default ending does.
+    void Finish()
+    {
+        {
+            const std::scoped_lock lock(mLock);
+            mEnding = Ending::AfterLastByte;
+        }
+        mCv.notify_all();
+    }
+
+    /// How many times WaitForBytes was called.
+    [[nodiscard]] std::size_t WaitCalls() const
+    {
+        const std::scoped_lock lock(mLock);
+        return mWaitCalls;
+    }
+
 private:
+    [[nodiscard]] bool ClosedLocked() const noexcept
+    {
+        return mEnding == Ending::AfterLastByte && mCursor >= mBytes.size();
+    }
+
     mutable std::mutex mLock;
+    std::condition_variable mCv;
     std::string mBytes;
     std::size_t mChunkSize;
+    Ending mEnding;
     std::size_t mCursor = 0;
+    std::size_t mWaitCalls = 0;
     bool mStopped = false;
 };
 

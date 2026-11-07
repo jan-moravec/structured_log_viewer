@@ -1,11 +1,12 @@
+#include "common.hpp"
+
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/stream_line_source.hpp>
 
 #include <catch2/catch_all.hpp>
 
-#include <atomic>
-#include <chrono>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -15,48 +16,10 @@
 #include <string_view>
 #include <utility>
 
-using loglib::BytesProducer;
 using loglib::StreamLineSource;
 
 namespace
 {
-
-/// Minimal `BytesProducer` test double. Only the few entry points
-/// `StreamLineSource` exposes through `Producer()` are exercised — the
-/// goal is to confirm wiring, not to re-test `BytesProducer`.
-class FakeProducer final : public BytesProducer
-{
-public:
-    size_t Read(std::span<char> /*buffer*/) override
-    {
-        ++mReadCalls;
-        return 0;
-    }
-
-    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
-    {
-        ++mWaitCalls;
-    }
-
-    void Stop() noexcept override
-    {
-        mStopped = true;
-    }
-
-    [[nodiscard]] bool IsClosed() const noexcept override
-    {
-        return mStopped;
-    }
-
-    [[nodiscard]] std::string DisplayName() const override
-    {
-        return "fake-producer";
-    }
-
-    size_t mReadCalls = 0;
-    size_t mWaitCalls = 0;
-    std::atomic<bool> mStopped{false};
-};
 
 } // namespace
 
@@ -202,8 +165,8 @@ TEST_CASE("StreamLineSource: EvictBefore beyond NextLineId clamps at the tail", 
 
 TEST_CASE("StreamLineSource: Producer() returns the underlying BytesProducer", "[StreamLineSource]")
 {
-    auto producer = std::make_unique<FakeProducer>();
-    FakeProducer *raw = producer.get();
+    auto producer = std::make_unique<InMemoryBytesProducer>("abc");
+    InMemoryBytesProducer *raw = producer.get();
 
     StreamLineSource source(std::filesystem::path("s.log"), std::move(producer));
 
@@ -214,9 +177,9 @@ TEST_CASE("StreamLineSource: Producer() returns the underlying BytesProducer", "
 
     // Round-trip a couple of producer methods through the source to
     // confirm the wiring is live (real parser code would use this seam).
-    const std::span<char> buffer;
-    CHECK(source.Producer()->Read(buffer) == 0);
-    CHECK(raw->mReadCalls == 1);
+    std::array<char, 8> buffer{};
+    CHECK(source.Producer()->Read(buffer) == 3);
+    CHECK(std::string_view(buffer.data(), 3) == "abc");
 }
 
 TEST_CASE("StreamLineSource: Producer() is null when constructed without one", "[StreamLineSource]")
