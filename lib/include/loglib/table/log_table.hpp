@@ -469,6 +469,18 @@ private:
     /** @brief Points every owned LineSource at the enumeration dictionaries. */
     void RewireSourceRegistries();
 
+    /**
+     * @brief An Enumeration or Level column as it was before a batch: enough to tell afterwards what happened to it.
+     */
+    struct EnumColumnSnapshot
+    {
+        KeyId key = INVALID_KEY_ID;
+        const EnumDictionary *dictionary = nullptr;
+        size_t column = 0;
+        uint16_t sizeBefore = 0;
+        ColumnType typeBefore = ColumnType::Any;
+    };
+
     LogData mData;
     LogConfigurationManager mConfiguration;
 
@@ -491,6 +503,9 @@ private:
      * borrow.
      */
     EnumInference mEnum;
+
+    /** @brief Scratch for AppendBatch, kept between calls so a steady stream does not allocate. */
+    std::vector<EnumColumnSnapshot> mEnumSnapshot;
 };
 
 } // namespace loglib

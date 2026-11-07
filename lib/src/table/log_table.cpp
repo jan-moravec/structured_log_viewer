@@ -116,16 +116,6 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
 namespace
 {
 
-// An Enumeration or Level column as it was before a batch: enough to tell afterwards what happened to it.
-struct EnumColumnSnapshot
-{
-    KeyId key = INVALID_KEY_ID;
-    const EnumDictionary *dictionary = nullptr;
-    size_t column = 0;
-    uint16_t sizeBefore = 0;
-    ColumnType typeBefore = ColumnType::Any;
-};
-
 bool IsEnumLike(ColumnType type) noexcept
 {
     return type == ColumnType::Enumeration || type == ColumnType::Level;
@@ -148,7 +138,8 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 
     // Only Enumeration and Level columns with a dictionary are recorded, so a table without them pays one pass over the
     // column types.
-    std::vector<EnumColumnSnapshot> enumSnapshot;
+    std::vector<EnumColumnSnapshot> &enumSnapshot = mEnumSnapshot;
+    enumSnapshot.clear();
     {
         const auto &columnsBefore = mConfiguration.Configuration().columns;
         for (size_t columnIndex = 0; columnIndex < columnsBefore.size(); ++columnIndex)
