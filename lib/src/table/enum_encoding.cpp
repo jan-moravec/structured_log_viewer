@@ -1,4 +1,4 @@
-#include "loglib/table/enum_inference.hpp"
+#include "loglib/table/internal/enum_inference.hpp"
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/line_source.hpp"

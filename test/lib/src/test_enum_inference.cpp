@@ -4,7 +4,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/schema/log_configuration.hpp>
-#include <loglib/table/enum_inference.hpp>
+#include <loglib/table/internal/enum_inference.hpp>
 
 #include "common.hpp"
 
