@@ -171,13 +171,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             {
                 continue;
             }
-            enumSnapshot.push_back(
-                {.key = key,
-                 .dictionary = dictionary,
-                 .column = columnIndex,
-                 .sizeBefore = dictionary->Size(),
-                 .typeBefore = column.type}
-            );
+            enumSnapshot.push_back({
+                .key = key,
+                .dictionary = dictionary,
+                .column = columnIndex,
+                .sizeBefore = dictionary->Size(),
+                .typeBefore = column.type,
+            });
         }
     }
 
@@ -306,7 +306,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     // Columns that were enumerations before the batch, in index order. Dictionaries stay at their address until they
     // are erased, so the recorded pointer is looked up again only when the batch demoted a column.
     std::vector<size_t> demotedColumns;
-    for (EnumColumnSnapshot &entry : enumSnapshot)
+    for (const EnumColumnSnapshot &entry : enumSnapshot)
     {
         const EnumDictionary *dictionary = anyDemotion ? mEnum.Dictionaries().Find(entry.key) : entry.dictionary;
         if (dictionary == nullptr)
@@ -741,11 +741,8 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
     {
         const ColumnType before = typesBefore[columnIndex];
         const ColumnType after = columnsAfter[columnIndex].type;
-        if (!IsEnumLike(before) && IsEnumLike(after))
-        {
-            result.enumEvents.push_back({.column = columnIndex, .change = EnumColumnChange::Promoted});
-        }
-        else if (before == ColumnType::Enumeration && after == ColumnType::Level)
+        if ((!IsEnumLike(before) && IsEnumLike(after)) ||
+            (before == ColumnType::Enumeration && after == ColumnType::Level))
         {
             result.enumEvents.push_back({.column = columnIndex, .change = EnumColumnChange::Promoted});
         }

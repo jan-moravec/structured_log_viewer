@@ -70,7 +70,7 @@ LogConfiguration LevelConfiguration(std::vector<std::string> keys)
             .keys = std::move(keys),
             .printFormat = "{}",
             .type = ColumnType::Level,
-            .parseFormats = {}
+            .parseFormats = {},
         }
     );
     return configuration;
@@ -153,7 +153,13 @@ ReferenceOutcome ReferenceAppend(LogTable &table, RowBatch batch)
             {
                 continue;
             }
-            Entry entry{kid, columnIndex, dictionary->Size(), column.type, {}};
+            Entry entry{
+                .kid = kid,
+                .columnIndex = columnIndex,
+                .sizeBefore = dictionary->Size(),
+                .typeBefore = column.type,
+                .levelValues = {},
+            };
             if (column.type == ColumnType::Level)
             {
                 entry.levelValues = ReferenceLevelValues(table, columnIndex, *dictionary);
@@ -284,19 +290,15 @@ ReferenceOutcome ReferenceFinalize(LogTable &table)
             }
             return LevelValueMap{};
         };
-        if (!IsEnumLikeType(before) && IsEnumLikeType(after))
+        if ((!IsEnumLikeType(before) && IsEnumLikeType(after)) ||
+            (before == ColumnType::Enumeration && after == ColumnType::Level))
         {
             outcome.events.push_back({.column = i, .change = EnumColumnChange::Promoted});
         }
-        else if (before == ColumnType::Enumeration && after == ColumnType::Level)
-        {
-            outcome.events.push_back({.column = i, .change = EnumColumnChange::Promoted});
-        }
-        else if (IsEnumLikeType(before) && !IsEnumLikeType(after))
-        {
-            outcome.events.push_back({.column = i, .change = EnumColumnChange::Demoted, .levelValues = mappingOf(i)});
-        }
-        else if (before == ColumnType::Level && after == ColumnType::Enumeration)
+        else if (
+            (IsEnumLikeType(before) && !IsEnumLikeType(after)) ||
+            (before == ColumnType::Level && after == ColumnType::Enumeration)
+        )
         {
             outcome.events.push_back({.column = i, .change = EnumColumnChange::Demoted, .levelValues = mappingOf(i)});
         }
@@ -336,7 +338,7 @@ public:
     void Append(const BatchMaker &make)
     {
         const ReferenceOutcome expected = ReferenceAppend(mReference, make(mReference.Keys(), *mSourceA));
-        LogTable::AppendBatchResult result = mReport.AppendBatch(make(mReport.Keys(), *mSourceB));
+        const LogTable::AppendBatchResult result = mReport.AppendBatch(make(mReport.Keys(), *mSourceB));
         Compare(expected, result.enumEvents, result.placements);
         CHECK(result.errors.empty());
     }
@@ -344,7 +346,7 @@ public:
     void Finalize()
     {
         const ReferenceOutcome expected = ReferenceFinalize(mReference);
-        LogTable::FinalizeResult result = mReport.FinalizeAutoDetection();
+        const LogTable::FinalizeResult result = mReport.FinalizeAutoDetection();
         Compare(expected, result.enumEvents, result.placements);
     }
 
@@ -581,8 +583,10 @@ TEST_CASE("The append report carries the level values of a demoted Level column"
         return MakeBatch(
             keys,
             source,
-            {{{"msg", std::string("m")}, {"level", std::string("x2")}},
-             {{"msg", std::string("m")}, {"level", std::string("x3")}}},
+            {
+                {{"msg", std::string("m")}, {"level", std::string("x2")}},
+                {{"msg", std::string("m")}, {"level", std::string("x3")}},
+            },
             8
         );
     });
@@ -685,6 +689,7 @@ TEST_CASE(
         });
         pair.Append([](KeyIndex &keys, LineSource &source) {
             std::vector<Fields> rows;
+            rows.reserve(10);
             for (int i = 0; i < 10; ++i)
             {
                 rows.push_back({{"msg", std::string("m")}, {"level", std::string(80, 'q')}});
@@ -782,7 +787,7 @@ TEST_CASE(
             .printFormat = "{}",
             .type = ColumnType::Enumeration,
             .parseFormats = {},
-            .autoDetect = false
+            .autoDetect = false,
         }
     );
     LogTable table(std::move(configuration));
