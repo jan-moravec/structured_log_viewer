@@ -285,7 +285,9 @@ void RunStaticParserPipelineBody(
     }
 
     const ResolvedPipelineSettings settings = ResolvePipelineSettings(options);
-    source.ReserveLineOffsets(source.StableBytes().size() / 100);
+    // Guess of the average line length in bytes, used only to size the offsets table up front.
+    constexpr size_t ASSUMED_BYTES_PER_LINE = 100;
+    source.ReserveLineOffsets(source.StableBytes().size() / ASSUMED_BYTES_PER_LINE);
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 

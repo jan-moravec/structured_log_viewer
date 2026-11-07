@@ -166,6 +166,7 @@ private:
 // A log holds millions of rows, and every filter, sort and export scans them in order. A row is 32 bytes: its fields
 // (16 bytes), the source pointer (8 bytes) and the line id (8 bytes). Two rows then fit in one cache line of 64 bytes.
 // A new member would add its size to every row of every log.
-static_assert(sizeof(LogLine) == 32, "LogLine must stay 32 bytes");
+inline constexpr size_t LOG_LINE_EXPECTED_BYTES = 32;
+static_assert(sizeof(LogLine) == LOG_LINE_EXPECTED_BYTES, "LogLine must stay 32 bytes");
 
 } // namespace loglib

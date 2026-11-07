@@ -89,7 +89,7 @@ TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]"
     KeyIndex keys;
     const LogLine emptyLine(emptyMap, keys, *source, 0);
 
-    auto resultKeys = emptyLine.GetKeys(keys);
+    const auto resultKeys = emptyLine.GetKeys(keys);
     CHECK(resultKeys.empty());
     CHECK(emptyLine.Values(keys).empty());
 }
