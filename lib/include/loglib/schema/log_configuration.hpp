@@ -251,10 +251,4 @@ private:
  */
 inline constexpr size_t CANONICAL_LEVEL_COLUMN_INDEX = 1;
 
-/**
- * @brief True if the column should move to CANONICAL_LEVEL_COLUMN_INDEX. False if the index is out of range, the
- * column is already there, there is only one column, or another Level column holds that place.
- */
-[[nodiscard]] bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept;
-
 } // namespace loglib

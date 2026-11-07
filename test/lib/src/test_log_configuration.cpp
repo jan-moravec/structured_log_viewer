@@ -5,6 +5,7 @@
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/schema/filter_expression.hpp>
+#include <loglib/schema/internal/level_column_slot.hpp>
 #include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/schema/log_configuration.hpp>
 

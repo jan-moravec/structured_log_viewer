@@ -2,6 +2,7 @@
 
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
+#include "loglib/schema/internal/level_column_slot.hpp"
 #include "loglib/table/internal/column_key_id_cache.hpp"
 #include "loglib/table/internal/timestamp_backfill.hpp"
 #include "loglib/time/time_zone_context.hpp"
@@ -287,8 +288,8 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     {
         result.backfilledColumns = std::make_pair(*firstBackfilled, *lastBackfilled);
     }
-    result.demotedKeys = mEnum.LastBatchDemotedKeys();
-    result.levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
+    const std::vector<KeyId> demotedKeys = mEnum.LastBatchDemotedKeys();
+    const std::vector<KeyId> levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
     for (ParseError &error : mEnum.TakePendingErrors())
     {
         result.errors.push_back(std::move(error));
@@ -296,7 +297,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 
     // Level values exist only if a dictionary was erased, and an erase is always recorded in demotedKeys.
     std::unordered_map<KeyId, LevelValueMap> demotedValues;
-    const bool anyDemotion = !result.demotedKeys.empty();
+    const bool anyDemotion = !demotedKeys.empty();
     if (anyDemotion)
     {
         demotedValues = mEnum.TakeDemotedLevelValues();
@@ -336,7 +337,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     }
 
     // A column that was promoted and demoted within the batch is invisible to the snapshot.
-    for (const KeyId key : result.demotedKeys)
+    for (const KeyId key : demotedKeys)
     {
         const int columnIndex = FindColumnIndexByKey(key);
         if (columnIndex < 0 || std::ranges::contains(demotedColumns, static_cast<size_t>(columnIndex)))
@@ -380,7 +381,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
             result.placements.push_back({.kind = ColumnPlacement::Kind::TimeToFront, .key = key});
         }
     }
-    for (const KeyId key : result.levelBubbleKeys)
+    for (const KeyId key : levelBubbleKeys)
     {
         result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .key = key});
     }
@@ -732,7 +733,7 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
     }
 
     result.promotedToEnumeration = mEnum.Finalize(mData, mConfiguration);
-    result.levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
+    const std::vector<KeyId> levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
     result.errors = mEnum.TakePendingErrors();
 
     auto demotedValues = mEnum.TakeDemotedLevelValues();
@@ -760,7 +761,7 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
             result.enumEvents.push_back(std::move(event));
         }
     }
-    for (const KeyId key : result.levelBubbleKeys)
+    for (const KeyId key : levelBubbleKeys)
     {
         result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .key = key});
     }
@@ -883,20 +884,6 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     }
 }
 
-std::vector<size_t> LogTable::TimeColumnsToFront(size_t firstColumn) const
-{
-    std::vector<size_t> moves;
-    const auto &columns = mConfiguration.Configuration().columns;
-    for (size_t columnIndex = std::max<size_t>(firstColumn, 1); columnIndex < columns.size(); ++columnIndex)
-    {
-        if (columns[columnIndex].type == ColumnType::Time)
-        {
-            moves.push_back(columnIndex);
-        }
-    }
-    return moves;
-}
-
 std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &placement) const
 {
     const int source = FindColumnIndexByKey(placement.key);
@@ -930,22 +917,6 @@ void LogTable::ApplyPlacements(std::span<const ColumnPlacement> placements)
         if (const std::optional<ColumnMove> move = ResolvePlacement(placement); move.has_value())
         {
             MoveColumn(move->from, move->to);
-        }
-    }
-}
-
-void LogTable::BubbleLevelColumns(std::span<const KeyId> keys)
-{
-    for (const KeyId kid : keys)
-    {
-        const int srcIndex = FindColumnIndexByKey(kid);
-        if (srcIndex < 0)
-        {
-            continue;
-        }
-        if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), static_cast<size_t>(srcIndex)))
-        {
-            MoveColumn(static_cast<size_t>(srcIndex), CANONICAL_LEVEL_COLUMN_INDEX);
         }
     }
 }
