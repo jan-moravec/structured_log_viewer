@@ -26,6 +26,7 @@
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/temp_dir.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -146,19 +147,7 @@ public:
     std::vector<loglib::ParseError> errors;
 };
 
-template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 60s)
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!predicate())
-    {
-        if (std::chrono::steady_clock::now() >= deadline)
-        {
-            return false;
-        }
-        std::this_thread::sleep_for(5ms);
-    }
-    return true;
-}
+using test_common::WaitUntil;
 
 std::string DrainTo(TailingBytesProducer &producer, std::string &collected)
 {

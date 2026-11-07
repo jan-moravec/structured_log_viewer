@@ -1,6 +1,7 @@
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -172,24 +173,13 @@ TailingBytesProducer::Options FastPollOptions()
     return options;
 }
 
-/// Block until `source.RotationCount() >= target` or `deadline`
-/// elapses. Tests use this to synchronise on rotation observation
-/// instead of guessing how long a busy runner takes to schedule the
-/// worker thread between two filesystem operations.
+/// Waits until the worker has counted at least target rotations. Tests use it instead of guessing how long a busy runner
+/// takes to schedule the worker thread between two file operations.
 [[nodiscard]] bool WaitForRotationCount(
     const TailingBytesProducer &source, size_t target, std::chrono::milliseconds deadline
 )
 {
-    const auto start = std::chrono::steady_clock::now();
-    while (source.RotationCount() < target)
-    {
-        if (std::chrono::steady_clock::now() - start >= deadline)
-        {
-            return false;
-        }
-        std::this_thread::sleep_for(5ms);
-    }
-    return true;
+    return test_common::WaitUntil([&] { return source.RotationCount() >= target; }, deadline);
 }
 
 } // namespace
@@ -652,12 +642,7 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
 
     source.Stop();
     // Allow the worker time to observe the stop flag and exit.
-    const auto deadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
-    while (!source.IsClosed() && std::chrono::steady_clock::now() < deadline)
-    {
-        std::this_thread::sleep_for(ScaledMs(5ms));
-    }
-    CHECK(source.IsClosed());
+    CHECK(test_common::WaitUntil([&] { return source.IsClosed(); }, ScaledMs(60000ms)));
 
     // Subsequent Read returns 0 with IsClosed true.
     std::array<char, 8> buf{};
@@ -706,20 +691,22 @@ TEST_CASE(
     // Delete the file → branch (ii) → Waiting.
     std::filesystem::remove(path);
 
-    const auto waitingDeadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
-    while (std::chrono::steady_clock::now() < waitingDeadline)
-    {
-        {
-            const std::scoped_lock lock(statusMu);
-            if (!observed.empty() && observed.back() == loglib::SourceStatus::Waiting)
+    CHECK(test_common::WaitUntil(
+        [&] {
             {
-                break;
+                const std::scoped_lock lock(statusMu);
+                if (!observed.empty() && observed.back() == loglib::SourceStatus::Waiting)
+                {
+                    return true;
+                }
             }
-        }
-        std::array<char, 256> buf{};
-        source.Read(std::span<char>(buf));
-        std::this_thread::sleep_for(ScaledMs(25ms));
-    }
+            std::array<char, 256> buf{};
+            source.Read(std::span<char>(buf));
+            return false;
+        },
+        ScaledMs(60000ms),
+        25ms
+    ));
 
     {
         const std::scoped_lock lock(statusMu);
@@ -730,20 +717,22 @@ TEST_CASE(
     // Re-create the file — branch (i) / (ii-reopened) → Running.
     Overwrite(path, "after\n");
 
-    const auto runningDeadline = std::chrono::steady_clock::now() + ScaledMs(60000ms);
-    while (std::chrono::steady_clock::now() < runningDeadline)
-    {
-        {
-            const std::scoped_lock lock(statusMu);
-            if (!observed.empty() && observed.back() == loglib::SourceStatus::Running)
+    CHECK(test_common::WaitUntil(
+        [&] {
             {
-                break;
+                const std::scoped_lock lock(statusMu);
+                if (!observed.empty() && observed.back() == loglib::SourceStatus::Running)
+                {
+                    return true;
+                }
             }
-        }
-        std::array<char, 256> buf{};
-        source.Read(std::span<char>(buf));
-        std::this_thread::sleep_for(ScaledMs(25ms));
-    }
+            std::array<char, 256> buf{};
+            source.Read(std::span<char>(buf));
+            return false;
+        },
+        ScaledMs(60000ms),
+        25ms
+    ));
 
     const std::scoped_lock lock(statusMu);
     REQUIRE(observed.size() >= 2);

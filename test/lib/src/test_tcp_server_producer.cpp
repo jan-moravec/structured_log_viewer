@@ -2,6 +2,7 @@
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -38,22 +39,6 @@ std::string DrainUntil(TcpServerProducer &producer, size_t target, std::chrono::
         }
     }
     return buf;
-}
-
-/// Wait until @p predicate holds or the budget expires. Used for
-/// shaping the test loop around `ActiveClientCount` / `IsClosed`.
-template <class Pred> bool WaitFor(Pred predicate, std::chrono::milliseconds budget)
-{
-    const auto deadline = std::chrono::steady_clock::now() + budget;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        if (predicate())
-        {
-            return true;
-        }
-        std::this_thread::sleep_for(5ms);
-    }
-    return predicate();
 }
 
 } // namespace
@@ -129,7 +114,7 @@ TEST_CASE("TcpServerProducer: client disconnect flushes partial-line carry", "[t
 
     const std::string drained = DrainUntil(producer, /*target*/ 24, ScaledMs(60000ms));
     REQUIRE(drained == "partial-without-newline\n");
-    REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 0; }, ScaledMs(60000ms)));
+    REQUIRE(test_common::WaitUntil([&] { return producer.ActiveClientCount() == 0; }, ScaledMs(60000ms)));
     REQUIRE(producer.TotalClientsAccepted() == 1);
 }
 
@@ -142,7 +127,7 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
 
     const test_common::TcpLogClient a("127.0.0.1", producer.BoundPort());
     const test_common::TcpLogClient b("127.0.0.1", producer.BoundPort());
-    REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 2; }, ScaledMs(60000ms)));
+    REQUIRE(test_common::WaitUntil([&] { return producer.ActiveClientCount() == 2; }, ScaledMs(60000ms)));
 
     // Third connection: the producer accepts and immediately closes
     // it, so any send racing the close may or may not raise -- we
@@ -167,7 +152,7 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
         static_cast<void>(ex);
     }
 
-    REQUIRE(WaitFor([&] { return producer.TotalClientsRejected() >= 1; }, ScaledMs(60000ms)));
+    REQUIRE(test_common::WaitUntil([&] { return producer.TotalClientsRejected() >= 1; }, ScaledMs(60000ms)));
     REQUIRE(producer.ActiveClientCount() == 2);
 }
 
