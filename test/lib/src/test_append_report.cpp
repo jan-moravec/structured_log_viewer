@@ -234,9 +234,13 @@ TEST_CASE("The append report of a static-like load in two batch sizes", "[append
 
     // The first batch decides everything: the message column stays text, the level and host columns become
     // enumerations, and the timestamp and then the level move to their places.
-    std::vector<Described> expected{
-        {"Demoted 0", "Promoted 1 backfill", "Promoted 3 backfill", "move 2->0", "move 2->1"}
-    };
+    std::vector<Described> expected{{
+        "Demoted 0",
+        "Promoted 1 backfill",
+        "Promoted 3 backfill",
+        "move 2->0",
+        "move 2->1",
+    }};
     expected.resize(batchSize == 1000 ? 6 : 3);
     CHECK(steps == expected);
 

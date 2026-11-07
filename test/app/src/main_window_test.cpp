@@ -9743,7 +9743,7 @@ private slots:
                     }
                     values.emplace_back(keys.GetOrInsert(key), loglib::LogValue(value));
                 }
-                batch.lines.push_back(loglib::LogLine{std::move(values), *sourcePtr, 0});
+                batch.lines.emplace_back(std::move(values), *sourcePtr, 0);
             }
             return batch;
         };
@@ -9754,32 +9754,40 @@ private slots:
         // Batch 2: "category" grows; "kind" arrives and is back-filled.
         model->AppendBatch(makeBatch(
             3,
-            {{{"msg", "c"}, {"category", "warn"}, {"kind", "x"}},
-             {{"msg", "d"}, {"category", "warn"}, {"kind", "x"}},
-             {{"msg", "e"}, {"category", "info"}, {"kind", "x"}}}
+            {
+                {{"msg", "c"}, {"category", "warn"}, {"kind", "x"}},
+                {{"msg", "d"}, {"category", "warn"}, {"kind", "x"}},
+                {{"msg", "e"}, {"category", "info"}, {"kind", "x"}},
+            }
         ));
         recorded.append(QStringLiteral("--- batch 3"));
         // Batch 3: a level column arrives and moves to its slot.
         model->AppendBatch(makeBatch(
             6,
-            {{{"msg", "f"}, {"category", "info"}, {"kind", "x"}, {"level", "info"}},
-             {{"msg", "g"}, {"category", "info"}, {"kind", "x"}, {"level", "warn"}},
-             {{"msg", "h"}, {"category", "info"}, {"kind", "x"}, {"level", "info"}}}
+            {
+                {{"msg", "f"}, {"category", "info"}, {"kind", "x"}, {"level", "info"}},
+                {{"msg", "g"}, {"category", "info"}, {"kind", "x"}, {"level", "warn"}},
+                {{"msg", "h"}, {"category", "info"}, {"kind", "x"}, {"level", "info"}},
+            }
         ));
         recorded.append(QStringLiteral("--- batch 4"));
         // Batch 4: the level column overflows the cap and demotes.
         model->AppendBatch(makeBatch(
             9,
-            {{{"msg", "i"}, {"category", "info"}, {"kind", "x"}, {"level", "error"}},
-             {{"msg", "j"}, {"category", "info"}, {"kind", "x"}, {"level", "debug"}},
-             {{"msg", "k"}, {"category", "info"}, {"kind", "x"}, {"level", "trace"}}}
+            {
+                {{"msg", "i"}, {"category", "info"}, {"kind", "x"}, {"level", "error"}},
+                {{"msg", "j"}, {"category", "info"}, {"kind", "x"}, {"level", "debug"}},
+                {{"msg", "k"}, {"category", "info"}, {"kind", "x"}, {"level", "trace"}},
+            }
         ));
         recorded.append(QStringLiteral("--- batch 5"));
         // Batch 5: two time columns arrive in one batch.
         model->AppendBatch(makeBatch(
             12,
-            {{{"msg", "l"}, {"timestamp", "2024-01-01T00:00:00Z"}, {"time", "2024-01-01T00:00:01Z"}},
-             {{"msg", "m"}, {"timestamp", "2024-01-01T00:00:02Z"}, {"time", "2024-01-01T00:00:03Z"}}}
+            {
+                {{"msg", "l"}, {"timestamp", "2024-01-01T00:00:00Z"}, {"time", "2024-01-01T00:00:01Z"}},
+                {{"msg", "m"}, {"timestamp", "2024-01-01T00:00:02Z"}, {"time", "2024-01-01T00:00:03Z"}},
+            }
         ));
         recorded.append(QStringLiteral("--- finish"));
         model->EndStreaming(false);
