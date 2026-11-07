@@ -1,6 +1,5 @@
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 
-#include <loglib_test/scaled_ms.hpp>
 #include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -19,7 +18,6 @@
 #include <vector>
 
 using loglib::TailingBytesProducer;
-using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
 namespace
@@ -119,7 +117,7 @@ std::string DrainUntil(TailingBytesProducer &source, std::chrono::milliseconds d
         const auto remaining = deadline - (now - start);
         source.WaitForBytes(
             std::min<std::chrono::milliseconds>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(remaining), ScaledMs(25ms)
+                std::chrono::duration_cast<std::chrono::milliseconds>(remaining), 25ms
             )
         );
     }
@@ -198,7 +196,7 @@ TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small fil
 
     TailingBytesProducer source(path, /*retentionLines=*/20, FastPollOptions());
 
-    const std::string drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const std::string drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 20;
     });
 
@@ -228,7 +226,7 @@ TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingByt
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
-    const std::string drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const std::string drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 3;
     });
 
@@ -271,14 +269,14 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
     TailingBytesProducer source(path, /*retentionLines=*/LINE_COUNT - 1, opts);
 
     const auto waitStart = std::chrono::steady_clock::now();
-    source.WaitForBytes(ScaledMs(3000ms));
+    source.WaitForBytes(3000ms);
     const auto waitElapsed = std::chrono::steady_clock::now() - waitStart;
 
     // 2s is generous for CI disks but well below the 10s regression.
-    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(waitElapsed) < ScaledMs(2000ms));
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(waitElapsed) < 2000ms);
 
     // Verify the wake wasn't spurious by draining the expected lines.
-    const std::string drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const std::string drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= LINE_COUNT - 1;
     });
     const auto lines = SplitLines(drained);
@@ -309,7 +307,7 @@ TEST_CASE(
     const auto ctorStart = std::chrono::steady_clock::now();
     TailingBytesProducer source(path, /*retentionLines=*/100, opts);
     const auto ctorElapsed = std::chrono::steady_clock::now() - ctorStart;
-    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < ScaledMs(5000ms));
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < 5000ms);
 
     // No pre-fill lines should surface. Two passes of the worker give any spurious bytes the time to land.
     REQUIRE(test_common::WaitForPasses(source, 2));
@@ -320,7 +318,7 @@ TEST_CASE(
     // Tailing still works: appending a complete line produces it.
     Append(path, "\nafter\n");
     const auto post =
-        DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) { return acc.contains("after\n"); });
+        DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("after\n"); });
     CHECK(post.contains("after\n"));
     // The 2 MiB "xxx…" prefix must NOT have been synthesized into a line.
     CHECK(!post.contains("xxxxx"));
@@ -339,11 +337,11 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
         for (int i = 0; i < COUNT; ++i)
         {
             Append(path, "g" + std::to_string(i) + "\n");
-            std::this_thread::sleep_for(ScaledMs(5ms));
+            std::this_thread::sleep_for(5ms);
         }
     });
 
-    const std::string drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const std::string drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= COUNT;
     });
     writer.join();
@@ -368,7 +366,7 @@ TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[Tai
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Drain pre-rotation lines.
-    const auto prefilled = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto prefilled = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 2;
     });
     auto preLines = SplitLines(prefilled);
@@ -380,7 +378,7 @@ TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[Tai
     std::filesystem::rename(path, rotatedPath);
     Overwrite(path, "post1\npost2\n");
 
-    const auto post = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto post = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 2;
     });
     const auto postLines = SplitLines(post);
@@ -402,17 +400,17 @@ TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingB
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Drain pre-rotation.
-    DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 3;
     });
 
     // Simulate copytruncate: copy elsewhere (we ignore the copy), then
     // truncate in place.
     Overwrite(path, "");
-    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms))); // the worker has seen the empty file
+    REQUIRE(WaitForRotationCount(source, 1, 60000ms)); // the worker has seen the empty file
     Append(path, "new1\nnew2\n");
 
-    const auto post = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto post = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 2;
     });
     const auto postLines = SplitLines(post);
@@ -430,16 +428,16 @@ TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytes
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
-    DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 3;
     });
 
     // Truncate in place via overwrite (`: > path` equivalent).
     Overwrite(path, "");
-    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms)));
+    REQUIRE(WaitForRotationCount(source, 1, 60000ms));
     Append(path, "y1\n");
 
-    const auto post = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto post = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     const auto postLines = SplitLines(post);
@@ -462,17 +460,17 @@ TEST_CASE(
     // The "consumer" never calls Read while we rotate; ingestion (and
     // rotation detection) must still happen on the worker.
     // Pre-fill sets the read offset that makes the truncation detectable.
-    source.WaitForBytes(ScaledMs(60000ms));
+    source.WaitForBytes(60000ms);
     Overwrite(path, ""); // truncate
     // Synchronise on rotation observation. Without this, the new
     // file ("q1\nq2\n", 6 bytes) and the original ("p1\np2\n", 6
     // bytes) are byte-for-byte the same length, so a busy macOS CI
     // runner that misses the size-0 poll window would never see the
     // rotation branch fire.
-    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms)));
+    REQUIRE(WaitForRotationCount(source, 1, 60000ms));
     Append(path, "q1\nq2\n");
 
-    const auto drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 4;
     });
     const auto lines = SplitLines(drained);
@@ -493,7 +491,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     // Drain "complete" first.
-    const auto first = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto first = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     auto firstLines = SplitLines(first);
@@ -503,11 +501,11 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     // Rotate via in-place truncate. The partial "incomplete" must be
     // discarded.
     Overwrite(path, "");
-    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms)));
+    REQUIRE(WaitForRotationCount(source, 1, 60000ms));
     Append(path, "after\n");
 
     const auto post =
-        DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) { return acc.contains("after\n"); });
+        DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("after\n"); });
     const auto postLines = SplitLines(post);
     REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "after");
@@ -523,7 +521,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
-    const auto pre = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto pre = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     auto preLines = SplitLines(pre);
@@ -535,7 +533,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
     source.Stop();
 
     const auto post =
-        DrainUntil(source, ScaledMs(60000ms), [&](const std::string & /*acc*/) { return source.IsClosed(); });
+        DrainUntil(source, 60000ms, [&](const std::string & /*acc*/) { return source.IsClosed(); });
     const auto postLines = SplitLines(post);
     REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "trailing-no-newline");
@@ -567,7 +565,7 @@ TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle fil
 
     CHECK(waitReturned.load(std::memory_order_acquire));
     // 500 ms budget for stop+I/O unwind; idle case is well under.
-    CHECK(elapsed < ScaledMs(5000ms));
+    CHECK(elapsed < 5000ms);
 }
 
 TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[TailingBytesProducer][rotation][fs-events]")
@@ -588,7 +586,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
 
     // Wait for pre-fill to consume the seed and for the worker to settle
     // on a steady mReadOffset.
-    DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) { return acc.contains("seed\n"); });
+    DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("seed\n"); });
 
     // Rename-and-create rotations flip the path's inode; identity
     // detection (branch i) is state-based, so the worker reliably
@@ -608,11 +606,11 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
         const auto rotated = dir.File("debounce.log." + std::to_string(i));
         std::filesystem::rename(path, rotated);
         Overwrite(path, "rot" + std::to_string(i) + "\n");
-        REQUIRE(WaitForRotationCount(source, static_cast<size_t>(i + 1), ScaledMs(60000ms)));
+        REQUIRE(WaitForRotationCount(source, static_cast<size_t>(i + 1), 60000ms));
     }
 
     // Drain so we know the worker has processed at least the last rotation.
-    DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) { return acc.contains("rot2\n"); });
+    DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("rot2\n"); });
 
     // RotationCount counts every detected rotation; the callback
     // collapses them into one per debounce window.
@@ -635,14 +633,14 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
     Overwrite(path, "only\n");
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
-    const auto drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
+    const auto drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     CHECK(SplitLines(drained).front() == "only");
 
     source.Stop();
     // Allow the worker time to observe the stop flag and exit.
-    CHECK(test_common::WaitUntil([&] { return source.IsClosed(); }, ScaledMs(60000ms)));
+    CHECK(test_common::WaitUntil([&] { return source.IsClosed(); }, 60000ms));
 
     // Subsequent Read returns 0 with IsClosed true.
     std::array<char, 8> buf{};
@@ -686,7 +684,7 @@ TEST_CASE(
 
     // Drain the pre-fill so the worker is in its steady-state tail loop
     // before we perturb the file.
-    DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) { return acc.contains("seed\n"); });
+    DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("seed\n"); });
 
     // Delete the file → branch (ii) → Waiting.
     std::filesystem::remove(path);
@@ -704,7 +702,7 @@ TEST_CASE(
             source.Read(std::span<char>(buf));
             return false;
         },
-        ScaledMs(60000ms),
+        60000ms,
         25ms
     ));
 
@@ -730,7 +728,7 @@ TEST_CASE(
             source.Read(std::span<char>(buf));
             return false;
         },
-        ScaledMs(60000ms),
+        60000ms,
         25ms
     ));
 

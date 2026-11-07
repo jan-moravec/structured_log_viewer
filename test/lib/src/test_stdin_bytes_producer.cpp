@@ -1,6 +1,5 @@
 #include <loglib/ingest/stdin_bytes_producer.hpp>
 
-#include <loglib_test/scaled_ms.hpp>
 #include <test_common/pipe.hpp>
 #include <test_common/wait.hpp>
 
@@ -21,7 +20,6 @@
 
 using loglib::StdinBytesProducer;
 using loglib::internal::StdinBytesProducerTestAccess;
-using loglib_test::ScaledMs;
 using test_common::Pipe;
 using namespace std::chrono_literals;
 
@@ -77,7 +75,7 @@ std::string DrainUntil(StdinBytesProducer &producer, std::chrono::milliseconds d
         const auto remaining = deadline - elapsed;
         producer.WaitForBytes(
             std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::min<std::chrono::steady_clock::duration>(remaining, ScaledMs(25ms))
+                std::min<std::chrono::steady_clock::duration>(remaining, 25ms)
             )
         );
     }
@@ -97,7 +95,7 @@ TEST_CASE("StdinBytesProducer delivers pipe bytes end-to-end", "[StdinBytesProdu
     pipe.CloseWrite();
 
     const std::string drained =
-        DrainUntil(*producer, ScaledMs(2000ms), [](const std::string &acc) { return acc.contains("world\n"); });
+        DrainUntil(*producer, 2000ms, [](const std::string &acc) { return acc.contains("world\n"); });
     CHECK(drained == "hello\nworld\n");
 }
 
@@ -113,10 +111,10 @@ TEST_CASE("StdinBytesProducer marks closed after write-end EOF", "[StdinBytesPro
     // Drain until the producer signals EOF; give the worker a
     // generous budget on slow CI. Once IsClosed() flips, the
     // Read call becomes a synchronous no-op.
-    const auto deadline = std::chrono::steady_clock::now() + ScaledMs(2000ms);
+    const auto deadline = std::chrono::steady_clock::now() + 2000ms;
     while (!producer->IsClosed() && std::chrono::steady_clock::now() < deadline)
     {
-        producer->WaitForBytes(ScaledMs(25ms));
+        producer->WaitForBytes(25ms);
     }
     CHECK(producer->IsClosed());
 }
@@ -145,7 +143,7 @@ TEST_CASE("StdinBytesProducer Stop() unblocks a pending WaitForBytes", "[StdinBy
     std::atomic<bool> waiterEntering{false};
     std::thread waiter([&] {
         waiterEntering.store(true, std::memory_order_release);
-        producer->WaitForBytes(ScaledMs(5000ms));
+        producer->WaitForBytes(5000ms);
         waiterReturned.store(true, std::memory_order_release);
     });
 

@@ -3,7 +3,6 @@
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
-#include <loglib_test/scaled_ms.hpp>
 #include <test_common/pipe.hpp>
 #include <test_common/wait.hpp>
 
@@ -32,7 +31,6 @@
 
 using loglib::IsStdinInteractive;
 using loglib::StdinPeek;
-using loglib_test::ScaledMs;
 using test_common::Pipe;
 using namespace std::chrono_literals;
 
@@ -106,7 +104,7 @@ TEST_CASE("StdinPeek delivers piped bytes up to the byte budget", "[StdinPeek]")
     pipe.Write(payload);
     pipe.CloseWrite();
 
-    const std::string peek = StdinPeek(/*budget=*/1024, ScaledMs(2000ms));
+    const std::string peek = StdinPeek(/*budget=*/1024, 2000ms);
     CHECK(peek == payload);
 }
 
@@ -122,7 +120,7 @@ TEST_CASE("StdinPeek honours the byte budget", "[StdinPeek]")
     pipe.CloseWrite();
 
     const std::size_t budget = 128;
-    const std::string peek = StdinPeek(budget, ScaledMs(2000ms));
+    const std::string peek = StdinPeek(budget, 2000ms);
     CHECK(peek.size() == budget);
     CHECK(peek == payload.substr(0, budget));
 }
@@ -135,10 +133,10 @@ TEST_CASE("StdinPeek returns immediately on EOF", "[StdinPeek]")
     pipe.CloseWrite();
 
     const auto start = std::chrono::steady_clock::now();
-    const std::string peek = StdinPeek(/*budget=*/1024, ScaledMs(5000ms));
+    const std::string peek = StdinPeek(/*budget=*/1024, 5000ms);
     const auto elapsed = std::chrono::steady_clock::now() - start;
     CHECK(peek.empty());
-    CHECK(elapsed < ScaledMs(1000ms));
+    CHECK(elapsed < 1000ms);
 }
 
 TEST_CASE("StdinPeek stops at the timeout when the producer is silent", "[StdinPeek]")
@@ -207,7 +205,7 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
         const StdinRedirect redirect(pipe);
         pipe.Write(s.bytes);
         pipe.CloseWrite();
-        const std::string peek = StdinPeek(loglib::PROBE_BYTES_BUDGET, ScaledMs(2000ms));
+        const std::string peek = StdinPeek(loglib::PROBE_BYTES_BUDGET, 2000ms);
         REQUIRE_FALSE(peek.empty());
         const loglib::DetectedFormat viaStdin = loglib::DetectFormatFromBytes(peek);
 

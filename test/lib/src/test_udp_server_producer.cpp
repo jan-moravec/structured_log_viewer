@@ -1,6 +1,5 @@
 #include <loglib/ingest/udp_server_producer.hpp>
 
-#include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>
 #include <test_common/wait.hpp>
 
@@ -14,7 +13,6 @@
 #include <thread>
 
 using loglib::UdpServerProducer;
-using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
 namespace
@@ -59,7 +57,7 @@ TEST_CASE("UdpServerProducer: receives single datagram and queues bytes", "[udp_
     test_common::UdpLogClient client("127.0.0.1", port);
     client.Send("hello world");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 12, ScaledMs(60000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 12, 60000ms);
     REQUIRE(drained == "hello world\n");
     REQUIRE(producer.DatagramCount() >= 1);
 }
@@ -74,7 +72,7 @@ TEST_CASE("UdpServerProducer: appends synthetic newline only when missing", "[ud
     client.Send("with-newline\n");
     client.Send("without-newline");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 29, ScaledMs(60000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 29, 60000ms);
     REQUIRE(drained == "with-newline\nwithout-newline\n");
 }
 
@@ -87,7 +85,7 @@ TEST_CASE("UdpServerProducer: multi-line datagrams pass through verbatim", "[udp
     test_common::UdpLogClient client("127.0.0.1", producer.BoundPort());
     client.Send("line-a\nline-b\nline-c\n");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 21, ScaledMs(60000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 21, 60000ms);
     REQUIRE(drained == "line-a\nline-b\nline-c\n");
 }
 
@@ -106,7 +104,7 @@ TEST_CASE("UdpServerProducer: many datagrams interleave in arrival order", "[udp
 
     // Each line is "line-N\n" so the lower bound is at least 7 bytes
     // per datagram; we just want to know we have all 64 lines.
-    const std::string drained = DrainUntil(producer, /*target*/ 7 * COUNT, ScaledMs(60000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 7 * COUNT, 60000ms);
     // Count newlines as a structural assertion: even if datagram drops
     // happen on a lossy localhost (rare but possible on Windows), we
     // demand at least 90% landed.
@@ -124,7 +122,7 @@ TEST_CASE("UdpServerProducer: Stop() unblocks WaitForBytes", "[udp_producer][net
     std::atomic<bool> waiterEntering{false};
     std::thread waiter([&] {
         waiterEntering.store(true, std::memory_order_release);
-        producer.WaitForBytes(ScaledMs(5000ms));
+        producer.WaitForBytes(5000ms);
         woke = true;
     });
 
