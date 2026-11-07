@@ -9710,14 +9710,12 @@ private slots:
             &QAbstractItemModel::dataChanged,
             &context,
             [&](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> &roles) {
-                recorded.append(
-                    QStringLiteral("data r%1-%2 c%3-%4 roles=%5")
-                        .arg(topLeft.row())
-                        .arg(bottomRight.row())
-                        .arg(topLeft.column())
-                        .arg(bottomRight.column())
-                        .arg(roles.size())
-                );
+                recorded.append(QStringLiteral("data r%1-%2 c%3-%4 roles=%5")
+                                    .arg(topLeft.row())
+                                    .arg(bottomRight.row())
+                                    .arg(topLeft.column())
+                                    .arg(bottomRight.column())
+                                    .arg(roles.size()));
             }
         );
         connect(
