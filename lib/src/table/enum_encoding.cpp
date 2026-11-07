@@ -6,10 +6,7 @@
 #include "loglib/core/log_line.hpp"
 #include "loglib/schema/log_configuration.hpp"
 
-#include <fmt/format.h>
-
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <ranges>
@@ -21,15 +18,6 @@
 
 namespace loglib
 {
-
-namespace
-{
-
-/// Microsecond threshold above which `DemoteColumnFromEnum` emits a
-/// stderr telemetry line; below it the demote cost is uninteresting.
-constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
-
-} // namespace
 
 bool EnumInference::EncodeColumnRange(
     LogData &data, std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
@@ -45,6 +33,7 @@ bool EnumInference::EncodeColumnRange(
         dict = &ref;
     }
     auto &lines = data.Lines();
+    bool overflowed = false;
     for (size_t row = rowBegin; row < rowEnd && row < lines.size(); ++row)
     {
         LogLine &line = lines[row];
@@ -78,7 +67,9 @@ bool EnumInference::EncodeColumnRange(
             const EnumValueId vid = dict->Insert(*bytes);
             if (vid == INVALID_ENUM_VALUE_ID)
             {
-                return false;
+                // A new value does not fit. Later rows may still hold values the dictionary knows.
+                overflowed = true;
+                break;
             }
             *slot = CompactLogValue::MakeDictRef(vid);
             encoded = true;
@@ -103,7 +94,7 @@ bool EnumInference::EncodeColumnRange(
             ++health.wrongTypeSlots;
         }
     }
-    return true;
+    return !overflowed;
 }
 
 bool EnumInference::EncodeColumnRangeAsEnum(
@@ -160,13 +151,7 @@ void EnumInference::PromoteColumnToEnum(LogData &data, LogConfigurationManager &
             {
                 if (!mDictionaries.Alias(*canonical, id))
                 {
-                    fmt::print(
-                        stderr,
-                        "[loglib] PromoteColumnToEnum: failed to alias key {} onto canonical {} for column '{}'\n",
-                        static_cast<uint32_t>(id),
-                        static_cast<uint32_t>(*canonical),
-                        headerKey
-                    );
+                    ReportAliasFailure(data.Keys(), *canonical, id, headerKey);
                 }
             }
         }
@@ -229,9 +214,6 @@ void EnumInference::DemoteColumnFromEnum(
 
     auto &lines = data.Lines();
 
-    const auto demoteStart = std::chrono::steady_clock::now();
-    size_t convertedSlots = 0;
-
     if (!keyIds.empty())
     {
         const EnumDictionary *dict = mDictionaries.Find(keyIds.front());
@@ -280,7 +262,6 @@ void EnumInference::DemoteColumnFromEnum(
                 {
                     *slot = CompactLogValue::MakeMonostate();
                 }
-                ++convertedSlots;
             }
         }
         mDictionaries.Erase(keyIds.front());
@@ -292,20 +273,6 @@ void EnumInference::DemoteColumnFromEnum(
     {
         mColumnHealth.erase(keyIds.front());
         mLevelRankCache.erase(keyIds.front());
-    }
-
-    const auto demoteElapsed =
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - demoteStart);
-    if (demoteElapsed.count() > DEMOTE_TELEMETRY_LOG_THRESHOLD_US)
-    {
-        fmt::print(
-            stderr,
-            "[loglib] DemoteColumnFromEnum column={} rows={} slots={} elapsed={}us\n",
-            columnIndex,
-            lines.size(),
-            convertedSlots,
-            demoteElapsed.count()
-        );
     }
 }
 

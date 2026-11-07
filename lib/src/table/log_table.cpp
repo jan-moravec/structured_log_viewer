@@ -281,6 +281,10 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     }
     result.demotedKeys = mEnum.LastBatchDemotedKeys();
     result.levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
+    for (ParseError &error : mEnum.TakePendingErrors())
+    {
+        result.errors.push_back(std::move(error));
+    }
 
     auto demotedValues = mEnum.TakeDemotedLevelValues();
     const auto &columnsAfter = mConfiguration.Configuration().columns;
@@ -714,6 +718,7 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
 
     result.promotedToEnumeration = mEnum.Finalize(mData, mConfiguration);
     result.levelBubbleKeys = mEnum.TakePendingLevelBubbleKeys();
+    result.errors = mEnum.TakePendingErrors();
 
     auto demotedValues = mEnum.TakeDemotedLevelValues();
     const auto &columnsAfter = mConfiguration.Configuration().columns;

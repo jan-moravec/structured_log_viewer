@@ -373,6 +373,9 @@ public:
         /** @brief Level columns that should move to CANONICAL_LEVEL_COLUMN_INDEX. */
         std::vector<ColumnPlacement> placements;
 
+        /** @brief Problems the table found while deciding column types. */
+        std::vector<ParseError> errors;
+
         /** @brief Canonical KeyIds of columns that became Level columns. Only LogModel reads it. */
         std::vector<KeyId> levelBubbleKeys;
     };

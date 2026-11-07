@@ -764,3 +764,55 @@ TEST_CASE("AppendBatch returns the batch errors and the row and column counts", 
     CHECK(second.rowsAdded == 1);
     CHECK(second.columnsAdded == 0);
 }
+
+TEST_CASE(
+    "A pinned enumeration column keeps encoding known values after its dictionary is full", "[append_report][c21]"
+)
+{
+    const TestLogFile testFile("append_report_c21.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration configuration;
+    configuration.columns.push_back(
+        Column{
+            .header = "kind",
+            .keys = {"kind"},
+            .printFormat = "{}",
+            .type = ColumnType::Enumeration,
+            .parseFormats = {},
+            .autoDetect = false
+        }
+    );
+    LogTable table(std::move(configuration));
+    table.SetEnumValueCap(4);
+    table.BeginStreaming(std::move(source));
+
+    const auto rowsOf = [](const std::vector<std::string> &values) {
+        std::vector<Fields> rows;
+        for (const std::string &value : values)
+        {
+            rows.push_back({{"kind", value}});
+        }
+        return rows;
+    };
+    AppendFixtureBatch(table, MakeBatch(table.Keys(), *sourcePtr, rowsOf({"a", "b", "c", "d"}), 1));
+    // "e" and "f" do not fit. The known values after them must still be encoded.
+    AppendFixtureBatch(table, MakeBatch(table.Keys(), *sourcePtr, rowsOf({"a", "e", "b", "f", "c", "d"}), 5));
+
+    REQUIRE(table.RowCount() == 10);
+    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    for (const size_t row : {size_t{4}, size_t{6}, size_t{8}, size_t{9}})
+    {
+        INFO("row " << row);
+        CHECK(table.GetEnumValueId(row, 0).has_value());
+    }
+    for (const size_t row : {size_t{5}, size_t{7}})
+    {
+        INFO("row " << row);
+        CHECK_FALSE(table.GetEnumValueId(row, 0).has_value());
+    }
+    CHECK(table.GetFormattedValue(5, 0) == "e");
+    CHECK(table.GetFormattedValue(8, 0) == "c");
+}

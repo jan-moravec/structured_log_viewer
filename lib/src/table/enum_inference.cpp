@@ -9,7 +9,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <chrono>
+#include <cassert>
 #include <cstdint>
 #include <optional>
 #include <ranges>
@@ -181,6 +181,7 @@ void EnumInference::Clear()
     mLevelRankCache.clear();
     mPendingLevelBubbleKeys.clear();
     mDemotedLevelValues.clear();
+    mPendingErrors.clear();
     mLastBatchDemotedKeys.clear();
     mIsStreaming = false;
 }
@@ -252,6 +253,28 @@ std::unordered_map<KeyId, LevelValueMap> EnumInference::TakeDemotedLevelValues()
     return std::exchange(mDemotedLevelValues, std::unordered_map<KeyId, LevelValueMap>{});
 }
 
+std::vector<ParseError> EnumInference::TakePendingErrors() noexcept
+{
+    return std::exchange(mPendingErrors, std::vector<ParseError>{});
+}
+
+void EnumInference::ReportAliasFailure(
+    const KeyIndex &keys, const KeyId canonical, const KeyId alias, const std::string &header
+)
+{
+    assert(false && "an enumeration key could not join the dictionary of its column");
+    mPendingErrors.push_back(
+        ParseError{
+            .message = fmt::format(
+                "Column '{}': key '{}' cannot share the values of key '{}'",
+                header,
+                keys.KeyOf(alias),
+                keys.KeyOf(canonical)
+            ),
+        }
+    );
+}
+
 std::vector<KeyId> EnumInference::TakePendingLevelBubbleKeys() noexcept
 {
     return std::exchange(mPendingLevelBubbleKeys, std::vector<KeyId>{});
@@ -297,14 +320,7 @@ void EnumInference::RefreshSnapshot(LogData &data, const LogConfigurationManager
             {
                 if (!mDictionaries.Alias(*canonical, id))
                 {
-                    fmt::print(
-                        stderr,
-                        "[loglib] RefreshSnapshotEnumKeys: failed to alias key {} onto canonical {} for column "
-                        "'{}'\n",
-                        static_cast<uint32_t>(id),
-                        static_cast<uint32_t>(*canonical),
-                        column.header
-                    );
+                    ReportAliasFailure(data.Keys(), *canonical, id, column.header);
                 }
             }
         }

@@ -13,6 +13,7 @@
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_level.hpp"
+#include "loglib/core/row_batch.hpp"
 #include "loglib/core/transparent_string_hash.hpp"
 #include "loglib/schema/column_schema.hpp"
 
@@ -212,6 +213,14 @@ public:
      */
     [[nodiscard]] std::unordered_map<KeyId, LevelValueMap> TakeDemotedLevelValues() noexcept;
 
+    /**
+     * @brief Returns the problems found since the last call, and forgets them.
+     *
+     * A key that cannot share the dictionary of its column's first key is a configuration the table cannot honor. The
+     * column keeps working with the keys that did share. The error has no line numbers.
+     */
+    [[nodiscard]] std::vector<ParseError> TakePendingErrors() noexcept;
+
     /** @brief Returns the columns that became Level columns and are waiting to move, and forgets them. */
     [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
 
@@ -282,7 +291,9 @@ public:
     /**
      * @brief Encodes the values of a column in the given row range as DictRef cells.
      *
-     * Returns false if the dictionary overflowed. Values that are too long or of the wrong type are counted in health.
+     * Returns false if the dictionary overflowed. A value the dictionary already knows is still encoded after an
+     * overflow, so a pinned column keeps its known values encoded. Values that are too long or of the wrong type are
+     * counted in health.
      */
     bool EncodeColumnRange(
         LogData &data, std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
@@ -299,6 +310,9 @@ public:
     ) const noexcept;
 
 private:
+    /** @brief Asserts in debug builds and records an error: alias could not join the dictionary of canonical. */
+    void ReportAliasFailure(const KeyIndex &keys, KeyId canonical, KeyId alias, const std::string &header);
+
     EnumDictionaryRegistry mDictionaries;
     uint16_t mValueCap = DEFAULT_ENUM_VALUE_CAP;
     uint32_t mValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
@@ -309,6 +323,7 @@ private:
     std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
     std::vector<KeyId> mPendingLevelBubbleKeys;
     std::unordered_map<KeyId, LevelValueMap> mDemotedLevelValues;
+    std::vector<ParseError> mPendingErrors;
 };
 
 } // namespace loglib
