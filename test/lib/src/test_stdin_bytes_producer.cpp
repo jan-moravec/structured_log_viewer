@@ -2,6 +2,7 @@
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/pipe.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -141,25 +142,23 @@ TEST_CASE("StdinBytesProducer Stop() unblocks a pending WaitForBytes", "[StdinBy
     // or the wait-for timeout expires (whichever comes first).
     // The test enforces the "wakes up fast" property directly.
     std::atomic<bool> waiterReturned{false};
+    std::atomic<bool> waiterEntering{false};
     std::thread waiter([&] {
+        waiterEntering.store(true, std::memory_order_release);
         producer->WaitForBytes(ScaledMs(5000ms));
         waiterReturned.store(true, std::memory_order_release);
     });
 
-    // Give the waiter a moment to actually park.
-    std::this_thread::sleep_for(ScaledMs(20ms));
+    // Let the waiter actually park.
+    test_common::LetWaiterPark(waiterEntering);
     producer->Stop();
 
-    const auto deadline = std::chrono::steady_clock::now() + ScaledMs(1000ms);
-    while (!waiterReturned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
-    {
-        std::this_thread::sleep_for(ScaledMs(5ms));
-    }
+    const bool returned = test_common::WaitUntil([&] { return waiterReturned.load(std::memory_order_acquire); });
     if (waiter.joinable())
     {
         waiter.join();
     }
-    CHECK(waiterReturned.load(std::memory_order_acquire));
+    CHECK(returned);
     CHECK(producer->IsClosed());
 }
 

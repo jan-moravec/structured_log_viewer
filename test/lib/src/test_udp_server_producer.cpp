@@ -2,6 +2,7 @@
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -120,12 +121,14 @@ TEST_CASE("UdpServerProducer: Stop() unblocks WaitForBytes", "[udp_producer]")
     UdpServerProducer producer(opts);
 
     std::atomic<bool> woke{false};
+    std::atomic<bool> waiterEntering{false};
     std::thread waiter([&] {
+        waiterEntering.store(true, std::memory_order_release);
         producer.WaitForBytes(ScaledMs(5000ms));
         woke = true;
     });
 
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    test_common::LetWaiterPark(waiterEntering);
     producer.Stop();
     waiter.join();
     REQUIRE(woke.load());

@@ -619,8 +619,9 @@ TEST_CASE("Tailing does not read a rotated file past the queue limit", "[Tailing
     std::filesystem::rename(path, dir.Path() / "app.log.1");
     (void)dir.Write("app.log", "after\n");
 
-    // With nothing consumed, the drain stays parked and rotation cannot finish.
-    std::this_thread::sleep_for(200ms);
+    // With nothing consumed, the drain stays parked and rotation cannot finish. The parked worker finishes no pass,
+    // so nothing observable marks the end of the quiet period and time is the only signal.
+    test_common::SleepToProveAbsence(100ms);
     CHECK(producer.RotationCount() == 0);
 
     const std::string expected = "start\n" + appended + "after\n";
@@ -648,14 +649,15 @@ TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[Tail
         std::ofstream output(target, std::ios::binary | std::ios::app);
         output << text;
     };
+    // Each step waits for two worker passes, so the worker has read the file after the step and before the next one.
     append(path, "first half");
-    std::this_thread::sleep_for(100ms);
+    REQUIRE(test_common::WaitForPasses(producer, 2));
 
     // The worker sees the path missing while its handle can still read the file.
     std::filesystem::rename(path, rotated);
-    std::this_thread::sleep_for(100ms);
+    REQUIRE(test_common::WaitForPasses(producer, 2));
     append(rotated, ", second half\n");
-    std::this_thread::sleep_for(100ms);
+    REQUIRE(test_common::WaitForPasses(producer, 2));
     (void)dir.Write("app.log", "after\n");
 
     REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("after\n"); }, 60s));

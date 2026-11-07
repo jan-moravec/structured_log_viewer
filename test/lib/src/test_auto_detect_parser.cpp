@@ -16,6 +16,7 @@
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>
 #include <test_common/temp_dir.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -44,6 +45,7 @@ using loglib::ParserOptions;
 using loglib::RowBatch;
 using loglib::StreamLineSource;
 using test_common::TempDir;
+using namespace std::chrono_literals;
 
 namespace
 {
@@ -93,15 +95,7 @@ void RunStreaming(
 )
 {
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
-    const auto giveUpAt = std::chrono::steady_clock::now() + deadline;
-    while (!sink.finished.load(std::memory_order_acquire))
-    {
-        if (std::chrono::steady_clock::now() >= giveUpAt)
-        {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    static_cast<void>(test_common::WaitUntil([&] { return sink.finished.load(std::memory_order_acquire); }, deadline));
     if (worker.joinable())
     {
         worker.join();
@@ -364,11 +358,7 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     const auto startedAt = std::chrono::steady_clock::now();
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    const auto giveUpAt = startedAt + std::chrono::milliseconds(15000);
-    while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    static_cast<void>(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }, 15s));
     CHECK(sink.started.load());
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
 
@@ -408,11 +398,7 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(200));
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    const auto giveUpAt = startedAt + std::chrono::milliseconds(15000);
-    while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    static_cast<void>(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }, 15s));
     CHECK(sink.started.load());
     // Allow startup slack beyond the 200 ms peek deadline.
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));

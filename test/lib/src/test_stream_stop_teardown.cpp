@@ -17,6 +17,7 @@
 #include <memory>
 
 #include <loglib_test/scaled_ms.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -92,6 +93,7 @@ struct CountingSink final : LogParseSink
 {
     KeyIndex keys;
     std::atomic<size_t> batchCount{0};
+    std::atomic<bool> started{false};
     std::atomic<size_t> rowCount{0};
     std::atomic<bool> finished{false};
     std::atomic<bool> finishedCancelled{false};
@@ -102,6 +104,7 @@ struct CountingSink final : LogParseSink
     }
     void OnStarted() override
     {
+        started.store(true, std::memory_order_release);
     }
     void OnBatch(RowBatch batch) override
     {
@@ -153,9 +156,10 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Give the worker time to drain pre-fill and park in WaitForBytes
-    // so we measure the typical idle path (Stop is correct either way).
-    std::this_thread::sleep_for(ScaledMs(100ms));
+    // Let the worker drain pre-fill and park in WaitForBytes so we measure the typical idle path (Stop is correct
+    // either way). The producer has finished two passes once the pre-fill line is parsed and the parser has no more.
+    REQUIRE(test_common::WaitUntil([&] { return sink.rowCount.load(std::memory_order_acquire) >= 1; }));
+    REQUIRE(test_common::WaitForPasses(*producerPtr, 2));
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();
@@ -205,9 +209,8 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Stop ASAP so we hit the worker mid-decode. The brief sleep just
-    // ensures OnStarted has fired so we don't measure setup time.
-    std::this_thread::sleep_for(ScaledMs(5ms));
+    // Stop ASAP so we hit the worker mid-decode. Waiting for OnStarted means we do not measure setup time.
+    REQUIRE(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }));
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();

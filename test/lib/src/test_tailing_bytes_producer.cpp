@@ -311,9 +311,8 @@ TEST_CASE(
     const auto ctorElapsed = std::chrono::steady_clock::now() - ctorStart;
     CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < ScaledMs(5000ms));
 
-    // No pre-fill lines should surface; the brief sleep gives any
-    // spurious bytes time to land before we sample.
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    // No pre-fill lines should surface. Two passes of the worker give any spurious bytes the time to land.
+    REQUIRE(test_common::WaitForPasses(source, 2));
     std::array<char, 1024> buf{};
     const size_t drained = source.Read(std::span<char>(buf));
     CHECK(drained == 0);
@@ -410,7 +409,7 @@ TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingB
     // Simulate copytruncate: copy elsewhere (we ignore the copy), then
     // truncate in place.
     Overwrite(path, "");
-    std::this_thread::sleep_for(ScaledMs(50ms)); // give the worker a poll tick to detect
+    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms))); // the worker has seen the empty file
     Append(path, "new1\nnew2\n");
 
     const auto post = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
@@ -437,7 +436,7 @@ TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytes
 
     // Truncate in place via overwrite (`: > path` equivalent).
     Overwrite(path, "");
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms)));
     Append(path, "y1\n");
 
     const auto post = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
@@ -472,7 +471,6 @@ TEST_CASE(
     // rotation branch fire.
     REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms)));
     Append(path, "q1\nq2\n");
-    std::this_thread::sleep_for(ScaledMs(100ms)); // poll tick + read
 
     const auto drained = DrainUntil(source, ScaledMs(60000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 4;
@@ -505,7 +503,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     // Rotate via in-place truncate. The partial "incomplete" must be
     // discarded.
     Overwrite(path, "");
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(60000ms)));
     Append(path, "after\n");
 
     const auto post =
@@ -553,14 +551,16 @@ TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle fil
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     std::atomic<bool> waitReturned{false};
+    std::atomic<bool> waiterEntering{false};
     const auto waitStart = std::chrono::steady_clock::now();
     std::thread waiter([&] {
+        waiterEntering.store(true, std::memory_order_release);
         source.WaitForBytes(5s);
         waitReturned.store(true, std::memory_order_release);
     });
 
-    // Give the waiter a tick to enter `WaitForBytes`, then signal Stop.
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    // Let the waiter block in `WaitForBytes`, then signal Stop.
+    test_common::LetWaiterPark(waiterEntering);
     source.Stop();
     waiter.join();
     const auto elapsed = std::chrono::steady_clock::now() - waitStart;

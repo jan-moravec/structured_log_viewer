@@ -163,11 +163,13 @@ TEST_CASE("TcpServerProducer: Stop() unblocks WaitForBytes", "[tcp_producer]")
     TcpServerProducer producer(opts);
 
     std::atomic<bool> woke{false};
+    std::atomic<bool> waiterEntering{false};
     std::thread waiter([&] {
+        waiterEntering.store(true, std::memory_order_release);
         producer.WaitForBytes(ScaledMs(5000ms));
         woke = true;
     });
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    test_common::LetWaiterPark(waiterEntering);
     producer.Stop();
     waiter.join();
     REQUIRE(woke.load());
