@@ -116,9 +116,7 @@ std::string DrainUntil(TailingBytesProducer &source, std::chrono::milliseconds d
         }
         const auto remaining = deadline - (now - start);
         source.WaitForBytes(
-            std::min<std::chrono::milliseconds>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(remaining), 25ms
-            )
+            std::min<std::chrono::milliseconds>(std::chrono::duration_cast<std::chrono::milliseconds>(remaining), 25ms)
         );
     }
 
@@ -171,8 +169,8 @@ TailingBytesProducer::Options FastPollOptions()
     return options;
 }
 
-/// Waits until the worker has counted at least target rotations. Tests use it instead of guessing how long a busy runner
-/// takes to schedule the worker thread between two file operations.
+/// Waits until the worker has counted at least target rotations. Tests use it instead of guessing how long a busy
+/// runner takes to schedule the worker thread between two file operations.
 [[nodiscard]] bool WaitForRotationCount(
     const TailingBytesProducer &source, size_t target, std::chrono::milliseconds deadline
 )
@@ -317,8 +315,7 @@ TEST_CASE(
 
     // Tailing still works: appending a complete line produces it.
     Append(path, "\nafter\n");
-    const auto post =
-        DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("after\n"); });
+    const auto post = DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("after\n"); });
     CHECK(post.contains("after\n"));
     // The 2 MiB "xxx…" prefix must NOT have been synthesized into a line.
     CHECK(!post.contains("xxxxx"));
@@ -354,7 +351,9 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
     }
 }
 
-TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[TailingBytesProducer][rotation][fs-events]")
+TEST_CASE(
+    "TailingBytesProducer recovers from rename-and-create rotation", "[TailingBytesProducer][rotation][fs-events]"
+)
 {
     const TempDir dir;
     const auto path = dir.File("rotate.log");
@@ -400,9 +399,7 @@ TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingB
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Drain pre-rotation.
-    DrainUntil(source, 60000ms, [](const std::string &acc) {
-        return std::count(acc.begin(), acc.end(), '\n') >= 3;
-    });
+    DrainUntil(source, 60000ms, [](const std::string &acc) { return std::count(acc.begin(), acc.end(), '\n') >= 3; });
 
     // Simulate copytruncate: copy elsewhere (we ignore the copy), then
     // truncate in place.
@@ -428,9 +425,7 @@ TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytes
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
-    DrainUntil(source, 60000ms, [](const std::string &acc) {
-        return std::count(acc.begin(), acc.end(), '\n') >= 3;
-    });
+    DrainUntil(source, 60000ms, [](const std::string &acc) { return std::count(acc.begin(), acc.end(), '\n') >= 3; });
 
     // Truncate in place via overwrite (`: > path` equivalent).
     Overwrite(path, "");
@@ -504,8 +499,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     REQUIRE(WaitForRotationCount(source, 1, 60000ms));
     Append(path, "after\n");
 
-    const auto post =
-        DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("after\n"); });
+    const auto post = DrainUntil(source, 60000ms, [](const std::string &acc) { return acc.contains("after\n"); });
     const auto postLines = SplitLines(post);
     REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "after");
@@ -532,8 +526,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
     // last line.
     source.Stop();
 
-    const auto post =
-        DrainUntil(source, 60000ms, [&](const std::string & /*acc*/) { return source.IsClosed(); });
+    const auto post = DrainUntil(source, 60000ms, [&](const std::string & /*acc*/) { return source.IsClosed(); });
     const auto postLines = SplitLines(post);
     REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "trailing-no-newline");
@@ -649,7 +642,8 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
 }
 
 TEST_CASE(
-    "TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status][fs-events]"
+    "TailingBytesProducer reports SourceStatus::Waiting while the file is missing",
+    "[TailingBytesProducer][status][fs-events]"
 )
 {
     // When the watched file disappears the source transitions to
@@ -689,22 +683,24 @@ TEST_CASE(
     // Delete the file → branch (ii) → Waiting.
     std::filesystem::remove(path);
 
-    CHECK(test_common::WaitUntil(
-        [&] {
-            {
-                const std::scoped_lock lock(statusMu);
-                if (!observed.empty() && observed.back() == loglib::SourceStatus::Waiting)
+    CHECK(
+        test_common::WaitUntil(
+            [&] {
                 {
-                    return true;
+                    const std::scoped_lock lock(statusMu);
+                    if (!observed.empty() && observed.back() == loglib::SourceStatus::Waiting)
+                    {
+                        return true;
+                    }
                 }
-            }
-            std::array<char, 256> buf{};
-            source.Read(std::span<char>(buf));
-            return false;
-        },
-        60000ms,
-        25ms
-    ));
+                std::array<char, 256> buf{};
+                source.Read(std::span<char>(buf));
+                return false;
+            },
+            60000ms,
+            25ms
+        )
+    );
 
     {
         const std::scoped_lock lock(statusMu);
@@ -715,22 +711,24 @@ TEST_CASE(
     // Re-create the file — branch (i) / (ii-reopened) → Running.
     Overwrite(path, "after\n");
 
-    CHECK(test_common::WaitUntil(
-        [&] {
-            {
-                const std::scoped_lock lock(statusMu);
-                if (!observed.empty() && observed.back() == loglib::SourceStatus::Running)
+    CHECK(
+        test_common::WaitUntil(
+            [&] {
                 {
-                    return true;
+                    const std::scoped_lock lock(statusMu);
+                    if (!observed.empty() && observed.back() == loglib::SourceStatus::Running)
+                    {
+                        return true;
+                    }
                 }
-            }
-            std::array<char, 256> buf{};
-            source.Read(std::span<char>(buf));
-            return false;
-        },
-        60000ms,
-        25ms
-    ));
+                std::array<char, 256> buf{};
+                source.Read(std::span<char>(buf));
+                return false;
+            },
+            60000ms,
+            25ms
+        )
+    );
 
     const std::scoped_lock lock(statusMu);
     REQUIRE(observed.size() >= 2);

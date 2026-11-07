@@ -413,7 +413,8 @@ namespace
 /// The peek timeout of the tests below. It only has to be shorter than the idle time they wait for.
 constexpr std::chrono::milliseconds SHORT_PEEK_TIMEOUT{50};
 
-/// The peek parks in WaitForBytes for 100 ms per call while idle. After this many calls it has been idle for 100 ms, twice SHORT_PEEK_TIMEOUT.
+/// The peek parks in WaitForBytes for 100 ms per call while idle. After this many calls it has been idle for 100 ms,
+/// twice SHORT_PEEK_TIMEOUT.
 constexpr std::size_t IDLE_WAIT_CALLS = 2;
 
 } // namespace

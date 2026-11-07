@@ -561,7 +561,9 @@ TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytes
     producer.Stop();
 }
 
-TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[TailingBytesProducer][limits][fs-events]")
+TEST_CASE(
+    "Tailing pauses reading while the queue is full and loses nothing", "[TailingBytesProducer][limits][fs-events]"
+)
 {
     const test_common::TempDir dir("tail_queue");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -592,7 +594,9 @@ TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[
     producer.Stop();
 }
 
-TEST_CASE("Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation][fs-events]")
+TEST_CASE(
+    "Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation][fs-events]"
+)
 {
     const test_common::TempDir dir("tail_rotate_queue");
     const std::filesystem::path path = dir.Write("app.log", "start\n");

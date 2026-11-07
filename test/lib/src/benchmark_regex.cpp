@@ -504,5 +504,4 @@ TEST_CASE(
         << "x mean speedup; best baseline " << baselineBestMBps << " MB/s vs anchored " << anchoredBestMBps
         << " MB/s => " << bestRatio << "x best speedup"
     );
-
 }
