@@ -4,8 +4,6 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
-#include <loglib/ingest/tcp_server_producer.hpp>
-#include <loglib/ingest/udp_server_producer.hpp>
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
@@ -13,9 +11,8 @@
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
-#include <loglib_test/scaled_ms.hpp>
-#include <test_common/network_log_client.hpp>
 #include <test_common/temp_dir.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -44,6 +41,7 @@ using loglib::ParserOptions;
 using loglib::RowBatch;
 using loglib::StreamLineSource;
 using test_common::TempDir;
+using namespace std::chrono_literals;
 
 namespace
 {
@@ -93,15 +91,7 @@ void RunStreaming(
 )
 {
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
-    const auto giveUpAt = std::chrono::steady_clock::now() + deadline;
-    while (!sink.finished.load(std::memory_order_acquire))
-    {
-        if (std::chrono::steady_clock::now() >= giveUpAt)
-        {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    static_cast<void>(test_common::WaitUntil([&] { return sink.finished.load(std::memory_order_acquire); }, deadline));
     if (worker.joinable())
     {
         worker.join();
@@ -364,11 +354,7 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     const auto startedAt = std::chrono::steady_clock::now();
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    const auto giveUpAt = startedAt + std::chrono::milliseconds(15000);
-    while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    static_cast<void>(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }, 15s));
     CHECK(sink.started.load());
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
 
@@ -408,11 +394,7 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(200));
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    const auto giveUpAt = startedAt + std::chrono::milliseconds(15000);
-    while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    static_cast<void>(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }, 15s));
     CHECK(sink.started.load());
     // Allow startup slack beyond the 200 ms peek deadline.
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(15000));
@@ -428,15 +410,53 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
 namespace
 {
 
-/// Starts an auto-detect parse on @p producer, lets the listener sit
-/// idle for well over the peek timeout, then sends logfmt lines via
-/// @p send. Detection must resolve logfmt rather than fall back to
-/// JSON.
-template <class Producer, class SendLines>
-void CheckDelayedSenderIsDetected(std::unique_ptr<Producer> producer, SendLines send)
+/// The peek timeout of the tests below. It only has to be shorter than the idle time they wait for.
+constexpr std::chrono::milliseconds SHORT_PEEK_TIMEOUT{50};
+
+/// The peek parks in WaitForBytes for 100 ms per call while idle. After this many calls it has been idle for 100 ms,
+/// twice SHORT_PEEK_TIMEOUT.
+constexpr std::size_t IDLE_WAIT_CALLS = 2;
+
+} // namespace
+
+TEST_CASE("AutoDetectParser waits for a delayed sender before detecting", "[AutoDetectParser]")
 {
-    const std::uint16_t port = producer->BoundPort();
-    REQUIRE(port != 0);
+    // The peek timer starts at the first byte, so an idle source for longer than the timeout must not make the parser
+    // fall back to JSON. The producer stays open and has no bytes until the test appends them.
+    auto producer = std::make_unique<InMemoryBytesProducer>(
+        std::string{}, std::string::npos, InMemoryBytesProducer::Ending::OnStop
+    );
+    InMemoryBytesProducer *raw = producer.get();
+    StreamLineSource source(std::filesystem::path("<network>"), std::move(producer));
+
+    CollectingSink sink;
+    ParserOptions options;
+    loglib::StopSource stopSource;
+    options.stopToken = stopSource.GetToken();
+    const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, SHORT_PEEK_TIMEOUT);
+    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+
+    REQUIRE(test_common::WaitUntil([&] { return raw->WaitCalls() >= IDLE_WAIT_CALLS; }));
+    CHECK_FALSE(sink.started.load());
+    raw->Append("level=info msg=first\nlevel=warn msg=second\nlevel=error msg=third\n");
+
+    raw->Finish();
+
+    const bool finished = test_common::WaitUntil([&] { return sink.finished.load(std::memory_order_acquire); });
+    stopSource.RequestStop(); // only matters when the wait above timed out
+    worker.join();
+    CHECK(finished);
+    CHECK(sink.finished.load());
+    CHECK(sink.rowCount.load() == 3);
+    CHECK(sink.errorCount.load() == 0);
+}
+
+TEST_CASE("AutoDetectParser stop ends an idle peek", "[AutoDetectParser]")
+{
+    auto producer = std::make_unique<InMemoryBytesProducer>(
+        std::string{}, std::string::npos, InMemoryBytesProducer::Ending::OnStop
+    );
+    InMemoryBytesProducer *raw = producer.get();
     StreamLineSource source(std::filesystem::path("<network>"), std::move(producer));
 
     CollectingSink sink;
@@ -446,74 +466,8 @@ void CheckDelayedSenderIsDetected(std::unique_ptr<Producer> producer, SendLines 
     const AutoDetectParser parser;
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
 
-    std::this_thread::sleep_for(AutoDetectParser::DEFAULT_PEEK_TIMEOUT * 3);
-    CHECK_FALSE(sink.started.load());
-    send(port);
-
-    const auto giveUpAt = std::chrono::steady_clock::now() + loglib_test::ScaledMs(std::chrono::milliseconds(5000));
-    while (sink.rowCount.load(std::memory_order_acquire) < 3 && std::chrono::steady_clock::now() < giveUpAt)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-
-    stopSource.RequestStop();
-    if (worker.joinable())
-    {
-        worker.join();
-    }
-    CHECK(sink.finished.load());
-    CHECK(sink.rowCount.load() == 3);
-    CHECK(sink.errorCount.load() == 0);
-}
-
-constexpr std::string_view DELAYED_LOGFMT_LINES[] = {
-    "level=info msg=first",
-    "level=warn msg=second",
-    "level=error msg=third",
-};
-
-} // namespace
-
-TEST_CASE("AutoDetectParser waits for a delayed TCP sender before detecting", "[AutoDetectParser][tcp_producer]")
-{
-    loglib::TcpServerProducer::Options opts;
-    opts.bindAddress = "127.0.0.1";
-    CheckDelayedSenderIsDetected(std::make_unique<loglib::TcpServerProducer>(opts), [](std::uint16_t port) {
-        test_common::TcpLogClient client("127.0.0.1", port);
-        for (const std::string_view line : DELAYED_LOGFMT_LINES)
-        {
-            client.Send(line);
-        }
-    });
-}
-
-TEST_CASE("AutoDetectParser waits for a delayed UDP sender before detecting", "[AutoDetectParser][udp_producer]")
-{
-    loglib::UdpServerProducer::Options opts;
-    opts.bindAddress = "127.0.0.1";
-    CheckDelayedSenderIsDetected(std::make_unique<loglib::UdpServerProducer>(opts), [](std::uint16_t port) {
-        test_common::UdpLogClient client("127.0.0.1", port);
-        for (const std::string_view line : DELAYED_LOGFMT_LINES)
-        {
-            client.Send(line);
-        }
-    });
-}
-
-TEST_CASE("AutoDetectParser stop ends an idle network peek", "[AutoDetectParser][tcp_producer]")
-{
-    loglib::TcpServerProducer::Options opts;
-    opts.bindAddress = "127.0.0.1";
-    StreamLineSource source(std::filesystem::path("<network>"), std::make_unique<loglib::TcpServerProducer>(opts));
-
-    CollectingSink sink;
-    ParserOptions options;
-    loglib::StopSource stopSource;
-    options.stopToken = stopSource.GetToken();
-    const AutoDetectParser parser;
-    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
-
-    std::this_thread::sleep_for(AutoDetectParser::DEFAULT_PEEK_TIMEOUT * 2);
+    // The worker is in the peek once it has called WaitForBytes.
+    REQUIRE(test_common::WaitUntil([&] { return raw->WaitCalls() >= 1; }));
     CHECK_FALSE(sink.finished.load());
     stopSource.RequestStop();
     worker.join();

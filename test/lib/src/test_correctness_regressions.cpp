@@ -26,6 +26,7 @@
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/temp_dir.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -146,19 +147,7 @@ public:
     std::vector<loglib::ParseError> errors;
 };
 
-template <class Predicate> bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = 60s)
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!predicate())
-    {
-        if (std::chrono::steady_clock::now() >= deadline)
-        {
-            return false;
-        }
-        std::this_thread::sleep_for(5ms);
-    }
-    return true;
-}
+using test_common::WaitUntil;
 
 std::string DrainTo(TailingBytesProducer &producer, std::string &collected)
 {
@@ -520,7 +509,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
     CHECK(loglib::FormatParseError(sink.errors[0]).find("Continuation lines dropped") != std::string::npos);
 }
 
-TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBytesProducer][rotation]")
+TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBytesProducer][rotation][fs-events]")
 {
     const test_common::TempDir dir("rotate");
     const std::filesystem::path path = dir.Write("app.log", "one\n");
@@ -547,7 +536,7 @@ TEST_CASE("Tailing delivers bytes written before a rename rotation", "[TailingBy
     producer.Stop();
 }
 
-TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytesProducer][limits]")
+TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytesProducer][limits][fs-events]")
 {
     const test_common::TempDir dir("tail_limit");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -572,7 +561,9 @@ TEST_CASE("Tailing drops an oversized line and resumes after it", "[TailingBytes
     producer.Stop();
 }
 
-TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[TailingBytesProducer][limits]")
+TEST_CASE(
+    "Tailing pauses reading while the queue is full and loses nothing", "[TailingBytesProducer][limits][fs-events]"
+)
 {
     const test_common::TempDir dir("tail_queue");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -603,7 +594,9 @@ TEST_CASE("Tailing pauses reading while the queue is full and loses nothing", "[
     producer.Stop();
 }
 
-TEST_CASE("Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation]")
+TEST_CASE(
+    "Tailing does not read a rotated file past the queue limit", "[TailingBytesProducer][limits][rotation][fs-events]"
+)
 {
     const test_common::TempDir dir("tail_rotate_queue");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -630,8 +623,9 @@ TEST_CASE("Tailing does not read a rotated file past the queue limit", "[Tailing
     std::filesystem::rename(path, dir.Path() / "app.log.1");
     (void)dir.Write("app.log", "after\n");
 
-    // With nothing consumed, the drain stays parked and rotation cannot finish.
-    std::this_thread::sleep_for(200ms);
+    // With nothing consumed, the drain stays parked and rotation cannot finish. The parked worker finishes no pass,
+    // so nothing observable marks the end of the quiet period and time is the only signal.
+    test_common::SleepToProveAbsence(100ms);
     CHECK(producer.RotationCount() == 0);
 
     const std::string expected = "start\n" + appended + "after\n";
@@ -641,7 +635,7 @@ TEST_CASE("Tailing does not read a rotated file past the queue limit", "[Tailing
     producer.Stop();
 }
 
-TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[TailingBytesProducer][rotation]")
+TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[TailingBytesProducer][rotation][fs-events]")
 {
     const test_common::TempDir dir("tail_rotate_partial");
     const std::filesystem::path path = dir.Write("app.log", "start\n");
@@ -659,14 +653,15 @@ TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[Tail
         std::ofstream output(target, std::ios::binary | std::ios::app);
         output << text;
     };
+    // Each step waits for two worker passes, so the worker has read the file after the step and before the next one.
     append(path, "first half");
-    std::this_thread::sleep_for(100ms);
+    REQUIRE(test_common::WaitForPasses(producer, 2));
 
     // The worker sees the path missing while its handle can still read the file.
     std::filesystem::rename(path, rotated);
-    std::this_thread::sleep_for(100ms);
+    REQUIRE(test_common::WaitForPasses(producer, 2));
     append(rotated, ", second half\n");
-    std::this_thread::sleep_for(100ms);
+    REQUIRE(test_common::WaitForPasses(producer, 2));
     (void)dir.Write("app.log", "after\n");
 
     REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("after\n"); }, 60s));
@@ -688,7 +683,7 @@ TEST_CASE("Session bundle metadata rejects a very deep filter tree", "[session_b
     CHECK_THROWS_AS(ParseSessionBundleMetadata(json), FormatError);
 }
 
-TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode]")
+TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicode][fs-events]")
 {
     const test_common::TempDir dir("unicode");
     const std::filesystem::path path = dir.Path() / std::filesystem::path(u8"日本語.log");

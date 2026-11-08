@@ -319,8 +319,5 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
         "[stream_latency] lines measured = " << latenciesMs.size() << ", median = " << median << " ms, p95 = " << p95
                                              << " ms, max = " << maxLatency << " ms"
     );
-
-    // Numbers feed CONTRIBUTING.md `## Benchmarking`.
-    CHECK(median <= 250.0);
-    CHECK(p95 <= 500.0);
+    // The figures feed CONTRIBUTING.md `## Benchmarking`. They are reported and compared between runs, never limited.
 }

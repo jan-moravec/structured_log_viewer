@@ -61,6 +61,7 @@
 #include <loglib/time/time_zone_context.hpp>
 
 #include <test_common/network_log_client.hpp>
+#include <test_common/wait.hpp>
 
 #include <QAbstractItemDelegate>
 #include <QAbstractItemModel>
@@ -659,70 +660,24 @@ private:
     QString mPath;
 };
 
-// Read-once test-time multiplier so loaded CI runners can scale wait
-// budgets without touching every callsite. Mirrors
-// `loglib_test::ScaledMs` (which we cannot link directly: `loglib_test`
-// is the catch2 fixture target and apptest is QtTest-based). Set via
-// `LOGLIB_TEST_TIME_SCALE` (double; defaults to 1.0). Sub-1.0 values
-// still floor at 1 ms so a tight 25 ms budget never collapses to 0.
-double LoadTestTimeScale() noexcept
-{
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4996) // getenv
-#endif
-    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test harness; read once per process.
-    const char *raw = std::getenv("LOGLIB_TEST_TIME_SCALE");
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-    if (raw == nullptr || *raw == '\0')
-    {
-        return 1.0;
-    }
-    char *end = nullptr;
-    const double parsed = std::strtod(raw, &end);
-    if (end == raw || parsed <= 0.0)
-    {
-        return 1.0;
-    }
-    return parsed;
-}
-
-double TestTimeScale() noexcept
-{
-    static const double SCALE = LoadTestTimeScale();
-    return SCALE;
-}
-
-std::chrono::milliseconds ScaledDeadline(std::chrono::milliseconds base) noexcept
-{
-    const double scaled = static_cast<double>(base.count()) * TestTimeScale();
-    const auto rounded = std::llround(scaled);
-    return std::chrono::milliseconds(rounded < 1 ? 1 : rounded);
-}
-
 // Wait until the model's `lineCountChanged` signal reports at least
 // @p target rows, draining the Qt event queue while we wait so the
-// QueuedConnection lambdas the parser worker posts actually run. The
-// deadline is automatically scaled by `LOGLIB_TEST_TIME_SCALE` so slow
-// CI runners can extend it without changing per-call code. Returns
+// QueuedConnection lambdas the parser worker posts actually run. Returns
 // `true` on success, `false` if the deadline expires (the caller
 // usually `QVERIFY2`s the result).
 bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::milliseconds deadline)
 {
-    const auto scaled = ScaledDeadline(deadline);
-    const auto start = std::chrono::steady_clock::now();
-    while (model.rowCount() < target)
-    {
-        if (std::chrono::steady_clock::now() - start > scaled)
-        {
+    return test_common::WaitUntil(
+        [&] {
+            if (model.rowCount() >= target)
+            {
+                return true;
+            }
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
             return false;
-        }
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return true;
+        },
+        deadline
+    );
 }
 
 // Column index whose configured `Column::header` equals @p header,

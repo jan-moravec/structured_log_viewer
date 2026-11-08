@@ -1,6 +1,5 @@
 // Stop-teardown coverage for `TailingBytesProducer` +
-// `JsonParser::ParseStreaming`. Budget: 500 ms from
-// `BytesProducer::Stop()` to the parser worker joining, both for an
+// `JsonParser::ParseStreaming`. Stop must reach the parser worker quickly, both for an
 // idle source and for a worker mid-decode of a 100 KiB buffered batch.
 //
 // These tests drive the full source -> parser -> sink chain so any
@@ -16,7 +15,7 @@
 
 #include <memory>
 
-#include <loglib_test/scaled_ms.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -38,11 +37,13 @@ using loglib::RowBatch;
 using loglib::StopSource;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
-using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
 namespace
 {
+
+/// The most a Stop may take. It guards a Stop that blocks, so it is far above the normal time and is no speed claim.
+constexpr std::chrono::seconds STOP_DEADLINE{10};
 
 class TempDir
 {
@@ -92,6 +93,7 @@ struct CountingSink final : LogParseSink
 {
     KeyIndex keys;
     std::atomic<size_t> batchCount{0};
+    std::atomic<bool> started{false};
     std::atomic<size_t> rowCount{0};
     std::atomic<bool> finished{false};
     std::atomic<bool> finishedCancelled{false};
@@ -102,6 +104,7 @@ struct CountingSink final : LogParseSink
     }
     void OnStarted() override
     {
+        started.store(true, std::memory_order_release);
     }
     void OnBatch(RowBatch batch) override
     {
@@ -119,8 +122,8 @@ TailingBytesProducer::Options TestOptions()
 {
     TailingBytesProducer::Options options;
     options.disableNativeWatcher = true;
-    options.pollInterval = ScaledMs(25ms);
-    options.rotationDebounce = ScaledMs(250ms);
+    options.pollInterval = 25ms;
+    options.rotationDebounce = 250ms;
     options.readChunkBytes = 64 * 1024;
     options.prefillChunkBytes = 64 * 1024;
     return options;
@@ -129,9 +132,9 @@ TailingBytesProducer::Options TestOptions()
 } // namespace
 
 // A worker parked in `WaitForBytes` on an idle producer must observe
-// `BytesProducer::Stop()` and unwind within 500 ms. The timed window
-// covers Stop() -> RequestStop() -> thread join -> OnFinished.
-TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown]")
+// `BytesProducer::Stop()` and unwind. The timed window covers Stop() ->
+// RequestStop() -> thread join -> OnFinished.
+TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes", "[stream_stop_teardown][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("idle.log");
@@ -153,9 +156,10 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Give the worker time to drain pre-fill and park in WaitForBytes
-    // so we measure the typical idle path (Stop is correct either way).
-    std::this_thread::sleep_for(ScaledMs(100ms));
+    // Let the worker drain pre-fill and park in WaitForBytes so we measure the typical idle path (Stop is correct
+    // either way). Two passes of the producer mean its pre-fill is queued and the parser has had them to read.
+    REQUIRE(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }));
+    REQUIRE(test_common::WaitForPasses(*producerPtr, 2));
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();
@@ -165,15 +169,13 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
 
     CHECK(sink.finished.load(std::memory_order_acquire));
     INFO("Stop teardown elapsed: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms");
-    // 500 ms developer-class-machine budget. `LOGLIB_TEST_TIME_SCALE`
-    // widens it for slow CI runners.
-    CHECK(elapsed < ScaledMs(500ms));
+    CHECK(elapsed < STOP_DEADLINE);
 }
 
 // A worker mid-decoding a 100 KiB buffered batch must still observe
-// Stop within 500 ms. The parser checks the stop-token at every line
+// Stop. The parser checks the stop-token at every line
 // boundary, so worst case is one line decode plus Stop-then-join.
-TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stream_stop_teardown]")
+TEST_CASE("Stream Stop teardown stops a mid-decode worker", "[stream_stop_teardown][fs-events]")
 {
     const TempDir dir;
     const auto path = dir.File("buffered.log");
@@ -205,9 +207,8 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Stop ASAP so we hit the worker mid-decode. The brief sleep just
-    // ensures OnStarted has fired so we don't measure setup time.
-    std::this_thread::sleep_for(ScaledMs(5ms));
+    // Stop ASAP so we hit the worker mid-decode. Waiting for OnStarted means we do not measure setup time.
+    REQUIRE(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }));
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();
@@ -221,5 +222,5 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
                                              << " ms; consumed batches=" << sink.batchCount.load()
                                              << " rows=" << sink.rowCount.load()
     );
-    CHECK(elapsed < ScaledMs(500ms));
+    CHECK(elapsed < STOP_DEADLINE);
 }

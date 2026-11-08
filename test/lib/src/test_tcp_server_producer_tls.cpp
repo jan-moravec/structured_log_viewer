@@ -1,6 +1,5 @@
 #include <loglib/ingest/tcp_server_producer.hpp>
 
-#include <loglib_test/scaled_ms.hpp>
 #include <test_common/network_log_client.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -20,7 +19,6 @@
 #include <string>
 
 using loglib::TcpServerProducer;
-using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
 namespace
@@ -178,7 +176,7 @@ std::string DrainUntil(TcpServerProducer &producer, size_t target, std::chrono::
 
 } // namespace
 
-TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tcp_producer][tls]")
+TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tcp_producer][tls][network]")
 {
     const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
@@ -206,11 +204,11 @@ TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tc
     {
         static_cast<void>(ex); // send may fail if the server side closes first
     }
-    const std::string drained = DrainUntil(producer, /*target*/ 1, ScaledMs(500ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 1, 500ms);
     REQUIRE(drained.empty());
 }
 
-TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cert", "[tcp_producer][tls]")
+TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cert", "[tcp_producer][tls][network]")
 {
     const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
@@ -229,12 +227,12 @@ TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cer
     test_common::TcpLogClient client("127.0.0.1", producer.BoundPort(), tls);
     client.Send("encrypted-line\n");
 
-    const std::string drained = DrainUntil(producer, /*target*/ 15, ScaledMs(3000ms));
+    const std::string drained = DrainUntil(producer, /*target*/ 15, 3000ms);
     REQUIRE(drained == "encrypted-line\n");
     REQUIRE(producer.TotalClientsAccepted() == 1);
 }
 
-TEST_CASE("TcpServerProducer (TLS): missing cert file fails fast in ctor", "[tcp_producer][tls]")
+TEST_CASE("TcpServerProducer (TLS): missing cert file fails fast in ctor", "[tcp_producer][tls][network]")
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "127.0.0.1";

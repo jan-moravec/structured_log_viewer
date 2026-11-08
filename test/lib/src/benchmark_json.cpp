@@ -491,5 +491,6 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         "Cancellation latency over " << ITERATIONS << " runs (us): median=" << median << ", p95=" << p95
                                      << ", max=" << maxLatency
     );
+    // A cancel that takes seconds is a hang, so this stays as a deadline. It is not a speed limit.
     REQUIRE(maxLatency < 5'000'000.0);
 }

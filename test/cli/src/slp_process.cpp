@@ -1,6 +1,7 @@
 #include "slp_process.hpp"
 
 #include <test_common/temp_dir.hpp>
+#include <test_common/wait.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -663,30 +664,12 @@ std::string SlpChild::Err() const
 
 bool SlpChild::WaitForErr(std::string_view needle, std::chrono::milliseconds timeout) const
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        if (Err().contains(needle))
-        {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    return Err().contains(needle);
+    return test_common::WaitUntil([&] { return Err().contains(needle); }, timeout, std::chrono::milliseconds(20));
 }
 
 bool SlpChild::WaitForOut(std::string_view needle, std::chrono::milliseconds timeout) const
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        if (Out().contains(needle))
-        {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    return Out().contains(needle);
+    return test_common::WaitUntil([&] { return Out().contains(needle); }, timeout, std::chrono::milliseconds(20));
 }
 
 void RequireGolden(std::string_view relativeName, std::string_view actual)
