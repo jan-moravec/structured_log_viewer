@@ -19,7 +19,8 @@ Two kinds of file are read:
 
 The script prints the change of every figure in percent, sorted from worst to best. Positive means better: less time,
 or more throughput. Figures worse than the threshold are marked with "!!" and the exit code is 1, so a run can gate a
-PR. It also lists benchmarks that failed or that appear on only one side.
+PR. It also lists benchmarks that failed or that appear on only one side. A failure on the after side also gives exit
+code 1.
 """
 
 from __future__ import annotations
@@ -54,14 +55,17 @@ def read_text(path: Path) -> str:
     return raw.decode(encoding, errors="replace")
 
 
-def json_figures(text: str) -> Figures:
-    """Returns the median real time and rates of each benchmark in a Google Benchmark JSON file."""
+def json_figures(text: str) -> tuple[Figures, list[str]]:
+    """Returns the median real time and rates of each benchmark in a Google Benchmark JSON file, and the failed ones."""
     medians: Figures = {}
+    failed: list[str] = []
     iterations: dict[str, list[dict]] = {}
     for entry in json.loads(text).get("benchmarks", []):
-        if entry.get("error_occurred"):
-            continue
         name = NAME_SUFFIX.sub("", entry.get("run_name") or entry["name"])
+        if entry.get("error_occurred"):
+            if name not in failed:
+                failed.append(name)
+            continue
         if entry.get("run_type") == "aggregate":
             if entry.get("aggregate_name") == "median":
                 add_entry(medians, name, entry)
@@ -69,9 +73,9 @@ def json_figures(text: str) -> Figures:
             iterations.setdefault(name, []).append(entry)
     # A run without repetitions has no aggregates; its single iteration entry is the figure.
     for name, entries in iterations.items():
-        if f"{name}" not in medians and len(entries) == 1:
+        if name not in medians and len(entries) == 1:
             add_entry(medians, name, entries[0])
-    return medians
+    return medians, failed
 
 
 def add_entry(figures: Figures, name: str, entry: dict) -> None:
@@ -107,7 +111,7 @@ def gui_figures(text: str) -> Figures:
 def load(path: Path) -> tuple[Figures, list[str]]:
     text = read_text(path)
     if path.suffix.lower() == ".json":
-        return json_figures(text), []
+        return json_figures(text)
     return gui_figures(text), FAILED.findall(text)
 
 
@@ -171,7 +175,7 @@ def main() -> int:
             print(f"  {label}: {name}")
 
     print(f"\n{len(rows)} compared, {worse} worse than -{args.threshold:g}%")
-    return 1 if worse else 0
+    return 1 if worse or failed_after else 0
 
 
 if __name__ == "__main__":
