@@ -758,6 +758,24 @@ TEST_CASE("ParseQuery: payload-less and inverted value lists are errors", "[quer
         REQUIRE_FALSE(parsed.has_value());
         CHECK(parsed.error().message.contains("below the lower bound"));
     }
+    SECTION("time range that ends before the epoch")
+    {
+        for (const std::string_view q : {
+                 "ts in [1960-01-01T00:00:00Z..1969-12-31T00:00:00Z]",
+                 "ts in [..1969-12-31T00:00:00Z]",
+                 "ts in [1969-12-31T00:00:00Z]",
+                 "ts < 1969-12-31T00:00:00Z",
+                 "ts <= 1969-12-31T00:00:00Z",
+             })
+        {
+            CAPTURE(q);
+            const auto parsed = ParseQuery(q);
+            REQUIRE_FALSE(parsed.has_value());
+            CHECK(parsed.error().message.contains("before the epoch"));
+        }
+        CHECK(ParseQuery("ts in [1960-01-01T00:00:00Z..1970-01-02T00:00:00Z]").has_value());
+        CHECK(ParseQuery("ts >= 1960-01-01T00:00:00Z").has_value());
+    }
     SECTION("single-sided and equal-bound ranges still parse")
     {
         for (const std::string_view q : {"latency in [10..]", "latency in [..100]", "latency in [10..10]"})

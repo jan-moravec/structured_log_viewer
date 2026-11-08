@@ -768,14 +768,19 @@ void LogModel::EmitEnumEvents(
 
 void LogModel::ApplyPlacementsWithSignals(const std::vector<loglib::ColumnPlacement> &placements)
 {
-    // A placement is resolved just before its move, because every move
-    // shifts the columns after it.
-    for (const loglib::ColumnPlacement &placement : placements)
+    // A placement is resolved just before its move, and every move shifts the columns of the placements after it.
+    std::vector<loglib::ColumnPlacement> pending(placements);
+    for (size_t i = 0; i < pending.size(); ++i)
     {
+        const loglib::ColumnPlacement &placement = pending[i];
         const std::optional<loglib::ColumnMove> move = mLogTable.ResolvePlacement(placement);
         if (!move.has_value())
         {
             continue;
+        }
+        for (size_t next = i + 1; next < pending.size(); ++next)
+        {
+            pending[next].column = move->Follow(pending[next].column);
         }
         const int from = static_cast<int>(move->from);
         const int to = static_cast<int>(move->to);

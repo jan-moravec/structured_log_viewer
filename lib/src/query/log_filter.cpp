@@ -143,14 +143,11 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 TimeRangeRowPredicate::TimeRangeRowPredicate(size_t columnIndex, int64_t begin, int64_t end)
     : mColumnIndex(columnIndex), mBegin(begin), mEnd(end)
 {
+    assert(begin <= end && end >= 0 && "a time range must not end before the epoch or before it begins");
 }
 
 bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
-    if (mBegin > mEnd)
-    {
-        return false;
-    }
     const LogValue value = table.GetValue(row, mColumnIndex);
     // Slot acceptance set must stay in lockstep with
     // `loglib::AsEpochMicroseconds`: `TimeStamp`, `int64_t`,
@@ -176,10 +173,10 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
                 {
                     return false;
                 }
-                // Clamp negative bounds to 0 so e.g. `[-1, 100]`
-                // still matches positive values.
+                // Clamp a negative begin to 0 so e.g. `[-1, 100]`
+                // still matches positive values. The end is never negative.
                 const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
-                const uint64_t hi = mEnd < 0 ? 0U : static_cast<uint64_t>(mEnd);
+                const auto hi = static_cast<uint64_t>(mEnd);
                 return alt >= lo && alt <= hi;
             }
             else

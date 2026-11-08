@@ -85,12 +85,18 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         {
             return std::nullopt;
         }
-        return loglib::RowPredicate{
-            std::in_place_type<loglib::TimeRangeRowPredicate>,
-            column,
-            rule.filterBegin.value_or(std::numeric_limits<std::int64_t>::min()),
-            rule.filterEnd.value_or(std::numeric_limits<std::int64_t>::max())
-        };
+        const std::int64_t begin = rule.filterBegin.value_or(std::numeric_limits<std::int64_t>::min());
+        const std::int64_t end = rule.filterEnd.value_or(std::numeric_limits<std::int64_t>::max());
+        // A range that ends before the epoch or before it begins can never match, and the time predicate does not take
+        // it. A saved filter can still hold one, so it gets a predicate that rejects every row. Dropping the leaf
+        // instead would make it match every row.
+        if (end < 0 || begin > end)
+        {
+            return loglib::RowPredicate{
+                std::in_place_type<loglib::BoolRowPredicate>, column, /*includeTrue=*/false, /*includeFalse=*/false
+            };
+        }
+        return loglib::RowPredicate{std::in_place_type<loglib::TimeRangeRowPredicate>, column, begin, end};
     }
     case T::Number:
     {
@@ -270,27 +276,22 @@ void CollectFilterProblems(
     );
 }
 
-/// Recursive compile step. Returns `nullopt` when the sub-tree is
-/// **absent** (carries no constraint).
-///
-/// Absence propagates uniformly: `And` and `Or` drop absent
-/// children and go absent when **every** child did (an input `And`
-/// with no children stays match-all -- that's the identity). `Not`
-/// goes absent when its child did.
-///
-/// We deliberately treat unresolvable leaves as absent rather than
-/// match-none. A leaf goes absent for routine, usually-temporary
-/// reasons (column keys not resolved yet, level column not
-/// promoted, hand-edited empty payload); folding match-none upwards
-/// would blank the view mid-stream with no cue, whereas dropping
-/// the clause over-accepts briefly and self-corrects on the next
-/// `enumColumnsChanged` rebuild.
-///
-/// Note the deliberate asymmetry: `NOT <absent>` is absent, not
-/// match-all. Folding to match-all inside an `Or` would explode the
-/// accept set -- `svc:auth OR NOT missing:x` would show every row.
-/// Sibling `And` cases collapse to the same result either way, so
-/// the `Or` case is the one that pins the choice.
+/**
+ * Compiles one node of the tree. It returns nothing when the node is absent, which means it puts no constraint on the
+ * rows.
+ *
+ * And and Or drop their absent children, and are absent themselves when every child is. An And that has no children in
+ * the input stays, and matches every row. Not is absent when its child is.
+ *
+ * A leaf is absent for reasons that usually pass: its column keys are not resolved yet, its level column is not
+ * promoted yet, or its payload was edited to nothing. Treating such a leaf as matching nothing would blank the view
+ * during a stream with no cue. Dropping it accepts too many rows for a moment, and the next rebuild after the enum
+ * columns change corrects it. A leaf that can never match, such as a time range that ends before it begins, is not
+ * absent: it compiles to a predicate that rejects every row.
+ *
+ * Not over an absent child is absent, not match-all. Inside an Or, match-all would accept every row: svc:auth OR NOT
+ * missing:x would show the whole table.
+ */
 // Recursive AST compiler; misc-no-recursion is suppressed on both
 // the entry point and the visitor lambda so each per-arm
 // specialisation (And / Or / Not) doesn't get flagged individually.

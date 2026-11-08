@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -143,13 +144,26 @@ public:
     /**
      * @brief Replaces the whole configuration with an already parsed one, in one step and without reading a file.
      *
-     * Like loading and SetColumnPrintFormat, it checks the print formats of the columns that are not Time columns. A
-     * format that no value type accepts, such as {:q}, is replaced by {} and reported once through TakeWarnings.
+     * Like loading and SetColumnPrintFormat, it checks the print formats. A format that no value type accepts, such as
+     * {:q}, is replaced by {} and reported once through TakeWarnings. Time columns are checked by the time format
+     * check.
      */
     void SetConfiguration(LogConfiguration configuration);
 
     /** @brief Returns the messages about print formats replaced since the last call, and clears them. */
     [[nodiscard]] std::vector<std::string> TakeWarnings();
+
+    /** @brief Tells whether a Time column can print with a time format. */
+    using TimeFormatCheck = std::function<bool(const std::string &format)>;
+
+    /**
+     * @brief Sets the check that validates the print formats of Time columns.
+     *
+     * The schema module cannot read time formats itself, so the table that owns the manager supplies the check. With a
+     * check set, a Time column whose format fails it gets the default time format, and the replacement is reported once
+     * through TakeWarnings, like any other replaced print format. Without a check, Time formats are left alone.
+     */
+    void SetTimeFormatCheck(TimeFormatCheck check);
 
     /**
      * @brief Adds columns for keys that no column uses yet, and makes keys that look like timestamps Time columns.
@@ -229,13 +243,18 @@ public:
     const LogConfiguration &Configuration() const;
 
 private:
-    /** @brief Replaces print formats that no value type accepts with {} and records a warning for each. */
+    /**
+     * @brief Replaces print formats that no value type accepts with {} and records a warning for each. Time columns are
+     * checked with the time format check, and get the default time format.
+     */
     void SanitizePrintFormats();
 
     void EnsureKeyCacheBuilt() const;
     bool IsKeyInAnyColumnCached(const std::string &key) const;
 
     LogConfiguration mConfiguration;
+
+    TimeFormatCheck mTimeFormatCheck;
 
     /** @brief Messages about print formats that were replaced. TakeWarnings hands them out once. */
     std::vector<std::string> mWarnings;

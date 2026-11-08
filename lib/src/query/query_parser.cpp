@@ -560,6 +560,13 @@ private:
             default:
                 break;
             }
+            if (rule.filterEnd.has_value() && *rule.filterEnd < 0)
+            {
+                QueryParseError err;
+                err.offset = opTok.offset;
+                err.message = "time range must not end before the epoch";
+                return std::unexpected(err);
+            }
         }
         else
         {
@@ -757,6 +764,13 @@ private:
             err.message = "range upper bound is below the lower bound";
             return std::unexpected(err);
         }
+        if (tsMax.has_value() && *tsMax < 0)
+        {
+            QueryParseError err;
+            err.offset = secondOffset;
+            err.message = "time range must not end before the epoch";
+            return std::unexpected(err);
+        }
         if (tsMin.has_value() || tsMax.has_value())
         {
             rule.type = LeafRule::Type::Time;
@@ -835,6 +849,13 @@ private:
             const std::string &only = rule.filterValues.front();
             if (const auto asTs = ParseIsoTimestamp(only, mTimeZone); asTs.has_value())
             {
+                if (*asTs < 0)
+                {
+                    QueryParseError err;
+                    err.offset = firstTok.offset;
+                    err.message = "time range must not end before the epoch";
+                    return std::unexpected(err);
+                }
                 rule.type = LeafRule::Type::Time;
                 rule.filterBegin = asTs;
                 rule.filterEnd = asTs;

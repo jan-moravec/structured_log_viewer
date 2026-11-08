@@ -287,28 +287,7 @@ void RunStreamingParseLoopBody(
         {
             return;
         }
-        if (orphanRunFirstLine == orphanRunLastLine)
-        {
-            coalescer.Pending().errors.push_back(
-                ParseError{
-                    .firstLine = orphanRunFirstLine,
-                    .lastLine = orphanRunFirstLine,
-                    .message = "Orphaned continuation line.",
-                }
-            );
-        }
-        else
-        {
-            coalescer.Pending().errors.push_back(
-                ParseError{
-                    .firstLine = orphanRunFirstLine,
-                    .lastLine = orphanRunLastLine,
-                    .message = fmt::format(
-                        "{} orphaned continuation lines dropped.", orphanRunLastLine - orphanRunFirstLine + 1
-                    ),
-                }
-            );
-        }
+        coalescer.Pending().errors.push_back(MakeOrphanedContinuationError(orphanRunFirstLine, orphanRunLastLine));
         orphanRunFirstLine = 0;
         orphanRunLastLine = 0;
     };
@@ -536,61 +515,81 @@ void RunStreamingParseLoopBody(
         }
     };
 
-    if (!carry.empty() && !stopToken.StopRequested())
+    // If the producer or the sink fails, the record that is still open holds valid lines. Send it before the failure is
+    // reported, so that those lines are not lost.
+    try
     {
-        scanCarry();
-        announceSeenKeys();
-        coalescer.TryFlush(false, nextLineNumber - 1);
-    }
-
-    bool reachedEof = false;
-    while (!reachedEof)
-    {
-        if (stopToken.StopRequested())
+        if (!carry.empty() && !stopToken.StopRequested())
         {
-            break;
+            scanCarry();
+            announceSeenKeys();
+            coalescer.TryFlush(false, nextLineNumber - 1);
         }
 
-        const size_t read = producer->Read(std::span<char>(readBuffer.data(), readBuffer.size()));
-        if (read != 0)
+        bool reachedEof = false;
+        while (!reachedEof)
         {
-            carry.append(readBuffer.data(), read);
-        }
-        else
-        {
-            if (producer->IsClosed())
+            if (stopToken.StopRequested())
             {
-                reachedEof = true;
+                break;
+            }
+
+            const size_t read = producer->Read(std::span<char>(readBuffer.data(), readBuffer.size()));
+            if (read != 0)
+            {
+                carry.append(readBuffer.data(), read);
             }
             else
             {
-                // Bound how long a quiet producer keeps a record invisible.
-                if (pending)
+                if (producer->IsClosed())
                 {
-                    const auto age = std::chrono::steady_clock::now() - pending->openedAt;
-                    if (age >= STREAMING_PENDING_RECORD_MAX_AGE)
-                    {
-                        commitPending();
-                    }
+                    reachedEof = true;
                 }
-                announceSeenKeys();
-                coalescer.TryFlush(false, nextLineNumber - 1);
-                producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
-                continue;
+                else
+                {
+                    // Bound how long a quiet producer keeps a record invisible.
+                    if (pending)
+                    {
+                        const auto age = std::chrono::steady_clock::now() - pending->openedAt;
+                        if (age >= STREAMING_PENDING_RECORD_MAX_AGE)
+                        {
+                            commitPending();
+                        }
+                    }
+                    announceSeenKeys();
+                    coalescer.TryFlush(false, nextLineNumber - 1);
+                    producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
+                    continue;
+                }
             }
+
+            scanCarry();
+
+            announceSeenKeys();
+            coalescer.TryFlush(false, nextLineNumber - 1);
         }
 
-        scanCarry();
-
-        announceSeenKeys();
-        coalescer.TryFlush(false, nextLineNumber - 1);
+        if (!carry.empty() && !stopToken.StopRequested())
+        {
+            std::string_view line(carry);
+            processLine(line);
+            carry.clear();
+        }
     }
-
-    if (!carry.empty() && !stopToken.StopRequested())
+    catch (...)
     {
-        std::string_view line(carry);
-        processLine(line);
-        carry.clear();
+        try
+        {
+            flushOrphanRun();
+            commitPending();
+            announceSeenKeys();
+        }
+        // NOLINTNEXTLINE(bugprone-empty-catch)
+        catch (...)
+        {
+            // The original failure is the one to report.
+        }
+        throw;
     }
 
     // Flush pending records and orphan summaries before the terminal batch.
@@ -620,8 +619,8 @@ void RunStreamingParseLoopBody(
  * declaredKeys before the first row. A parser that interns its keys before calling, as the regex parser does for the
  * groups of its pattern, passes them as declaredKeys, so those columns appear even if no row has a value.
  *
- * When the loop throws, the sink still gets one last batch with an error that says so, and OnFinished, and the
- * exception goes on to the caller. See BatchCoalescer::FinishAfterException.
+ * When the loop throws, the sink still gets one last batch with an error that says so and the record that was still
+ * open, and OnFinished, and the exception goes on to the caller. See BatchCoalescer::FinishAfterException.
  */
 template <class Decoder>
 void RunStreamingParseLoop(

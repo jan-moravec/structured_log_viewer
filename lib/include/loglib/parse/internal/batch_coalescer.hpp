@@ -12,6 +12,8 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
 
+#include <fmt/format.h>
+
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -21,6 +23,23 @@
 
 namespace loglib::internal
 {
+
+/**
+ * @brief The error for a run of continuation lines that has no record to join. Both parse drivers report one such error
+ * per run, with the first and last line of the run.
+ */
+inline ParseError MakeOrphanedContinuationError(size_t firstLine, size_t lastLine)
+{
+    if (firstLine == lastLine)
+    {
+        return ParseError{.firstLine = firstLine, .lastLine = lastLine, .message = "Orphaned continuation line."};
+    }
+    return ParseError{
+        .firstLine = firstLine,
+        .lastLine = lastLine,
+        .message = fmt::format("{} orphaned continuation lines dropped.", lastLine - firstLine + 1),
+    };
+}
 
 /**
  * @brief Collects parsed lines into batches and sends them to a sink when enough have piled up or enough time has

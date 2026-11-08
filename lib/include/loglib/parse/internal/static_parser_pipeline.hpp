@@ -304,6 +304,10 @@ void RunStaticParserPipelineBody(
     };
     std::optional<HeldTail> held;
 
+    // A run of continuation lines with no record to join, which may span several batches. It is reported as one error
+    // when something else follows it, as the streaming loop does.
+    std::optional<ParseError> orphanRun;
+
     const StopToken stopToken = options.stopToken;
     std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
@@ -401,14 +405,17 @@ void RunStaticParserPipelineBody(
                     held->lastLineIdx = lineNumberDelta + parsed.leadingContinuationLineCount - 1;
                 }
             }
-            else
+            else if (parsed.leadingContinuationLineCount > 0)
             {
-                parsed.errors.push_back(
-                    ParsedLineError{
-                        .relativeLine = 1,
-                        .body = "Orphaned continuation line(s) at start of file.",
-                    }
-                );
+                const size_t lastLine = lineNumberDelta + parsed.leadingContinuationLineCount;
+                if (orphanRun.has_value())
+                {
+                    orphanRun->lastLine = lastLine;
+                }
+                else
+                {
+                    orphanRun = MakeOrphanedContinuationError(lineNumberDelta + 1, lastLine);
+                }
             }
         }
 
@@ -504,6 +511,11 @@ void RunStaticParserPipelineBody(
                 std::make_move_iterator(spansThisBatch.end())
             );
         }
+        if (orphanRun.has_value() && (batchHasNewRecords || !parsed.errors.empty()))
+        {
+            pending.errors.push_back(MakeOrphanedContinuationError(orphanRun->firstLine, orphanRun->lastLine));
+            orphanRun.reset();
+        }
         moveErrorsInto(pending.errors);
 
         nextLineNumber += parsed.totalLineCount;
@@ -519,28 +531,49 @@ void RunStaticParserPipelineBody(
         oneapi::tbb::global_control::max_allowed_parallelism, static_cast<size_t>(settings.effectiveThreads)
     );
 
-    oneapi::tbb::parallel_pipeline(
-        settings.ntokens,
-        oneapi::tbb::make_filter<void, Token>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
-            oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
-            oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
-    );
+    // Moves the open final record and the open orphan run into the batch being built.
+    auto sealHeldTail = [&] {
+        if (orphanRun.has_value())
+        {
+            coalescer.Pending().errors.push_back(
+                MakeOrphanedContinuationError(orphanRun->firstLine, orphanRun->lastLine)
+            );
+            orphanRun.reset();
+        }
+        if (held.has_value())
+        {
+            const MultiLineRecordSpan span{held->headerLineIdx, held->lastLineIdx};
+            const bool isMultiLine = span.lastLineId > span.headerLineId;
+
+            RowBatch &pending = coalescer.Pending();
+            coalescer.Prime(held->absoluteLineNumber);
+            pending.lines.push_back(std::move(held->line));
+            if (isMultiLine)
+            {
+                pending.multiLineSpans.push_back(span);
+            }
+            held.reset();
+        }
+    };
+
+    try
+    {
+        oneapi::tbb::parallel_pipeline(
+            settings.ntokens,
+            oneapi::tbb::make_filter<void, Token>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
+                oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
+                oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
+        );
+    }
+    catch (...)
+    {
+        // The held record holds the lines read so far and is a valid row. Send it before the failure is reported.
+        sealHeldTail();
+        throw;
+    }
 
     // EOF seals the final held record.
-    if (held.has_value())
-    {
-        const MultiLineRecordSpan span{held->headerLineIdx, held->lastLineIdx};
-        const bool isMultiLine = span.lastLineId > span.headerLineId;
-
-        RowBatch &pending = coalescer.Pending();
-        coalescer.Prime(held->absoluteLineNumber);
-        pending.lines.push_back(std::move(held->line));
-        if (isMultiLine)
-        {
-            pending.multiLineSpans.push_back(span);
-        }
-        held.reset();
-    }
+    sealHeldTail();
 
     coalescer.Finish(nextLineNumber - 1, stopToken.StopRequested());
 }
@@ -559,9 +592,10 @@ void RunStaticParserPipelineBody(
  * before the first row. A parser that interns its keys before the pipeline starts, such as CSV with its header, passes
  * them there so they appear even if no row has a value.
  *
- * When the parse throws, the sink still gets one last batch with an error that says so, and OnFinished, and the
- * exception goes on to the caller. See BatchCoalescer::FinishAfterException. TBB cancels the pipeline and rethrows a
- * stage's exception on the calling thread, so the sink is never called from two threads at once.
+ * When the parse throws, the sink still gets one last batch with an error that says so and the record that was still
+ * open, and OnFinished, and the exception goes on to the caller. See BatchCoalescer::FinishAfterException. TBB cancels
+ * the pipeline and rethrows a stage's exception on the calling thread, so the sink is never called from two threads at
+ * once.
  */
 // The callables are forwarded as lvalues to the body, which uses them many times.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>

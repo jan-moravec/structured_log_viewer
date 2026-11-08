@@ -625,6 +625,63 @@ TEST_CASE("The same bytes as a file and as a stream give the same batches", "[ba
     }
 }
 
+TEST_CASE(
+    "Continuation lines at the start of the input are reported the same way as a file and as a stream",
+    "[batch_contract][equivalence][orphan]"
+)
+{
+    const std::string oneLine = "    orphan one\n";
+    const std::string twoLines = "    orphan one\n    orphan two\n";
+    for (const std::string &lead : {oneLine, twoLines})
+    {
+        CAPTURE(lead);
+        SECTION("logfmt")
+        {
+            CheckStaticAndStreamAgree(LogfmtParser{}, lead + LogfmtInput(), "batch_contract_orphan.log");
+        }
+        SECTION("indented regex")
+        {
+            const RegexParser parser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::Indented);
+            CheckStaticAndStreamAgree(parser, lead + RegexInput(), "batch_contract_orphan_indented.log");
+        }
+        SECTION("multi-line regex")
+        {
+            const RegexParser parser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+            CheckStaticAndStreamAgree(parser, lead + RegexInput(), "batch_contract_orphan_regex.log");
+        }
+    }
+}
+
+TEST_CASE(
+    "A numeric message keeps the continuation lines that follow it", "[batch_contract][equivalence][numeric_capture]"
+)
+{
+    const std::string bytes = "1000 404\n    trace a\n    trace b\n1001 500\n1002 200\n    trace c\n";
+    for (const ContinuationMode mode : {ContinuationMode::Indented, ContinuationMode::UntilNextHeader})
+    {
+        const RegexParser parser(R"(^(?<ts>\d+) (?<msg>\d+)$)", mode);
+        for (const bool asFile : {true, false})
+        {
+            CAPTURE(mode, asFile);
+            RecordingSink sink;
+            if (asFile)
+            {
+                ParseAsFile(parser, "batch_contract_numeric.log", bytes, 4096, sink);
+            }
+            else
+            {
+                ParseAsStream(parser, bytes, 4096, sink);
+            }
+            CHECK(sink.Errors().empty());
+            const std::vector<std::string> rows = DescribeRows(sink);
+            REQUIRE(rows.size() == 3);
+            CHECK(rows[0].contains("msg=s:404\n    trace a\n    trace b;"));
+            CHECK(rows[1].contains("msg=s:500;"));
+            CHECK(rows[2].contains("msg=s:200\n    trace c;"));
+        }
+    }
+}
+
 TEST_CASE("Declared keys are announced before the keys of rows", "[batch_contract][declared_keys]")
 {
     SECTION("a CSV column that is empty in every row still appears")
@@ -1052,7 +1109,8 @@ TEST_CASE("A decoder that throws still finishes the sink, once, and the exceptio
         {
             rows += batch.lines.size();
         }
-        CHECK(rows == 2);
+        // The record that was still open when the decoder threw is delivered as well.
+        CHECK(rows == 3);
         CHECK(sink.LastBatch().lastLineNumber == 4);
     }
     SECTION("an exception that is not a std::exception")
@@ -1060,6 +1118,137 @@ TEST_CASE("A decoder that throws still finishes the sink, once, and the exceptio
         CountingSink sink;
         CHECK_THROWS(RunStreamWithThrowingDecoder(sink, NonStdException{42}));
         CheckFinishedWithFailureError(sink, "unknown exception");
+    }
+}
+
+namespace
+{
+
+/** A streaming decoder for multi-line records: "head" starts a record, "  more" continues it and "boom" throws. */
+class OpenRecordDecoder
+{
+public:
+    internal::LineDecodeResult DecodeCompact(
+        std::string_view line,
+        KeyIndex &keys,
+        internal::PerWorkerKeyCache & /*keyCache*/,
+        std::vector<std::pair<KeyId, CompactLogValue>> &out,
+        std::string &outOwnedArena,
+        std::string & /*errorOut*/
+    )
+    {
+        out.clear();
+        outOwnedArena.clear();
+        if (line == "boom")
+        {
+            throw std::runtime_error("producer failed");
+        }
+        if (line.starts_with(' '))
+        {
+            return internal::LineDecodeResult::Continue;
+        }
+        mTarget = keys.GetOrInsert("msg");
+        outOwnedArena.append(line);
+        out.emplace_back(mTarget, CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())));
+        return internal::LineDecodeResult::Emit;
+    }
+
+    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    {
+        return mTarget;
+    }
+
+private:
+    KeyId mTarget = INVALID_KEY_ID;
+};
+
+/** A Stage B whose first batch holds one open record and whose second batch throws. */
+struct OpenRecordStageB
+{
+    void operator()(
+        internal::ByteRange token,
+        internal::WorkerScratch<NoWorkerState> & /*worker*/,
+        KeyIndex &keys,
+        std::span<const internal::TimeColumnSpec> /*timeColumns*/,
+        internal::ParsedPipelineBatch &parsed
+    ) const
+    {
+        parsed.batchIndex = token.batchIndex;
+        parsed.totalLineCount = static_cast<std::size_t>(std::count(token.bytesBegin, token.bytesEnd, '\n'));
+        if (token.batchIndex == 0)
+        {
+            const KeyId key = keys.GetOrInsert("msg");
+            parsed.lines.emplace_back(
+                std::vector<std::pair<KeyId, LogValue>>{{key, LogValue{std::string("head")}}}, *source, 0
+            );
+            parsed.firstSeenKeys.push_back(key);
+            parsed.lastRecordOpenForContinuation = true;
+            parsed.continuationTargetKeyId = key;
+            parsed.tailRecordHeaderPhysicalLine = 1;
+            parsed.tailRecordLastPhysicalLine = 1;
+            return;
+        }
+        throw std::runtime_error("producer failed");
+    }
+
+    FileLineSource *source = nullptr;
+};
+
+[[nodiscard]] std::size_t CountRows(const CountingSink &sink)
+{
+    std::size_t rows = 0;
+    for (const RowBatch &batch : sink.batches)
+    {
+        rows += batch.lines.size();
+    }
+    return rows;
+}
+
+} // namespace
+
+TEST_CASE("A failed parse still delivers the record that was open", "[batch_contract][failure]")
+{
+    SECTION("the static driver")
+    {
+        std::string bytes;
+        for (int i = 0; i < 300; ++i)
+        {
+            bytes += "line " + std::to_string(i) + "\n";
+        }
+        auto source = MemorySource(bytes, "batch_contract_open_record_static.log");
+        const FileLineSource &logFile = *source;
+        // With one thread, TBB takes the first batch through every stage before it reads the second, so the record is
+        // held when the second batch throws.
+        ParserOptions options;
+        options.threads = 1;
+        CountingSink sink;
+        OpenRecordStageB stageB;
+        stageB.source = source.get();
+        CHECK_THROWS_WITH(
+            (internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
+                *source,
+                sink,
+                options,
+                internal::MakeLineAlignedBatcher(
+                    logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
+                ),
+                stageB
+            )),
+            "producer failed"
+        );
+        CheckFinishedWithFailureError(sink, "producer failed");
+        CHECK(CountRows(sink) == 1);
+    }
+    SECTION("the streaming driver")
+    {
+        StreamLineSource source(
+            "memory.log", std::make_unique<InMemoryBytesProducer>("head\n  more\nboom\nlater\n", 4)
+        );
+        OpenRecordDecoder decoder;
+        CountingSink sink;
+        CHECK_THROWS_WITH(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), "producer failed");
+        CheckFinishedWithFailureError(sink, "producer failed");
+        CHECK(CountRows(sink) == 1);
     }
 }
 

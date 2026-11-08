@@ -85,8 +85,11 @@ struct ColumnPlacement
 
     Kind kind = Kind::TimeToFront;
 
-    /** The first key of the column. A key stays valid when other columns move, an index does not. */
-    KeyId key = INVALID_KEY_ID;
+    /**
+     * The index of the column when the call that returned the placement finished. Moving a column shifts the others,
+     * so apply the placements of one call in order with ApplyPlacements, which keeps the remaining indices current.
+     */
+    size_t column = 0;
 };
 
 /** @brief A column move from one index to another, as MoveColumn takes it. */
@@ -94,6 +97,24 @@ struct ColumnMove
 {
     size_t from = 0;
     size_t to = 0;
+
+    /** @brief Where the column at index now sits after this move has been applied. */
+    [[nodiscard]] constexpr size_t Follow(size_t index) const noexcept
+    {
+        if (index == from)
+        {
+            return to;
+        }
+        if (from > to && index >= to && index < from)
+        {
+            return index + 1;
+        }
+        if (from < to && index > from && index <= to)
+        {
+            return index - 1;
+        }
+        return index;
+    }
 };
 
 /**
@@ -198,11 +219,12 @@ public:
     /**
      * @brief The move a placement needs now, or nothing if its column is missing or already in place.
      *
-     * It reads the current layout, so call it just before applying the move.
+     * It reads the current layout, so call it just before applying the move. After a move, pass the column of every
+     * placement still waiting through ColumnMove::Follow.
      */
     [[nodiscard]] std::optional<ColumnMove> ResolvePlacement(const ColumnPlacement &placement) const;
 
-    /** @brief Resolves and applies each placement in order, without any notification. */
+    /** @brief Resolves and applies each placement in order, following the columns each move shifts. No notification. */
     void ApplyPlacements(std::span<const ColumnPlacement> placements);
 
     /**

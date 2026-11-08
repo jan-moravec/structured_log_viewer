@@ -165,6 +165,25 @@ TEST_CASE("CompileTimeLeafBothBoundsProduces", "[leaf_rule_compile]")
     REQUIRE(compiled.has_value());
 }
 
+TEST_CASE("CompileTimeLeafImpossibleRangeRejectsEveryRow", "[leaf_rule_compile]")
+{
+    // A saved filter can hold a range that ends before the epoch or before it begins. It must keep matching no row
+    // rather than be dropped, which would match every row.
+    const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
+    const loglib::LogTable table;
+    for (const Leaf &rule : {
+             MakeTimeLeaf("ts", std::nullopt, std::int64_t{-1}),
+             MakeTimeLeaf("ts", std::int64_t{-100}, std::int64_t{-10}),
+             MakeTimeLeaf("ts", std::int64_t{1000}, std::int64_t{10}),
+         })
+    {
+        const auto compiled = loglib::CompileLeaf(rule, 0, columns, &table);
+        REQUIRE(compiled.has_value());
+        CHECK_FALSE(std::holds_alternative<loglib::TimeRangeRowPredicate>(*compiled));
+        CHECK_FALSE(loglib::MatchesRow(*compiled, table, 0));
+    }
+}
+
 TEST_CASE("CompileNumberLeafNoBoundsAbsent", "[leaf_rule_compile]")
 {
     const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};

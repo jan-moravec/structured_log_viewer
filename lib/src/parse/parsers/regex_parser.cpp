@@ -83,7 +83,8 @@ std::vector<KeyId> InternSchemaKeys(const PatternSchema &schema, KeyIndex &keys)
  * errorOut is populated on no-match / match-limit / other
  * errors and the function returns false; the caller decides
  * whether to surface it as a ParsedLineError or a
- * LineDecodeResult::Error.
+ * LineDecodeResult::Error. The capture of textOnlyKey is always
+ * stored as text.
  */
 bool MatchLineAndEmit(
     const CompiledPattern &compiled,
@@ -94,7 +95,8 @@ bool MatchLineAndEmit(
     size_t fileSize,
     std::string &ownedArena,
     std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
-    std::string &errorOut
+    std::string &errorOut,
+    KeyId textOnlyKey
 )
 {
     // Self-contained contract: callers previously had to clear
@@ -159,7 +161,10 @@ bool MatchLineAndEmit(
             // bloat the per-line array.
             continue;
         }
-        const loglib::CompactLogValue compact = internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
+        // The capture that continuation lines are added to must stay text, or the continuations could not join it.
+        const loglib::CompactLogValue compact =
+            columnKeys[i] == textOnlyKey ? internal::MakeStringCompact(captured, fileBegin, fileSize, ownedArena)
+                                         : internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
         out.emplace_back(columnKeys[i], compact);
     }
     return true;
@@ -374,7 +379,8 @@ void DecodeRegexBatch(
                 fileSize,
                 parsed.ownedStringsArena,
                 values,
-                lineError
+                lineError,
+                continuationTargetKey
             ))
         {
             parsed.errors.push_back(internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = lineError});
@@ -529,7 +535,8 @@ public:
                 /*fileSize=*/0,
                 outOwnedArena,
                 out,
-                errorOut
+                errorOut,
+                mMode != ContinuationMode::None ? mLastContinuationTarget : INVALID_KEY_ID
             ))
         {
             return internal::LineDecodeResult::Error;
