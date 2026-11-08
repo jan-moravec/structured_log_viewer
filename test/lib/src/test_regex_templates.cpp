@@ -10,10 +10,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <limits>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace loglib;
@@ -848,4 +850,54 @@ TEST_CASE("Every shipped template's headerAnchor compiles [regex_templates]", "[
         CHECK(ValidateHeaderAnchor(t.headerAnchor, err));
         CHECK(err.empty());
     }
+}
+
+TEST_CASE(
+    "The template catalog can be replaced while other threads detect templates [regex_templates]", "[regex_templates]"
+)
+{
+    const RegexTemplate userTemplate{
+        .name = "Concurrent user template",
+        .pattern = R"(^(?<word>zzz\w+)$)",
+        .sampleLines = {"zzzone", "zzztwo"},
+        .autoDetect = true,
+        .priority = 200,
+        .description = "",
+    };
+    const RegexTemplate extras[] = {userTemplate};
+
+    const std::string syslog = "Apr 28 04:02:03 host-a systemd: System starting\n"
+                               "Jun 27 01:47:20 host-b configd[17]: network changed\n";
+
+    std::atomic<bool> writerDone{false};
+    std::atomic<int> wrongDetections{0};
+
+    const auto reader = [&] {
+        while (!writerDone.load(std::memory_order_acquire))
+        {
+            const auto detected = DetectRegexTemplateFromBytes(syslog);
+            if (!detected.has_value() || detected->name != "Syslog (RFC3164)")
+            {
+                wrongDetections.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 3; ++i)
+    {
+        readers.emplace_back(reader);
+    }
+    for (int i = 0; i < 200; ++i)
+    {
+        SetExtraRegexTemplates(extras);
+        SetExtraRegexTemplates({});
+    }
+    writerDone.store(true, std::memory_order_release);
+    for (std::thread &thread : readers)
+    {
+        thread.join();
+    }
+
+    CHECK(wrongDetections.load() == 0);
 }

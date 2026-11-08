@@ -106,6 +106,17 @@ Typical composition:
 
 `SetProcessDefaultTimeZone` is a documented process-wide convenience for applications and for formatting helpers such as `UtcMicrosecondsToDateTimeString`. The library never reads it, and `scripts/check-loglib-internal-includes.py` enforces that. A parse gets its zone as `ParserOptions::defaultSourceTimeZone`, a `LogTable` has its own display zone and default source zone, and `ParseQuery` takes a zone. All of them are UTC unless the caller sets one. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 
+## Process-wide state
+
+The library keeps little state outside the objects that use it. What remains is listed here, and nothing else is global.
+
+- **Regex template catalog.** The built-in templates and the extra templates set with `SetExtraRegexTemplates` form one registry for the whole process. The application sets the extras once from the user's files, and the call replaces the whole set. It is safe to read from any thread, also while another thread replaces the extras, because every reader works from a snapshot taken under a shared lock. The compiled patterns that format detection uses are a cache of this registry and are rebuilt when the extras change.
+- **Default time zone.** `SetProcessDefaultTimeZone`, described above. The library never reads it. `TimeZoneContext::Load` also points the date library at the tzdata folder, which that library keeps globally.
+- **Unique name counters.** The temporary file names of decompression and of bundle writing come from atomic counters, so two threads never pick the same name.
+- **Per-thread scratch buffers.** A few functions on the filter and compare path reuse thread-local buffers. They hold no state between calls.
+
+A TBB pipeline for a static file runs in its own task arena with the thread count of that parse, so it does not limit other TBB users in the process.
+
 ## Worked example: `slp`
 
 [`cli/`](../cli) is a complete `loglib`-only host. It links no Qt target and builds with `-DSLV_BUILD_GUI=OFF`. It shows the whole composition: source resolution (`ResolveSourcePlan`), format detection, streaming parse into a `LogTable`, filter compilation (`CompileExpression`), sorting (`RowOrdering`), export sinks, session bundles, and the live producers behind `slp tail`. See the [`slp` reference](../doc/cli.md).
