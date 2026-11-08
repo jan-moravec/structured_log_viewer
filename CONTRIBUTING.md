@@ -632,11 +632,12 @@ The two presets are intentionally split because `ctest --preset release -L bench
 
 ### Targets
 
-| Target          | Coverage                                                                                                                                                                                                                                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests`         | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing) **and** the parser/lookup micro-benchmarks. The benchmark cases are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. |
-| `apptest`       | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                                              |
-| `log_generator` | Standalone multi-format log generator for fixtures and manual UI smoke testing; not run by CTest. Its option parsing, outputs, and rotation live in the `log_generator_core` library, covered by the `[log_generator_tool]` cases in `tests`. See [Generating logs](#generating-logs).                                             |
+| Target              | Coverage                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests`             | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing).                                                                                                                                                                                                                                     |
+| `loglib_benchmarks` | Catch2 parser, lookup, filter and stream micro-benchmarks for `loglib`, built apart from `tests` so editing a benchmark does not relink the unit tests. The cases are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. Both executables link the `loglib_test_support` helper library. |
+| `apptest`           | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                                                                                |
+| `log_generator`     | Standalone multi-format log generator for fixtures and manual UI smoke testing; not run by CTest. Its option parsing, outputs, and rotation live in the `log_generator_core` library, covered by the `[log_generator_tool]` cases in `tests`. See [Generating logs](#generating-logs).                                                                               |
 
 Session-bundle library coverage lives in `test/lib/src/test_session_bundle.cpp`; bundle open/export smoke coverage lives in `test/app/src/main_window_test.cpp`.
 
@@ -693,7 +694,7 @@ The `--roll-*` and `--append` options are rejected for network and stdout output
 
 This section is the canonical home for the regression gate; the parser benchmarks in [`test/lib/src/benchmark_json.cpp`](test/lib/src/benchmark_json.cpp), [`test/lib/src/benchmark_logfmt.cpp`](test/lib/src/benchmark_logfmt.cpp), [`test/lib/src/benchmark_csv.cpp`](test/lib/src/benchmark_csv.cpp), and [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) (all built on the shared [`test/lib/include/benchmark_common.hpp`](test/lib/include/benchmark_common.hpp) harness), the Stream-Mode latency benchmark in [`test/lib/src/benchmark_stream.cpp`](test/lib/src/benchmark_stream.cpp), the filter / sort benchmarks in [`test/lib/src/benchmark_log_filter.cpp`](test/lib/src/benchmark_log_filter.cpp), and the bundle benchmark in [`test/lib/src/benchmark_session_bundle.cpp`](test/lib/src/benchmark_session_bundle.cpp) link back to it via their top-of-file comment. Quote the bullets in the [Acceptance bar](#acceptance-bar) below in commit messages and PR descriptions.
 
-The parser benchmarks live in the same `tests` binary as the unit tests but are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. GUI benches (`apptest_bench`, `apptest_session_tabs_bench`) are separate QtTest binaries with the same CTest label.
+The parser benchmarks live in their own `loglib_benchmarks` executable, apart from the unit tests in `tests`. They are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. GUI benches (`apptest_bench`, `apptest_session_tabs_bench`) are separate QtTest binaries with the same CTest label.
 
 **Debug builds skip benchmarks automatically.** Use the `release` preset for the canonical regression-gate number, or `relwithdebinfo` if you want to attach a profiler — both have IPO/LTO on and `NDEBUG` defined. Running benchmarks against `--preset debug` reports each case as `SKIPPED` with a message rather than producing misleading numbers (see `BENCHMARK_REQUIRES_RELEASE_BUILD` in `benchmark_json.cpp`).
 
@@ -743,9 +744,9 @@ ctest --preset relwithdebinfo-benchmark     # release optimisations + debug info
 Catch2-direct invocations with `--reporter compact` for tight ad-hoc sweeps (no preset wrapping; you choose the tags):
 
 ```sh
-build/release/bin/Release/tests "[benchmark]" --reporter compact
-build/release/bin/Release/tests "[large],[wide]" --reporter compact   # regression-gating subset
-build/release/bin/Release/tests "[large]" --reporter compact          # one fixture
+build/release/bin/Release/loglib_benchmarks "[benchmark]" --reporter compact
+build/release/bin/Release/loglib_benchmarks "[large],[wide]" --reporter compact   # regression-gating subset
+build/release/bin/Release/loglib_benchmarks "[large]" --reporter compact          # one fixture
 ```
 
 The path above assumes the `release` preset on Linux/macOS; on multi-config generators (Visual Studio) substitute the active configuration for `Release`. The Catch2 hidden-by-default tag (`[.]`) requires an explicit filter — picking any tag is enough.
