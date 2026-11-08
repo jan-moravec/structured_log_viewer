@@ -55,7 +55,7 @@ std::int64_t Micros(int year, unsigned month, unsigned day, int hour, int minute
     return total.count();
 }
 
-struct CollectingSink final : LogParseSink
+struct CollectingSink : LogParseSink
 {
     KeyIndex keys;
     std::vector<RowBatch> batches;
@@ -566,4 +566,157 @@ TEST_CASE(
         CHECK(table.Configuration().Configuration().columns[1].printFormat == "%H:%M");
         CHECK(table.Configuration().TakeWarnings().empty());
     }
+}
+
+namespace
+{
+
+constexpr std::size_t CLOCK_TEST_LINES_PER_BATCH = 300;
+
+std::chrono::system_clock::time_point UtcTime(int year, unsigned month, unsigned day, int hour, int minute, int second)
+{
+    return std::chrono::system_clock::time_point{
+        std::chrono::sys_days{std::chrono::year{year} / std::chrono::month{month} / std::chrono::day{day}} +
+        std::chrono::hours{hour} + std::chrono::minutes{minute} + std::chrono::seconds{second}
+    };
+}
+
+/** @brief A stream of two batches of syslog timestamps. The clock moves from 31 December to 1 January between them. */
+struct NewYearStream
+{
+    std::string firstBatch;
+    std::string secondBatch;
+    std::chrono::system_clock::time_point now = UtcTime(2025, 12, 31, 23, 59, 59);
+
+    NewYearStream()
+    {
+        for (std::size_t i = 0; i < CLOCK_TEST_LINES_PER_BATCH; ++i)
+        {
+            firstBatch += "{\"ts\":\"Dec 31 23:59:58\"}\n";
+            secondBatch += "{\"ts\":\"Jan  1 00:00:01\"}\n";
+        }
+    }
+
+    [[nodiscard]] std::unique_ptr<StreamLineSource> MakeSource() const
+    {
+        // Each read returns one batch worth of lines, so the loop flushes between them.
+        return std::make_unique<StreamLineSource>(
+            std::filesystem::path("new_year.log"),
+            std::make_unique<InMemoryBytesProducer>(firstBatch + secondBatch, firstBatch.size())
+        );
+    }
+
+    /** @brief Moves the clock past midnight once the first batch has reached the sink. */
+    void PassMidnight()
+    {
+        now = UtcTime(2026, 1, 1, 0, 0, 2);
+    }
+};
+
+/** @brief Forwards every batch to a table, and moves the stream's clock after the first one. */
+struct TableFeedingSink final : LogParseSink
+{
+    TableFeedingSink(LogTable &tableToFeed, NewYearStream &streamToMove)
+        : table(&tableToFeed), stream(&streamToMove)
+    {
+    }
+
+    KeyIndex &Keys() override
+    {
+        return table->Keys();
+    }
+    void OnStarted() override
+    {
+    }
+    void OnBatch(RowBatch batch) override
+    {
+        (void)table->AppendBatch(std::move(batch));
+        ++batches;
+        stream->PassMidnight();
+    }
+    void OnFinished(bool /*cancelled*/) override
+    {
+    }
+
+    LogTable *table;
+    NewYearStream *stream;
+    int batches = 0;
+};
+
+std::int64_t TimestampMicros(const LogData &data, std::size_t row)
+{
+    const LogValue value = data.Lines()[row].GetValue(data.Keys(), "ts");
+    const auto *stamp = std::get_if<TimeStamp>(&value);
+    REQUIRE(stamp != nullptr);
+    return stamp->time_since_epoch().count();
+}
+
+} // namespace
+
+TEST_CASE(
+    "A stream reads the clock for each batch when the parser converts a syslog timestamp", "[explicit_time_inputs]"
+)
+{
+    NewYearStream stream;
+    auto source = stream.MakeSource();
+
+    struct MovingSink : CollectingSink
+    {
+        explicit MovingSink(NewYearStream &streamToMove)
+            : stream(&streamToMove)
+        {
+        }
+        void OnBatch(RowBatch batch) override
+        {
+            CollectingSink::OnBatch(std::move(batch));
+            stream->PassMidnight();
+        }
+        NewYearStream *stream;
+    } sink(stream);
+
+    ParserOptions options;
+    options.timeColumns = {TimeColumn("ts", "%b %e %H:%M:%S")};
+    options.clock = [&stream] { return stream.now; };
+    JsonParser{}.ParseStreaming(*source, sink, options);
+
+    REQUIRE(sink.batches.size() >= 2);
+    const auto lines = sink.Lines();
+    REQUIRE(lines.size() == 2 * CLOCK_TEST_LINES_PER_BATCH);
+    const auto micros = [&](std::size_t row) {
+        const LogValue value = lines[row]->GetValue(sink.Keys(), "ts");
+        const auto *stamp = std::get_if<TimeStamp>(&value);
+        REQUIRE(stamp != nullptr);
+        return stamp->time_since_epoch().count();
+    };
+    CHECK(micros(0) == Micros(2025, 12, 31, 23, 59, 58));
+    CHECK(micros(CLOCK_TEST_LINES_PER_BATCH) == Micros(2026, 1, 1, 0, 0, 1));
+}
+
+TEST_CASE(
+    "A stream reads the clock for each batch when the table converts a syslog timestamp", "[explicit_time_inputs]"
+)
+{
+    NewYearStream stream;
+    auto source = stream.MakeSource();
+
+    LogConfiguration configuration;
+    configuration.columns.push_back(
+        {.header = "ts",
+         .keys = {"ts"},
+         .printFormat = "%F %H:%M:%S",
+         .type = ColumnType::Time,
+         .parseFormats = {"%b %e %H:%M:%S"}}
+    );
+    LogTable table(configuration);
+    table.SetClock([&stream] { return stream.now; });
+    StreamLineSource *sourcePtr = source.get();
+    table.BeginStreaming(std::move(source));
+
+    TableFeedingSink sink(table, stream);
+    JsonParser{}.ParseStreaming(*sourcePtr, sink, ParserOptions{});
+
+    REQUIRE(sink.batches >= 2);
+    REQUIRE(table.RowCount() == 2 * CLOCK_TEST_LINES_PER_BATCH);
+    CHECK(TimestampMicros(table.Data(), 0) == Micros(2025, 12, 31, 23, 59, 58));
+    CHECK(TimestampMicros(table.Data(), CLOCK_TEST_LINES_PER_BATCH) == Micros(2026, 1, 1, 0, 0, 1));
 }

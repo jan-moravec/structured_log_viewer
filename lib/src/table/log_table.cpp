@@ -66,6 +66,8 @@ LogTable::LogTable(LogTable &&other) noexcept
       mDefaultSourceTimeZone(std::move(other.mDefaultSourceTimeZone)),
       mReferenceTime(other.mReferenceTime),
       mReferenceTimeFixed(other.mReferenceTimeFixed),
+      mClock(std::move(other.mClock)),
+      mLiveSource(other.mLiveSource),
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
       mTableConvertedTimeKeys(std::move(other.mTableConvertedTimeKeys)),
       mEnum(std::make_unique<EnumInference>(std::move(*other.mEnum)))
@@ -85,6 +87,8 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mDefaultSourceTimeZone = std::move(other.mDefaultSourceTimeZone);
     mReferenceTime = other.mReferenceTime;
     mReferenceTimeFixed = other.mReferenceTimeFixed;
+    mClock = std::move(other.mClock);
+    mLiveSource = other.mLiveSource;
     mColumnKeyIds = std::move(other.mColumnKeyIds);
     mTableConvertedTimeKeys = std::move(other.mTableConvertedTimeKeys);
     *mEnum = std::move(*other.mEnum);
@@ -97,6 +101,7 @@ LogTable::~LogTable() = default;
 void LogTable::Reset()
 {
     mData = LogData{};
+    mLiveSource = false;
     mTableConvertedTimeKeys.clear();
     mEnum->Clear();
     RefreshColumnKeyIds();
@@ -112,9 +117,10 @@ void LogTable::OnConfigurationReloaded()
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mEnum->BeginStreaming();
+    mLiveSource = source && source->SupportsEviction();
     if (!mReferenceTimeFixed)
     {
-        mReferenceTime = std::chrono::system_clock::now();
+        mReferenceTime = ReadClock();
     }
 
     if (source)
@@ -157,6 +163,10 @@ bool IsEnumLike(ColumnType type) noexcept
 
 LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 {
+    if (mLiveSource && !mReferenceTimeFixed)
+    {
+        mReferenceTime = ReadClock();
+    }
     mEnum->ClearLastBatchDemotedKeys();
     (void)mEnum->TakePendingLevelBubbleKeys();
     mEnum->ClearDemotedLevelValues();
@@ -624,6 +634,16 @@ void LogTable::SetDefaultSourceTimeZone(TimeZoneContext timeZone)
 const TimeZoneContext &LogTable::DefaultSourceTimeZone() const noexcept
 {
     return mDefaultSourceTimeZone;
+}
+
+void LogTable::SetClock(std::function<std::chrono::system_clock::time_point()> clock)
+{
+    mClock = std::move(clock);
+}
+
+std::chrono::system_clock::time_point LogTable::ReadClock() const
+{
+    return mClock ? mClock() : std::chrono::system_clock::now();
 }
 
 void LogTable::SetReferenceTime(std::chrono::system_clock::time_point referenceTime) noexcept

@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -49,6 +50,14 @@ struct ParserOptions
      * reads the clock once when it starts, so every line of one parse gets the same year.
      */
     std::optional<std::chrono::system_clock::time_point> referenceTime;
+
+    /**
+     * @brief The clock a live stream reads for the "now" of formats without a year. It is read once for each batch, so
+     * a stream that runs across New Year gives the rows after it the new year. Empty means the system clock. It is not
+     * used when referenceTime is set, and a static file never reads it, so a file gives the same result however long
+     * it takes to read. Tests inject a clock here.
+     */
+    std::function<std::chrono::system_clock::time_point()> clock;
 
     /**
      * @brief The most worker threads the static-file pipeline uses. Zero means the smaller of the hardware thread

@@ -5,6 +5,11 @@
  * templates ship inside the library. Users can add their own, which the library keeps in a registry that format
  * detection reads. The header also loads templates from a folder of JSON files and looks them up by name or by pattern.
  *
+ * The registry is process-wide. The application sets the extra templates once from the user's files with
+ * SetExtraRegexTemplates, which replaces the whole set. Every reader works from a snapshot taken under a shared lock,
+ * so all functions here are safe to call from any thread, also while another thread replaces the extras. A reader sees
+ * either the old set or the new one, never a mix.
+ *
  * This is part of the parse module.
  */
 #pragma once
