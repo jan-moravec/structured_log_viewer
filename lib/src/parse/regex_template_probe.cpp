@@ -44,27 +44,20 @@ using internal::Pcre2MatchContextPtr;
 using internal::Pcre2MatchDataPtr;
 using internal::UTF8_BOM;
 
-/// Bytes scanned by `IsValidBytes` and
-/// `DetectRegexTemplateFromBytes`.
+/** @brief The bytes that IsValidBytes and DetectRegexTemplateFromBytes look at. */
 constexpr size_t IS_VALID_PROBE_BYTES = PROBE_BYTES_BUDGET;
 
-/// Minimum number of non-blank probe lines a template must match for
-/// auto-detection to claim the file. Two is enough to rule out the
-/// "one ad-hoc line that happens to look like syslog" case without
-/// disqualifying short files.
+/**
+ * @brief How many non-blank probe lines a template must match to claim a file. Two rule out a single line that happens
+ * to look like syslog, without turning down short files.
+ */
 constexpr size_t IS_VALID_MIN_MATCHES = 2;
 
-/// Maximum number of non-blank probe lines collected before
-/// running the auto-detect template loop. Bounded so a huge
-/// mmap-friendly file doesn't blow up scratch memory for a
-/// yes/no decision.
+/** @brief The most non-blank lines collected for detection, so a huge file costs no more than a small one. */
 constexpr size_t IS_VALID_PROBE_MAX_LINES = 8;
 
-// ---------------------------------------------------------------------
-// Auto-detect template compile cache (used by IsValid /
-// DetectRegexTemplate). Covers both built-ins and any user
-// templates registered via `SetExtraRegexTemplates`.
-// ---------------------------------------------------------------------
+// The compiled patterns that format detection uses. They cover the built-in templates and the extra templates set with
+// SetExtraRegexTemplates.
 
 struct CompiledTemplate
 {
@@ -72,49 +65,37 @@ struct CompiledTemplate
     CompiledPattern compiled;
 };
 
-/// Compiled snapshot of the merged regex-template registry,
-/// pinned to a specific generation. `source` keeps the underlying
-/// `RegexTemplate` storage alive so the `CompiledTemplate::source`
-/// pointers stay valid even if a concurrent
-/// `SetExtraRegexTemplates` call rebuilds the registry — readers
-/// using this snapshot keep working until they drop their reference.
+/**
+ * @brief The compiled patterns of one version of the template catalog.
+ *
+ * The snapshot holds the template list it was compiled from, so the source pointers of its patterns stay valid while
+ * SetExtraRegexTemplates replaces the catalog on another thread. A reader keeps working with its snapshot until it lets
+ * go of it.
+ */
 struct CompiledProbeSnapshot
 {
-    /// The merged template list this snapshot was compiled
-    /// against: built-ins first (sorted by `priority`) then extras
-    /// (sorted by `priority`), matching `regex_templates.cpp`.
-    /// Retained to keep `compiled[i].source` valid.
+    /**
+     * @brief The template list the patterns were compiled from: the built-in templates by priority, then the extras by
+     * priority. It keeps the source pointers in compiled valid.
+     */
     std::shared_ptr<const std::vector<RegexTemplate>> source;
-    /// Compiled patterns in probe order. `autoDetect=false`
-    /// templates are excluded entirely; the rest preserve source
-    /// ordering (see the two-tier invariant on
-    /// `SetExtraRegexTemplates`).
+    /** @brief The patterns in probe order, which is the order of source without the templates that skip detection. */
     std::vector<CompiledTemplate> compiled;
-    /// `internal::TemplatesGeneration()` value this snapshot was
-    /// built against. The probe re-acquires when the counter
-    /// advances.
+    /** @brief The catalog version the snapshot was built from. A newer version makes the probe build a new snapshot. */
     uint64_t generation = 0;
 };
 
-/// Lazy, thread-safe singleton that mirrors the merged template
-/// registry. Built on first `IsValid` / `DetectRegexTemplate` and
-/// rebuilt whenever `SetExtraRegexTemplates` bumps the generation
-/// counter. The compile cost (one `pcre2_compile` +
-/// `pcre2_jit_compile` per entry) is amortised across every probe
-/// between rebuilds.
-///
-/// Probe order matches the source list exactly (excluding
-/// `autoDetect=false` entries). `regex_templates.cpp` already
-/// delivers the list as (built-ins by priority, then extras by
-/// priority); re-sorting here by `priority` alone would break the
-/// two-tier invariant on `SetExtraRegexTemplates` — a user
-/// template with a smaller priority would probe first and
-/// silently steal matches from a shipped template.
+/**
+ * @brief The snapshot of the current catalog, built on first use and again after SetExtraRegexTemplates changes it.
+ *
+ * Compiling every pattern is costly, so all probes share one snapshot until the catalog changes. The probe order is the
+ * order of the catalog, which puts the built-in templates before the extras. Sorting by priority alone here would let a
+ * user template with a lower priority value take a match from a built-in template.
+ */
 std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
 {
-    // Read-mostly in steady state: the parser hot path re-enters
-    // on every probe, so the fast path is a single shared_ptr load
-    // + atomic counter read.
+    // Every probe comes here, and the catalog rarely changes, so the common path only reads the version under a shared
+    // lock.
     static std::shared_mutex mutex;
     static std::shared_ptr<const CompiledProbeSnapshot> cached;
 
@@ -168,19 +149,14 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
     return cached;
 }
 
-/// True iff @p code matches @p line in full. `PCRE2_ANCHORED |
-/// PCRE2_ENDANCHORED` is passed unconditionally so an unanchored
-/// user template (no explicit `^...$`) cannot claim a probe match
-/// on a substring — auto-detect must mean "the whole line is a
-/// record for this template", never "the pattern appears somewhere
-/// in the line". The shipped built-ins are all `^...$`-anchored,
-/// so this flag pair is a no-op for them; it exists to keep user
-/// templates honest. `PatternMatchesLine` (Validate button in the
-/// editor) uses the same flags — the two callers **must** stay
-/// aligned, otherwise a template that self-tests green could fail
-/// the probe (or vice-versa). A per-call `pcre2_match_data` is
-/// used because the cache is process-wide; allocating one tiny
-/// block is cheap next to the match itself.
+/**
+ * @brief True if the pattern matches the whole line.
+ *
+ * The match is anchored at both ends, so a user template without anchors cannot claim a line where it matches only a
+ * part. The built-in templates are anchored already. PatternMatchesLine anchors the same way, and the two must agree,
+ * or a template that passes its own check could fail detection. Each call allocates its own match data because the
+ * compiled patterns are shared by every thread.
+ */
 bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
 {
     const Pcre2MatchDataPtr md = cp.NewMatchData();
@@ -200,15 +176,15 @@ bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
     return rc > 0;
 }
 
-/// Shared by `RegexParser::IsValidBytes` and
-/// `DetectRegexTemplateFromBytes`.
-/// Walks the merged auto-detect registry (built-ins + any
-/// `autoDetect=true` extras from `SetExtraRegexTemplates`) in
-/// probe order and returns the first entry that matches at least
-/// `IS_VALID_MIN_MATCHES` of the first non-blank lines from
-/// @p sniffBuffer, or nullptr. Built-ins probe before user
-/// templates by construction — see `CompiledProbeSnapshot`.
-const RegexTemplate *ProbeAutoDetectTemplates(std::string_view sniffBuffer)
+/**
+ * @brief Returns the first template, in probe order, that matches at least IS_VALID_MIN_MATCHES of the first non-blank
+ * lines of sniffBuffer, or nullopt.
+ *
+ * The match is copied while this function still holds the snapshot. Once it lets go, a SetExtraRegexTemplates call on
+ * another thread may free the snapshot and the template in it. RegexParser::IsValidBytes and
+ * DetectRegexTemplateFromBytes both use it.
+ */
+std::optional<RegexTemplate> ProbeAutoDetectTemplates(std::string_view sniffBuffer)
 {
     std::vector<std::string> probeLines;
     probeLines.reserve(IS_VALID_PROBE_MAX_LINES);
@@ -240,13 +216,13 @@ const RegexTemplate *ProbeAutoDetectTemplates(std::string_view sniffBuffer)
     {
         // Pattern matching is brittle on a 1-line file; refuse
         // rather than declare a winner from a coin flip.
-        return nullptr;
+        return std::nullopt;
     }
 
     const auto snapshot = CurrentProbeSnapshot();
     if (!snapshot)
     {
-        return nullptr;
+        return std::nullopt;
     }
     for (const CompiledTemplate &t : snapshot->compiled)
     {
@@ -258,28 +234,24 @@ const RegexTemplate *ProbeAutoDetectTemplates(std::string_view sniffBuffer)
                 ++hits;
                 if (hits >= IS_VALID_MIN_MATCHES)
                 {
-                    return t.source;
+                    return *t.source;
                 }
             }
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 } // namespace
 
 bool RegexParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    return ProbeAutoDetectTemplates(sniffBuffer) != nullptr;
+    return ProbeAutoDetectTemplates(sniffBuffer).has_value();
 }
 
 std::optional<RegexTemplate> DetectRegexTemplateFromBytes(std::string_view sniffBuffer)
 {
-    if (const RegexTemplate *tmpl = ProbeAutoDetectTemplates(sniffBuffer); tmpl != nullptr)
-    {
-        return *tmpl;
-    }
-    return std::nullopt;
+    return ProbeAutoDetectTemplates(sniffBuffer);
 }
 
 std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file)
