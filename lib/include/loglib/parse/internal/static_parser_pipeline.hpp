@@ -532,7 +532,7 @@ void RunStaticParserPipelineBody(
     );
 
     // Moves the open final record and the open orphan run into the batch being built.
-    auto sealHeldTail = [&]() {
+    auto sealHeldTail = [&] {
         if (orphanRun.has_value())
         {
             coalescer.Pending().errors.push_back(

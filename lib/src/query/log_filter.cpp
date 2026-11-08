@@ -176,7 +176,7 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
                 // Clamp a negative begin to 0 so e.g. `[-1, 100]`
                 // still matches positive values. The end is never negative.
                 const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
-                const uint64_t hi = static_cast<uint64_t>(mEnd);
+                const auto hi = static_cast<uint64_t>(mEnd);
                 return alt >= lo && alt <= hi;
             }
             else

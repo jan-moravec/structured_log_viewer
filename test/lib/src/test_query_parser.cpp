@@ -760,12 +760,13 @@ TEST_CASE("ParseQuery: payload-less and inverted value lists are errors", "[quer
     }
     SECTION("time range that ends before the epoch")
     {
-        for (const std::string_view q :
-             {"ts in [1960-01-01T00:00:00Z..1969-12-31T00:00:00Z]",
-              "ts in [..1969-12-31T00:00:00Z]",
-              "ts in [1969-12-31T00:00:00Z]",
-              "ts < 1969-12-31T00:00:00Z",
-              "ts <= 1969-12-31T00:00:00Z"})
+        for (const std::string_view q : {
+                 "ts in [1960-01-01T00:00:00Z..1969-12-31T00:00:00Z]",
+                 "ts in [..1969-12-31T00:00:00Z]",
+                 "ts in [1969-12-31T00:00:00Z]",
+                 "ts < 1969-12-31T00:00:00Z",
+                 "ts <= 1969-12-31T00:00:00Z",
+             })
         {
             CAPTURE(q);
             const auto parsed = ParseQuery(q);

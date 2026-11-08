@@ -584,6 +584,7 @@ void RunStreamingParseLoopBody(
             commitPending();
             announceSeenKeys();
         }
+        // NOLINTNEXTLINE(bugprone-empty-catch)
         catch (...)
         {
             // The original failure is the one to report.

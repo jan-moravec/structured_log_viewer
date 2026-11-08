@@ -171,10 +171,11 @@ TEST_CASE("CompileTimeLeafImpossibleRangeRejectsEveryRow", "[leaf_rule_compile]"
     // rather than be dropped, which would match every row.
     const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
     const loglib::LogTable table;
-    for (const Leaf &rule :
-         {MakeTimeLeaf("ts", std::nullopt, std::int64_t{-1}),
-          MakeTimeLeaf("ts", std::int64_t{-100}, std::int64_t{-10}),
-          MakeTimeLeaf("ts", std::int64_t{1000}, std::int64_t{10})})
+    for (const Leaf &rule : {
+             MakeTimeLeaf("ts", std::nullopt, std::int64_t{-1}),
+             MakeTimeLeaf("ts", std::int64_t{-100}, std::int64_t{-10}),
+             MakeTimeLeaf("ts", std::int64_t{1000}, std::int64_t{10}),
+         })
     {
         const auto compiled = loglib::CompileLeaf(rule, 0, columns, &table);
         REQUIRE(compiled.has_value());

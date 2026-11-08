@@ -675,6 +675,7 @@ TEST_CASE("A streamed column of all-distinct values does not stay an enumeration
     Stream stream("append_report_distinct_ids");
     static_cast<void>(stream.Append([](KeyIndex &keys, LineSource &source) {
         std::vector<Fields> rows;
+        rows.reserve(30);
         for (size_t i = 0; i < 30; ++i)
         {
             rows.push_back({{"id", "id-" + std::to_string(i)}, {"status", std::string(i % 3 == 0 ? "ok" : "bad")}});
