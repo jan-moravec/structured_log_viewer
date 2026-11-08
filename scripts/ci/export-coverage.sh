@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Merges the `clang-coverage` test profiles into coverage.lcov and prints a summary.
-# Only library and app sources are counted: `_deps/`, `build/`, and `test/` are excluded.
+# Only library, app and slp sources are counted: `_deps/`, `build/`, and `test/` are excluded.
 set -euo pipefail
 
 BUILD_DIR=build/clang-coverage
@@ -12,12 +12,13 @@ OBJECTS=(
     "$BIN_DIR/tests"
     -object "$BIN_DIR/apptest"
     -object "$BIN_DIR/apptest_queue"
+    -object "$BIN_DIR/slp"
 )
 llvm-cov-23 export -format=lcov \
     -instr-profile="$BUILD_DIR/merged.profdata" \
     -ignore-filename-regex="$IGNORE" \
     "${OBJECTS[@]}" >coverage.lcov
-echo "::group::Coverage summary (library + app only)"
+echo "::group::Coverage summary (library, app and slp only)"
 llvm-cov-23 report \
     -instr-profile="$BUILD_DIR/merged.profdata" \
     -ignore-filename-regex="$IGNORE" \
