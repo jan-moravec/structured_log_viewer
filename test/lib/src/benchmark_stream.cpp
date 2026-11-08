@@ -1,13 +1,11 @@
 // Stream-Mode end-to-end latency benchmark.
 //
-// Measures the wall-clock delta between a producer's `write()+fflush()`
-// and the corresponding row landing in `OnBatch`. Asserts median <=
-// 250 ms / p95 <= 500 ms on the parser-side path (no Qt event loop).
-//
-// Tagged `[stream_latency][benchmark]` to land under the `benchmark`
-// CTest label.
+// Measures the wall-clock delta between a producer's `write()+fflush()` and the corresponding row landing in
+// `OnBatch`, on the parser-side path (no Qt event loop). The median latency of a run is the figure; the 95th
+// percentile and the maximum are reported as counters.
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 #include "common.hpp"
 
 #include <loglib/core/key_index.hpp>
@@ -19,20 +17,18 @@
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 
-#include <memory>
-
-#include <catch2/catch_all.hpp>
-
-#include <cmath>
+#include <benchmark/benchmark.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
@@ -49,6 +45,9 @@ using loglib::StopSource;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
 using namespace std::chrono_literals;
+
+namespace bench
+{
 
 namespace
 {
@@ -156,7 +155,10 @@ void RunProducer(
         const int n = std::snprintf(
             buf, sizeof(buf), "{\"i\":%zu,\"msg\":\"latency benchmark line %zu padding padding\"}\n", lineId, lineId
         );
-        REQUIRE(n > 0);
+        if (n <= 0)
+        {
+            break;
+        }
         static_cast<void>(std::fwrite(buf, 1, static_cast<size_t>(n), fp));
         static_cast<void>(std::fflush(fp));
         const auto committedAt = std::chrono::steady_clock::now();
@@ -181,31 +183,26 @@ double Percentile(std::vector<double> sorted, double pct)
     return sorted[std::min(idx, sorted.size() - 1)];
 }
 
-} // namespace
-
-// Writer-to-row latency. The producer writes `LINE_COUNT` at a steady rate
-// well below saturation; the consumer's parser drains in real time. We
-// then assert median/p95/max of the per-line deltas. The full GUI
-// latency is verified separately by the offscreen Qt smoke test in
-// `test/app/src/main_window_test.cpp`.
-TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
+// One run: the producer writes LINE_COUNT lines at a steady rate well below saturation while the parser drains in real
+// time. Returns the per-line write-to-row deltas in milliseconds, empty when the run failed. The full GUI latency is
+// verified separately by the offscreen Qt smoke test in `test/app/src/main_window_test.cpp`.
+//
+// 100 lines at 10 ms give the worker plenty of poll-tick cycles to coalesce several lines per batch, so the
+// measurement stresses the coalesce window and not only the syscall round-trip, and a run takes about a second.
+std::vector<double> RunLatencyOnce()
 {
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
+    constexpr int LINE_COUNT = 100;
+    constexpr auto INTER_LINE_DELAY = 10ms;
 
     const TempDir dir;
     const auto path = dir.File("latency.log");
     {
         const std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        REQUIRE(out.is_open());
+        if (!out.is_open())
+        {
+            return {};
+        }
     }
-
-    // 200 lines spread over ~2 s give the worker plenty of poll-tick
-    // cycles to coalesce multiple lines per batch (so the per-line latency
-    // measurement actually stresses the coalesce window, not just the
-    // syscall round-trip). The interval is 10 ms so total wall-time is
-    // ~2 s — short enough for CI but long enough for a stable percentile.
-    constexpr int LINE_COUNT = 200;
-    constexpr auto INTER_LINE_DELAY = 10ms;
 
     TailingBytesProducer::Options sourceOptions;
     sourceOptions.disableNativeWatcher = false;
@@ -227,12 +224,10 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Open the file with the C stdio API so we can `fflush` per line; the
-    // C++ `std::ofstream` flush is buffered by the streambuf even after
-    // `flush()` calls in some implementations. `fflush(fp)` issues the
-    // `_write` syscall directly. MSVC prefers `fopen_s`; the safer API
-    // adds nothing here (the path is test-controlled) so suppress C4996
-    // locally rather than fork the call site by platform.
+    // Open the file with the C stdio API so we can `fflush` per line; the C++ `std::ofstream` flush is buffered by the
+    // streambuf even after `flush()` calls in some implementations. `fflush(fp)` issues the `_write` syscall
+    // directly. MSVC prefers `fopen_s`; the safer API adds nothing here (the path is test-controlled) so suppress
+    // C4996 locally rather than fork the call site by platform.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996)
@@ -241,7 +236,13 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
-    REQUIRE(fp != nullptr);
+    if (fp == nullptr)
+    {
+        producerPtr->Stop();
+        stopSource.RequestStop();
+        worker.join();
+        return {};
+    }
 
     std::vector<ProducerWrite> writes;
     std::atomic<bool> producerDone{false};
@@ -258,66 +259,97 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     producer.join();
     static_cast<void>(std::fclose(fp));
 
-    // Wait for the consumer to drain. We poll the sink's arrivals vector
-    // under its mutex; the parser will keep parking on `WaitForBytes`
-    // because nothing more is coming, so we Stop after a short grace
-    // window. The grace window must exceed the worst-case latency we're
-    // willing to measure — using 1 s here means a stuck line at the tail
-    // surfaces as a ~1 s outlier in the percentile output rather than a
-    // missed sample.
+    // Wait for the consumer to drain. The parser keeps parking on `WaitForBytes` because nothing more is coming, so we
+    // Stop after a grace window. The window must exceed the worst-case latency we are willing to measure, so a stuck
+    // line at the tail surfaces as an outlier in the percentiles rather than a missed sample.
     const auto deadline = std::chrono::steady_clock::now() + 1500ms;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        const std::scoped_lock lock(sink.mu);
-        if (static_cast<int>(sink.arrivals.size()) >= LINE_COUNT)
         {
-            break;
+            const std::scoped_lock lock(sink.mu);
+            if (static_cast<int>(sink.arrivals.size()) >= LINE_COUNT)
+            {
+                break;
+            }
         }
-        std::this_thread::sleep_for(20ms);
+        std::this_thread::sleep_for(5ms);
     }
 
     producerPtr->Stop();
     stopSource.RequestStop();
     worker.join();
 
-    REQUIRE(sink.finished.load(std::memory_order_acquire));
+    if (!sink.finished.load(std::memory_order_acquire))
+    {
+        return {};
+    }
 
     // Match write timestamps against arrivals via lineId; compute deltas.
     std::vector<double> latenciesMs;
     latenciesMs.reserve(static_cast<size_t>(LINE_COUNT));
+    const std::scoped_lock lock(sink.mu);
+    // The parser emits in source order, so the arrivals are normally sorted by lineId already, but we do not rely on
+    // it.
+    std::ranges::sort(sink.arrivals, [](const auto &a, const auto &b) { return a.first < b.first; });
+    size_t arrIdx = 0;
+    for (const auto &write : writes)
     {
-        const std::scoped_lock lock(sink.mu);
-        // Convert arrivals into a sorted-by-lineId snapshot so the lookup is
-        // O(1). The parser emits in source order, so this is normally
-        // already sorted, but we don't rely on it.
-        std::ranges::sort(sink.arrivals, [](const auto &a, const auto &b) { return a.first < b.first; });
-        size_t arrIdx = 0;
-        for (const auto &write : writes)
+        while (arrIdx < sink.arrivals.size() && sink.arrivals[arrIdx].first < write.lineId)
         {
-            while (arrIdx < sink.arrivals.size() && sink.arrivals[arrIdx].first < write.lineId)
-            {
-                ++arrIdx;
-            }
-            if (arrIdx >= sink.arrivals.size() || sink.arrivals[arrIdx].first != write.lineId)
-            {
-                continue; // dropped on Stop — skip rather than fail the run
-            }
-            const auto delta = sink.arrivals[arrIdx].second - write.committedAt;
-            latenciesMs.push_back(std::chrono::duration<double, std::milli>(delta).count());
             ++arrIdx;
         }
+        if (arrIdx >= sink.arrivals.size() || sink.arrivals[arrIdx].first != write.lineId)
+        {
+            continue; // dropped on Stop -- skip rather than fail the run
+        }
+        const auto delta = sink.arrivals[arrIdx].second - write.committedAt;
+        latenciesMs.push_back(std::chrono::duration<double, std::milli>(delta).count());
+        ++arrIdx;
     }
-
-    REQUIRE(!latenciesMs.empty());
-
-    std::ranges::sort(latenciesMs);
-    const double median = Percentile(latenciesMs, 50.0);
-    const double p95 = Percentile(latenciesMs, 95.0);
-    const double maxLatency = latenciesMs.back();
-
-    WARN(
-        "[stream_latency] lines measured = " << latenciesMs.size() << ", median = " << median << " ms, p95 = " << p95
-                                             << " ms, max = " << maxLatency << " ms"
-    );
-    // The figures feed CONTRIBUTING.md `## Benchmarking`. They are reported and compared between runs, never limited.
+    return latenciesMs;
 }
+
+struct NoInput
+{
+};
+
+} // namespace
+
+void RegisterStreamBenchmarks()
+{
+    // The iteration time is the median write-to-row latency of one run. The figures are reported and compared between
+    // runs, never limited.
+    RegisterLarge<NoInput>(
+        "Stream Mode write-to-row latency",
+        []() { return std::make_unique<NoInput>(); },
+        [](NoInput & /*input*/, benchmark::State &state, bool first) {
+            if (first)
+            {
+                RunLatencyOnce();
+            }
+            double p95 = 0.0;
+            double maxLatency = 0.0;
+            std::size_t measured = 0;
+            for (auto _ : state)
+            {
+                std::vector<double> latenciesMs = RunLatencyOnce();
+                if (latenciesMs.empty())
+                {
+                    Fail(state, "no line was measured");
+                    return;
+                }
+                std::ranges::sort(latenciesMs);
+                measured = latenciesMs.size();
+                p95 = Percentile(latenciesMs, 95.0);
+                maxLatency = latenciesMs.back();
+                state.SetIterationTime(Percentile(latenciesMs, 50.0) / 1000.0);
+            }
+            state.counters["lines_measured"] = static_cast<double>(measured);
+            state.counters["p95_ms"] = p95;
+            state.counters["max_ms"] = maxLatency;
+        },
+        LargeOptions{.manualTime = true}
+    );
+}
+
+} // namespace bench

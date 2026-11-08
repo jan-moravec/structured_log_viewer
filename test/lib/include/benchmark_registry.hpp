@@ -11,10 +11,13 @@ namespace bench
 {
 
 void RegisterCsvBenchmarks();
+void RegisterDecompressionBenchmarks();
 void RegisterHistogramBucketIndexBenchmarks();
 void RegisterJsonBenchmarks();
 void RegisterLogFilterBenchmarks();
 void RegisterLogfmtBenchmarks();
 void RegisterRegexBenchmarks();
+void RegisterSessionBundleBenchmarks();
+void RegisterStreamBenchmarks();
 
 } // namespace bench

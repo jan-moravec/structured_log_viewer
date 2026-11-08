@@ -32,11 +32,14 @@ int main(int argc, char **argv)
     }
 
     bench::RegisterCsvBenchmarks();
+    bench::RegisterDecompressionBenchmarks();
     bench::RegisterHistogramBucketIndexBenchmarks();
     bench::RegisterJsonBenchmarks();
     bench::RegisterLogFilterBenchmarks();
     bench::RegisterLogfmtBenchmarks();
     bench::RegisterRegexBenchmarks();
+    bench::RegisterSessionBundleBenchmarks();
+    bench::RegisterStreamBenchmarks();
 
     try
     {

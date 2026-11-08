@@ -111,12 +111,15 @@ target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INST
 add_executable(
     loglib_benchmarks
     "src/benchmark_csv.cpp"
+    "src/benchmark_decompression.cpp"
     "src/benchmark_histogram_bucket_index.cpp"
     "src/benchmark_json.cpp"
     "src/benchmark_log_filter.cpp"
     "src/benchmark_logfmt.cpp"
     "src/benchmark_main.cpp"
     "src/benchmark_regex.cpp"
+    "src/benchmark_session_bundle.cpp"
+    "src/benchmark_stream.cpp"
 )
 
 target_link_libraries(
