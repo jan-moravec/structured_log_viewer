@@ -621,7 +621,9 @@ Re-run just the tests against an existing build:
 ```sh
 ctest --preset release                   # unit + Qt smoke (excludes benchmark label)
 ctest --preset release-benchmark         # benchmarks only, verbose (see Benchmarking)
-ctest --preset release -R log_table      # filter by registered test name
+ctest --preset release -R LogTable       # filter by registered test name (the Catch case name)
+ctest --preset release -L log_table      # filter by Catch tag: every tag is a CTest label
+ctest --preset release -L network        # socket cases; -L fs-events selects the file-event cases
 ```
 
 The `release` test preset stays quiet on success (only `--output-on-failure` is set) so the workflow output stays scannable. The benchmark presets enable `output.verbosity = verbose` so the WARN-line throughput / latency numbers always show up in the log; pass `-V` explicitly if you want the same firehose output for a unit-test run.

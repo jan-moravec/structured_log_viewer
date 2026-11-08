@@ -133,11 +133,11 @@ if(WIN32)
     )
 endif()
 
-# Two disjoint discovery passes so benchmark cases land under the `benchmark`
-# CTest label without renaming. Use `ctest -LE benchmark` / `-L benchmark`
-# to filter.
-catch_discover_tests(tests TEST_SPEC "~[benchmark]")
-catch_discover_tests(tests TEST_SPEC "[benchmark]" PROPERTIES LABELS "benchmark")
+# Two disjoint discovery passes. ADD_TAGS_AS_LABELS turns every Catch2 tag into a CTest label, so the
+# `[benchmark]` tag is what puts benchmark cases under the `benchmark` label (and `[network]`, `[fs-events]`
+# and the per-unit tags are labels too). Select with `ctest -L <tag>`, exclude with `-LE <tag>`.
+catch_discover_tests(tests TEST_SPEC "~[benchmark]" ADD_TAGS_AS_LABELS)
+catch_discover_tests(tests TEST_SPEC "[benchmark]" ADD_TAGS_AS_LABELS)
 
 # Installs the loglib component and compiles a consumer that includes every installed header. Skipped for sanitizer
 # and coverage builds, because the consumer is built without their flags.

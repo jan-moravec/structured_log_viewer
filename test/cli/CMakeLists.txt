@@ -53,7 +53,7 @@ if(WIN32)
     )
 endif()
 
-catch_discover_tests(slp_tests PROPERTIES LABELS "cli")
+catch_discover_tests(slp_tests ADD_TAGS_AS_LABELS)
 
 # One-command golden regeneration: sets SLP_UPDATE_GOLDEN and runs the
 # golden-tagged cases. Documented in test/cli/README.md.
