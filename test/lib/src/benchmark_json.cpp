@@ -204,7 +204,8 @@ void RunLookupBenchmark(benchmark::State &state, const LogData &data, std::size_
 
 void RegisterLookupBenchmarks()
 {
-    auto plainInput = MakeLazy<ParsedInput>([] { return ParseFixture(SMALL_FILE_RECORDS, "bench_json_lookup.jsonl"); });
+    const auto plainInput =
+        MakeLazy<ParsedInput>([] { return ParseFixture(SMALL_FILE_RECORDS, "bench_json_lookup.jsonl"); });
     const auto dictRefInput = MakeLazy<ParsedInput>(ParseFixtureWithDictRefLevel);
 
     // LogLine::GetValue micro-benchmarks: slow path (key string -> KeyIndex -> KeyId) vs. fast path (cached
