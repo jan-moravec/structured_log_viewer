@@ -321,6 +321,52 @@ TEST_CASE(
     CHECK(!post.contains("xxxxx"));
 }
 
+TEST_CASE(
+    "TailingBytesProducer pre-fill keeps the complete lines inside the scan budget", "[TailingBytesProducer][fs-events]"
+)
+{
+    // The last 10 lines are about 10 KiB, far more than the 4 KiB scan budget. Pre-fill still delivers the complete
+    // lines it scanned, instead of nothing.
+    const TempDir dir;
+    const auto path = dir.File("long_lines.log");
+    constexpr size_t LINE_BYTES = 1000;
+    std::string content;
+    for (int i = 0; i < 20; ++i)
+    {
+        std::string line = "line-" + std::to_string(i) + "-";
+        line.resize(LINE_BYTES, 'x');
+        content += line + "\n";
+    }
+    Overwrite(path, content);
+
+    auto opts = FastPollOptions();
+    opts.prefillMaxScanBytes = 4 * 1024;
+    opts.prefillChunkBytes = 1024;
+    TailingBytesProducer source(path, /*retentionLines=*/10, opts);
+
+    const std::string drained = DrainUntil(source, 60000ms, [](const std::string &acc) {
+        return acc.contains("line-19-") && acc.ends_with('\n');
+    });
+
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < drained.size())
+    {
+        const size_t end = drained.find('\n', start);
+        REQUIRE(end != std::string::npos);
+        lines.push_back(drained.substr(start, end - start));
+        start = end + 1;
+    }
+    REQUIRE_FALSE(lines.empty());
+    CHECK(lines.size() < 10);
+    for (const std::string &line : lines)
+    {
+        CHECK(line.size() == LINE_BYTES);
+        CHECK(line.starts_with("line-"));
+    }
+    CHECK(lines.back().starts_with("line-19-"));
+}
+
 TEST_CASE("TailingBytesProducer detects growth across many small writes", "[TailingBytesProducer][fs-events]")
 {
     const TempDir dir;
