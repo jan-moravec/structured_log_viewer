@@ -418,6 +418,8 @@ struct StreamingFixture
 {
     std::unique_ptr<TestStructuredLogFile> logFile;
     ParserStreamFn parser;
+    /// Anything that must stay alive while the benchmark runs, such as a registered extra template.
+    std::shared_ptr<void> keepAlive;
 };
 
 struct StreamingInput
@@ -432,8 +434,11 @@ struct StreamingInput
 
 /// Registers an end-to-end streaming benchmark. The first call parses once untimed to capture the memory counters
 /// (AppendBatch wall time, structural bytes, peak working set); the timed repetitions follow. Each repetition checks
-/// the row count after the timed part.
-inline void RegisterStreaming(const std::string &name, std::function<StreamingFixture()> makeFixture)
+/// the row count after the timed part. With parseLoopOnly the time of an iteration excludes the LogTable::AppendBatch
+/// time of the sink.
+inline void RegisterStreaming(
+    const std::string &name, std::function<StreamingFixture()> makeFixture, bool parseLoopOnly = false
+)
 {
     RegisterLarge<StreamingInput>(
         name,
@@ -447,7 +452,7 @@ inline void RegisterStreaming(const std::string &name, std::function<StreamingFi
             input->configFile.Write(*input->configuration);
             return input;
         },
-        [](StreamingInput &input, benchmark::State &state, bool first) {
+        [parseLoopOnly](StreamingInput &input, benchmark::State &state, bool first) {
             const std::filesystem::path configPath = input.configFile.GetFilePath();
             const std::filesystem::path logPath = input.fixture.logFile->GetFilePath();
             if (first)
@@ -459,7 +464,13 @@ inline void RegisterStreaming(const std::string &name, std::function<StreamingFi
             std::size_t rows = input.probe.rowCount;
             for (auto _ : state)
             {
-                rows = RunStreamingFlow(configPath, logPath, input.configuration, input.fixture.parser).rowCount;
+                const StreamingRunResult run =
+                    RunStreamingFlow(configPath, logPath, input.configuration, input.fixture.parser);
+                rows = run.rowCount;
+                if (parseLoopOnly)
+                {
+                    state.SetIterationTime(std::chrono::duration<double>(run.elapsed - run.appendTotal).count());
+                }
             }
             if (rows != input.rows)
             {
@@ -484,7 +495,8 @@ inline void RegisterStreaming(const std::string &name, std::function<StreamingFi
                     : static_cast<double>(probe.structuralBytes.Total()) / static_cast<double>(input.bytes);
             state.counters["peak_ws_delta_MiB"] = static_cast<double>(probe.peakWorkingSetDeltaBytes) / MIB;
             state.counters["peak_ws_MiB"] = static_cast<double>(probe.peakWorkingSetBytes) / MIB;
-        }
+        },
+        LargeOptions{.manualTime = parseLoopOnly}
     );
 }
 

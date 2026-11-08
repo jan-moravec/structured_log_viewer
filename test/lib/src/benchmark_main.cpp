@@ -33,6 +33,8 @@ int main(int argc, char **argv)
 
     bench::RegisterCsvBenchmarks();
     bench::RegisterJsonBenchmarks();
+    bench::RegisterLogfmtBenchmarks();
+    bench::RegisterRegexBenchmarks();
 
     try
     {

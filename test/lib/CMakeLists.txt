@@ -108,7 +108,14 @@ target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INST
 
 # Benchmarks: a separate executable on Google Benchmark, so changing one does not relink the unit tests and two builds
 # can be compared by copying only this binary. It has its own main (benchmark_main.cpp).
-add_executable(loglib_benchmarks "src/benchmark_csv.cpp" "src/benchmark_json.cpp" "src/benchmark_main.cpp")
+add_executable(
+    loglib_benchmarks
+    "src/benchmark_csv.cpp"
+    "src/benchmark_json.cpp"
+    "src/benchmark_logfmt.cpp"
+    "src/benchmark_main.cpp"
+    "src/benchmark_regex.cpp"
+)
 
 target_link_libraries(
     loglib_benchmarks

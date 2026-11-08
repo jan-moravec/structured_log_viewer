@@ -12,5 +12,7 @@ namespace bench
 
 void RegisterCsvBenchmarks();
 void RegisterJsonBenchmarks();
+void RegisterLogfmtBenchmarks();
+void RegisterRegexBenchmarks();
 
 } // namespace bench
