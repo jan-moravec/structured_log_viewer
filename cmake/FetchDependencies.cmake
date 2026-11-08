@@ -113,6 +113,8 @@ if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
             set(BENCHMARK_ENABLE_TESTING OFF)
             set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
             set(BENCHMARK_ENABLE_INSTALL OFF)
+            # Its -Werror would turn a new compiler warning in a test-only dependency into a build failure.
+            set(BENCHMARK_ENABLE_WERROR OFF)
             FetchContent_MakeAvailable(benchmark)
         endblock()
     else()

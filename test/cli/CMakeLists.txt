@@ -53,6 +53,8 @@ if(WIN32)
     )
 endif()
 
+# Every Catch tag becomes a CTest label. The cli label comes from the [cli] tag, which every slp test case must carry:
+# a label set through PROPERTIES would be replaced by the tag labels.
 catch_discover_tests(slp_tests ADD_TAGS_AS_LABELS)
 
 # One-command golden regeneration: sets SLP_UPDATE_GOLDEN and runs the

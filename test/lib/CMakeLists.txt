@@ -141,11 +141,6 @@ if(WIN32)
     target_link_libraries(loglib_benchmarks PRIVATE Psapi)
 endif()
 
-# Enable KeyIndex call-count instrumentation; PUBLIC so the test TU and
-# `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
-# at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
-target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
-
 # On Windows the TBB runtime DLL must sit next to each executable for both
 # `catch_discover_tests` (which runs `<exe> --list-test-names-only` at build
 # time) and `ctest` itself to find it.
