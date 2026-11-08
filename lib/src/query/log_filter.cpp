@@ -7,7 +7,6 @@
 
 #include <oneapi/tbb/blocked_range.h>
 #include <oneapi/tbb/enumerable_thread_specific.h>
-#include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_for.h>
 
 #include <algorithm>

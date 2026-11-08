@@ -1,5 +1,5 @@
-// `loglib` has no Qt in its include chain, so the TBB-before-Qt
-// ordering that `app/` needs doesn't apply here.
+// The library has no Qt in its include chain, so the TBB-before-Qt include order that the application needs does not
+// apply here.
 #include "loglib/query/log_filter.hpp"
 
 #include "loglib/core/log_value.hpp"
@@ -7,8 +7,8 @@
 
 #include <oneapi/tbb/blocked_range.h>
 #include <oneapi/tbb/enumerable_thread_specific.h>
-#include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/task_arena.h>
 
 #include <algorithm>
 #include <bit>
@@ -34,10 +34,10 @@ namespace loglib
 namespace
 {
 
-/// Tree summary consumed by `ShouldUseBitsetPath`.
+/** @brief The shape of a filter tree, which ShouldUseBitsetPath uses to pick an evaluation path. */
 struct TreeShape
 {
-    /// Number of leaves; drives the bitset memory estimate.
+    /** @brief The number of leaves, which sets the memory the bitset path needs. */
     size_t leafCount = 0;
     bool hasOr = false;
     bool hasNot = false;
@@ -82,18 +82,16 @@ void CollectShape(const CompiledFilterExpression &expr, TreeShape &shape)
     );
 }
 
-/// Hard cap on bitset memory; over-cap trees fall back to visit.
+/** @brief The most memory the bitset path may use. A tree that needs more is evaluated row by row. */
 constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
 
-/// Pick between the bitset and visit paths for @p shape over
-/// @p rowCount rows.
-///
-/// Flat `And` stays on visit: short-circuit only evaluates child N
-/// on rows that passed 1..N-1, strictly less work than materialising
-/// every leaf. `Or`/`Not` flip the trade -- `Or` still visits every
-/// leaf on rejected rows, `Not` inverts a whole column at once, and
-/// repeated leaves cost one shared bitset -- and both benefit from
-/// word-parallel folding.
+/**
+ * @brief Picks the bitset path or the row-by-row path for a tree of this shape over rowCount rows.
+ *
+ * A flat And stays row by row: it evaluates a child only on the rows that passed the children before it, which is less
+ * work than building a bitset for every leaf. Or and Not reverse that. Or visits every leaf on a rejected row and Not
+ * inverts a whole bitset at once, so both gain from combining 64 rows at a time.
+ */
 [[nodiscard]] bool ShouldUseBitsetPath(const TreeShape &shape, size_t rowCount) noexcept
 {
     if (rowCount == 0 || shape.leafCount < 2)
@@ -102,24 +100,19 @@ constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
     }
     if (!shape.hasOr && !shape.hasNot)
     {
-        // Flat `And`: short-circuit evaluation strictly dominates.
+        // A flat And: evaluating row by row and stopping at the first failing child is always cheaper.
         return false;
     }
-    // Peak memory = `unique * bytesPerBitset` (kept for the whole
-    // evaluation) + `workers * bytesPerBitset` (per-worker bitsets
-    // inside `MaterialiseLeafBitset`, torn down between leaves).
+    // Peak memory is one bitset per leaf, kept for the whole evaluation, plus one bitset per worker inside
+    // MaterialiseLeafBitset, freed between leaves.
     const size_t bytesPerBitset = (rowCount / 8) + 1;
-    // `active_value` reads the live parallelism ceiling; floor at 1
-    // for single-thread test runs.
-    const size_t workers = std::max<size_t>(
-        1, oneapi::tbb::global_control::active_value(oneapi::tbb::global_control::max_allowed_parallelism)
-    );
+    // The workers are those of the task arena the evaluation runs in, at least one.
+    const size_t workers = static_cast<size_t>(std::max(1, oneapi::tbb::this_task_arena::max_concurrency()));
     const size_t bytes = (shape.leafCount + workers) * bytesPerBitset;
     return bytes <= BITSET_MEMORY_CAP_BYTES;
 }
 
-/// Packed word-sized bitset over `[0, rowCount)`. Bit-set / test /
-/// AND / OR / NOT are all inline.
+/** @brief One bit per row, packed into 64-bit words. Bits past the last row are always zero. */
 class RowBitset
 {
 public:
@@ -140,8 +133,7 @@ public:
 
     void Set(size_t row) noexcept
     {
-        // Out-of-range writes would clobber tail bits and break
-        // the `MaskTail` invariant every op relies on.
+        // A write past the last row would set a bit that every operation relies on being zero.
         assert(row < mRowCount);
         mWords[row / WORD_BITS] |= (uint64_t{1} << (row % WORD_BITS));
     }
@@ -153,7 +145,7 @@ public:
 
     void OrInPlace(const RowBitset &other) noexcept
     {
-        // All bitsets in one evaluation share a `rowCount`.
+        // All bitsets in one evaluation have the same row count.
         assert(mWords.size() == other.mWords.size());
         for (size_t i = 0; i < mWords.size(); ++i)
         {
@@ -173,7 +165,7 @@ public:
     void FillTrue() noexcept
     {
         std::ranges::fill(mWords, ~uint64_t{0});
-        // Mask off the tail bits past `mRowCount`.
+        // Clear the bits past the last row.
         MaskTail();
     }
 
@@ -186,8 +178,7 @@ public:
         MaskTail();
     }
 
-    /// Number of set bits. Tail bits past `mRowCount` are always
-    /// masked off, so this is exactly the accepted-row count.
+    /** @brief The number of set bits, which is the number of accepted rows because bits past the last row are zero. */
     [[nodiscard]] size_t Count() const noexcept
     {
         size_t total = 0;
@@ -198,12 +189,11 @@ public:
         return total;
     }
 
-    /// Extract accepted rows in ascending order.
+    /** @brief Appends the accepted rows to out in ascending order. */
     void CollectInto(std::vector<size_t> &out) const
     {
-        // Reserve by popcount, not `mRowCount`: reserving per-row
-        // would allocate ~800 MB per 100 M-row table for a
-        // handful of matches.
+        // Reserve the number of matches, not the number of rows. A table of 100 million rows would otherwise reserve
+        // about 800 MB for a handful of matches.
         out.reserve(out.size() + Count());
         for (size_t wi = 0; wi < mWords.size(); ++wi)
         {
@@ -212,8 +202,7 @@ public:
             {
                 const auto bit = static_cast<unsigned int>(std::countr_zero(word));
                 const size_t row = (wi * WORD_BITS) + bit;
-                // Every mutating op must call `MaskTail`, so a set
-                // bit past `mRowCount` here would be a bug.
+                // Every operation that changes bits clears those past the last row, so a set one here is a bug.
                 assert(row < mRowCount);
                 out.push_back(row);
                 word &= word - 1U;
@@ -248,9 +237,10 @@ private:
     std::vector<uint64_t> mWords;
 };
 
-/// Materialise @p predicate's accept-set into a packed bitset in
-/// parallel. Each worker owns a private bitset; the main thread
-/// OR-coalesces at the end.
+/**
+ * @brief Evaluates one leaf on every row in parallel and returns the rows it accepts as a bitset. Each worker fills its
+ * own bitset, and the calling thread combines them at the end.
+ */
 RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &table, size_t rowCount)
 {
     tbb::enumerable_thread_specific<RowBitset> workerBitsets{[rowCount] { return RowBitset(rowCount); }};
@@ -268,8 +258,8 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
         }
     );
 
-    // Seed from the first worker (move: skip zero-init + full OR),
-    // fold the rest. No workers = no rows, return empty.
+    // Move the first worker's bitset in, which saves clearing and combining one, then combine the rest. With no worker
+    // there were no rows, so the result is empty.
     RowBitset combined;
     bool seeded = false;
     for (auto &worker : workerBitsets)
@@ -291,9 +281,10 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
     return combined;
 }
 
-/// Evaluate @p expr against the pre-materialised leaf bitsets in
-/// @p leafBitsets, which are in the order `CollectLeafsInVisitOrder`
-/// visits leaves. Recurses over And / Or / Not.
+/**
+ * @brief Evaluates a tree from the bitsets of its leaves. leafBitsets holds them in the order CollectLeafsInVisitOrder
+ * visits the leaves, and leafCursor walks through them.
+ */
 // NOLINTNEXTLINE(misc-no-recursion)
 RowBitset EvaluateExpressionBitset(
     const CompiledFilterExpression &expr, const std::vector<RowBitset> &leafBitsets, size_t &leafCursor, size_t rowCount
@@ -361,12 +352,10 @@ RowBitset EvaluateExpressionBitset(
     );
 }
 
-/// Walk @p expr in the same order `EvaluateExpressionBitset`
-/// consumes leaves and append pointers to leaf predicates. The
-/// caller dedups by pointer (identity is stable for the tree's
-/// lifetime) so a repeated leaf materialises once. Structurally
-/// identical leaves compiled independently still cost one bitset
-/// each -- follow-up if it ever matters.
+/**
+ * @brief Appends a pointer to each leaf predicate, in the order EvaluateExpressionBitset reads the leaves. Every leaf
+ * gets a bitset of its own, also when two leaves are equal.
+ */
 // NOLINTNEXTLINE(misc-no-recursion)
 void CollectLeafsInVisitOrder(const CompiledFilterExpression &expr, std::vector<const RowPredicate *> &out)
 {
@@ -413,8 +402,7 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
 
     if (IsMatchAllCompiled(expression))
     {
-        // Identity case: hand back every row so callers share one
-        // code path with the filtered case.
+        // Return every row, so callers handle a filter that matches all rows like any other.
         accepted.resize(rowCount);
         std::iota(accepted.begin(), accepted.end(), size_t{0});
         return accepted;
@@ -425,8 +413,7 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
         return accepted;
     }
 
-    // Shape drives evaluator choice. Visit is always safe; bitset
-    // is the perf win on complex trees.
+    // The shape picks the path. Row by row always works; bitsets are faster on trees with Or or Not.
     TreeShape shape;
     CollectShape(expression, shape);
 
@@ -449,7 +436,7 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
         return accepted;
     }
 
-    // Visit path: parallel-for over rows, each row walks the tree.
+    // Row by row: rows are split across workers, and each row walks the tree.
     tbb::enumerable_thread_specific<std::vector<size_t>> buckets;
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, rowCount),
