@@ -106,27 +106,15 @@ target_link_libraries(
 # at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
 target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
 
-# Benchmarks: a separate executable so changing one does not relink the unit tests, and so two builds can be
-# compared by copying only this binary. The cases carry the `[benchmark]` tag, which becomes the `benchmark` CTest
-# label below.
-add_executable(
-    loglib_benchmarks
-    "src/benchmark_csv.cpp"
-    "src/benchmark_decompression.cpp"
-    "src/benchmark_histogram_bucket_index.cpp"
-    "src/benchmark_json.cpp"
-    "src/benchmark_log_filter.cpp"
-    "src/benchmark_logfmt.cpp"
-    "src/benchmark_regex.cpp"
-    "src/benchmark_session_bundle.cpp"
-    "src/benchmark_stream.cpp"
-)
+# Benchmarks: a separate executable on Google Benchmark, so changing one does not relink the unit tests and two builds
+# can be compared by copying only this binary. It has its own main (benchmark_main.cpp).
+add_executable(loglib_benchmarks "src/benchmark_csv.cpp" "src/benchmark_json.cpp" "src/benchmark_main.cpp")
 
 target_link_libraries(
     loglib_benchmarks
     PRIVATE
         loglib_test_support
-        Catch2::Catch2WithMain
+        benchmark::benchmark
         project_warnings
         ZLIB::ZLIB
         BZip2::BZip2
@@ -161,11 +149,22 @@ if(WIN32)
     endforeach()
 endif()
 
-# ADD_TAGS_AS_LABELS turns every Catch2 tag into a CTest label, so the `[benchmark]` tag is what puts benchmark cases
-# under the `benchmark` label (and `[network]`, `[fs-events]` and the per-unit tags are labels too). Select with
-# `ctest -L <tag>`, exclude with `-LE <tag>`.
+# ADD_TAGS_AS_LABELS turns every Catch2 tag into a CTest label, so `[network]`, `[fs-events]` and the per-unit tags
+# are labels too. Select with `ctest -L <tag>`, exclude with `-LE <tag>`.
 catch_discover_tests(tests ADD_TAGS_AS_LABELS)
-catch_discover_tests(loglib_benchmarks TEST_SPEC "[benchmark]" ADD_TAGS_AS_LABELS)
+
+# All library benchmarks are one CTest test. Google Benchmark writes its figures as JSON to the build tree; the console
+# output still goes to the CTest log. Set BENCHMARK_FILTER (a regex) in the environment to run only some of them.
+# SKIP_RETURN_CODE 4 is the exit code of a Debug build, which refuses to run benchmarks.
+set(LOGLIB_BENCHMARK_RESULTS_DIR "${CMAKE_BINARY_DIR}/benchmark-results")
+file(MAKE_DIRECTORY "${LOGLIB_BENCHMARK_RESULTS_DIR}")
+add_test(
+    NAME loglib_benchmarks
+    COMMAND
+        loglib_benchmarks "--benchmark_out=${LOGLIB_BENCHMARK_RESULTS_DIR}/loglib_benchmarks.json"
+        --benchmark_out_format=json
+)
+set_tests_properties(loglib_benchmarks PROPERTIES LABELS "benchmark" SKIP_RETURN_CODE 4)
 
 # Installs the loglib component and compiles a consumer that includes every installed header. Skipped for sanitizer
 # and coverage builds, because the consumer is built without their flags.

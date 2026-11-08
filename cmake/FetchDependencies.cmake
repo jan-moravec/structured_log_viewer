@@ -4,6 +4,7 @@ include(FetchContent)
 option(USE_SYSTEM_DATE "Use system HowardHinnant date library" OFF)
 option(USE_SYSTEM_FMT "Use system fmtlib fmt library" OFF)
 option(USE_SYSTEM_CATCH2 "Use system catchorg Catch2 library" OFF)
+option(USE_SYSTEM_BENCHMARK "Use system google/benchmark library" OFF)
 option(USE_SYSTEM_MIO "Use system mandreyel mio library" OFF)
 option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
 option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
@@ -95,6 +96,28 @@ if(NOT USE_SYSTEM_CATCH2)
     FetchContent_MakeAvailable(Catch2)
 else()
     find_package(Catch2 REQUIRED)
+endif()
+
+# google/benchmark drives the library benchmarks, so it is only needed when tests are built. BUILD_TESTING is not
+# defined yet when this file runs without -DBUILD_TESTING, and then it defaults to ON.
+if(NOT DEFINED BUILD_TESTING OR BUILD_TESTING)
+    if(NOT USE_SYSTEM_BENCHMARK)
+        FetchContent_Declare(
+            benchmark
+            GIT_REPOSITORY https://github.com/google/benchmark.git
+            GIT_TAG v1.10.0
+            SYSTEM
+            EXCLUDE_FROM_ALL
+        )
+        block()
+            set(BENCHMARK_ENABLE_TESTING OFF)
+            set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
+            set(BENCHMARK_ENABLE_INSTALL OFF)
+            FetchContent_MakeAvailable(benchmark)
+        endblock()
+    else()
+        find_package(benchmark REQUIRED)
+    endif()
 endif()
 
 if(NOT USE_SYSTEM_MIO)
