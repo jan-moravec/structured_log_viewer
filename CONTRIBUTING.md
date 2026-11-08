@@ -28,9 +28,10 @@ Thanks for your interest in contributing! This document is the developer referen
   - [Targets](#targets)
   - [Common pitfalls](#common-pitfalls)
 - [Benchmarking](#benchmarking)
+  - [How a benchmark is written](#how-a-benchmark-is-written)
   - [Fixture inventory](#fixture-inventory)
   - [Running](#running)
-  - [WARN-line convention](#warn-line-convention)
+  - [Comparing two builds](#comparing-two-builds)
   - [Acceptance bar](#acceptance-bar)
 - [Code style and pre-commit](#code-style-and-pre-commit)
 - [Pull requests](#pull-requests)
@@ -415,7 +416,7 @@ To teach the viewer a new regex-based log format (a vendor-specific syslog diale
 
    - **`log_generator` CLI:** add a `FORMATS` row in [`test/log_generator/src/formats.cpp`](test/log_generator/src/formats.cpp) so `log_generator --format <name>` picks it up (and the row shows in `--list-formats`).
    - **Round-trip test:** add a `TEST_CASE` in [`test/lib/src/test_regex_template_generators.cpp`](test/lib/src/test_regex_template_generators.cpp) that runs 1000 synthesized records through `RegexParser(template.pattern)` and asserts zero errors. This is the load-bearing drift guard between the synthesizer and the pattern.
-   - **Streaming benchmark:** add a `[.][benchmark][regex_parser][large]` case in [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) via the shared `RunRegexTemplateBenchmark(...)` helper so per-template MB/s and lines/s land in the same regression-gate row.
+   - **Streaming benchmark:** add a `RegisterTemplateBenchmark(...)` call in [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) so per-template MB/s and lines/s land in the same regression-gate row.
 
    Skip this step for niche / vendor-specific templates: `sampleLines` in the JSON is enough to keep [`test_regex_templates.cpp`](test/lib/src/test_regex_templates.cpp) covering the template's parse surface.
 
@@ -450,7 +451,7 @@ The `Network Stream` dialog only consumes the picker; the `Save as template...` 
   - Windows: MSVC 2022 (Visual Studio 2022)
   - macOS: Xcode 15+ / Apple Clang
 
-Most third-party C++ dependencies (`date`, `fmt`, `Catch2`, `mio`, `glaze`, `simdjson`, `robin-map`, `efsw`, `asio`) are fetched automatically via `FetchContent`. To use system copies instead, pass the corresponding option when configuring — one of `USE_SYSTEM_DATE`, `USE_SYSTEM_FMT`, `USE_SYSTEM_CATCH2`, `USE_SYSTEM_MIO`, `USE_SYSTEM_GLAZE`, `USE_SYSTEM_SIMDJSON`, `USE_SYSTEM_ROBIN_MAP`, `USE_SYSTEM_EFSW`, `USE_SYSTEM_ASIO` (e.g. `-DUSE_SYSTEM_FMT=ON`). See [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake) for the pinned versions.
+Most third-party C++ dependencies (`date`, `fmt`, `Catch2`, `benchmark`, `mio`, `glaze`, `simdjson`, `robin-map`, `efsw`, `asio`) are fetched automatically via `FetchContent`. To use system copies instead, pass the corresponding option when configuring — one of `USE_SYSTEM_DATE`, `USE_SYSTEM_FMT`, `USE_SYSTEM_CATCH2`, `USE_SYSTEM_BENCHMARK`, `USE_SYSTEM_MIO`, `USE_SYSTEM_GLAZE`, `USE_SYSTEM_SIMDJSON`, `USE_SYSTEM_ROBIN_MAP`, `USE_SYSTEM_EFSW`, `USE_SYSTEM_ASIO` (e.g. `-DUSE_SYSTEM_FMT=ON`). See [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake) for the pinned versions.
 
 `loglib` also links against [oneTBB](https://github.com/uxlfoundation/oneTBB) (Intel oneAPI Threading Building Blocks) for the parallel JSON parsing pipeline and against [efsw](https://github.com/SpartanJ/efsw) for the cross-platform filesystem watcher behind Stream Mode's `TailingBytesProducer`. oneTBB is fetched at `v2023.1.0` by default; pass `-DUSE_SYSTEM_TBB=ON` to use a system installation, which must be **>= 2021.5** (the first oneAPI-style release that ships `tbb::filter_mode` / `tbb::parallel_pipeline`). efsw is fetched at `1.6.3`; the matching `USE_SYSTEM_EFSW` knob picks up a system copy. On Windows, the build copies `tbb12.dll` next to `StructuredLogViewer.exe` and the test binaries automatically (both into the build tree and the install tree) — keep it next to the executable when redistributing.
 
@@ -621,20 +622,23 @@ Re-run just the tests against an existing build:
 ```sh
 ctest --preset release                   # unit + Qt smoke (excludes benchmark label)
 ctest --preset release-benchmark         # benchmarks only, verbose (see Benchmarking)
-ctest --preset release -R log_table      # filter by registered test name
+ctest --preset release -R LogTable       # filter by registered test name (the Catch case name)
+ctest --preset release -L log_table      # filter by Catch tag: every tag is a CTest label
+ctest --preset release -L network        # socket cases; -L fs-events selects the file-event cases
 ```
 
-The `release` test preset stays quiet on success (only `--output-on-failure` is set) so the workflow output stays scannable. The benchmark presets enable `output.verbosity = verbose` so the WARN-line throughput / latency numbers always show up in the log; pass `-V` explicitly if you want the same firehose output for a unit-test run.
+The `release` test preset stays quiet on success (only `--output-on-failure` is set) so the workflow output stays scannable. The benchmark presets enable `output.verbosity = verbose` so the benchmark throughput / latency tables always show up in the log; pass `-V` explicitly if you want the same firehose output for a unit-test run.
 
 The two presets are intentionally split because `ctest --preset release -L benchmark` would **not** flip the `release` preset's `filter.exclude.label = benchmark` off — `-L` only overrides the *include* label per [`cmake-presets(7)`](https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html#test-preset), so benchmarks would still be skipped. Use the `release-benchmark` (or `relwithdebinfo-benchmark`) preset instead.
 
 ### Targets
 
-| Target          | Coverage                                                                                                                                                                                                                                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests`         | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing) **and** the parser/lookup micro-benchmarks. The benchmark cases are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. |
-| `apptest`       | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                                              |
-| `log_generator` | Standalone multi-format log generator for fixtures and manual UI smoke testing; not run by CTest. Its option parsing, outputs, and rotation live in the `log_generator_core` library, covered by the `[log_generator_tool]` cases in `tests`. See [Generating logs](#generating-logs).                                             |
+| Target              | Coverage                                                                                                                                                                                                                                                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests`             | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing).                                                                                                                                                                           |
+| `loglib_benchmarks` | Google Benchmark parser, lookup, filter and stream benchmarks for `loglib`, built apart from `tests` so editing a benchmark does not relink the unit tests. One CTest test under the `benchmark` label. Both executables link the `loglib_test_support` helper library. See [Benchmarking](#benchmarking). |
+| `apptest`           | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                      |
+| `log_generator`     | Standalone multi-format log generator for fixtures and manual UI smoke testing; not run by CTest. Its option parsing, outputs, and rotation live in the `log_generator_core` library, covered by the `[log_generator_tool]` cases in `tests`. See [Generating logs](#generating-logs).                     |
 
 Session-bundle library coverage lives in `test/lib/src/test_session_bundle.cpp`; bundle open/export smoke coverage lives in `test/app/src/main_window_test.cpp`.
 
@@ -689,90 +693,102 @@ The `--roll-*` and `--append` options are rejected for network and stdout output
 
 ## Benchmarking
 
-This section is the canonical home for the regression gate; the parser benchmarks in [`test/lib/src/benchmark_json.cpp`](test/lib/src/benchmark_json.cpp), [`test/lib/src/benchmark_logfmt.cpp`](test/lib/src/benchmark_logfmt.cpp), [`test/lib/src/benchmark_csv.cpp`](test/lib/src/benchmark_csv.cpp), and [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) (all built on the shared [`test/lib/include/benchmark_common.hpp`](test/lib/include/benchmark_common.hpp) harness), the Stream-Mode latency benchmark in [`test/lib/src/benchmark_stream.cpp`](test/lib/src/benchmark_stream.cpp), the filter / sort benchmarks in [`test/lib/src/benchmark_log_filter.cpp`](test/lib/src/benchmark_log_filter.cpp), and the bundle benchmark in [`test/lib/src/benchmark_session_bundle.cpp`](test/lib/src/benchmark_session_bundle.cpp) link back to it via their top-of-file comment. Quote the bullets in the [Acceptance bar](#acceptance-bar) below in commit messages and PR descriptions.
+This section is the canonical home for the regression gate. The library benchmarks are Google Benchmark benchmarks in [`test/lib/src/`](test/lib/src) (`benchmark_*.cpp`), built into their own `loglib_benchmarks` executable, apart from the unit tests in `tests`. Both link the `loglib_test_support` helper library. Quote the bullets in the [Acceptance bar](#acceptance-bar) below in commit messages and PR descriptions.
 
-The parser benchmarks live in the same `tests` binary as the unit tests but are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. GUI benches (`apptest_bench`, `apptest_session_tabs_bench`) are separate QtTest binaries with the same CTest label.
+The whole executable is one CTest test, `loglib_benchmarks`, under the `benchmark` label. The GUI benchmarks (`apptest_bench`, `apptest_session_tabs_bench`) stay QtTest binaries with the same label; they print their figures as `QDEBUG` lines in the CTest log.
 
-**Debug builds skip benchmarks automatically.** Use the `release` preset for the canonical regression-gate number, or `relwithdebinfo` if you want to attach a profiler — both have IPO/LTO on and `NDEBUG` defined. Running benchmarks against `--preset debug` reports each case as `SKIPPED` with a message rather than producing misleading numbers (see `BENCHMARK_REQUIRES_RELEASE_BUILD` in `benchmark_json.cpp`).
+**Debug builds skip benchmarks automatically.** Use the `release` preset for the canonical regression-gate number, or `relwithdebinfo` if you want to attach a profiler — both have IPO/LTO on and `NDEBUG` defined. In a Debug build `loglib_benchmarks` prints a message and exits with code 4, which CTest reports as skipped.
+
+### How a benchmark is written
+
+The helpers in [`test/lib/include/benchmark_common.hpp`](test/lib/include/benchmark_common.hpp) encode the rules, so each benchmark only says which kind it is.
+
+- **One benchmark per figure.** Name it with the text of the figure; the comparison script matches figures by name.
+- **Inputs are built once per process**, outside the timed part, on first use, so a filtered run builds only what it runs. A repetition never regenerates a fixture.
+- **Large operations** (about 50 ms or more per run, such as a parse of 1'000'000 lines) use `RegisterLarge`: five repetitions of a few timed iterations, real time in milliseconds, and an untimed warm-up run first. An operation of about a second or more runs one iteration per repetition, one of a few hundred milliseconds three, and a faster one five (`FAST_LARGE_ITERATIONS`), so a repetition averages out the noise of a shared machine. `RegisterStreaming` is the large benchmark for the end-to-end parse into a `LogTable` flow.
+- **Small operations** (under about 50 ms, such as `GetValue` or a histogram bucket lookup) use `RegisterSmall`: Google Benchmark scales the iterations so a repetition lasts at least 0.3 s, and runs five repetitions.
+- Only the aggregates are reported: mean, median, standard deviation and coefficient of variation. The median is the figure that is compared.
+- Throughput is `SetBytesProcessed` (MB/s) and `SetItemsProcessed` (rows/s). Other figures, such as memory, latency percentiles and counts, are user counters.
+- Each benchmark checks its result outside the timed part, as the unit tests do. On a mismatch it calls `bench::Fail`, and the executable exits non-zero, so CTest fails. There is no speed assertion.
+
+**Time budget.** One full `ctest --preset release-benchmark` run takes about 3 minutes and must stay under 5. Each benchmark takes at most 10 s, setup included. Reduce the size or the repetitions of a benchmark to stay inside, rather than lengthening a run: precision comes from repetitions and medians.
 
 ### Fixture inventory
 
-The table below groups the main `[.][benchmark]` fixtures by tag. A row may cover several `TEST_CASE`s.
-
 <!-- markdownlint-disable MD055 MD060 -->
 
-| Tag                                       | Coverage                                                                                                                                                                                                                                                                                                                             |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `[parse_sync]`                            | Synchronous parse coverage (10'000 lines), exercises the parse-only test helper.                                                                                                                                                                                                                                                     |
-| `[json_parser][large]`                    | Streaming-to-`LogTable` flow, 1'000'000 JSON lines (~170 MB). End-to-end GUI benchmark. Fed from a pinned-seed (`LARGE_FIXTURE_SEED`) record stream so numbers are stable across runs and directly comparable to `[logfmt_parser][large]` and `[csv_parser][large]`.                                                                 |
-| `[logfmt_parser][large]`                  | Streaming-to-`LogTable` flow, 1'000'000 logfmt lines. Mirrors `[json_parser][large]` via the shared `benchmark_common.hpp` harness, fed the same pinned-seed RNG-driven records so lines/s is directly comparable (MB/s differs because logfmt bytes/line < JSON bytes/line).                                                        |
-| `[csv_parser][large]`                     | Streaming-to-`LogTable` flow, 1'000'000 CSV lines. Mirrors `[json_parser][large]` / `[logfmt_parser][large]`; same pinned-seed RNG-driven records, schema derived from a one-record probe so the streaming ctor stays a streaming ctor.                                                                                              |
-| `[regex_parser][large]`                   | Five single-line 1'000'000-record fixtures: Syslog RFC3164, Apache/nginx Combined and Common, Apache error, and Java / Logback. They use the shipped patterns, pinned records, and deterministic timestamps. Compare lines/s within a format; byte sizes differ across formats.                                                      |
-| `[java_multiline]`                        | 1'000'000 Java records in `Indented` mode; every tenth header has three continuation frames. Uses the shipped Java template.                                                                                                                                                                                                         |
-| `[untilNextHeader]`                       | 1'000'000 records through a test-only Python-traceback template. Every tenth header has mixed indented and unindented continuation lines.                                                                                                                                                                                            |
-| `[header_anchor]`                         | Compares the same `UntilNextHeader` fixture with the full-pattern probe and a dedicated header anchor. Hard-fails if the anchor's parse-loop throughput is less than 1.03× the baseline.                                                                                                                                             |
-| `[json_parser][wide]`                     | Streaming-to-`LogTable`, 200'000 wide JSON rows (~30 fields/line). Stresses per-line field iteration (`InsertSorted`, `ExtractFieldKey`, `ParseLine`, `IsKeyInAnyColumn`). Pinned-seed (`WIDE_FIXTURE_SEED`) so it is byte-comparable to `[logfmt_parser][wide]` and `[csv_parser][wide]`.                                           |
-| `[logfmt_parser][wide]`                   | Streaming-to-`LogTable`, 200'000 wide logfmt rows. Mirror of `[json_parser][wide]` for the logfmt `LogfmtLineDecoder` hot loop; the wide generator's nested array/object fields land as quoted JSON strings in logfmt (see `test_common::Logfmt()` docstring), so per-field cost is broadly — not exactly — comparable.              |
-| `[csv_parser][wide]`                      | Streaming-to-`LogTable`, 200'000 wide CSV rows. Mirror of `[json_parser][wide]` / `[logfmt_parser][wide]` for the `CsvLineDecoder` hot loop; the wide generator's nested array/object fields land as quoted compact-JSON cells in CSV (see `test_common::Csv()` docstring), so per-field cost is broadly — not exactly — comparable. |
-| `[get_value_micro]`                       | `LogLine::GetValue` slow-path (string lookup) vs fast-path (`KeyId` lookup).                                                                                                                                                                                                                                                         |
-| `[allocations]`                           | `string_view` fast-path fraction over a 1'000-line parse. The test itself only asserts `stringViewValues > 0`; the ≥ 99 % bar is the PR-description convention.                                                                                                                                                                      |
-| `[enum]`                                  | End-to-end enum auto-detection over a 20'000-line parse with a `level`-style key. Asserts the `level` column promotes to `Type::Enumeration` and every slot ends up as a `DictRef`; reports dictionary heap cost.                                                                                                                    |
-| `[cancellation]`                          | Cancellation-latency over 20 runs of a 1M-line parse. The test hard-fails only above 5 s; the ±3 % p95 bar is the PR-description convention.                                                                                                                                                                                         |
-| `[stream_latency]`                        | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms.                                                                                                                                                                                            |
-| `[session_tabs]`                          | Two 100,000-row JSONL tabs with 1,000 anchors each and visible shared docks. 10 warm-up + 50 measured activations. Hard-fails when p95 > 100 ms. Prints hardware class, row counts, dock visibility, and p50/p95. Stay within 20 % of the controlled-CI baseline once that number is recorded in the PR.                             |
-| `[session_bundle]`                        | Encode, decode, and round-trip a 1'000'000-row JSON bundle at zstd level 3. Reports throughput and compressed size.                                                                                                                                                                                                                  |
-| `[log_filter][large]` (enum)              | `EnumRowPredicate` fast-path scan over 1'000'000 enum-column rows. Hard-fails above 100 ms; guards against a regression to the per-row allocation path.                                                                                                                                                                              |
-| `[log_filter][large]` (string)            | `CallbackStringRowPredicate` substring scan over 1'000'000 string rows. Hard-fails above 200 ms; guards the `std::variant` access + table-lookup cost.                                                                                                                                                                               |
-| `[log_filter][log_compare][large]`        | `CompareRows` and `SortPermutationByColumn` sorts over 1'000'000 `Type::Enumeration` rows with an `EnumDictRank` cache. Uses the `region` key to keep the column Enumeration (a level-named key would auto-flip to Level mid-fixture). Reports mean / low / high and sanity-checks rank-monotonic output.                            |
-| `[log_filter][log_compare][large][level]` | Sibling cases for `Type::Level` columns: `SortPermutationByColumn` exercises the parallel `LevelRankCache` fast path (≤ 500 ms) and `CompareRows` exercises the per-call `CompareLevel` path (≤ 2000 ms). Sanity check is canonical-severity-monotonic via `GetLevelForRow`.                                                         |
+| Benchmark name starts with                                                | Coverage                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Parse 10'000 JSON log entries (sync)`                                    | Synchronous parse coverage (10'000 lines), exercises the parse-only test helper.                                                                                                                                                                         |
+| `Stream 1'000'000 JSON log entries to LogTable`                           | Streaming-to-`LogTable` flow, 1'000'000 JSON lines (~170 MB). End-to-end GUI benchmark. Fed from a pinned-seed (`LARGE_FIXTURE_SEED`) record stream so numbers are stable across runs and comparable across formats.                                     |
+| `Stream 1'000'000 logfmt log entries to LogTable`                         | The same records as logfmt, so lines/s is directly comparable (MB/s is not).                                                                                                                                                                             |
+| `Stream 1'000'000 CSV log entries to LogTable`                            | The same records as CSV, with the schema derived from a one-record probe.                                                                                                                                                                                |
+| `Stream 1'000'000 <format> entries to LogTable`                           | Five single-line regex fixtures: Syslog RFC3164, Apache/nginx Combined and Common, Apache error, and Java / Logback. They use the shipped patterns, pinned records and deterministic timestamps.                                                         |
+| `Stream 1'000'000 Java multi-line (indented) records`                     | 1'000'000 Java records in `Indented` mode; every tenth header has three continuation frames. Uses the shipped Java template.                                                                                                                             |
+| `Stream 1'000'000 Python traceback (UntilNextHeader)`                     | 1'000'000 records through a test-only Python-traceback template. Every tenth header has mixed indented and unindented continuation lines.                                                                                                                |
+| `Python-traceback header anchor (parse-loop only)`                        | The same `UntilNextHeader` fixture with the full-pattern probe (baseline) and with a dedicated header anchor (anchored). Only the parse loop is timed, so the gap is the speedup of the anchor.                                                          |
+| `Stream 200'000 wide <format> log entries`                                | Streaming-to-`LogTable`, 200'000 wide rows (~30 fields/line) as JSON, logfmt and CSV. Stresses per-line field iteration. Pinned seed (`WIDE_FIXTURE_SEED`).                                                                                              |
+| `LogLine::GetValue(...)`                                                  | The string lookup (slow path), the `KeyId` lookup (fast path) and the enum-encoded lookup (`DictRef`), one pass over every key of 10'000 lines.                                                                                                          |
+| `Allocation footprint and string_view fast-path ...`                      | `string_view` fast-path fraction over a 1'000-line parse, reported as counters. The benchmark fails only when no value takes the fast path; the 99 % bar is the PR-description convention.                                                               |
+| `Enum auto-detection over 20000 lines`                                    | End-to-end enum auto-detection with a `level`-style key. Fails unless the `level` column promotes to an enum-like type and every slot is a `DictRef`; reports dictionary heap cost as counters.                                                          |
+| `Cancellation latency over 20 runs (us)`                                  | The gap between a stop request and the parse reporting cancelled, on a 1'000'000-line parse. The iteration time is the measured gap; a repetition is 20 cancelled parses.                                                                                |
+| `Stream Mode write-to-row latency`                                        | Write-to-row latency over a `TailingBytesProducer` + `JsonParser::ParseStreaming` chain: 100 lines at 10 ms. The iteration time is the median latency; the 95th percentile and the maximum are counters.                                                 |
+| `Decompress + parse (...)`, `Baseline`, `LoadFile`                        | `DecompressingByteSource` + `ParseFile` on a 250'000-line (~43 MiB) JSONL fixture per codec (gzip, bzip2, xz single-block, xz multi-block, zstd), the uncompressed parse baseline, and `LoadFile` on the plain file. MB/s is over the file that is read. |
+| `WriteSessionBundle`, `Decompress and parse session bundle`, `Round-trip` | Encode, decode and round-trip a 250'000-row JSON bundle at zstd level 3. Throughput is over the uncompressed size; bundle size is a counter.                                                                                                             |
+| `EnumRowPredicate`, `CallbackStringRowPredicate`                          | Predicate scans over 1'000'000 enum or string rows (`region` keeps the column Enumeration; a level-named key would auto-flip it to `Level`).                                                                                                             |
+| `CompareRows ...`, `SortPermutationByColumn ...`                          | Sorts over 1'000'000 `Type::Enumeration` rows with an `EnumDictRank` cache and over `Type::Level` rows with the pre-materialised `LevelRankCache`.                                                                                                       |
+| `FilterAcceptedRows ...`                                                  | The parallel evaluator on a single enum leaf, a flat AND of four leaves and an AND(OR, NOT) tree that takes the bitset path.                                                                                                                             |
+| `HistogramBucketIndex ...`                                                | Rebuilding the index over 1'000'000 rows at one-second and one-minute buckets, the live-tail append and `AutoBucketSize`.                                                                                                                                |
+| `apptest_session_tabs_bench`                                              | Two 100,000-row JSONL tabs with 1,000 anchors each and visible shared docks. 10 warm-up + 50 measured activations. Hard-fails when p95 > 100 ms. Prints hardware class, row counts, dock visibility, and p50/p95.                                        |
 
 <!-- markdownlint-enable MD055 MD060 -->
 
 ### Running
 
-Benchmarks are tagged `[.][benchmark]` in Catch2 and registered under the `benchmark` CTest label. The `release` test preset filters that label out, so they only run when you explicitly opt in via the dedicated `release-benchmark` test preset (or its `relwithdebinfo-benchmark` sibling, useful when attaching a profiler). Both presets bake in `output.verbosity = verbose`, so the `WARN` lines with throughput and latency show up in the CTest log without needing `-V`:
+The `release` test preset filters the `benchmark` label out, so benchmarks only run when you opt in with the dedicated `release-benchmark` test preset (or `relwithdebinfo-benchmark`):
 
 ```sh
-ctest --preset release-benchmark            # all parser benchmarks, verbose
-ctest --preset release-benchmark -R large   # one fixture, by CTest-registered name regex
+ctest --preset release-benchmark            # all benchmarks, verbose
 ctest --preset relwithdebinfo-benchmark     # release optimisations + debug info
 ```
 
-Catch2-direct invocations with `--reporter compact` for tight ad-hoc sweeps (no preset wrapping; you choose the tags):
+To run only some library benchmarks, set the environment variable `BENCHMARK_FILTER` (a regular expression on the benchmark name) before `ctest`; Google Benchmark reads its flags from environment variables named `BENCHMARK_<FLAG>`:
 
 ```sh
-build/release/bin/Release/tests "[benchmark]" --reporter compact
-build/release/bin/Release/tests "[large],[wide]" --reporter compact   # regression-gating subset
-build/release/bin/Release/tests "[large]" --reporter compact          # one fixture
+BENCHMARK_FILTER="JSON" ctest --preset release-benchmark -R loglib_benchmarks
 ```
 
-The path above assumes the `release` preset on Linux/macOS; on multi-config generators (Visual Studio) substitute the active configuration for `Release`. The Catch2 hidden-by-default tag (`[.]`) requires an explicit filter — picking any tag is enough.
+In PowerShell, set `$env:BENCHMARK_FILTER = "JSON"` first. `loglib_benchmarks --benchmark_list_tests` prints every name.
 
-### WARN-line convention
+The figures are also written as JSON to `benchmark-results/loglib_benchmarks.json` in the build tree (for example `build/release/benchmark-results/`). Each run overwrites the file, so copy it next to the log if you want to keep it.
 
-Throughput, fast-path fraction, and cancellation latency are reported via Catch2's `WARN` macro so they appear in the output even on success. The streaming-to-`LogTable` cases (`[large]`, `[wide]`) emit three `WARN` lines per case via `RunStreamingBenchmark`:
+### Comparing two builds
 
-1. **Warm-up MB/s** — single cold-cache run; informative context but **not** the regression-gate number.
-1. **`LogTable::AppendBatch` wall-time per 100 k lines** — the GUI-thread cost of consuming the streamed batches (printed once, sourced from the warm-up run).
-1. **`RunTimedSamples` summary** — mean / low / high / stddev MB/s and lines/s across N samples (4 for the heavy fixtures).
+Save the verbose log and the JSON file of each run, then compare with `scripts/bench_compare.py`:
 
-The **steady-state MB/s mean from `RunTimedSamples` — not the warm-up MB/s** — is the canonical regression-gate input. The warm-up's run-to-run variance from cache and scheduling effects easily masks single-digit-percent code changes, which is why the gate is anchored on the timed samples.
+```sh
+ctest --preset release-benchmark -V > before1.log
+cp build/release/benchmark-results/loglib_benchmarks.json before1.json
+python -I scripts/bench_compare.py --before before1.json before1.log before2.json before2.log --after after1.json after1.log after2.json after2.log
+```
+
+It reads the library figures from the JSON files (the median real time and, where reported, the median bytes and items per second) and the GUI figures from the `QDEBUG` lines of the logs. With several files per side it compares medians. Positive means better. Figures more than 3 % worse are marked `!!` and the exit code is 1. To settle a flagged figure in code a change does not touch, copy `loglib_benchmarks` from each build to its own name, run them alternately with `--benchmark_filter=<regex> --benchmark_out=<file>.json --benchmark_out_format=json`, and compare the two sets.
+
+CI uploads the JSON file and the verbose log of each platform as workflow artifacts on pushes to `main`, so a later change can be compared against them. CI does not gate on the figures, because shared runners are too noisy.
 
 ### Acceptance bar
 
-> **Note:** the bar below is a **manual review convention**, not an automated CI gate. The CI `release-benchmark` step runs the benchmarks and prints the WARN lines; reviewers (and the PR author, in the description / commit message) compare the printed numbers against the prior commit's. There is no script that fails the build on a regression — a machine-readable CSV emitter that wires into a CI compare-against-baseline step is filed as a follow-up. Until that lands, please paste the relevant WARN lines into your PR description so the reviewer can spot a regression at a glance.
+> **Note:** the bar below is a **manual review convention**, not an automated CI gate. The author runs the benchmarks on an idle machine before and after the change and quotes the `scripts/bench_compare.py` output in the PR description.
 
-The convention is to capture both **before** (clean-tree baseline) and **after** (your branch tip) numbers for each gating fixture and quote them in the commit message or PR description:
+Capture **before** (clean-tree baseline) and **after** (your branch tip) numbers, at least two runs before and three after, and quote them in the commit message or PR description:
 
-- `[large]` and `[wide]` — steady-state throughput mean within ±3 % of the prior commit, or a documented architectural justification. Use MB/s generally and lines/s when comparing regex formats whose bytes per record differ.
-- `[java_multiline]` and `[untilNextHeader]` carry the `[large]` tag and use the same manual ±3 % before/after convention. `[header_anchor]` separately enforces its 1.03× parse-loop throughput floor.
-- `[allocations]` — `string_view` fast-path fraction ≥ 99 %.
-- `[cancellation]` — p95 latency within ±3 % of the prior commit's number.
-- `[stream_latency]` — median ≤ 250 ms and p95 ≤ 500 ms (the test fails on a regression rather than relying on a manual review compare). Stream-Mode PRs must also re-run `[large]` / `[wide]` / `[allocations]` / `[cancellation]` and record the numbers, since the static-path machinery and the Stream-Mode seam share the same parser and `LogTable` plumbing.
-- `[session_tabs]` — tab-switch p95 ≤ 100 ms on two 100,000-row tabs with 1,000 anchors each and visible shared docks (10 warm-up switches, 50 measured). Also stay within 20 % of the controlled-CI baseline once that number is recorded in the PR. The test prints hardware class on every run; do not disable it if a machine misses 100 ms.
-- `[session_bundle]` — compare write, read, and round-trip WARN lines before/after changes to bundle serialization, reading, or UI export/open paths. No hard ceiling is enforced yet.
-- `[log_filter][large]` and `[log_filter][log_compare][large]` — each test hard-fails on a regression past its built-in ceiling (100 ms / 200 ms / linear-ish sort time). PRs touching `loglib::RowPredicate`, `EnumDictRank`, or `LogFilterModel::lessThan` should still paste the WARN lines so a within-bar regression is visible.
-- `[log_filter][log_compare][large][level]` — Level-typed siblings with their own ceilings (500 ms for the parallel `SortPermutationByColumn`, 2000 ms for the per-compare `CompareRows`/`CompareLevel`). PRs touching `GetLevelForRow`, `LevelRankCache` invalidation, or the `Type::Level` arm of `SortPermutationByColumn` should paste these WARN lines too.
+- Streaming and wide fixtures, `GetValue`, filter, sort, histogram and decompression figures — median within ±3 % of the prior commit, or a documented architectural justification. Use MB/s generally and lines/s when comparing regex formats whose bytes per record differ.
+- `Allocation footprint ...` — `string_view` fast-path fraction ≥ 99 %.
+- `Cancellation latency ...` — median within ±3 % of the prior commit's number. Cancellation latency and the wide logfmt figure are known to be noisy.
+- `Stream Mode write-to-row latency` — report the median and the 95th percentile. Stream-Mode PRs must also re-run the large and wide fixtures, the allocation and the cancellation figures, since the static-path machinery and the Stream-Mode seam share the same parser and `LogTable` plumbing.
+- `apptest_session_tabs_bench` — tab-switch p95 ≤ 100 ms on two 100,000-row tabs with 1,000 anchors each and visible shared docks (10 warm-up switches, 50 measured). Also stay within 20 % of the controlled-CI baseline once that number is recorded in the PR. The test prints hardware class on every run; do not disable it if a machine misses 100 ms.
+- Session bundle figures — compare write, read and round-trip before and after changes to bundle serialization, reading, or UI export/open paths.
+- Predicate, sort and filter figures — PRs touching `loglib::RowPredicate`, `EnumDictRank`, `LogFilterModel::lessThan`, `GetLevelForRow`, `LevelRankCache` invalidation or `SortPermutationByColumn` quote the matching figures.
 
 ## Code style and pre-commit
 

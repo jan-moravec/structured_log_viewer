@@ -1,11 +1,10 @@
-// Session-bundle export / import benchmarks. Uses the same
-// `[large]`-style pinned RNG seeded fixture as the parser benchmarks
-// so run-over-run numbers are directly comparable. See CONTRIBUTING.md
-// `## Benchmarking` for the PR process.
+// Session-bundle export / import benchmarks. Uses the same pinned-seed fixture as the parser benchmarks so
+// run-over-run numbers are directly comparable. See CONTRIBUTING.md ## Benchmarking for the PR process.
 
 #include "parse_only.hpp"
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 #include "common.hpp"
 
 #include <loglib/core/log_data.hpp>
@@ -20,22 +19,34 @@
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 using namespace loglib;
-using namespace bench;
+
+namespace bench
+{
 
 namespace
 {
 
-/// RAII bundle path that also removes unique staging siblings.
+// 250'000 lines (about 43 MiB of JSONL). The write benchmark takes about a second per run, so a benchmark with its
+// warm-up and five repetitions stays within the time budget.
+constexpr std::size_t BUNDLE_RECORDS = 250'000;
+
+/**
+ * RAII bundle path that also removes unique staging siblings.
+ */
 class TempBundlePath
 {
 public:
@@ -104,138 +115,190 @@ private:
     std::filesystem::path mPath;
 };
 
-/// Build a large `LogTable` from a JSON fixture identical (bytes) to
-/// the `[large]` parser benchmarks -- same seed, timestamps, and
-/// record shape. Requires timezone init for the timestamp columns.
-loglib::LogTable BuildLargeJsonTable(std::size_t &outBytes, std::size_t &outRecordCount)
+// A large LogTable built from a JSON fixture with the same seed, timestamps and record shape as the parser
+// benchmarks. The fixture file stays alive because the table reads from it. Requires timezone init for the timestamp
+// columns.
+struct TableFixture
 {
-    const TestStructuredLogFile testFile(
+    std::unique_ptr<TestStructuredLogFile> file;
+    std::unique_ptr<LoadResult> loaded;
+    std::size_t bytes = 0;
+    std::size_t recordCount = 0;
+
+    LogTable &Table() const
+    {
+        return loaded->table;
+    }
+};
+
+std::unique_ptr<TableFixture> BuildLargeJsonTable()
+{
+    auto fixture = std::make_unique<TableFixture>();
+    fixture->file = std::make_unique<TestStructuredLogFile>(
         StreamedRecords{
-            .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+            .count = BUNDLE_RECORDS,
+            .seed = LARGE_FIXTURE_SEED,
+            .timestamps = DeterministicBenchmarkTimestamps(),
         },
-        test_common::JsonLines()
+        test_common::JsonLines(),
+        test_common::RecordSchema{},
+        "bench_session_bundle.jsonl"
     );
-    outBytes = std::filesystem::file_size(testFile.GetFilePath());
-    outRecordCount = testFile.RecordCount();
+    fixture->bytes = std::filesystem::file_size(fixture->file->GetFilePath());
+    fixture->recordCount = fixture->file->RecordCount();
 
     InitializeTimezoneData();
 
-    LoadResult loaded = LoadFile(testFile.GetFilePath());
-    REQUIRE(loaded.errors.empty());
-    REQUIRE(loaded.table.RowCount() == outRecordCount);
-    return std::move(loaded.table);
+    fixture->loaded = std::make_unique<LoadResult>(LoadFile(fixture->file->GetFilePath()));
+    if (!fixture->loaded->errors.empty() || fixture->loaded->table.RowCount() != fixture->recordCount)
+    {
+        throw std::runtime_error("the bundle fixture did not load");
+    }
+    return fixture;
 }
+
+using SharedTable = std::shared_ptr<LazyInput<TableFixture>>;
+
+struct BundleInput
+{
+    SharedTable table;
+    // Encoded once at level 3 (writer default) so the read benchmark measures pure decode + rehydrate cost.
+    std::unique_ptr<TempBundlePath> bundlePath;
+    std::size_t compressedBytes = 0;
+};
+
+SessionBundleWriteOptions WriteOptions()
+{
+    SessionBundleWriteOptions opts;
+    opts.compressionLevel = 3;
+    opts.totalWorkers = 0;
+    return opts;
+}
+
+// Decodes a bundle and parses its rows; true when the metadata and the parse agree with @p recordCount.
+bool DecodeAndParse(const std::filesystem::path &bundle, std::size_t recordCount)
+{
+    DecompressingByteSource::Options options;
+    options.discardFirstLine = true;
+    const DecompressingByteSource decoded(bundle, {}, {}, options);
+    const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
+    if (metadata.rowCount != recordCount)
+    {
+        return false;
+    }
+    const ParseResult parsed = ParseFile(decoded.EffectivePath());
+    return parsed.errors.empty() && parsed.data.Lines().size() == recordCount;
+}
+
+void SetBundleCounters(benchmark::State &state, const TableFixture &fixture)
+{
+    // MB/s over the *uncompressed* input size, matching the parse benchmarks, so ratios show the codec speed relative
+    // to raw log volume.
+    const auto iterations = static_cast<std::int64_t>(state.iterations());
+    state.SetBytesProcessed(iterations * static_cast<std::int64_t>(fixture.bytes));
+    state.SetItemsProcessed(iterations * static_cast<std::int64_t>(fixture.recordCount));
+}
+
+struct TableOnly
+{
+    SharedTable table;
+};
 
 } // namespace
 
-// Bundle-write throughput: mirrors `[json_parser][large]` in fixture
-// size + seed so numbers are directly comparable to the parse path.
-// Level `3` is the writer's default; the harness reports MB/s over the
-// uncompressed input size so it stays comparable to the parse benchmarks.
-TEST_CASE("Write session bundle (JSON, 1'000'000 lines)", "[.][benchmark][session_bundle][write]")
+void RegisterSessionBundleBenchmarks()
 {
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
+    const SharedTable table = MakeLazy<TableFixture>(BuildLargeJsonTable);
 
-    std::size_t bytes = 0;
-    std::size_t recordCount = 0;
-    LogTable table = BuildLargeJsonTable(bytes, recordCount);
+    // Bundle-write throughput. Level 3 is the writer's default.
+    RegisterLarge<TableOnly>(
+        "WriteSessionBundle 250'000 JSON entries (level=3, single-threaded)",
+        [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
+        [](TableOnly &input, benchmark::State &state, bool first) {
+            const TableFixture &fixture = input.table->Get();
+            const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
+            std::size_t compressed = 0;
+            const auto writeOnce = [&] {
+                const TempBundlePath dest;
+                WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions());
+                compressed = std::filesystem::file_size(dest.Path());
+            };
+            if (first)
+            {
+                writeOnce();
+            }
+            for (const auto _ : state)
+            {
+                writeOnce();
+            }
+            SetBundleCounters(state, fixture);
+            state.counters["bundle_MiB"] = static_cast<double>(compressed) / (1024.0 * 1024.0);
+            state.counters["compression_ratio"] =
+                static_cast<double>(fixture.bytes) / static_cast<double>(compressed == 0 ? 1 : compressed);
+        }
+    );
 
-    const LogConfiguration &cfg = table.Configuration().Configuration();
-
-    RunTimedSamples(
-        "WriteSessionBundle 1'000'000 JSON entries (level=3, single-threaded)",
-        3,
-        {.bytes = bytes, .lines = recordCount},
-        [&]() {
-            const TempBundlePath dest;
-            SessionBundleWriteOptions opts;
-            opts.compressionLevel = 3;
-            opts.totalWorkers = 0;
-            WriteSessionBundle(table, cfg, dest.Path(), opts);
-            const std::size_t compressed = std::filesystem::file_size(dest.Path());
-            WARN(
-                "Bundle size: " << (static_cast<double>(compressed) / (1024.0 * 1024.0)) << " MiB (ratio "
-                                << (static_cast<double>(bytes) / static_cast<double>(compressed == 0 ? 1 : compressed))
-                                << "x)"
+    // Bundle-read throughput.
+    RegisterLarge<BundleInput>(
+        "Decompress and parse session bundle (250'000 JSON entries)",
+        [table] {
+            auto input = std::make_unique<BundleInput>();
+            input->table = table;
+            const TableFixture &fixture = table->Get();
+            input->bundlePath = std::make_unique<TempBundlePath>();
+            WriteSessionBundle(
+                fixture.Table(),
+                fixture.Table().Configuration().Configuration(),
+                input->bundlePath->Path(),
+                WriteOptions()
             );
+            input->compressedBytes = std::filesystem::file_size(input->bundlePath->Path());
+            return input;
+        },
+        [](BundleInput &input, benchmark::State &state, bool first) {
+            const TableFixture &fixture = input.table->Get();
+            bool ok = !first || DecodeAndParse(input.bundlePath->Path(), fixture.recordCount);
+            for (const auto _ : state)
+            {
+                ok = DecodeAndParse(input.bundlePath->Path(), fixture.recordCount);
+            }
+            if (!ok)
+            {
+                Fail(state, "the bundle did not decode to the written rows");
+                return;
+            }
+            SetBundleCounters(state, fixture);
+            state.counters["bundle_MiB"] = static_cast<double>(input.compressedBytes) / (1024.0 * 1024.0);
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
+    );
+
+    // End-to-end round-trip: encode + decode back-to-back. Approximates the "share and re-open" user story so the
+    // aggregate wall time is actionable.
+    RegisterLarge<TableOnly>(
+        "Round-trip 250'000 JSON entries (write + read)",
+        [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
+        [](TableOnly &input, benchmark::State &state, bool first) {
+            const TableFixture &fixture = input.table->Get();
+            const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
+            const auto roundTrip = [&] {
+                const TempBundlePath dest;
+                WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions());
+                return DecodeAndParse(dest.Path(), fixture.recordCount);
+            };
+            bool ok = !first || roundTrip();
+            for (const auto _ : state)
+            {
+                ok = roundTrip();
+            }
+            if (!ok)
+            {
+                Fail(state, "the round trip changed the rows");
+                return;
+            }
+            SetBundleCounters(state, fixture);
         }
     );
 }
 
-// Bundle-read throughput. Report MB/s over the *uncompressed* input
-// size (matches the write benchmark) so ratios show the codec's decode
-// speed relative to raw log volume.
-TEST_CASE("Read session bundle (JSON, 1'000'000 lines)", "[.][benchmark][session_bundle][read]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    std::size_t bytes = 0;
-    std::size_t recordCount = 0;
-    LogTable table = BuildLargeJsonTable(bytes, recordCount);
-
-    const LogConfiguration &cfg = table.Configuration().Configuration();
-
-    // Encode once at level 3 (writer default) so the read benchmark
-    // measures pure decode + rehydrate cost, not encode variance.
-    const TempBundlePath bundlePath;
-    {
-        SessionBundleWriteOptions opts;
-        opts.compressionLevel = 3;
-        opts.totalWorkers = 0;
-        WriteSessionBundle(table, cfg, bundlePath.Path(), opts);
-    }
-    const std::size_t compressed = std::filesystem::file_size(bundlePath.Path());
-    WARN(
-        "Bundle on-disk size: " << (static_cast<double>(compressed) / (1024.0 * 1024.0)) << " MiB (compressed) vs "
-                                << (static_cast<double>(bytes) / (1024.0 * 1024.0)) << " MiB (uncompressed)"
-    );
-
-    RunTimedSamples(
-        "Decompress and parse session bundle (1'000'000 JSON entries)",
-        3,
-        {.bytes = bytes, .lines = recordCount},
-        [&]() {
-            DecompressingByteSource::Options options;
-            options.discardFirstLine = true;
-            const DecompressingByteSource decoded(bundlePath.Path(), {}, {}, options);
-            const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
-            REQUIRE(metadata.rowCount == recordCount);
-            const ParseResult parsed = ParseFile(decoded.EffectivePath());
-            REQUIRE(parsed.errors.empty());
-            REQUIRE(parsed.data.Lines().size() == recordCount);
-        }
-    );
-}
-
-// End-to-end round-trip: encode + decode back-to-back. Approximates
-// the "share and re-open" user story so the aggregate wall time is
-// actionable (e.g. "sharing a 1M-line session takes <N> seconds").
-TEST_CASE("Round-trip session bundle (JSON, 1'000'000 lines)", "[.][benchmark][session_bundle][round_trip]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    std::size_t bytes = 0;
-    std::size_t recordCount = 0;
-    LogTable table = BuildLargeJsonTable(bytes, recordCount);
-
-    const LogConfiguration &cfg = table.Configuration().Configuration();
-
-    RunTimedSamples(
-        "Round-trip 1'000'000 JSON entries (write + read)", 3, {.bytes = bytes, .lines = recordCount}, [&]() {
-            const TempBundlePath dest;
-            SessionBundleWriteOptions writeOpts;
-            writeOpts.compressionLevel = 3;
-            writeOpts.totalWorkers = 0;
-            WriteSessionBundle(table, cfg, dest.Path(), writeOpts);
-
-            DecompressingByteSource::Options options;
-            options.discardFirstLine = true;
-            const DecompressingByteSource decoded(dest.Path(), {}, {}, options);
-            const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
-            REQUIRE(metadata.rowCount == recordCount);
-            const ParseResult parsed = ParseFile(decoded.EffectivePath());
-            REQUIRE(parsed.errors.empty());
-            REQUIRE(parsed.data.Lines().size() == recordCount);
-        }
-    );
-}
+} // namespace bench

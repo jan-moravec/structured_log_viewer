@@ -13,6 +13,55 @@ coverage:
         if_ci_failed: success
         informational: true
 
+# Coverage is reported per directory. The library is the only blocking status: its project coverage may not fall more
+# than 1 % below the base commit. The other statuses only report.
+component_management:
+  individual_components:
+    - component_id: lib
+      name: lib
+      paths:
+        - lib/
+      statuses:
+        - type: project
+          target: auto
+          threshold: 1%
+          if_ci_failed: success
+          informational: false
+        - type: patch
+          target: 80%
+          if_ci_failed: success
+          informational: true
+    - component_id: cli
+      name: cli
+      paths:
+        - cli/
+      statuses:
+        - type: project
+          target: auto
+          threshold: 5%
+          if_ci_failed: success
+          informational: true
+        - type: patch
+          target: auto
+          threshold: 50%
+          if_ci_failed: success
+          informational: true
+    - component_id: app
+      name: app
+      paths:
+        - app/
+      statuses:
+        - type: project
+          target: auto
+          threshold: 5%
+          if_ci_failed: success
+          informational: true
+        - type: patch
+          target: auto
+          threshold: 50%
+          if_ci_failed: success
+          informational: true
+
 comment:
   layout: "reach,diff,flags,files"
   behavior: default

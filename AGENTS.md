@@ -86,9 +86,10 @@ Keep the preset name consistent across stages. Build before running a filtered t
 
 ```sh
 cmake --build --preset release
-ctest --preset release -R log_table            # CTest test-name regex
-ctest --preset release -L regex_templates      # CTest label
-ctest --preset release -R log_table -V         # verbose failure reproduction
+ctest --preset release -R LogTable             # CTest test-name regex (Catch case names)
+ctest --preset release -L regex_templates      # CTest label (every Catch tag is a label)
+ctest --preset release -L network              # socket cases; -L fs-events selects the file-event cases
+ctest --preset release -L log_table -V         # verbose failure reproduction
 ```
 
 ## CLI tests

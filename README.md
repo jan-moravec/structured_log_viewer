@@ -120,7 +120,8 @@ Distributed binaries also include a `THIRD_PARTY_LICENSES.txt` aggregating the l
 - [uxlfoundation/oneTBB](https://github.com/uxlfoundation/oneTBB) — Threading Building Blocks (parallel parsing pipeline)
 - [chriskohlhoff/asio](https://github.com/chriskohlhoff/asio) — standalone Asio (cross-platform networking for the TCP/UDP producers)
 - [openssl/openssl](https://github.com/openssl/openssl) — TLS support for the TCP server producer (optional, gated by `LOGLIB_NETWORK_TLS=ON`)
-- [catchorg/Catch2](https://github.com/catchorg/Catch2) — unit testing and benchmarking
+- [catchorg/Catch2](https://github.com/catchorg/Catch2) — unit testing
+- [google/benchmark](https://github.com/google/benchmark) — library benchmarks
 - [PCRE2](https://github.com/PCRE2Project/pcre2) — regex engine (PCRE2-8 with JIT) backing the regex-template log format
 - [lnav](https://github.com/tstack/lnav) (BSD-2-Clause) — reference patterns for the built-in syslog / Apache / glog / PostgreSQL / MySQL / HAProxy / Zap / Rails / Redis / Java / spdlog / env_logger regex templates
 - [logstash-plugins/logstash-patterns-core](https://github.com/logstash-plugins/logstash-patterns-core) (Apache-2.0) — reference grok patterns informing the built-in regex catalog (Cisco ASA, BIND9, iptables, Squid, AWS S3 / Classic ELB / CloudFront, NetScreen, Exim, MongoDB)

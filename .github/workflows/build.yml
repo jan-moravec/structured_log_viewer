@@ -253,7 +253,23 @@ jobs:
 
       - name: Run parser benchmarks
         if: env.SLV_LTO == 'ON'
-        run: ctest --preset release-benchmark
+        run: |
+          if ! ctest --preset release-benchmark -V > benchmark-linux.log 2>&1; then
+            tail -n 200 benchmark-linux.log
+            exit 1
+          fi
+
+      - name: Upload benchmark results
+        # Kept on main so figures can be compared later with scripts/bench_compare.py. Shared runners are too noisy to
+        # gate on them.
+        if: always() && env.SLV_LTO == 'ON' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-results-linux
+          path: |
+            benchmark-linux.log
+            build/release/benchmark-results/loglib_benchmarks.json
+          if-no-files-found: warn
 
       - name: Package AppImage
         run: scripts/ci/package-appimage.sh
@@ -334,7 +350,21 @@ jobs:
 
       - name: Run parser benchmarks
         if: env.SLV_LTO == 'ON'
-        run: ctest --preset release-benchmark
+        run: |
+          ctest --preset release-benchmark -V *> benchmark-windows.log
+          if ($LASTEXITCODE -ne 0) { Get-Content benchmark-windows.log -Tail 200; exit 1 }
+
+      - name: Upload benchmark results
+        # Kept on main so figures can be compared later with scripts/bench_compare.py. Shared runners are too noisy to
+        # gate on them.
+        if: always() && env.SLV_LTO == 'ON' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-results-windows
+          path: |
+            benchmark-windows.log
+            build/release/benchmark-results/loglib_benchmarks.json
+          if-no-files-found: warn
 
       - name: Package application
         run: scripts/ci/package-windows.ps1
@@ -392,7 +422,23 @@ jobs:
 
       - name: Run parser benchmarks
         if: env.SLV_LTO == 'ON'
-        run: ctest --preset release-benchmark
+        run: |
+          if ! ctest --preset release-benchmark -V > benchmark-macos.log 2>&1; then
+            tail -n 200 benchmark-macos.log
+            exit 1
+          fi
+
+      - name: Upload benchmark results
+        # Kept on main so figures can be compared later with scripts/bench_compare.py. Shared runners are too noisy to
+        # gate on them.
+        if: always() && env.SLV_LTO == 'ON' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-results-macos
+          path: |
+            benchmark-macos.log
+            build/release/benchmark-results/loglib_benchmarks.json
+          if-no-files-found: warn
 
       - name: Package DMG
         run: scripts/ci/package-macos.sh

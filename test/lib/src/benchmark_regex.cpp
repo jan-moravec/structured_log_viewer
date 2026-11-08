@@ -1,16 +1,12 @@
-// RegexParser benchmarks; mirror of `[json_parser]` /
-// `[logfmt_parser]` / `[csv_parser]` `[large]` via the shared
-// `benchmark_common.hpp`. One `[large]` case per shipped
-// `test_common::LogFormat` synthesizer, so each streams lines that
-// the corresponding real `RegexTemplate` pattern parses (rather
-// than the retired bracketed-regex placeholder).
+// RegexParser benchmarks; mirror of the JSON, logfmt and CSV large streaming benchmarks via the shared
+// benchmark_common.hpp. One large benchmark per shipped test_common::LogFormat synthesizer, so each streams lines
+// that the corresponding real RegexTemplate pattern parses.
 //
-// Lines/s is the primary regression-gate metric and is directly
-// comparable across templates. MB/s isn't — each format's
-// per-record punctuation lands files at different byte sizes.
-// See CONTRIBUTING.md `## Benchmarking`.
+// Lines/s is the primary regression-gate metric and is directly comparable across templates. MB/s isn't -- each
+// format's per-record punctuation lands files at different byte sizes. See CONTRIBUTING.md ## Benchmarking.
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 #include "common.hpp"
 
 #include <loglib/core/file_line_source.hpp>
@@ -22,156 +18,68 @@
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
-#include <filesystem>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace loglib;
-using namespace bench;
+
+namespace bench
+{
 
 namespace
 {
-
-/// Shared per-template streaming benchmark. Materialises a 1M-line
-/// fixture through @p factory, then drives @p templateName's
-/// pattern via `RegexParser::ParseStreaming` through the shared
-/// harness.
-///
-/// The pattern is copied into a local `std::string` so the closure
-/// captures a reference that outlives every `RunStreamingFlow`
-/// sample. Registry storage is process-lifetime, but a defensive
-/// owned copy keeps the closure state-free.
-void RunRegexTemplateBenchmark(
-    std::string_view templateName,
-    test_common::LogFormat (*factory)(),
-    const char *label,
-    const std::filesystem::path &logPath,
-    std::size_t lines,
-    std::size_t samples
-)
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const RegexTemplate *tmpl = FindTemplateByName(templateName);
-    REQUIRE(tmpl != nullptr);
-    // Owned copy: the closure captures by reference; this string
-    // outlives every `RegexParser::ParseStreaming` invocation.
-    const std::string pattern{tmpl->pattern};
-
-    const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
-
-    const TestStructuredLogFile testFile(
-        StreamedRecords{.count = lines, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
-        factory(),
-        test_common::RecordSchema{},
-        logPath.string()
-    );
-    const std::size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration configFile;
-    configFile.Write(*configuration);
-
-    const ParserStreamFn parserStream =
-        [&pattern, tmpl](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-            RegexParser{pattern, tmpl->continuationMode, tmpl->headerAnchor}.ParseStreaming(source, sink, options);
-        };
-
-    RunStreamingBenchmark(
-        label,
-        configFile.GetFilePath(),
-        testFile.GetFilePath(),
-        configuration,
-        parserStream,
-        testFile.RecordCount(),
-        bytes,
-        samples
-    );
-}
 
 constexpr std::size_t REGEX_BENCH_LINES = 1'000'000;
-constexpr std::size_t REGEX_BENCH_SAMPLES = 4;
 
-} // namespace
-
-TEST_CASE("Stream Syslog (RFC3164) log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]")
-{
-    RunRegexTemplateBenchmark(
-        "Syslog (RFC3164)",
-        &test_common::SyslogRfc3164Format,
-        "Stream 1'000'000 Syslog (RFC3164) entries to LogTable",
-        "bench_regex_syslog.log",
-        REGEX_BENCH_LINES,
-        REGEX_BENCH_SAMPLES
-    );
-}
-
-TEST_CASE(
-    "Stream Apache/nginx Combined Log Format log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]"
+// Streams a fixture produced by @p factory through the shipped template called @p templateName. The pattern is copied
+// into a local string so the parser closure outlives every run.
+StreamingFixture MakeTemplateFixture(
+    std::string_view templateName, test_common::LogFormat (*factory)(), const std::string &fileName
 )
 {
-    RunRegexTemplateBenchmark(
-        "Apache/nginx Combined Log Format",
-        &test_common::ApacheCombinedFormat,
-        "Stream 1'000'000 Apache/nginx Combined entries to LogTable",
-        "bench_regex_apache_combined.log",
-        REGEX_BENCH_LINES,
-        REGEX_BENCH_SAMPLES
-    );
+    const RegexTemplate *tmpl = FindTemplateByName(templateName);
+    if (tmpl == nullptr)
+    {
+        throw std::runtime_error("regex template not found: " + std::string(templateName));
+    }
+    const std::string pattern{tmpl->pattern};
+    const ContinuationMode continuation = tmpl->continuationMode;
+    const std::string headerAnchor{tmpl->headerAnchor};
+    return StreamingFixture{
+        .logFile = std::make_unique<TestStructuredLogFile>(
+            StreamedRecords{
+                .count = REGEX_BENCH_LINES,
+                .seed = LARGE_FIXTURE_SEED,
+                .timestamps = DeterministicBenchmarkTimestamps(),
+            },
+            factory(),
+            test_common::RecordSchema{},
+            fileName
+        ),
+        .parser = [pattern, continuation, headerAnchor](
+                      FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                  ) { RegexParser{pattern, continuation, headerAnchor}.ParseStreaming(source, sink, options); },
+    };
 }
 
-TEST_CASE(
-    "Stream Apache/nginx Common Log Format log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]"
+void RegisterTemplateBenchmark(
+    const std::string &name, std::string_view templateName, test_common::LogFormat (*factory)(), std::string fileName
 )
 {
-    RunRegexTemplateBenchmark(
-        "Apache/nginx Common Log Format",
-        &test_common::ApacheCommonFormat,
-        "Stream 1'000'000 Apache/nginx Common entries to LogTable",
-        "bench_regex_apache_common.log",
-        REGEX_BENCH_LINES,
-        REGEX_BENCH_SAMPLES
-    );
+    RegisterStreaming(name, [templateName, factory, fileName = std::move(fileName)] {
+        return MakeTemplateFixture(templateName, factory, fileName);
+    });
 }
-
-TEST_CASE("Stream Apache error log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]")
-{
-    RunRegexTemplateBenchmark(
-        "Apache error log",
-        &test_common::ApacheErrorFormat,
-        "Stream 1'000'000 Apache error entries to LogTable",
-        "bench_regex_apache_error.log",
-        REGEX_BENCH_LINES,
-        REGEX_BENCH_SAMPLES
-    );
-}
-
-TEST_CASE(
-    "Stream Java / log4j / SLF4J Logback log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]"
-)
-{
-    RunRegexTemplateBenchmark(
-        "Java / log4j / SLF4J Logback",
-        &test_common::JavaLogFormat,
-        "Stream 1'000'000 Java / log4j / SLF4J entries to LogTable",
-        "bench_regex_java_log.log",
-        REGEX_BENCH_LINES,
-        REGEX_BENCH_SAMPLES
-    );
-}
-
-namespace
-{
 
 struct EveryN
 {
@@ -260,248 +168,159 @@ test_common::LogFormat PythonTracebackFormat(std::size_t everyN)
 
 constexpr const char PYTHON_TRACEBACK_PATTERN[] =
     R"(^(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): (?<message>.*)$)";
+constexpr const char PYTHON_TRACEBACK_ANCHOR[] = R"(^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): )";
 
-} // namespace
-
-TEST_CASE(
-    "Stream Java multi-line (indented) log to LogTable (1'000'000 records)",
-    "[.][benchmark][regex_parser][large][java_multiline]"
-)
+// Registers one extra Python-traceback template for as long as it lives, and removes it afterwards.
+class ExtraTemplateGuard
 {
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const RegexTemplate *tmpl = FindTemplateByName("Java / log4j / SLF4J Logback");
-    REQUIRE(tmpl != nullptr);
-    REQUIRE(tmpl->continuationMode == ContinuationMode::Indented);
-    const std::string pattern{tmpl->pattern};
-
-    const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
-
-    const TestStructuredLogFile testFile(
-        StreamedRecords{.count = REGEX_BENCH_LINES, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
-        MultilineIndentedFormat(test_common::JavaLogFormat(), /*everyN=*/10),
-        test_common::RecordSchema{},
-        "bench_regex_java_multiline.log"
-    );
-    const std::size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration configFile;
-    configFile.Write(*configuration);
-
-    const ParserStreamFn parserStream =
-        [&pattern, tmpl](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-            RegexParser{pattern, tmpl->continuationMode, tmpl->headerAnchor}.ParseStreaming(source, sink, options);
-        };
-
-    RunStreamingBenchmark(
-        "Stream 1'000'000 Java multi-line (indented) records to LogTable",
-        configFile.GetFilePath(),
-        testFile.GetFilePath(),
-        configuration,
-        parserStream,
-        testFile.RecordCount(),
-        bytes,
-        REGEX_BENCH_SAMPLES
-    );
-}
-
-TEST_CASE(
-    "Stream Python-traceback (UntilNextHeader) log to LogTable (1'000'000 records)",
-    "[.][benchmark][regex_parser][large][untilNextHeader]"
-)
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const std::string pattern{PYTHON_TRACEBACK_PATTERN};
-    const RegexTemplate extra{
-        .name = "test-python-traceback",
-        .pattern = pattern,
-        .sampleLines = {"INFO: hello"},
-        .autoDetect = false,
-        .priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY,
-        .description = "",
-        .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = "",
-    };
-    const std::vector<RegexTemplate> extras{extra};
-    loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
-    struct ExtrasGuard
+public:
+    ExtraTemplateGuard(std::string name, std::string headerAnchor)
+        : mTemplate{
+              .name = std::move(name),
+              .pattern = PYTHON_TRACEBACK_PATTERN,
+              .sampleLines = {"INFO: hello"},
+              .autoDetect = false,
+              .priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY,
+              .description = "",
+              .continuationMode = ContinuationMode::UntilNextHeader,
+              .headerAnchor = std::move(headerAnchor),
+          }
     {
-        ExtrasGuard() = default;
-        ExtrasGuard(const ExtrasGuard &) = delete;
-        ExtrasGuard(ExtrasGuard &&) = delete;
-        ExtrasGuard &operator=(const ExtrasGuard &) = delete;
-        ExtrasGuard &operator=(ExtrasGuard &&) = delete;
-        ~ExtrasGuard()
-        {
-            loglib::SetExtraRegexTemplates({});
-        }
-    };
-    const ExtrasGuard guard;
-    (void)guard;
-
-    const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
-
-    const TestStructuredLogFile testFile(
-        StreamedRecords{.count = REGEX_BENCH_LINES, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
-        PythonTracebackFormat(/*everyN=*/10),
-        test_common::RecordSchema{},
-        "bench_regex_python_traceback.log"
-    );
-    const std::size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration configFile;
-    configFile.Write(*configuration);
-
-    const ParserStreamFn parserStream = [&extra](
-                                            FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                                        ) {
-        RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.ParseStreaming(source, sink, options);
-    };
-
-    RunStreamingBenchmark(
-        "Stream 1'000'000 Python traceback (UntilNextHeader) records to LogTable",
-        configFile.GetFilePath(),
-        testFile.GetFilePath(),
-        configuration,
-        parserStream,
-        testFile.RecordCount(),
-        bytes,
-        REGEX_BENCH_SAMPLES
-    );
-}
-
-TEST_CASE(
-    "Python-traceback (UntilNextHeader) with headerAnchor beats main-pattern probe (1'000'000 records)",
-    "[.][benchmark][regex_parser][large][header_anchor]"
-)
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const std::string pattern{PYTHON_TRACEBACK_PATTERN};
-    const std::string anchor = R"(^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): )";
-
-    const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
-
-    const TestStructuredLogFile testFile(
-        StreamedRecords{.count = REGEX_BENCH_LINES, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
-        PythonTracebackFormat(/*everyN=*/10),
-        test_common::RecordSchema{},
-        "bench_regex_header_anchor.log"
-    );
-    const std::size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration configFile;
-    configFile.Write(*configuration);
-
+        mExtras.push_back(mTemplate);
+        loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(mExtras));
+    }
+    ExtraTemplateGuard(const ExtraTemplateGuard &) = delete;
+    ExtraTemplateGuard(ExtraTemplateGuard &&) = delete;
+    ExtraTemplateGuard &operator=(const ExtraTemplateGuard &) = delete;
+    ExtraTemplateGuard &operator=(ExtraTemplateGuard &&) = delete;
+    ~ExtraTemplateGuard()
     {
-        const RegexTemplate extraNoAnchor{
-            .name = "test-python-traceback-anchor",
-            .pattern = pattern,
-            .sampleLines = {"INFO: hello"},
-            .autoDetect = false,
-            .priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY,
-            .description = "",
-            .continuationMode = ContinuationMode::UntilNextHeader,
-            .headerAnchor = "",
-        };
-        const std::vector<RegexTemplate> extras{extraNoAnchor};
-        loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
-        const ParserStreamFn parserStream =
-            [&extraNoAnchor](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{extraNoAnchor.pattern, extraNoAnchor.continuationMode, extraNoAnchor.headerAnchor}
-                    .ParseStreaming(source, sink, options);
-            };
-        const StreamingRunResult warmup =
-            RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);
-        REQUIRE(warmup.rowCount == testFile.RecordCount());
         loglib::SetExtraRegexTemplates({});
     }
 
-    auto runOneConfig = [&](const std::string &headerAnchor) -> std::chrono::nanoseconds {
-        const RegexTemplate extra{
-            .name = "test-python-traceback-anchor",
-            .pattern = pattern,
-            .sampleLines = {"INFO: hello"},
-            .autoDetect = false,
-            .priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY,
-            .description = "",
-            .continuationMode = ContinuationMode::UntilNextHeader,
-            .headerAnchor = headerAnchor,
-        };
-        const std::vector<RegexTemplate> extras{extra};
-        loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
+    const RegexTemplate &Template() const noexcept
+    {
+        return mTemplate;
+    }
 
-        const ParserStreamFn parserStream =
-            [&extra](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+private:
+    RegexTemplate mTemplate;
+    std::vector<RegexTemplate> mExtras;
+};
+
+StreamingFixture MakePythonTracebackFixture(
+    const std::string &name, const std::string &headerAnchor, const std::string &fileName
+)
+{
+    const auto guard = std::make_shared<ExtraTemplateGuard>(name, headerAnchor);
+    const RegexTemplate &extra = guard->Template();
+    return StreamingFixture{
+        .logFile = std::make_unique<TestStructuredLogFile>(
+            StreamedRecords{
+                .count = REGEX_BENCH_LINES,
+                .seed = LARGE_FIXTURE_SEED,
+                .timestamps = DeterministicBenchmarkTimestamps(),
+            },
+            PythonTracebackFormat(/*everyN=*/10),
+            test_common::RecordSchema{},
+            fileName
+        ),
+        .parser =
+            [guard, &extra](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
                 RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.ParseStreaming(
                     source, sink, options
                 );
-            };
-
-        const StreamingRunResult run =
-            RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);
-        REQUIRE(run.rowCount == testFile.RecordCount());
-        loglib::SetExtraRegexTemplates({});
-        return run.elapsed - run.appendTotal;
+            },
+        .keepAlive = guard,
     };
+}
 
-    // More samples than the standard `REGEX_BENCH_SAMPLES` because
-    // `bestRatio` is min-of-N: a larger sample pool gives min a better
-    // chance of catching a clean run on noisy / shared hosts. 24
-    // samples per config lands the benchmark's total wall-clock cost
-    // around ~30s on a 500 MB/s host, which is well within the
-    // `release-benchmark` step's tolerance.
-    constexpr std::size_t HEADER_ANCHOR_SAMPLES = REGEX_BENCH_SAMPLES * 6;
-    std::vector<std::chrono::nanoseconds> baselineSamples;
-    std::vector<std::chrono::nanoseconds> anchoredSamples;
-    baselineSamples.reserve(HEADER_ANCHOR_SAMPLES);
-    anchoredSamples.reserve(HEADER_ANCHOR_SAMPLES);
-    for (std::size_t i = 0; i < HEADER_ANCHOR_SAMPLES; ++i)
-    {
-        baselineSamples.push_back(runOneConfig(""));
-        anchoredSamples.push_back(runOneConfig(anchor));
-    }
+} // namespace
 
-    const auto meanOf = [](const std::vector<std::chrono::nanoseconds> &s) {
-        const auto sum = std::accumulate(s.begin(), s.end(), std::chrono::nanoseconds::zero());
-        return sum / static_cast<long long>(s.size());
-    };
-    const auto baselineMean = meanOf(baselineSamples);
-    const auto anchoredMean = meanOf(anchoredSamples);
-    // Best-of-N (min elapsed) filters out OS scheduling noise / paging
-    // spikes and reflects the intrinsic parse-loop speed for each
-    // config. Matches the `low = min_element(elapsed)` convention in
-    // `benchmark_log_filter.cpp`. Mean-of-N was flaky as a hard gate
-    // on shared CI hosts (a single outlier sample drags the ratio
-    // through the CHECK floor).
-    const auto baselineBest = *std::ranges::min_element(baselineSamples);
-    const auto anchoredBest = *std::ranges::min_element(anchoredSamples);
+void RegisterRegexBenchmarks()
+{
+    RegisterTemplateBenchmark(
+        "Stream 1'000'000 Syslog (RFC3164) entries to LogTable",
+        "Syslog (RFC3164)",
+        &test_common::SyslogRfc3164Format,
+        "bench_regex_syslog.log"
+    );
+    RegisterTemplateBenchmark(
+        "Stream 1'000'000 Apache/nginx Combined entries to LogTable",
+        "Apache/nginx Combined Log Format",
+        &test_common::ApacheCombinedFormat,
+        "bench_regex_apache_combined.log"
+    );
+    RegisterTemplateBenchmark(
+        "Stream 1'000'000 Apache/nginx Common entries to LogTable",
+        "Apache/nginx Common Log Format",
+        &test_common::ApacheCommonFormat,
+        "bench_regex_apache_common.log"
+    );
+    RegisterTemplateBenchmark(
+        "Stream 1'000'000 Apache error entries to LogTable",
+        "Apache error log",
+        &test_common::ApacheErrorFormat,
+        "bench_regex_apache_error.log"
+    );
+    RegisterTemplateBenchmark(
+        "Stream 1'000'000 Java / log4j / SLF4J entries to LogTable",
+        "Java / log4j / SLF4J Logback",
+        &test_common::JavaLogFormat,
+        "bench_regex_java_log.log"
+    );
 
-    const double bytesMB = static_cast<double>(bytes) / (1024.0 * 1024.0);
-    const double baselineMeanSec = std::chrono::duration<double>(baselineMean).count();
-    const double anchoredMeanSec = std::chrono::duration<double>(anchoredMean).count();
-    const double baselineBestSec = std::chrono::duration<double>(baselineBest).count();
-    const double anchoredBestSec = std::chrono::duration<double>(anchoredBest).count();
-    const double baselineMeanMBps = baselineMeanSec == 0.0 ? 0.0 : bytesMB / baselineMeanSec;
-    const double anchoredMeanMBps = anchoredMeanSec == 0.0 ? 0.0 : bytesMB / anchoredMeanSec;
-    const double baselineBestMBps = baselineBestSec == 0.0 ? 0.0 : bytesMB / baselineBestSec;
-    const double anchoredBestMBps = anchoredBestSec == 0.0 ? 0.0 : bytesMB / anchoredBestSec;
-    const double meanRatio = baselineMeanMBps == 0.0 ? 0.0 : anchoredMeanMBps / baselineMeanMBps;
-    const double bestRatio = baselineBestMBps == 0.0 ? 0.0 : anchoredBestMBps / baselineBestMBps;
-    WARN(
-        "Python-traceback header anchor (parse-loop only): mean baseline (main-pattern probe) "
-        << baselineMeanMBps << " MB/s vs anchored " << anchoredMeanMBps << " MB/s => " << meanRatio
-        << "x mean speedup; best baseline " << baselineBestMBps << " MB/s vs anchored " << anchoredBestMBps
-        << " MB/s => " << bestRatio << "x best speedup"
+    RegisterStreaming("Stream 1'000'000 Java multi-line (indented) records to LogTable", [] {
+        const RegexTemplate *tmpl = FindTemplateByName("Java / log4j / SLF4J Logback");
+        if (tmpl == nullptr || tmpl->continuationMode != ContinuationMode::Indented)
+        {
+            throw std::runtime_error("the Java template is missing or not indented");
+        }
+        const std::string pattern{tmpl->pattern};
+        const std::string headerAnchor{tmpl->headerAnchor};
+        return StreamingFixture{
+            .logFile = std::make_unique<TestStructuredLogFile>(
+                StreamedRecords{
+                    .count = REGEX_BENCH_LINES,
+                    .seed = LARGE_FIXTURE_SEED,
+                    .timestamps = DeterministicBenchmarkTimestamps(),
+                },
+                MultilineIndentedFormat(test_common::JavaLogFormat(), /*everyN=*/10),
+                test_common::RecordSchema{},
+                "bench_regex_java_multiline.log"
+            ),
+            .parser = [pattern,
+                       headerAnchor](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+                RegexParser{pattern, ContinuationMode::Indented, headerAnchor}.ParseStreaming(source, sink, options);
+            },
+        };
+    });
+
+    RegisterStreaming("Stream 1'000'000 Python traceback (UntilNextHeader) records to LogTable", [] {
+        return MakePythonTracebackFixture("test-python-traceback", "", "bench_regex_python_traceback.log");
+    });
+
+    // The header anchor lets the parser recognise a header line without running the full pattern. The two
+    // benchmarks parse the same file with and without the anchor and time only the parse loop (LogTable::AppendBatch
+    // excluded), so the gap between them is the speedup of the anchor.
+    RegisterStreaming(
+        "Python-traceback header anchor (parse-loop only): baseline (main-pattern probe)",
+        [] {
+            return MakePythonTracebackFixture("test-python-traceback-anchor", "", "bench_regex_header_baseline.log");
+        },
+        /*parseLoopOnly=*/true,
+        FAST_LARGE_ITERATIONS
+    );
+    RegisterStreaming(
+        "Python-traceback header anchor (parse-loop only): anchored",
+        [] {
+            return MakePythonTracebackFixture(
+                "test-python-traceback-anchor", PYTHON_TRACEBACK_ANCHOR, "bench_regex_header_anchored.log"
+            );
+        },
+        /*parseLoopOnly=*/true,
+        FAST_LARGE_ITERATIONS
     );
 }
+
+} // namespace bench

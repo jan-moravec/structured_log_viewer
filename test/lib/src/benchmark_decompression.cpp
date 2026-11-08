@@ -1,12 +1,11 @@
-// Decompression benchmark for `DecompressingByteSource`. Measures
-// end-to-end `DecompressingByteSource` + `ParseFile` on a ~500 MiB
-// JSONL fixture per codec vs. the uncompressed baseline.
-// Release-only (see `BENCHMARK_REQUIRES_RELEASE_BUILD`); opt-in via
-// the `[benchmark]` tag (`ctest -L benchmark`).
+// Decompression benchmark for DecompressingByteSource. Measures end-to-end DecompressingByteSource + ParseFile
+// on a JSONL fixture per codec against the uncompressed baseline. The figures are MB/s of the file that is read: the
+// compressed size for a codec, the plain size for the baseline. See CONTRIBUTING.md ## Benchmarking.
 
 #include "parse_only.hpp"
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 #include "common.hpp"
 
 #include <loglib/ingest/decompressing_byte_source.hpp>
@@ -15,7 +14,7 @@
 
 #include <test_common/log_format.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <bzlib.h>
 #include <lzma.h>
@@ -23,31 +22,46 @@
 #include <zstd.h>
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
-using bench::ReportThroughput;
 using loglib::DecompressingByteSource;
 using loglib::JsonParser;
 using loglib::LoadFile;
 using loglib::LoadResult;
 using loglib::ParseFile;
 
+namespace bench
+{
+
 namespace
 {
 
-constexpr std::size_t BENCH_LINE_COUNT = 5'000'000; // ~500 MiB JSONL
+// 250'000 lines, about 43 MiB of JSONL. Large enough for the multi-threaded xz decoder to see several blocks, small
+// enough that the slowest codec (bzip2) stays within the time budget of a benchmark.
+constexpr std::size_t BENCH_LINE_COUNT = 250'000;
 constexpr std::size_t IO_CHUNK = 256 * 1024;
 
-/// Delete @p path (best-effort) when the RAII guard goes out of scope.
+// The fixture writers throw instead of asserting: the benchmark executable has no test session.
+void Check(bool ok)
+{
+    if (!ok)
+    {
+        throw std::runtime_error("could not build the compressed fixture");
+    }
+}
+
+/**
+ * Delete @p path (best-effort) when the RAII guard goes out of scope.
+ */
 class FileScrubGuard
 {
 public:
@@ -86,10 +100,10 @@ void CompressToGzip(const std::filesystem::path &input, const std::filesystem::p
 {
     std::ifstream in(input, std::ios::binary);
     std::ofstream out(output, std::ios::binary);
-    REQUIRE((in.is_open() && out.is_open()));
+    Check((in.is_open() && out.is_open()));
 
     z_stream strm{};
-    REQUIRE(::deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) == Z_OK);
+    Check(::deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) == Z_OK);
 
     std::array<Bytef, IO_CHUNK> inBuf{};
     std::array<Bytef, IO_CHUNK> outBuf{};
@@ -107,7 +121,7 @@ void CompressToGzip(const std::filesystem::path &input, const std::filesystem::p
             strm.next_out = outBuf.data();
             strm.avail_out = static_cast<uInt>(outBuf.size());
             const int ret = ::deflate(&strm, flush);
-            REQUIRE(ret != Z_STREAM_ERROR);
+            Check(ret != Z_STREAM_ERROR);
             const std::size_t produced = outBuf.size() - strm.avail_out;
             out.write(reinterpret_cast<const char *>(outBuf.data()), static_cast<std::streamsize>(produced));
             if (strm.avail_out != 0)
@@ -123,15 +137,15 @@ void CompressToBzip2(const std::filesystem::path &input, const std::filesystem::
 {
     std::ifstream in(input, std::ios::binary);
     std::ofstream out(output, std::ios::binary);
-    REQUIRE((in.is_open() && out.is_open()));
+    Check((in.is_open() && out.is_open()));
 
     bz_stream strm{};
-    REQUIRE(::BZ2_bzCompressInit(&strm, 9, 0, 30) == BZ_OK);
+    Check(::BZ2_bzCompressInit(&strm, 9, 0, 30) == BZ_OK);
 
     std::array<char, IO_CHUNK> inBuf{};
     std::array<char, IO_CHUNK> outBuf{};
     int action = BZ_RUN;
-    // Loop until BZ_STREAM_END. Do NOT exit on `avail_in == 0` in
+    // Loop until BZ_STREAM_END. Do NOT exit on avail_in == 0 in
     // FINISH mode -- bzip2 returns BZ_FINISH_OK (not BZ_STREAM_END)
     // while flushing internal buffers, and the final flush can
     // exceed a single 256 KiB output buffer.
@@ -151,7 +165,7 @@ void CompressToBzip2(const std::filesystem::path &input, const std::filesystem::
         strm.next_out = outBuf.data();
         strm.avail_out = static_cast<unsigned>(outBuf.size());
         const int ret = ::BZ2_bzCompress(&strm, action);
-        REQUIRE((ret == BZ_RUN_OK || ret == BZ_FINISH_OK || ret == BZ_STREAM_END));
+        Check((ret == BZ_RUN_OK || ret == BZ_FINISH_OK || ret == BZ_STREAM_END));
         const std::size_t produced = outBuf.size() - strm.avail_out;
         out.write(outBuf.data(), static_cast<std::streamsize>(produced));
         if (ret == BZ_STREAM_END)
@@ -166,11 +180,11 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
 {
     std::ifstream in(input, std::ios::binary);
     std::ofstream out(output, std::ios::binary);
-    REQUIRE((in.is_open() && out.is_open()));
+    Check((in.is_open() && out.is_open()));
 
     lzma_stream strm = LZMA_STREAM_INIT;
     // Preset 1 keeps 500 MiB compression time reasonable.
-    REQUIRE(::lzma_easy_encoder(&strm, 1, LZMA_CHECK_CRC64) == LZMA_OK);
+    Check(::lzma_easy_encoder(&strm, 1, LZMA_CHECK_CRC64) == LZMA_OK);
 
     std::array<std::uint8_t, IO_CHUNK> inBuf{};
     std::array<std::uint8_t, IO_CHUNK> outBuf{};
@@ -192,24 +206,24 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
         strm.next_out = outBuf.data();
         strm.avail_out = outBuf.size();
         ret = ::lzma_code(&strm, action);
-        REQUIRE((ret == LZMA_OK || ret == LZMA_STREAM_END));
+        Check((ret == LZMA_OK || ret == LZMA_STREAM_END));
         const std::size_t produced = outBuf.size() - strm.avail_out;
         out.write(reinterpret_cast<const char *>(outBuf.data()), static_cast<std::streamsize>(produced));
     }
     ::lzma_end(&strm);
 }
 
-// Multi-block .xz fixture (equivalent to `xz -T <N>`).
-// `lzma_stream_encoder_mt` emits per-block headers with populated
+// Multi-block .xz fixture (equivalent to xz -T <N>).
+// lzma_stream_encoder_mt emits per-block headers with populated
 // compressed-size fields -- both preconditions for the MT decoder.
-// The single-block `CompressToXz` fixture is invisible to the MT
+// The single-block CompressToXz fixture is invisible to the MT
 // decoder (it falls back to ST), so this variant is what actually
 // exercises the MT decoder path.
 void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::path &output)
 {
     std::ifstream in(input, std::ios::binary);
     std::ofstream out(output, std::ios::binary);
-    REQUIRE((in.is_open() && out.is_open()));
+    Check((in.is_open() && out.is_open()));
 
     lzma_stream strm = LZMA_STREAM_INIT;
     std::uint32_t threads = ::lzma_cputhreads();
@@ -224,7 +238,7 @@ void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::p
     mt.preset = 1; // match CompressToXz so fixture sizes stay comparable
     mt.filters = nullptr;
     mt.check = LZMA_CHECK_CRC64;
-    REQUIRE(::lzma_stream_encoder_mt(&strm, &mt) == LZMA_OK);
+    Check(::lzma_stream_encoder_mt(&strm, &mt) == LZMA_OK);
 
     std::array<std::uint8_t, IO_CHUNK> inBuf{};
     std::array<std::uint8_t, IO_CHUNK> outBuf{};
@@ -246,7 +260,7 @@ void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::p
         strm.next_out = outBuf.data();
         strm.avail_out = outBuf.size();
         ret = ::lzma_code(&strm, action);
-        REQUIRE((ret == LZMA_OK || ret == LZMA_STREAM_END));
+        Check((ret == LZMA_OK || ret == LZMA_STREAM_END));
         const std::size_t produced = outBuf.size() - strm.avail_out;
         out.write(reinterpret_cast<const char *>(outBuf.data()), static_cast<std::streamsize>(produced));
     }
@@ -257,10 +271,10 @@ void CompressToZstd(const std::filesystem::path &input, const std::filesystem::p
 {
     std::ifstream in(input, std::ios::binary);
     std::ofstream out(output, std::ios::binary);
-    REQUIRE((in.is_open() && out.is_open()));
+    Check((in.is_open() && out.is_open()));
 
     ZSTD_CCtx *cctx = ::ZSTD_createCCtx();
-    REQUIRE(cctx != nullptr);
+    Check(cctx != nullptr);
 
     const std::size_t inChunk = ::ZSTD_CStreamInSize();
     const std::size_t outChunk = ::ZSTD_CStreamOutSize();
@@ -278,7 +292,7 @@ void CompressToZstd(const std::filesystem::path &input, const std::filesystem::p
         {
             ZSTD_outBuffer outputBuf{.dst = outBuf.data(), .size = outBuf.size(), .pos = 0};
             const std::size_t remaining = ::ZSTD_compressStream2(cctx, &outputBuf, &inChunkView, mode);
-            REQUIRE(!::ZSTD_isError(remaining));
+            Check(!::ZSTD_isError(remaining));
             out.write(outBuf.data(), static_cast<std::streamsize>(outputBuf.pos));
             if (mode == ZSTD_e_end && remaining == 0)
             {
@@ -298,126 +312,165 @@ void CompressToZstd(const std::filesystem::path &input, const std::filesystem::p
     ::ZSTD_freeCCtx(cctx);
 }
 
-// -------- benchmark helper --------
+// -------- benchmarks --------
 
-struct FixtureLocations
+using CompressFn = void (*)(const std::filesystem::path &, const std::filesystem::path &);
+
+// The plain JSONL file, written on first use and kept for the other benchmarks of this file.
+struct PlainFixture
 {
-    std::filesystem::path uncompressed;
-    std::filesystem::path gzip;
-    std::filesystem::path bzip2;
-    std::filesystem::path xz;
-    // Multi-block .xz (`xz -T <N>` equivalent). Kept separate from
-    // the ST fixture so the ST baseline stays comparable across
-    // benchmark history.
-    std::filesystem::path xzMt;
-    std::filesystem::path zstd;
+    std::unique_ptr<TestStructuredLogFile> file;
+    std::size_t bytes = 0;
 };
 
-FixtureLocations BuildFixtures()
+std::unique_ptr<PlainFixture> MakePlainFixture()
 {
-    FixtureLocations paths;
-    paths.uncompressed = BenchScratchPath(".jsonl");
-    paths.gzip = BenchScratchPath(".jsonl.gz");
-    paths.bzip2 = BenchScratchPath(".jsonl.bz2");
-    paths.xz = BenchScratchPath(".jsonl.xz");
-    paths.xzMt = BenchScratchPath(".jsonl.mt.xz");
-    paths.zstd = BenchScratchPath(".jsonl.zst");
-
-    // Regenerate the uncompressed fixture on first entry so on-disk
-    // size is deterministic across CI hosts. Held in a function-local
-    // static so the RAII cleanup (which unlinks the file on dtor) runs
-    // at process exit, not when this helper returns -- otherwise the
-    // baseline `TimeAndReport` below (and the compressor loop, on a
-    // clean scratch dir) would race the destructor and see
-    // `filesystem_error: No such file` from `file_size`.
-    static const TestStructuredLogFile FIXTURE_BUILDER(
+    auto fixture = std::make_unique<PlainFixture>();
+    fixture->file = std::make_unique<TestStructuredLogFile>(
         StreamedRecords{
             .count = BENCH_LINE_COUNT,
-            .seed = bench::LARGE_FIXTURE_SEED,
-            .timestamps = bench::DeterministicBenchmarkTimestamps()
+            .seed = LARGE_FIXTURE_SEED,
+            .timestamps = DeterministicBenchmarkTimestamps(),
         },
         test_common::JsonLines(),
-        {}, // default schema
-        paths.uncompressed.string()
+        test_common::RecordSchema{},
+        BenchScratchPath(".jsonl")
     );
-    (void)FIXTURE_BUILDER;
-
-    // Compress once per codec; skip if a non-empty artefact already
-    // exists (cheap local iteration after the first run).
-    auto ensureCompressed = [](const std::filesystem::path &input,
-                               const std::filesystem::path &output,
-                               void (*compress)(const std::filesystem::path &, const std::filesystem::path &)) {
-        if (std::filesystem::exists(output) && std::filesystem::file_size(output) > 0)
-        {
-            return;
-        }
-        compress(input, output);
-    };
-    ensureCompressed(paths.uncompressed, paths.gzip, &CompressToGzip);
-    ensureCompressed(paths.uncompressed, paths.bzip2, &CompressToBzip2);
-    ensureCompressed(paths.uncompressed, paths.xz, &CompressToXz);
-    ensureCompressed(paths.uncompressed, paths.xzMt, &CompressToXzMt);
-    ensureCompressed(paths.uncompressed, paths.zstd, &CompressToZstd);
-    return paths;
+    fixture->bytes = std::filesystem::file_size(fixture->file->GetFilePath());
+    return fixture;
 }
 
-std::size_t TimeAndReport(const char *label, const std::filesystem::path &path, bool decompressFirst)
+using SharedPlain = std::shared_ptr<LazyInput<PlainFixture>>;
+
+// One compressed copy of the plain file, removed when the benchmark is done.
+struct CodecFixture
 {
-    const std::size_t bytes = std::filesystem::file_size(path);
-    const JsonParser parser;
-    const auto start = std::chrono::steady_clock::now();
-    if (decompressFirst)
-    {
-        DecompressingByteSource dbs(path);
-        REQUIRE(dbs.WasDecompressed());
-        const auto result = ParseFile(parser, dbs.EffectivePath());
-        REQUIRE(result.data.Lines().size() == BENCH_LINE_COUNT);
-    }
-    else
-    {
-        const auto result = ParseFile(parser, path);
-        REQUIRE(result.data.Lines().size() == BENCH_LINE_COUNT);
-    }
-    const auto elapsed = std::chrono::steady_clock::now() - start;
-    ReportThroughput(label, elapsed, bytes, BENCH_LINE_COUNT);
-    return bytes;
+    SharedPlain plain;
+    std::filesystem::path compressed;
+    std::unique_ptr<FileScrubGuard> scrub;
+    std::size_t compressedBytes = 0;
+};
+
+void SetDecompressionCounters(benchmark::State &state, std::size_t readBytes, std::size_t plainBytes)
+{
+    const auto iterations = static_cast<std::int64_t>(state.iterations());
+    state.SetBytesProcessed(iterations * static_cast<std::int64_t>(readBytes));
+    state.SetItemsProcessed(iterations * static_cast<std::int64_t>(BENCH_LINE_COUNT));
+    constexpr double MIB = 1024.0 * 1024.0;
+    state.counters["read_MiB"] = static_cast<double>(readBytes) / MIB;
+    state.counters["uncompressed_MiB"] = static_cast<double>(plainBytes) / MIB;
+}
+
+void RegisterCodec(
+    const std::string &name, const SharedPlain &plain, const std::string &suffix, CompressFn compress, int iterations
+)
+{
+    RegisterLarge<CodecFixture>(
+        name,
+        [plain, suffix, compress] {
+            auto fixture = std::make_unique<CodecFixture>();
+            fixture->plain = plain;
+            const PlainFixture &source = plain->Get();
+            fixture->compressed = BenchScratchPath(suffix);
+            fixture->scrub = std::make_unique<FileScrubGuard>(fixture->compressed);
+            compress(source.file->GetFilePath(), fixture->compressed);
+            fixture->compressedBytes = std::filesystem::file_size(fixture->compressed);
+            return fixture;
+        },
+        [](CodecFixture &fixture, benchmark::State &state, bool first) {
+            const JsonParser parser;
+            const auto runOnce = [&] {
+                DecompressingByteSource dbs(fixture.compressed);
+                if (!dbs.WasDecompressed())
+                {
+                    return std::size_t{0};
+                }
+                return ParseFile(parser, dbs.EffectivePath()).data.Lines().size();
+            };
+            std::size_t lines = first ? runOnce() : BENCH_LINE_COUNT;
+            for (const auto _ : state)
+            {
+                lines = runOnce();
+            }
+            if (lines != BENCH_LINE_COUNT)
+            {
+                Fail(state, "parsed " + std::to_string(lines) + " lines, expected " + std::to_string(BENCH_LINE_COUNT));
+                return;
+            }
+            SetDecompressionCounters(state, fixture.compressedBytes, fixture.plain->Get().bytes);
+        },
+        LargeOptions{.iterations = iterations}
+    );
 }
 
 } // namespace
 
-TEST_CASE("Decompress + parse a 500 MiB JSONL fixture (all codecs)", "[.][benchmark][decompression]")
+void RegisterDecompressionBenchmarks()
 {
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
+    const SharedPlain plain = MakeLazy<PlainFixture>(MakePlainFixture);
 
-    const FixtureLocations paths = BuildFixtures();
-
-    // Baseline: parser cost on the uncompressed file, for reading
-    // codec overhead off the numbers below.
-    const std::size_t baselineBytes =
-        TimeAndReport("Baseline: ParseFile on uncompressed JSONL", paths.uncompressed, false);
-    (void)baselineBytes;
-
-    // The same file through the path the GUI and slp use: open, detect, parse into a typed table and finish. Its figure
-    // is the reference for the table path, not a replacement for the parse-only baseline above.
+    // Baseline: parser cost on the uncompressed file, for reading codec overhead off the numbers below.
+    struct PlainRun
     {
-        const auto start = std::chrono::steady_clock::now();
-        const LoadResult loaded = LoadFile(paths.uncompressed);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(loaded.table.RowCount() == BENCH_LINE_COUNT);
-        ReportThroughput("LoadFile on uncompressed JSONL", elapsed, baselineBytes, BENCH_LINE_COUNT);
-    }
-
-    const auto compressedBytes = std::filesystem::file_size(paths.gzip);
-    WARN(
-        "Fixture sizes: uncompressed=" << baselineBytes / (1024 * 1024)
-                                       << " MiB, gzip=" << compressedBytes / (1024 * 1024) << " MiB"
+        SharedPlain plain;
+    };
+    RegisterLarge<PlainRun>(
+        "Baseline: ParseFile on uncompressed JSONL",
+        [plain] { return std::make_unique<PlainRun>(PlainRun{.plain = plain}); },
+        [](PlainRun &run, benchmark::State &state, bool first) {
+            const PlainFixture &fixture = run.plain->Get();
+            const JsonParser parser;
+            std::size_t lines =
+                first ? ParseFile(parser, fixture.file->GetFilePath()).data.Lines().size() : BENCH_LINE_COUNT;
+            for (const auto _ : state)
+            {
+                lines = ParseFile(parser, fixture.file->GetFilePath()).data.Lines().size();
+            }
+            if (lines != BENCH_LINE_COUNT)
+            {
+                Fail(state, "parsed the wrong number of lines");
+                return;
+            }
+            SetDecompressionCounters(state, fixture.bytes, fixture.bytes);
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
     );
 
-    TimeAndReport("Decompress + parse (gzip)", paths.gzip, true);
-    TimeAndReport("Decompress + parse (bzip2)", paths.bzip2, true);
+    // The same file through the path the GUI and slp use: open, detect, parse into a typed table and finish. Its
+    // figure is the reference for the table path, not a replacement for the parse-only baseline above.
+    RegisterLarge<PlainRun>(
+        "LoadFile on uncompressed JSONL",
+        [plain] { return std::make_unique<PlainRun>(PlainRun{.plain = plain}); },
+        [](PlainRun &run, benchmark::State &state, bool first) {
+            const PlainFixture &fixture = run.plain->Get();
+            std::size_t rows = first ? LoadFile(fixture.file->GetFilePath()).table.RowCount() : BENCH_LINE_COUNT;
+            for (const auto _ : state)
+            {
+                const LoadResult loaded = LoadFile(fixture.file->GetFilePath());
+                rows = loaded.table.RowCount();
+            }
+            if (rows != BENCH_LINE_COUNT)
+            {
+                Fail(state, "loaded the wrong number of rows");
+                return;
+            }
+            SetDecompressionCounters(state, fixture.bytes, fixture.bytes);
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
+    );
+
+    // The iteration counts follow the cost of a run: bzip2 takes over a second, single-block xz a few hundred
+    // milliseconds, the others well under 150 ms.
+    RegisterCodec("Decompress + parse (gzip)", plain, ".jsonl.gz", &CompressToGzip, FAST_LARGE_ITERATIONS);
+    RegisterCodec("Decompress + parse (bzip2)", plain, ".jsonl.bz2", &CompressToBzip2, 1);
     // Single-block .xz: MT decoder falls back to ST here (baseline).
-    TimeAndReport("Decompress + parse (xz, single-block)", paths.xz, true);
-    // Multi-block .xz: exercises the MT decoder path.
-    TimeAndReport("Decompress + parse (xz, multi-block/MT)", paths.xzMt, true);
-    TimeAndReport("Decompress + parse (zstd)", paths.zstd, true);
+    RegisterCodec("Decompress + parse (xz, single-block)", plain, ".jsonl.xz", &CompressToXz, 2);
+    // Multi-block .xz: exercises the MT decoder path. Kept apart from the single-block fixture so the ST baseline stays
+    // comparable.
+    RegisterCodec(
+        "Decompress + parse (xz, multi-block/MT)", plain, ".jsonl.mt.xz", &CompressToXzMt, FAST_LARGE_ITERATIONS
+    );
+    RegisterCodec("Decompress + parse (zstd)", plain, ".jsonl.zst", &CompressToZstd, FAST_LARGE_ITERATIONS);
 }
+
+} // namespace bench

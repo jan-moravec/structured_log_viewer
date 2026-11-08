@@ -1,11 +1,10 @@
-// Parser benchmarks for `loglib`. See CONTRIBUTING.md `## Benchmarking`
-// for the PR-process docs (regression gate, sample interpretation, how
-// to run). Debug builds skip these cases automatically — see
-// `BENCHMARK_REQUIRES_RELEASE_BUILD`.
+// JSON parser benchmarks for loglib. See CONTRIBUTING.md ## Benchmarking for the PR-process docs (regression
+// gate, how to read the figures, how to run). The benchmark executable refuses to run in a Debug build.
 
 #include "parse_only.hpp"
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 #include "common.hpp"
 
 #include <loglib/core/enum_dictionary.hpp>
@@ -21,476 +20,513 @@
 
 #include <test_common/log_generator.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace loglib;
-using namespace bench;
 using test_common::GenerateRandomLogRecords;
 using test_common::GenerateWideLogRecords;
+
+namespace bench
+{
 
 namespace
 {
 
-// `JsonParser::ParseStreaming` adapter for `bench::RunStreamingBenchmark`.
-// A free function rather than a `bench::ParserStreamFn` global to avoid
-// `bugprone-throwing-static-initialization` (the `std::function` ctor is
-// not `noexcept`).
+// JsonParser::ParseStreaming adapter for RegisterStreaming. A free function rather than a ParserStreamFn global
+// to avoid bugprone-throwing-static-initialization (the std::function ctor is not noexcept).
 void JsonStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
     JsonParser{}.ParseStreaming(source, sink, options);
 }
 
+constexpr std::size_t SMALL_FILE_RECORDS = 10'000;
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+const std::array<std::string, 5> LOOKUP_KEYS = {"timestamp", "level", "message", "thread_id", "component"};
+
+// A parsed small file that the lookup benchmarks read.
+struct ParsedInput
+{
+    std::unique_ptr<TestStructuredLogFile> file;
+    ParseResult result;
+    std::array<KeyId, 5> keyIds{};
+    KeyId levelKey = INVALID_KEY_ID;
+    // Only the DictRef input fills this: the registry the rewritten level values refer to.
+    EnumDictionaryRegistry registry;
+};
+
+std::unique_ptr<ParsedInput> ParseFixture(std::size_t records, const char *fileName)
+{
+    auto input = std::make_unique<ParsedInput>();
+    input->file = std::make_unique<TestStructuredLogFile>(
+        GenerateRandomLogRecords(records), test_common::JsonLines(), test_common::RecordSchema{}, fileName
+    );
+    input->result = ParseFile(JsonParser{}, input->file->GetFilePath());
+    if (!input->result.errors.empty() || input->result.data.Lines().size() != input->file->RecordCount())
+    {
+        throw std::runtime_error("the JSON fixture did not parse");
+    }
+    for (std::size_t i = 0; i < LOOKUP_KEYS.size(); ++i)
+    {
+        input->keyIds[i] = input->result.data.Keys().Find(LOOKUP_KEYS[i]);
+        if (input->keyIds[i] == INVALID_KEY_ID)
+        {
+            throw std::runtime_error("the JSON fixture lacks a key");
+        }
+    }
+    input->levelKey = input->result.data.Keys().Find("level");
+    return input;
+}
+
+// Pre-encodes level as DictRef so each GetValue resolves through the registry; the gap to the KeyId path is the
+// lookup cost.
+std::unique_ptr<ParsedInput> ParseFixtureWithDictRefLevel()
+{
+    auto input = ParseFixture(SMALL_FILE_RECORDS, "bench_json_dictref.jsonl");
+    LogData &data = input->result.data;
+    EnumDictionary &dict = input->registry.GetOrInsert(input->levelKey);
+    std::vector<std::pair<std::size_t, EnumValueId>> rowDictRefs;
+    rowDictRefs.reserve(data.Lines().size());
+    for (std::size_t i = 0; i < data.Lines().size(); ++i)
+    {
+        const LogValue v = data.Lines()[i].GetValue(input->levelKey);
+        if (auto sv = AsStringView(v); sv.has_value())
+        {
+            const EnumValueId vid = dict.Insert(*sv);
+            if (vid != INVALID_ENUM_VALUE_ID)
+            {
+                rowDictRefs.emplace_back(i, vid);
+            }
+        }
+    }
+    for (auto &source : data.Sources())
+    {
+        source->SetEnumDictionaries(&input->registry);
+    }
+    for (auto &[rowIdx, vid] : rowDictRefs)
+    {
+        *data.Lines()[rowIdx].FindCompactMutable(input->levelKey) = CompactLogValue::MakeDictRef(vid);
+    }
+    return input;
+}
+
+// Asks for a stop after the first batch and records when the parse reports it was cancelled.
+struct LatencySink : LogParseSink
+{
+    KeyIndex keys;
+    loglib::StopSource stop;
+    std::chrono::steady_clock::time_point requestedAt;
+    std::chrono::steady_clock::time_point finishedAt;
+    bool cancelled = false;
+    std::size_t batches = 0;
+
+    KeyIndex &Keys() override
+    {
+        return keys;
+    }
+    void OnStarted() override
+    {
+    }
+    void OnBatch(RowBatch /*batch*/) override
+    {
+        ++batches;
+        if (batches == 1 && !stop.StopRequested())
+        {
+            requestedAt = std::chrono::steady_clock::now();
+            stop.RequestStop();
+        }
+    }
+    void OnFinished(bool wasCancelled) override
+    {
+        finishedAt = std::chrono::steady_clock::now();
+        cancelled = wasCancelled;
+    }
+};
+
+struct CancellationInput
+{
+    std::unique_ptr<TestStructuredLogFile> file;
+};
+
+struct SyncInput
+{
+    std::unique_ptr<TestStructuredLogFile> file;
+    std::size_t bytes = 0;
+};
+
+struct EnumInput
+{
+    std::unique_ptr<TestStructuredLogFile> file;
+    TestLogConfiguration configFile{"bench_json_enum_config.json"};
+    std::shared_ptr<const LogConfiguration> configuration;
+};
+
+// One streaming parse into a fresh LogTable, kept alive so the counters can read the last one after the timed loop.
+struct EnumRun
+{
+    std::unique_ptr<LogConfigurationManager> configManager;
+    std::unique_ptr<loglib::LogTable> table;
+};
+
+// Walks every key of every line and counts the matches; fn(line) returns how many values it found.
+template <typename Walk>
+void RunLookupBenchmark(benchmark::State &state, const LogData &data, std::size_t keysPerLine, Walk walk)
+{
+    std::size_t hits = 0;
+    for (const auto _ : state)
+    {
+        hits = 0;
+        for (const LogLine &line : data.Lines())
+        {
+            hits += walk(line);
+        }
+        benchmark::DoNotOptimize(hits);
+    }
+    if (hits == 0)
+    {
+        Fail(state, "no lookup found a value");
+        return;
+    }
+    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * data.Lines().size() * keysPerLine));
+}
+
+void RegisterLookupBenchmarks()
+{
+    const auto plainInput =
+        MakeLazy<ParsedInput>([] { return ParseFixture(SMALL_FILE_RECORDS, "bench_json_lookup.jsonl"); });
+    const auto dictRefInput = MakeLazy<ParsedInput>(ParseFixtureWithDictRefLevel);
+
+    // LogLine::GetValue micro-benchmarks: slow path (key string -> KeyIndex -> KeyId) vs. fast path (cached
+    // KeyId) vs. the enum-encoded path. The file is parsed once outside the timed part, so the timed loop measures
+    // lookup cost only. One iteration looks up every key of every line.
+    RegisterSmall("LogLine::GetValue(string) - slow path", [plainInput](benchmark::State &state) {
+        const LogData &data = plainInput->Get().result.data;
+        RunLookupBenchmark(state, data, LOOKUP_KEYS.size(), [&data](const LogLine &line) {
+            std::size_t found = 0;
+            for (const std::string &key : LOOKUP_KEYS)
+            {
+                found += !std::holds_alternative<std::monostate>(line.GetValue(data.Keys(), key));
+            }
+            return found;
+        });
+    });
+
+    RegisterSmall("LogLine::GetValue(KeyId) - fast path", [plainInput](benchmark::State &state) {
+        const ParsedInput &input = plainInput->Get();
+        RunLookupBenchmark(state, input.result.data, input.keyIds.size(), [&input](const LogLine &line) {
+            std::size_t found = 0;
+            for (const KeyId id : input.keyIds)
+            {
+                found += !std::holds_alternative<std::monostate>(line.GetValue(id));
+            }
+            return found;
+        });
+    });
+
+    RegisterSmall("LogLine::GetValue(KeyId) - DictRef path", [dictRefInput](benchmark::State &state) {
+        const ParsedInput &input = dictRefInput->Get();
+        RunLookupBenchmark(state, input.result.data, 1, [&input](const LogLine &line) {
+            return static_cast<std::size_t>(!std::holds_alternative<std::monostate>(line.GetValue(input.levelKey)));
+        });
+    });
+}
+
+// Allocation footprint and string_view fast-path fraction. We don't override global operator new (it interacts
+// badly with TBB workers); instead we count the observable structural cost of a parse: one heap-allocated vector per
+// line, one owned-string allocation per value holding a std::string, zero for values holding a std::string_view.
+// The compact slot's tag is inspected without materialising a LogValue (which would always allocate a
+// std::string for the slow path). The fast-path fraction has to stay above zero or the parser regressed to an
+// all-owned-string regime. The timed part is the classification walk.
+void RegisterAllocationBenchmark()
+{
+    const auto input = MakeLazy<ParsedInput>([] { return ParseFixture(1'000, "bench_json_alloc.jsonl"); });
+    RegisterSmall("Allocation footprint and string_view fast-path fraction", [input](benchmark::State &state) {
+        const LogData &data = input->Get().result.data;
+        std::size_t totalValues = 0;
+        std::size_t mmapSliceValues = 0;
+        std::size_t ownedStringValues = 0;
+        std::size_t dictRefValues = 0;
+        for (const auto _ : state)
+        {
+            totalValues = mmapSliceValues = ownedStringValues = dictRefValues = 0;
+            for (const LogLine &line : data.Lines())
+            {
+                for (std::size_t i = 0; i < data.Keys().Size(); ++i)
+                {
+                    const auto id = static_cast<KeyId>(i);
+                    const CompactLogValue *compact = line.FindCompact(id);
+                    if (compact != nullptr && compact->tag == CompactTag::MmapSlice)
+                    {
+                        ++mmapSliceValues;
+                        ++totalValues;
+                    }
+                    else if (compact != nullptr && compact->tag == CompactTag::OwnedString)
+                    {
+                        ++ownedStringValues;
+                        ++totalValues;
+                    }
+                    else if (line.IsDictRef(id))
+                    {
+                        ++dictRefValues;
+                        ++totalValues;
+                    }
+                    else if (!std::holds_alternative<std::monostate>(line.GetValue(id)))
+                    {
+                        ++totalValues;
+                    }
+                }
+            }
+            benchmark::DoNotOptimize(totalValues);
+        }
+        if (mmapSliceValues == 0)
+        {
+            Fail(state, "no value took the string_view fast path");
+            return;
+        }
+        const std::size_t totalStringValues = mmapSliceValues + ownedStringValues + dictRefValues;
+        state.counters["lines"] = static_cast<double>(data.Lines().size());
+        state.counters["values"] = static_cast<double>(totalValues);
+        state.counters["MmapSlice"] = static_cast<double>(mmapSliceValues);
+        state.counters["OwnedString"] = static_cast<double>(ownedStringValues);
+        state.counters["DictRef"] = static_cast<double>(dictRefValues);
+        state.counters["fast_path_fraction_pct"] =
+            100.0 * static_cast<double>(mmapSliceValues) / static_cast<double>(totalStringValues);
+        // One vector heap allocation per line (the compact-pair vector), plus zero per owned string: those are
+        // coalesced in the FileLineSource arena after the stream.
+        state.counters["allocation_upper_bound"] = static_cast<double>(data.Lines().size());
+    });
+}
+
+// Enum auto-detection: a handful of distinct level values across many rows. The timed part is the streaming parse
+// into a fresh table; the counters report the DictRef fraction and the dictionary heap bytes.
+void RegisterEnumBenchmark()
+{
+    const auto input = MakeLazy<EnumInput>([] {
+        auto created = std::make_unique<EnumInput>();
+        created->file = std::make_unique<TestStructuredLogFile>(
+            GenerateRandomLogRecords(20'000),
+            test_common::JsonLines(),
+            test_common::RecordSchema{},
+            "bench_json_enum.jsonl"
+        );
+        InitializeTimezoneData();
+        created->configuration = MakeTimestampConfiguration();
+        created->configFile.Write(*created->configuration);
+        return created;
+    });
+    RegisterSmall("Enum auto-detection over 20000 lines", [input](benchmark::State &state) {
+        EnumInput &fixture = input->Get();
+        EnumRun run;
+        for (const auto _ : state)
+        {
+            run.table.reset();
+            run.configManager = std::make_unique<LogConfigurationManager>();
+            run.configManager->Load(fixture.configFile.GetFilePath());
+            run.table = std::make_unique<loglib::LogTable>(run.configManager->Configuration());
+            run.table->SetDisplayTimeZone(ProcessDefaultTimeZone());
+            run.table->SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+
+            auto sourceForTable = std::make_unique<FileLineSource>(fixture.file->GetFilePath());
+            FileLineSource *parseSource = sourceForTable.get();
+            run.table->BeginStreaming(std::move(sourceForTable));
+
+            StreamSink sink;
+            sink.table = run.table.get();
+            ParserOptions opts;
+            opts.timeColumns = TimeColumnsOf(*fixture.configuration);
+            opts.defaultSourceTimeZone = run.table->DefaultSourceTimeZone();
+            JsonParser{}.ParseStreaming(*parseSource, sink, opts);
+        }
+
+        const loglib::LogTable &table = *run.table;
+        const KeyId levelKey = table.Keys().Find("level");
+        const auto &columns = table.Configuration().Configuration().columns;
+        const auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
+            return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
+        });
+        // The level column auto-promotes from Enumeration to the canonical Level type once enough dictionary
+        // entries map to a LogLevel; either terminal enum-like state is accepted.
+        const bool levelIsEnumeration = levelColumn != columns.end() && (levelColumn->type == ColumnType::Enumeration ||
+                                                                         levelColumn->type == ColumnType::Level);
+        std::size_t dictRefValues = 0;
+        if (levelKey != INVALID_KEY_ID)
+        {
+            for (const LogLine &line : table.Data().Lines())
+            {
+                dictRefValues += line.IsDictRef(levelKey) ? 1 : 0;
+            }
+        }
+        if (table.RowCount() != fixture.file->RecordCount() || !levelIsEnumeration || dictRefValues != table.RowCount())
+        {
+            Fail(state, "the level column was not enum-encoded on every row");
+            return;
+        }
+        const StructuralBytesWithEnums bytes = ComputeStructuralBytesWithEnums(table);
+        state.counters["dict_ref_values"] = static_cast<double>(dictRefValues);
+        state.counters["dict_ref_pct"] =
+            100.0 * static_cast<double>(dictRefValues) / static_cast<double>(table.RowCount());
+        state.counters["dictionary_heap_bytes"] = static_cast<double>(bytes.enumDictionaries);
+        state.counters["structural_bytes"] = static_cast<double>(bytes.Total());
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * table.RowCount()));
+    });
+}
+
+// Synchronous-Parse coverage for BufferingSink (the sink behind the loglib::ParseFile(parser, path) free helper,
+// used by tests and any non-GUI caller that wants a one-shot LogData). Small fixture because the synchronous path is
+// not the GUI hot path -- the large and wide streams cover that.
+void RegisterSyncBenchmark()
+{
+    const auto input = MakeLazy<SyncInput>([] {
+        auto created = std::make_unique<SyncInput>();
+        created->file = std::make_unique<TestStructuredLogFile>(
+            GenerateRandomLogRecords(SMALL_FILE_RECORDS),
+            test_common::JsonLines(),
+            test_common::RecordSchema{},
+            "bench_json_sync.jsonl"
+        );
+        created->bytes = std::filesystem::file_size(created->file->GetFilePath());
+        return created;
+    });
+    RegisterSmall("Parse 10'000 JSON log entries (sync)", [input](benchmark::State &state) {
+        const SyncInput &fixture = input->Get();
+        const JsonParser parser;
+        std::size_t lines = 0;
+        std::size_t errors = 0;
+        for (const auto _ : state)
+        {
+            ParseResult result = ParseFile(parser, fixture.file->GetFilePath());
+            lines = result.data.Lines().size();
+            errors = result.errors.size();
+            benchmark::DoNotOptimize(result);
+        }
+        if (lines != fixture.file->RecordCount() || errors != 0)
+        {
+            Fail(state, "the synchronous parse returned the wrong rows");
+            return;
+        }
+        const auto iterations = static_cast<std::int64_t>(state.iterations());
+        state.SetBytesProcessed(iterations * static_cast<std::int64_t>(fixture.bytes));
+        state.SetItemsProcessed(iterations * static_cast<std::int64_t>(fixture.file->RecordCount()));
+    });
+}
+
+// Asks for a stop after the first batch arrives and times the gap between RequestStop() and
+// OnFinished(cancelled=true), which validates the ntokens * batchSizeBytes upper bound on latency. The gap is the
+// iteration time; a repetition is 20 cancelled parses. Pinned seed and timestamps give reproducible byte counts (the
+// gap itself does not depend on content).
+void RegisterCancellationBenchmark()
+{
+    RegisterLarge<CancellationInput>(
+        "Cancellation latency over 20 runs (us)",
+        [] {
+            auto input = std::make_unique<CancellationInput>();
+            input->file = std::make_unique<TestStructuredLogFile>(
+                StreamedRecords{
+                    .count = 1'000'000,
+                    .seed = LARGE_FIXTURE_SEED,
+                    .timestamps = DeterministicBenchmarkTimestamps(),
+                },
+                test_common::JsonLines(),
+                test_common::RecordSchema{},
+                "bench_json_cancel.jsonl"
+            );
+            return input;
+        },
+        [](CancellationInput &input, benchmark::State &state, bool first) {
+            const JsonParser parser;
+            // Returns the gap in seconds, or a negative number when the parse was not cancelled.
+            const auto cancelOnce = [&] {
+                FileLineSource source(input.file->GetFilePath());
+                LatencySink sink;
+                ParserOptions opts;
+                opts.stopToken = sink.stop.GetToken();
+                parser.ParseStreaming(source, sink, opts);
+                if (!sink.cancelled || sink.requestedAt.time_since_epoch().count() == 0)
+                {
+                    return -1.0;
+                }
+                return std::chrono::duration<double>(sink.finishedAt - sink.requestedAt).count();
+            };
+            // The first runs of a process are slower than the steady state; the warm-up is one untimed repetition.
+            for (int i = 0; first && i < 20; ++i)
+            {
+                cancelOnce();
+            }
+            for (const auto _ : state)
+            {
+                const double gap = cancelOnce();
+                if (gap < 0.0)
+                {
+                    Fail(state, "the parse was not cancelled");
+                    return;
+                }
+                state.SetIterationTime(gap);
+            }
+        },
+        LargeOptions{.iterations = 20, .manualTime = true, .unit = benchmark::kMicrosecond}
+    );
+}
+
 } // namespace
 
-// Synchronous-Parse coverage for `BufferingSink` (the sink behind the
-// `loglib::ParseFile(parser, path)` free helper, used by tests and any
-// non-GUI caller that wants a one-shot `LogData`). Small fixture because
-// the synchronous path is not the GUI hot path -- the `[large]` and
-// `[wide]` cases below cover that.
-TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_sync]")
+void RegisterJsonBenchmarks()
 {
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
+    RegisterSyncBenchmark();
 
-    const TestStructuredLogFile testFile(GenerateRandomLogRecords(10'000), test_common::JsonLines());
-    const JsonParser parser;
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+    // Large-file streaming benchmark (1'000'000 lines, ~170 MB). End-to-end GUI flow: LogTable::BeginStreaming plus
+    // a sink that calls LogTable::AppendBatch per OnBatch, with a Type::Time column so the streaming parser
+    // does real inline timestamp promotion. Pinned seed and timestamps keep the record bytes identical across runs
+    // and to the logfmt benchmark.
+    RegisterStreaming("Stream 1'000'000 JSON log entries to LogTable", [] {
+        return StreamingFixture{
+            .logFile = std::make_unique<TestStructuredLogFile>(
+                StreamedRecords{
+                    .count = 1'000'000,
+                    .seed = LARGE_FIXTURE_SEED,
+                    .timestamps = DeterministicBenchmarkTimestamps(),
+                },
+                test_common::JsonLines()
+            ),
+            .parser = JsonStream,
+        };
+    });
 
-    {
-        const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = ParseFile(parser, testFile.GetFilePath());
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(warmup.data.Lines().size() == testFile.RecordCount());
-        REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse 10'000 (sync) warm-up", elapsed, bytes, testFile.RecordCount());
-    }
-
-    RunTimedSamples(
-        "Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = testFile.RecordCount()}, [&]() {
-            ParseResult result = ParseFile(parser, testFile.GetFilePath());
-            REQUIRE(result.data.Lines().size() == testFile.RecordCount());
-            REQUIRE(result.errors.empty());
-        }
-    );
-}
-
-// Large-file streaming benchmark (1'000'000 lines, ~170 MB). End-to-end
-// GUI flow: `LogTable::BeginStreaming` + a sink that calls
-// `LogTable::AppendBatch` per `OnBatch`, with a `Type::Time` column so the
-// streaming parser does real inline timestamp promotion.
-TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][large]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    // Pinned seed + timestamps so the record bytes are identical across
-    // runs and identical to `[logfmt_parser][large]`.
-    const TestStructuredLogFile testFile(
-        StreamedRecords{
-            .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
-        },
-        test_common::JsonLines()
-    );
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration configFile;
-    configFile.Write(*configuration);
-
-    RunStreamingBenchmark(
-        "Stream 1'000'000 JSON log entries to LogTable",
-        configFile.GetFilePath(),
-        testFile.GetFilePath(),
-        configuration,
-        JsonStream,
-        testFile.RecordCount(),
-        bytes,
-        4
-    );
-}
-
-// Wide-row streaming benchmark (200'000 lines, ~30 fields per line).
-// Stresses the per-line field-iteration cost (`InsertSorted`,
-// `ExtractFieldKey`, `ParseLine`, `IsKeyInAnyColumn`). Line count is lower
-// than `[large]`'s 1'000'000 so total field operations stay comparable
-// (~6x fields per line gives ~6 M total field ops at 200'000 lines).
-TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][json_parser][wide]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    // Pinned seed + timestamps so JSON and logfmt see byte-identical records.
-    const TestStructuredLogFile testFile(
-        GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()),
-        test_common::JsonLines()
-    );
-    // False positive inside MSVC's `<filesystem>` (`_BITMASK_OPS::operator|`).
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration configFile;
-    configFile.Write(*configuration);
-
-    RunStreamingBenchmark(
+    // Wide-row streaming benchmark (200'000 lines, ~30 fields per line). Stresses the per-line field-iteration cost
+    // (InsertSorted, ExtractFieldKey, ParseLine, IsKeyInAnyColumn). The line count is lower than the large
+    // one so total field operations stay comparable.
+    RegisterStreaming(
         "Stream 200'000 wide JSON log entries to LogTable",
-        configFile.GetFilePath(),
-        testFile.GetFilePath(),
-        configuration,
-        JsonStream,
-        testFile.RecordCount(),
-        bytes,
-        4
-    );
-}
-
-// `LogLine::GetValue` micro-benchmark: slow path (key string -> `KeyIndex`
-// -> `KeyId`) vs. fast path (cached `KeyId`). Pre-parses once so the
-// timed loop measures lookup cost only.
-TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_value_micro]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const TestStructuredLogFile testFile(GenerateRandomLogRecords(10'000), test_common::JsonLines());
-    const JsonParser parser;
-
-    ParseResult result = ParseFile(parser, testFile.GetFilePath());
-    REQUIRE(result.errors.empty());
-    const LogData &data = result.data;
-    const std::vector<LogLine> &lines = data.Lines();
-    REQUIRE(!lines.empty());
-
-    const std::array<std::string, 5> kKeys = {"timestamp", "level", "message", "thread_id", "component"};
-    std::array<KeyId, 5> keyIds{};
-    for (size_t i = 0; i < kKeys.size(); ++i)
-    {
-        const KeyId id = data.Keys().Find(kKeys[i]);
-        REQUIRE(id != INVALID_KEY_ID);
-        keyIds[i] = id;
-    }
-
-    // `volatile` sink — `RunTimedSamples` has no `keep_memory()` analogue,
-    // so without this the optimiser folds the whole walk away.
-    volatile size_t hitsSink = 0;
-
-    RunTimedSamples("LogLine::GetValue(string) — slow path", 11, [&]() {
-        size_t hits = 0;
-        for (const LogLine &line : lines)
-        {
-            for (const std::string &key : kKeys)
-            {
-                if (!std::holds_alternative<std::monostate>(line.GetValue(data.Keys(), key)))
-                {
-                    ++hits;
-                }
-            }
-        }
-        hitsSink = hits;
-    });
-
-    RunTimedSamples("LogLine::GetValue(KeyId) — fast path", 11, [&]() {
-        size_t hits = 0;
-        for (const LogLine &line : lines)
-        {
-            for (const KeyId id : keyIds)
-            {
-                if (!std::holds_alternative<std::monostate>(line.GetValue(id)))
-                {
-                    ++hits;
-                }
-            }
-        }
-        hitsSink = hits;
-    });
-
-    // DictRef variant: pre-encode `level` so each `GetValue` resolves
-    // through the registry; the gap vs the KeyId path is the lookup cost.
-    {
-        LogData &mutableData = result.data;
-        const KeyId levelKey = mutableData.Keys().Find("level");
-        REQUIRE(levelKey != INVALID_KEY_ID);
-
-        EnumDictionaryRegistry registry;
-        EnumDictionary &dict = registry.GetOrInsert(levelKey);
-        std::vector<std::pair<size_t, EnumValueId>> rowDictRefs;
-        rowDictRefs.reserve(mutableData.Lines().size());
-        for (size_t i = 0; i < mutableData.Lines().size(); ++i)
-        {
-            const LogValue v = mutableData.Lines()[i].GetValue(levelKey);
-            if (auto sv = AsStringView(v); sv.has_value())
-            {
-                const EnumValueId vid = dict.Insert(*sv);
-                if (vid != INVALID_ENUM_VALUE_ID)
-                {
-                    rowDictRefs.emplace_back(i, vid);
-                }
-            }
-        }
-
-        for (auto &source : mutableData.Sources())
-        {
-            source->SetEnumDictionaries(&registry);
-        }
-        std::vector<LogLine> &mutLines = mutableData.Lines();
-        for (auto &[rowIdx, vid] : rowDictRefs)
-        {
-            *mutLines[rowIdx].FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(vid);
-        }
-
-        RunTimedSamples("LogLine::GetValue(KeyId) — DictRef path", 11, [&]() {
-            size_t hits = 0;
-            for (const LogLine &line : mutLines)
-            {
-                if (!std::holds_alternative<std::monostate>(line.GetValue(levelKey)))
-                {
-                    ++hits;
-                }
-            }
-            hitsSink = hits;
-        });
-    }
-
-    (void)hitsSink;
-}
-
-// Allocation footprint and `string_view` fast-path fraction. We don't
-// override global `operator new` (interacts badly with Catch2 reporting
-// and TBB workers); instead we count the observable structural cost of
-// a parse: one heap-allocated vector per line, one owned-string
-// allocation per `LogValue` holding a `std::string`, zero for values
-// holding a `std::string_view`. The fast-path fraction has to stay > 0
-// or the parser regressed to an all-owned-string regime.
-TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchmark][json_parser][allocations]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const TestStructuredLogFile testFile(GenerateRandomLogRecords(1'000), test_common::JsonLines());
-    const JsonParser parser;
-
-    ParseResult result = ParseFile(parser, testFile.GetFilePath());
-    REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == testFile.RecordCount());
-
-    // Phase 1 changed the per-field representation from a 48 B
-    // `std::variant` to a 16 B `CompactLogValue` whose tags are the new
-    // ground truth for "fast path vs slow path". the compact slot's
-    // tag is inspected without materialising a `LogValue`
-    // (which would always allocate a `std::string` for the slow path),
-    // so the per-value cost of this benchmark stays representative of
-    // the parse hot path.
-    const size_t lineCount = result.data.Lines().size();
-    size_t totalValues = 0;
-    size_t mmapSliceValues = 0;
-    size_t ownedStringValues = 0;
-    size_t dictRefValues = 0;
-    for (const LogLine &line : result.data.Lines())
-    {
-        for (size_t i = 0; i < result.data.Keys().Size(); ++i)
-        {
-            const auto id = static_cast<KeyId>(i);
-            const CompactLogValue *compact = line.FindCompact(id);
-            const bool mmap = compact != nullptr && compact->tag == CompactTag::MmapSlice;
-            const bool owned = compact != nullptr && compact->tag == CompactTag::OwnedString;
-            const bool dict = line.IsDictRef(id);
-            if (mmap)
-            {
-                ++mmapSliceValues;
-                ++totalValues;
-            }
-            else if (owned)
-            {
-                ++ownedStringValues;
-                ++totalValues;
-            }
-            else if (dict)
-            {
-                ++dictRefValues;
-                ++totalValues;
-            }
-            else if (!std::holds_alternative<std::monostate>(line.GetValue(id)))
-            {
-                ++totalValues;
-            }
-        }
-    }
-
-    const size_t totalStringValues = mmapSliceValues + ownedStringValues + dictRefValues;
-    const double fastPathFraction =
-        totalStringValues == 0 ? 0.0 : static_cast<double>(mmapSliceValues) / static_cast<double>(totalStringValues);
-    // One vector heap allocation per line (the compact-pair vector), plus
-    // *zero* per owned string (those are coalesced in the `FileLineSource`
-    // arena post-stream — the per-batch arena is freed when Stage C ends).
-    const size_t allocUpperBound = lineCount;
-
-    WARN(
-        "Allocation footprint over " << lineCount << " lines: " << totalValues << " values, " << mmapSliceValues
-                                     << " MmapSlice (fast path), " << ownedStringValues << " OwnedString (slow path), "
-                                     << dictRefValues << " DictRef (enum-encoded), fast-path fraction="
-                                     << (fastPathFraction * 100.0) << "%, allocation upper bound=" << allocUpperBound
-                                     << " (~" << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
-                                     << "/line)"
-    );
-
-    REQUIRE(mmapSliceValues > 0);
-}
-
-// Enum auto-detection benchmark: a handful of distinct `level` values
-// across many rows. Reports DictRef fraction and dictionary heap bytes.
-TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][json_parser][enum]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const TestStructuredLogFile testFile(GenerateRandomLogRecords(20'000), test_common::JsonLines());
-
-    InitializeTimezoneData();
-    auto configuration = MakeTimestampConfiguration();
-    const TestLogConfiguration cfgFile;
-    cfgFile.Write(*configuration);
-
-    LogConfigurationManager configManager;
-    configManager.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(configManager.Configuration());
-    table.SetDisplayTimeZone(ProcessDefaultTimeZone());
-    table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
-
-    auto sourceForTable = std::make_unique<FileLineSource>(testFile.GetFilePath());
-    FileLineSource *parseSource = sourceForTable.get();
-    table.BeginStreaming(std::move(sourceForTable));
-
-    StreamSink sink;
-    sink.table = &table;
-
-    ParserOptions opts;
-    opts.timeColumns = TimeColumnsOf(*configuration);
-    opts.defaultSourceTimeZone = table.DefaultSourceTimeZone();
-
-    JsonParser{}.ParseStreaming(*parseSource, sink, opts);
-
-    REQUIRE(table.RowCount() == testFile.RecordCount());
-
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-
-    const auto &columns = table.Configuration().Configuration().columns;
-    auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
-        return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
-    });
-    // The `level` column auto-promotes from Enumeration to the canonical
-    // Level type once enough dictionary entries map to a `LogLevel`; the
-    // benchmark checks that *either* terminal enum-like state was reached.
-    const bool levelIsEnumeration = levelColumn != columns.end() && (levelColumn->type == ColumnType::Enumeration ||
-                                                                     levelColumn->type == ColumnType::Level);
-
-    size_t dictRefValues = 0;
-    for (const LogLine &line : table.Data().Lines())
-    {
-        if (line.IsDictRef(levelKey))
-        {
-            ++dictRefValues;
-        }
-    }
-
-    const StructuralBytesWithEnums bytes = ComputeStructuralBytesWithEnums(table);
-
-    WARN(
-        "Enum auto-detection over " << table.RowCount() << " lines: dict-ref values=" << dictRefValues << " ("
-                                    << (100.0 * static_cast<double>(dictRefValues) /
-                                        static_cast<double>(table.RowCount()))
-                                    << "%), level column is enum or level=" << (levelIsEnumeration ? "yes" : "no")
-                                    << ", dictionary heap bytes=" << bytes.enumDictionaries
-                                    << ", lines+offsets+ownedStrings+keyIndex bytes=" << bytes.Total()
-    );
-
-    CHECK(levelIsEnumeration);
-    CHECK(dictRefValues == table.RowCount());
-}
-
-// Cancellation-latency benchmark. Asks for a stop after the first batch
-// arrives and times the gap between `RequestStop()` and
-// `OnFinished(cancelled=true)`. Validates the
-// `ntokens * batchSizeBytes` upper bound on cancellation latency.
-TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    // Pinned seed + timestamps for reproducible byte counts (the
-    // measurement itself is independent of content variation).
-    const TestStructuredLogFile testFile(
-        StreamedRecords{
-            .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+        [] {
+            return StreamingFixture{
+                .logFile = std::make_unique<TestStructuredLogFile>(
+                    GenerateWideLogRecords(
+                        200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+                    ),
+                    test_common::JsonLines()
+                ),
+                .parser = JsonStream,
+            };
         },
-        test_common::JsonLines()
+        /*parseLoopOnly=*/false,
+        FAST_LARGE_ITERATIONS
     );
-    const JsonParser parser;
 
-    struct LatencySink : LogParseSink
-    {
-        KeyIndex keys;
-        loglib::StopSource stop;
-        std::chrono::steady_clock::time_point requestedAt;
-        std::chrono::steady_clock::time_point finishedAt;
-        bool cancelled = false;
-        size_t batches = 0;
-
-        KeyIndex &Keys() override
-        {
-            return keys;
-        }
-        void OnStarted() override
-        {
-        }
-        void OnBatch(RowBatch /*batch*/) override
-        {
-            ++batches;
-            if (batches == 1 && !stop.StopRequested())
-            {
-                requestedAt = std::chrono::steady_clock::now();
-                stop.RequestStop();
-            }
-        }
-        void OnFinished(bool wasCancelled) override
-        {
-            finishedAt = std::chrono::steady_clock::now();
-            cancelled = wasCancelled;
-        }
-    };
-
-    constexpr int ITERATIONS = 20;
-    std::vector<double> latenciesUs;
-    latenciesUs.reserve(ITERATIONS);
-
-    for (int i = 0; i < ITERATIONS; ++i)
-    {
-        FileLineSource source(testFile.GetFilePath());
-        LatencySink sink;
-        ParserOptions opts;
-        opts.stopToken = sink.stop.GetToken();
-        parser.ParseStreaming(source, sink, opts);
-        REQUIRE(sink.cancelled);
-        REQUIRE(sink.requestedAt.time_since_epoch().count() != 0);
-        const auto latency = std::chrono::duration<double, std::micro>(sink.finishedAt - sink.requestedAt).count();
-        latenciesUs.push_back(latency);
-    }
-
-    std::ranges::sort(latenciesUs);
-    const double median = latenciesUs[latenciesUs.size() / 2];
-    const double p95 = latenciesUs[(latenciesUs.size() * 95) / 100];
-    const double maxLatency = latenciesUs.back();
-    WARN(
-        "Cancellation latency over " << ITERATIONS << " runs (us): median=" << median << ", p95=" << p95
-                                     << ", max=" << maxLatency
-    );
-    // A cancel that takes seconds is a hang, so this stays as a deadline. It is not a speed limit.
-    REQUIRE(maxLatency < 5'000'000.0);
+    RegisterLookupBenchmarks();
+    RegisterAllocationBenchmark();
+    RegisterEnumBenchmark();
+    RegisterCancellationBenchmark();
 }
+
+} // namespace bench

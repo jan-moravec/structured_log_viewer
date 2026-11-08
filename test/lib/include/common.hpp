@@ -1,3 +1,5 @@
+#pragma once
+
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_line.hpp>

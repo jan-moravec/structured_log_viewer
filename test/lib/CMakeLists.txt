@@ -1,21 +1,21 @@
 cmake_minimum_required(VERSION 3.28)
 
-# Tests + benchmarks share one binary; benchmarks land under the `benchmark`
-# CTest label (see `catch_discover_tests` below).
+# Helpers shared by the unit tests and the benchmarks: fixture generation, parse-only drivers and table builders.
+add_library(loglib_test_support STATIC "src/common.cpp" "src/parse_only.cpp" "src/table_from_data.cpp")
+
+target_include_directories(loglib_test_support PUBLIC include)
+
+# TBB and fmt are linked PUBLIC because the helper headers include loglib/internal/** pipeline headers (which use
+# fmt::format) and the tests use TBB directly; loglib keeps both PRIVATE.
+target_link_libraries(
+    loglib_test_support
+    PUBLIC loglib test_common log_generator_core Catch2::Catch2 TBB::tbb fmt::fmt
+    PRIVATE project_warnings
+)
+
+# Unit tests. The benchmarks are a separate executable, `loglib_benchmarks`, defined below.
 add_executable(
     tests
-    "src/benchmark_csv.cpp"
-    "src/benchmark_decompression.cpp"
-    "src/benchmark_histogram_bucket_index.cpp"
-    "src/benchmark_json.cpp"
-    "src/benchmark_log_filter.cpp"
-    "src/benchmark_logfmt.cpp"
-    "src/benchmark_regex.cpp"
-    "src/benchmark_session_bundle.cpp"
-    "src/benchmark_stream.cpp"
-    "src/common.cpp"
-    "src/parse_only.cpp"
-    "src/table_from_data.cpp"
     "src/test_append_report.cpp"
     "src/test_auto_detect_parser.cpp"
     "src/test_batch_contract.cpp"
@@ -84,8 +84,6 @@ if(LOGLIB_NETWORK_TLS)
     target_link_libraries(tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
-target_include_directories(tests PRIVATE include)
-
 # TBB linked directly here for the concurrent KeyIndex test; loglib keeps it PRIVATE.
 # fmt is linked directly so TUs that include `loglib/internal/**` pipeline headers
 # (which use `fmt::format`) still see the header. loglib keeps fmt PRIVATE.
@@ -94,50 +92,86 @@ target_include_directories(tests PRIVATE include)
 target_link_libraries(
     tests
     PRIVATE
-        loglib
-        test_common
-        log_generator_core
+        loglib_test_support
         Catch2::Catch2WithMain
         project_warnings
-        TBB::tbb
-        fmt::fmt
         ZLIB::ZLIB
         BZip2::BZip2
         LibLZMA::LibLZMA
         zstd::libzstd
 )
 
-# `benchmark_json.cpp` calls `GetProcessMemoryInfo` to report peak working
-# set; on Windows that lives in `psapi.lib` (Windows 7+ also re-exports it
-# from `kernel32.dll`, but linking the import library is the portable form
-# across SDK versions).
-if(WIN32)
-    target_link_libraries(tests PRIVATE Psapi)
-endif()
-
 # Enable KeyIndex call-count instrumentation; PUBLIC so the test TU and
 # `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
 # at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
 target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
 
-# On Windows the TBB runtime DLL must sit next to the test executable for both
-# `catch_discover_tests` (which runs `tests.exe --list-test-names-only` at build
-# time) and `ctest` itself to find it.
+# Benchmarks: a separate executable on Google Benchmark, so changing one does not relink the unit tests and two builds
+# can be compared by copying only this binary. It has its own main (benchmark_main.cpp).
+add_executable(
+    loglib_benchmarks
+    "src/benchmark_csv.cpp"
+    "src/benchmark_decompression.cpp"
+    "src/benchmark_histogram_bucket_index.cpp"
+    "src/benchmark_json.cpp"
+    "src/benchmark_log_filter.cpp"
+    "src/benchmark_logfmt.cpp"
+    "src/benchmark_main.cpp"
+    "src/benchmark_regex.cpp"
+    "src/benchmark_session_bundle.cpp"
+    "src/benchmark_stream.cpp"
+)
+
+target_link_libraries(
+    loglib_benchmarks
+    PRIVATE
+        loglib_test_support
+        benchmark::benchmark
+        project_warnings
+        ZLIB::ZLIB
+        BZip2::BZip2
+        LibLZMA::LibLZMA
+        zstd::libzstd
+)
+
+# `benchmark_json.cpp` calls `GetProcessMemoryInfo` to report peak working set; on Windows that lives in
+# `psapi.lib` (Windows 7+ also re-exports it from `kernel32.dll`, but linking the import library is the portable
+# form across SDK versions).
 if(WIN32)
-    add_custom_command(
-        TARGET tests
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb> $<TARGET_FILE_DIR:tests>
-        COMMENT "Copying TBB runtime DLL next to tests.exe"
-        VERBATIM
-    )
+    target_link_libraries(loglib_benchmarks PRIVATE Psapi)
 endif()
 
-# Two disjoint discovery passes so benchmark cases land under the `benchmark`
-# CTest label without renaming. Use `ctest -LE benchmark` / `-L benchmark`
-# to filter.
-catch_discover_tests(tests TEST_SPEC "~[benchmark]")
-catch_discover_tests(tests TEST_SPEC "[benchmark]" PROPERTIES LABELS "benchmark")
+# On Windows the TBB runtime DLL must sit next to each executable for both
+# `catch_discover_tests` (which runs `<exe> --list-test-names-only` at build
+# time) and `ctest` itself to find it.
+if(WIN32)
+    foreach(test_target tests loglib_benchmarks)
+        add_custom_command(
+            TARGET ${test_target}
+            POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb> $<TARGET_FILE_DIR:${test_target}>
+            COMMENT "Copying TBB runtime DLL next to ${test_target}.exe"
+            VERBATIM
+        )
+    endforeach()
+endif()
+
+# ADD_TAGS_AS_LABELS turns every Catch2 tag into a CTest label, so `[network]`, `[fs-events]` and the per-unit tags
+# are labels too. Select with `ctest -L <tag>`, exclude with `-LE <tag>`.
+catch_discover_tests(tests ADD_TAGS_AS_LABELS)
+
+# All library benchmarks are one CTest test. Google Benchmark writes its figures as JSON to the build tree; the console
+# output still goes to the CTest log. Set BENCHMARK_FILTER (a regex) in the environment to run only some of them.
+# SKIP_RETURN_CODE 4 is the exit code of a Debug build, which refuses to run benchmarks.
+set(LOGLIB_BENCHMARK_RESULTS_DIR "${CMAKE_BINARY_DIR}/benchmark-results")
+file(MAKE_DIRECTORY "${LOGLIB_BENCHMARK_RESULTS_DIR}")
+add_test(
+    NAME loglib_benchmarks
+    COMMAND
+        loglib_benchmarks "--benchmark_out=${LOGLIB_BENCHMARK_RESULTS_DIR}/loglib_benchmarks.json"
+        --benchmark_out_format=json
+)
+set_tests_properties(loglib_benchmarks PROPERTIES LABELS "benchmark" SKIP_RETURN_CODE 4)
 
 # Installs the loglib component and compiles a consumer that includes every installed header. Skipped for sanitizer
 # and coverage builds, because the consumer is built without their flags.

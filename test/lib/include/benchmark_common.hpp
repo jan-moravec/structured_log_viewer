@@ -1,10 +1,20 @@
+/**
+ * @brief Shared helpers of the library benchmarks: how a benchmark is registered and timed, and the fixtures they
+ * share.
+ *
+ * Every library benchmark runs on Google Benchmark through the helpers here, so all of them follow the same rules.
+ * RegisterLarge is for an operation of about 50 ms or more: a fixed number of iterations per repetition, an untimed
+ * warm-up and an input built once outside the timed part. RegisterSmall is for a shorter operation, which Google
+ * Benchmark repeats until a minimum time has passed. Fail marks a wrong result, which makes the benchmark executable
+ * exit non-zero.
+ *
+ * RegisterStreaming builds on RegisterLarge for the end-to-end parse benchmarks: it parses a generated file into a
+ * LogTable with any parser and reports throughput and memory counters. The fixed seeds and timestamps make every run
+ * parse the same bytes. CONTRIBUTING.md, section Benchmarking, says how to run and compare the benchmarks.
+ */
 #pragma once
 
-// Shared scaffolding for the parser streaming benchmarks. Callers pass a
-// `ParserStreamFn` so the same timing / memory / throughput harness drives
-// any parser's static `ParseStreaming` overload. See CONTRIBUTING.md
-// `## Benchmarking` for PR-process docs.
-
+#include "common.hpp"
 #include "table_fixture.hpp"
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -18,17 +28,16 @@
 
 #include <test_common/log_generator.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,23 +56,29 @@
 namespace bench
 {
 
-/// Pinned RNG seed for the large cross-format fixture (`[json_parser][large]`,
-/// `[logfmt_parser][large]`, …). Combined with `DeterministicBenchmarkTimestamps()`,
-/// it makes every format consume byte-identical records so cross-format
-/// lines/s is directly comparable. Always pair the two — without pinned
-/// timestamps, per-record `system_clock::now()` drifts fixtures by a few
-/// bytes per run.
+/**
+ * Pinned RNG seed for the large cross-format fixture ([json_parser][large],
+ * [logfmt_parser][large], …). Combined with DeterministicBenchmarkTimestamps(),
+ * it makes every format consume byte-identical records so cross-format
+ * lines/s is directly comparable. Always pair the two — without pinned
+ * timestamps, per-record system_clock::now() drifts fixtures by a few
+ * bytes per run.
+ */
 inline constexpr std::uint32_t LARGE_FIXTURE_SEED = 0xC0FFEEu;
 
-/// Pinned RNG seed for the wide-row fixture (`[json_parser][wide]`,
-/// `[logfmt_parser][wide]`). Distinct from `LARGE_FIXTURE_SEED` to avoid
-/// state collisions if both shapes load in one run. Same pairing
-/// requirement with `DeterministicBenchmarkTimestamps()`.
+/**
+ * Pinned RNG seed for the wide-row fixture ([json_parser][wide],
+ * [logfmt_parser][wide]). Distinct from LARGE_FIXTURE_SEED to avoid
+ * state collisions if both shapes load in one run. Same pairing
+ * requirement with DeterministicBenchmarkTimestamps().
+ */
 inline constexpr std::uint32_t WIDE_FIXTURE_SEED = 0xDEC0DEu;
 
-/// Pinned `TimestampPolicy` for benchmark fixtures: 2026-01-01 00:00:00 UTC
-/// + 1 ms per record. The 1 ms step keeps the formatted-string length
-/// constant across the whole fixture.
+/**
+ * Pinned TimestampPolicy for benchmark fixtures: 2026-01-01 00:00:00 UTC
+ * + 1 ms per record. The 1 ms step keeps the formatted-string length
+ * constant across the whole fixture.
+ */
 inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
 {
     // 2026-01-01T00:00:00Z = 1767225600 seconds since the Unix epoch.
@@ -74,122 +89,165 @@ inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
     };
 }
 
-/// Skip the current `TEST_CASE` under Debug. Debug disables IPO/LTO and
-/// leaves assertions on, so numbers are not comparable to release.
-inline void RequireReleaseBuildForBenchmarks()
+/**
+ * Repetitions of a large benchmark. Each repetition is one timed iteration.
+ */
+inline constexpr int LARGE_REPETITIONS = 5;
+
+/**
+ * Repetitions of a small benchmark. Each repetition runs for at least SMALL_MIN_TIME_SECONDS.
+ */
+inline constexpr int SMALL_REPETITIONS = 5;
+
+/**
+ * Minimum time of one repetition of a small benchmark.
+ */
+inline constexpr double SMALL_MIN_TIME_SECONDS = 0.3;
+
+/**
+ * Timed iterations per repetition of a large benchmark whose operation takes about 150 ms or less, and of one that
+ * takes up to about 500 ms. More work per repetition averages out the noise of a shared machine. A benchmark of
+ * about a second or more runs one iteration.
+ */
+inline constexpr int FAST_LARGE_ITERATIONS = 5;
+inline constexpr int MEDIUM_LARGE_ITERATIONS = 3;
+
+inline std::atomic<bool> &FailureFlag()
 {
-#ifndef NDEBUG
-    SKIP(
-        "Benchmarks require a release build (Debug disables IPO/LTO and "
-        "leaves assertions enabled, so numbers are not comparable). "
-        "Rebuild with: cmake --preset release  (or relwithdebinfo)."
-    );
-#endif
+    static std::atomic<bool> failed{false};
+    return failed;
 }
 
-/// Emit a single-run throughput line (uses `WARN` so it prints on success).
-inline void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, std::size_t bytes, std::size_t lines)
+/**
+ * Marks the benchmark as failed. Google Benchmark drops a skipped run from its output, so the flag is what makes
+ * the executable exit non-zero.
+ */
+inline void Fail(benchmark::State &state, const std::string &message)
 {
-    if (elapsed.count() == 0)
-    {
-        return;
-    }
-    const double seconds = std::chrono::duration<double>(elapsed).count();
-    const double mbps = (static_cast<double>(bytes) / (1024.0 * 1024.0)) / seconds;
-    const double linesPerSec = static_cast<double>(lines) / seconds;
-    WARN(
-        label << ": " << mbps << " MB/s, " << linesPerSec << " lines/s (" << bytes << " bytes / " << lines
-              << " lines / " << seconds << "s)"
-    );
+    FailureFlag().store(true);
+    state.SkipWithError(message);
 }
 
-struct ThroughputInputs
+/**
+ * True when any benchmark reported a wrong result.
+ */
+inline bool AnyFailure()
 {
-    std::size_t bytes = 0;
-    std::size_t lines = 0;
+    return FailureFlag().load();
+}
+
+/**
+ * How a large benchmark is timed. The default is one iteration per repetition, timed by the clock, in milliseconds.
+ * Operations that take less than about a second set iterations to FAST_LARGE_ITERATIONS or MEDIUM_LARGE_ITERATIONS.
+ * A benchmark that measures an interval itself sets manualTime and calls SetIterationTime in every iteration.
+ */
+struct LargeOptions
+{
+    int iterations = 1;
+    bool manualTime = false;
+    benchmark::TimeUnit unit = benchmark::kMillisecond;
 };
 
-struct SampleStats
+/**
+ * Registers a benchmark for an operation of about 50 ms or more: five repetitions of a few timed iterations,
+ * aggregates only. The first call of body gets true as its last argument; it is the warm-up, so it runs the
+ * operation once untimed before the timed loop. setup builds the input on the first call, outside the timed part.
+ * The input is freed after the last repetition so that large fixtures do not pile up.
+ */
+template <typename Input>
+void RegisterLarge(
+    const std::string &name,
+    std::function<std::unique_ptr<Input>()> setup,
+    std::function<void(Input &, benchmark::State &, bool)> body,
+    LargeOptions options = {}
+)
 {
-    std::chrono::nanoseconds mean;
-    std::chrono::nanoseconds low;
-    std::chrono::nanoseconds high;
-    double stddevNs;
+    struct Slot
+    {
+        std::function<std::unique_ptr<Input>()> setup;
+        std::unique_ptr<Input> input;
+        int calls = 0;
+    };
+    const auto slot = std::make_shared<Slot>();
+    slot->setup = std::move(setup);
+    benchmark::Benchmark *registered =
+        benchmark::RegisterBenchmark(name, [slot, body = std::move(body)](benchmark::State &state) {
+            if (!slot->input)
+            {
+                slot->input = slot->setup();
+            }
+            const bool first = slot->calls == 0;
+            body(*slot->input, state, first);
+            if (++slot->calls >= LARGE_REPETITIONS)
+            {
+                slot->input.reset();
+            }
+        });
+    registered->Unit(options.unit)
+        ->Iterations(options.iterations)
+        ->Repetitions(LARGE_REPETITIONS)
+        ->ReportAggregatesOnly(true);
+    if (options.manualTime)
+    {
+        registered->UseManualTime();
+    }
+    else
+    {
+        registered->UseRealTime();
+    }
+}
+
+/**
+ * Builds an input on first use and keeps it for the rest of the process. Small benchmarks share one with it.
+ */
+template <typename Input> class LazyInput
+{
+public:
+    explicit LazyInput(std::function<std::unique_ptr<Input>()> make)
+        : mMake(std::move(make))
+    {
+    }
+
+    Input &Get()
+    {
+        if (!mValue)
+        {
+            mValue = mMake();
+        }
+        return *mValue;
+    }
+
+private:
+    std::function<std::unique_ptr<Input>()> mMake;
+    std::unique_ptr<Input> mValue;
 };
 
-/// Run `fn` `samples` times and compute mean/low/high/stddev. Used instead
-/// of `BENCHMARK_ADVANCED` because Catch2's iteration estimator + 100-sample
-/// bootstrap added 3-5x wall-time on the multi-second-per-sample fixtures.
-template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn fn)
+template <typename Input> std::shared_ptr<LazyInput<Input>> MakeLazy(std::function<std::unique_ptr<Input>()> make)
 {
-    REQUIRE(samples > 0);
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(samples);
-    for (std::size_t i = 0; i < samples; ++i)
-    {
-        const auto start = std::chrono::steady_clock::now();
-        fn();
-        elapsed.push_back(std::chrono::steady_clock::now() - start);
-    }
-
-    const auto sum = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero());
-    const auto mean = sum / static_cast<long long>(samples);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    const auto meanNs = static_cast<double>(mean.count());
-    double sqAccum = 0.0;
-    for (const auto &e : elapsed)
-    {
-        const double d = static_cast<double>(e.count()) - meanNs;
-        sqAccum += d * d;
-    }
-    const double stddevNs = std::sqrt(sqAccum / static_cast<double>(samples));
-
-    return SampleStats{.mean = mean, .low = low, .high = high, .stddevNs = stddevNs};
+    return std::make_shared<LazyInput<Input>>(std::move(make));
 }
 
-template <typename Fn> void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
+/**
+ * Registers a benchmark for an operation under about 50 ms. Google Benchmark picks the iteration count so that one
+ * repetition lasts at least SMALL_MIN_TIME_SECONDS. fn builds nothing itself: capture the prepared input.
+ */
+inline void RegisterSmall(
+    const std::string &name,
+    std::function<void(benchmark::State &)> fn,
+    benchmark::TimeUnit unit = benchmark::kMillisecond
+)
 {
-    const SampleStats stats = CollectSamples(samples, std::forward<Fn>(fn));
-    using Ms = std::chrono::duration<double, std::milli>;
-    WARN(
-        label << " (samples=" << samples << "): mean=" << Ms(stats.mean).count() << " ms, low=" << Ms(stats.low).count()
-              << " ms, high=" << Ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms"
-    );
+    benchmark::RegisterBenchmark(name, std::move(fn))
+        ->Unit(unit)
+        ->MinTime(SMALL_MIN_TIME_SECONDS)
+        ->Repetitions(SMALL_REPETITIONS)
+        ->ReportAggregatesOnly(true)
+        ->UseRealTime();
 }
 
-/// Throughput overload. Reports MB/s (mean/low/high/stddev) and lines/s on
-/// one `WARN` line; mean MB/s is the regression-gate input. The MB/s
-/// stddev is a first-order Taylor approximation around the mean.
-template <typename Fn>
-void RunTimedSamples(const char *label, std::size_t samples, ThroughputInputs throughput, Fn &&fn)
-{
-    const SampleStats stats = CollectSamples(samples, std::forward<Fn>(fn));
-    using Ms = std::chrono::duration<double, std::milli>;
-    using S = std::chrono::duration<double>;
-
-    const double meanSec = S(stats.mean).count();
-    const double lowSec = S(stats.low).count();
-    const double highSec = S(stats.high).count();
-    const double bytesMB = static_cast<double>(throughput.bytes) / (1024.0 * 1024.0);
-    const auto linesD = static_cast<double>(throughput.lines);
-    const double meanMBps = meanSec == 0.0 ? 0.0 : bytesMB / meanSec;
-    const double highMBps = lowSec == 0.0 ? 0.0 : bytesMB / lowSec;
-    const double lowMBps = highSec == 0.0 ? 0.0 : bytesMB / highSec;
-    const double meanLinesPerSec = meanSec == 0.0 ? 0.0 : linesD / meanSec;
-    const auto meanNs = static_cast<double>(stats.mean.count());
-    const double stddevMBps = meanNs == 0.0 ? 0.0 : meanMBps * (stats.stddevNs / meanNs);
-
-    WARN(
-        label << " (samples=" << samples << "): mean=" << Ms(stats.mean).count() << " ms, low=" << Ms(stats.low).count()
-              << " ms, high=" << Ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms | "
-              << meanMBps << " MB/s mean (low=" << lowMBps << ", high=" << highMBps << ", stddev=" << stddevMBps
-              << "), " << meanLinesPerSec << " lines/s mean"
-    );
-}
-
-/// Heap bytes owned by a parsed `LogTable` (mmap'd file content excluded).
+/**
+ * Heap bytes owned by a parsed LogTable (mmap'd file content excluded).
+ */
 struct StructuralBytes
 {
     std::size_t lines = 0;
@@ -235,8 +293,10 @@ inline StructuralBytesWithEnums ComputeStructuralBytesWithEnums(const loglib::Lo
     return result;
 }
 
-/// Process peak working set (Windows) / max RSS (POSIX), in bytes.
-/// OS-level cross-check against `StructuralBytes`; noisier across runs.
+/**
+ * Process peak working set (Windows) / max RSS (POSIX), in bytes.
+ * OS-level cross-check against StructuralBytes; noisier across runs.
+ */
 inline std::size_t SamplePeakWorkingSetBytes()
 {
 #ifdef _WIN32
@@ -252,13 +312,13 @@ inline std::size_t SamplePeakWorkingSetBytes()
     if (::getrusage(RUSAGE_SELF, &usage) == 0)
     {
 #ifdef __APPLE__
-        // Darwin reports `ru_maxrss` in bytes. The system `rusage` layout
+        // Darwin reports ru_maxrss in bytes. The system rusage layout
         // wraps the field through a glibc-style union on some platforms,
         // so the union-access lint is unavoidable here.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         return static_cast<std::size_t>(usage.ru_maxrss);
 #else
-        // Linux/BSDs report `ru_maxrss` in kilobytes; see the macOS
+        // Linux/BSDs report ru_maxrss in kilobytes; see the macOS
         // branch above for the union-access NOLINT rationale.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         return static_cast<std::size_t>(usage.ru_maxrss) * 1024U;
@@ -270,8 +330,10 @@ inline std::size_t SamplePeakWorkingSetBytes()
 #endif
 }
 
-/// Sink mirroring `LogModel::OnBatch`: forwards every batch to
-/// `LogTable::AppendBatch` (the GUI-thread back-fill loop).
+/**
+ * Sink mirroring LogModel::OnBatch: forwards every batch to
+ * LogTable::AppendBatch (the GUI-thread back-fill loop).
+ */
 struct StreamSink : loglib::LogParseSink
 {
     loglib::LogTable *table = nullptr;
@@ -300,8 +362,10 @@ struct StreamSink : loglib::LogParseSink
     }
 };
 
-/// `LogConfiguration` with one `Type::Time` column for `timestamp`, so the
-/// parser does real inline timestamp promotion (the GUI's typical shape).
+/**
+ * LogConfiguration with one Type::Time column for timestamp, so the
+ * parser does real inline timestamp promotion (the GUI's typical shape).
+ */
 inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguration()
 {
     loglib::LogConfiguration baseConfig;
@@ -315,16 +379,20 @@ inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguratio
     return std::make_shared<loglib::LogConfiguration>(std::move(baseConfig));
 }
 
-/// Parser-agnostic streaming entry point: matches the static
-/// `ParseStreaming` overload shared by every parser, so benchmarks can plug
-/// in `JsonParser::ParseStreaming`, `LogfmtParser::ParseStreaming`, etc.
+/**
+ * Parser-agnostic streaming entry point: matches the static
+ * ParseStreaming overload shared by every parser, so benchmarks can plug
+ * in JsonParser::ParseStreaming, LogfmtParser::ParseStreaming, etc.
+ */
 using ParserStreamFn =
     std::function<void(loglib::FileLineSource &, loglib::LogParseSink &, const loglib::ParserOptions &)>;
 
-/// Results of one end-to-end streaming run. The timed window covers
-/// configuration load + `LogTable` construction + mmap + `ParseStreaming`
-/// + `~LogTable`. Sink stats and row count are copied out before the inner
-/// scope closes so the caller can inspect them after the timer stops.
+/**
+ * Results of one end-to-end streaming run. The timed window covers
+ * configuration load + LogTable construction + mmap + ParseStreaming
+ * + ~LogTable. Sink stats and row count are copied out before the inner
+ * scope closes so the caller can inspect them after the timer stops.
+ */
 struct StreamingRunResult
 {
     std::chrono::steady_clock::duration elapsed{};
@@ -332,8 +400,10 @@ struct StreamingRunResult
     std::size_t appendBatches = 0;
     std::size_t appendLines = 0;
     std::size_t rowCount = 0;
-    /// Populated only when `captureMemory == true`. Sampled while the
-    /// `LogTable` is still alive so the counters reflect steady state.
+    /**
+     * Populated only when captureMemory == true. Sampled while the
+     * LogTable is still alive so the counters reflect steady state.
+     */
     bool memoryCaptured = false;
     StructuralBytes structuralBytes{};
     std::size_t peakWorkingSetBytes = 0;
@@ -361,10 +431,10 @@ inline StreamingRunResult RunStreamingFlow(
         table.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
         table.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());
 
-        // Mirror `MainWindow::OpenJsonStreaming`: the parser borrows the
-        // same `FileLineSource` the table owns, so Stage C's offsets and
-        // owned-string arena land in the `FileLineSource` value accesses read
-        // from. Splitting them would dangle `LogValue`s and under-count
+        // Mirror MainWindow::OpenJsonStreaming: the parser borrows the
+        // same FileLineSource the table owns, so Stage C's offsets and
+        // owned-string arena land in the FileLineSource value accesses read
+        // from. Splitting them would dangle LogValues and under-count
         // structural bytes.
         auto sourceForTable = std::make_unique<loglib::FileLineSource>(logPath);
         loglib::FileLineSource *parseSource = sourceForTable.get();
@@ -386,7 +456,7 @@ inline StreamingRunResult RunStreamingFlow(
 
         if (captureMemory)
         {
-            // Sample inside the `LogTable` scope; sampling after `~LogTable`
+            // Sample inside the LogTable scope; sampling after ~LogTable
             // would skew the working-set delta.
             result.structuralBytes = ComputeStructuralBytes(table);
             const std::size_t peakAfter = SamplePeakWorkingSetBytes();
@@ -399,66 +469,100 @@ inline StreamingRunResult RunStreamingFlow(
     return result;
 }
 
-/// Run one streaming benchmark: an untimed warm-up that reports
-/// `AppendBatch` wall-time and structural memory, then `samples` timed
-/// end-to-end runs through the throughput overload.
-inline void RunStreamingBenchmark(
-    const char *label,
-    const std::filesystem::path &configPath,
-    const std::filesystem::path &logPath,
-    std::shared_ptr<const loglib::LogConfiguration> configuration,
-    const ParserStreamFn &parserStream,
-    std::size_t expectedRows,
-    std::size_t bytes,
-    std::size_t samples
+/**
+ * The input of one streaming benchmark: the log file to parse and the parser that reads it.
+ */
+struct StreamingFixture
+{
+    std::unique_ptr<TestStructuredLogFile> logFile;
+    ParserStreamFn parser;
+    /**
+     * Anything that must stay alive while the benchmark runs, such as a registered extra template.
+     */
+    std::shared_ptr<void> keepAlive;
+};
+
+struct StreamingInput
+{
+    StreamingFixture fixture;
+    TestLogConfiguration configFile;
+    std::shared_ptr<const loglib::LogConfiguration> configuration;
+    std::size_t bytes = 0;
+    std::size_t rows = 0;
+    StreamingRunResult probe;
+};
+
+/**
+ * Registers an end-to-end streaming benchmark. The first call parses once untimed to capture the memory counters
+ * (AppendBatch wall time, structural bytes, peak working set); the timed repetitions follow. Each repetition checks
+ * the row count after the timed part. With parseLoopOnly the time of an iteration excludes the LogTable::AppendBatch
+ * time of the sink.
+ */
+inline void RegisterStreaming(
+    const std::string &name,
+    std::function<StreamingFixture()> makeFixture,
+    bool parseLoopOnly = false,
+    int iterations = MEDIUM_LARGE_ITERATIONS
 )
 {
-    {
-        // Memory introspection runs on the warm-up only: structural bytes
-        // are deterministic across runs, so one sample suffices and timed
-        // samples don't pay for the walk.
-        const StreamingRunResult warmup =
-            RunStreamingFlow(configPath, logPath, configuration, parserStream, /*captureMemory=*/true);
-        REQUIRE(warmup.rowCount == expectedRows);
-        ReportThroughput((std::string(label) + " warm-up").c_str(), warmup.elapsed, bytes, expectedRows);
+    RegisterLarge<StreamingInput>(
+        name,
+        [makeFixture = std::move(makeFixture)] {
+            auto input = std::make_unique<StreamingInput>();
+            input->fixture = makeFixture();
+            input->bytes = std::filesystem::file_size(input->fixture.logFile->GetFilePath());
+            input->rows = input->fixture.logFile->RecordCount();
+            InitializeTimezoneData();
+            input->configuration = MakeTimestampConfiguration();
+            input->configFile.Write(*input->configuration);
+            return input;
+        },
+        [parseLoopOnly](StreamingInput &input, benchmark::State &state, bool first) {
+            const std::filesystem::path configPath = input.configFile.GetFilePath();
+            const std::filesystem::path logPath = input.fixture.logFile->GetFilePath();
+            if (first)
+            {
+                input.probe = RunStreamingFlow(
+                    configPath, logPath, input.configuration, input.fixture.parser, /*captureMemory=*/true
+                );
+            }
+            std::size_t rows = input.probe.rowCount;
+            for (const auto _ : state)
+            {
+                const StreamingRunResult run =
+                    RunStreamingFlow(configPath, logPath, input.configuration, input.fixture.parser);
+                rows = run.rowCount;
+                if (parseLoopOnly)
+                {
+                    state.SetIterationTime(std::chrono::duration<double>(run.elapsed - run.appendTotal).count());
+                }
+            }
+            if (rows != input.rows)
+            {
+                Fail(state, "parsed " + std::to_string(rows) + " rows, expected " + std::to_string(input.rows));
+                return;
+            }
+            const auto iterations = static_cast<std::int64_t>(state.iterations());
+            state.SetBytesProcessed(iterations * static_cast<std::int64_t>(input.bytes));
+            state.SetItemsProcessed(iterations * static_cast<std::int64_t>(input.rows));
 
-        const double appendMs = std::chrono::duration<double, std::milli>(warmup.appendTotal).count();
-        const double per100k =
-            warmup.appendLines == 0 ? 0.0 : appendMs * 100'000.0 / static_cast<double>(warmup.appendLines);
-        WARN(
-            "LogTable::AppendBatch wall-time: " << appendMs << " ms over " << warmup.appendBatches << " batches / "
-                                                << warmup.appendLines << " lines (" << per100k << " ms / 100k lines)"
-        );
-
-        if (warmup.memoryCaptured)
-        {
             constexpr double MIB = 1024.0 * 1024.0;
-            const auto linesD = static_cast<double>(expectedRows == 0 ? 1 : expectedRows);
-            const double bytesPerLine =
-                expectedRows == 0 ? 0.0 : static_cast<double>(warmup.structuralBytes.Total()) / linesD;
-            const double fileBytesMiB = static_cast<double>(bytes) / MIB;
-            const double structuralBytesMiB = static_cast<double>(warmup.structuralBytes.Total()) / MIB;
-            const double structuralRatio = bytes == 0 ? 0.0 : structuralBytesMiB / fileBytesMiB;
-            WARN(
-                "Structural bytes (lines+offsets+ownedStrings+keys): "
-                << structuralBytesMiB << " MiB (" << bytesPerLine << " B/line, "
-                << static_cast<double>(warmup.structuralBytes.lines) / MIB << " MiB lines + "
-                << static_cast<double>(warmup.structuralBytes.lineOffsets) / MIB << " MiB offsets + "
-                << static_cast<double>(warmup.structuralBytes.ownedStrings) / MIB << " MiB ownedStrings + "
-                << static_cast<double>(warmup.structuralBytes.keyIndex) / MIB
-                << " MiB keys), structural/file ratio=" << structuralRatio << " | peak working set delta "
-                << static_cast<double>(warmup.peakWorkingSetDeltaBytes) / MIB << " MiB (peak "
-                << static_cast<double>(warmup.peakWorkingSetBytes) / MIB << " MiB)"
-            );
-        }
-    }
-
-    RunTimedSamples(label, samples, {.bytes = bytes, .lines = expectedRows}, [&]() {
-        const StreamingRunResult run = RunStreamingFlow(configPath, logPath, configuration, parserStream);
-        REQUIRE(run.rowCount == expectedRows);
-    });
+            const StreamingRunResult &probe = input.probe;
+            const double appendMs = std::chrono::duration<double, std::milli>(probe.appendTotal).count();
+            state.counters["AppendBatch_ms"] = appendMs;
+            state.counters["structural_MiB"] = static_cast<double>(probe.structuralBytes.Total()) / MIB;
+            state.counters["structural_B_per_line"] =
+                input.rows == 0 ? 0.0
+                                : static_cast<double>(probe.structuralBytes.Total()) / static_cast<double>(input.rows);
+            state.counters["structural_to_file_ratio"] =
+                input.bytes == 0
+                    ? 0.0
+                    : static_cast<double>(probe.structuralBytes.Total()) / static_cast<double>(input.bytes);
+            state.counters["peak_ws_delta_MiB"] = static_cast<double>(probe.peakWorkingSetDeltaBytes) / MIB;
+            state.counters["peak_ws_MiB"] = static_cast<double>(probe.peakWorkingSetBytes) / MIB;
+        },
+        LargeOptions{.iterations = iterations, .manualTime = parseLoopOnly}
+    );
 }
 
 } // namespace bench
-
-#define BENCHMARK_REQUIRES_RELEASE_BUILD() ::bench::RequireReleaseBuildForBenchmarks()

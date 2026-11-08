@@ -52,6 +52,16 @@ std::string ResolveScratchPath(std::string filePath)
     return (ScratchDir() / fsPath).string();
 }
 
+// Fixture helpers throw instead of using a Catch assertion so the benchmark executable, which has no Catch session,
+// can use them too. A throw inside a test case still fails that case.
+void ThrowIfNotOpen(bool isOpen)
+{
+    if (!isOpen)
+    {
+        throw std::runtime_error("could not open the fixture file for writing");
+    }
+}
+
 // Open @p fsPath for binary writing (no '\n' translation, so offsets match
 // `FileLineSource`), emit the format header if non-empty, and return the stream.
 std::ofstream OpenStructuredFile(
@@ -59,7 +69,7 @@ std::ofstream OpenStructuredFile(
 )
 {
     std::ofstream file(fsPath, std::ios::binary | std::ios::trunc);
-    REQUIRE(file.is_open());
+    ThrowIfNotOpen(file.is_open());
     const std::string header = format.writeHeader(schema);
     if (!header.empty())
     {
@@ -166,7 +176,7 @@ TestLogConfiguration::TestLogConfiguration(std::string filePath)
     : mFilePath(ResolveScratchPath(std::move(filePath))), mFsPath(mFilePath)
 {
     const std::ofstream file(mFsPath);
-    REQUIRE(file.is_open());
+    ThrowIfNotOpen(file.is_open());
 }
 
 TestLogConfiguration::~TestLogConfiguration() noexcept
@@ -183,7 +193,7 @@ const std::string &TestLogConfiguration::GetFilePath() const
 void TestLogConfiguration::Write(const LogConfiguration &configuration) const
 {
     std::ofstream file(mFsPath);
-    REQUIRE(file.is_open());
+    ThrowIfNotOpen(file.is_open());
     std::string json;
     const auto error = glz::write_json(configuration, json);
     if (error)
@@ -202,13 +212,13 @@ TestLogFile::TestLogFile(std::string filePath)
     : mFilePath(ResolveScratchPath(std::move(filePath))), mFsPath(mFilePath)
 {
     const std::ofstream file(mFsPath, std::ios::binary);
-    REQUIRE(file.is_open());
+    ThrowIfNotOpen(file.is_open());
 }
 
 void TestLogFile::Write(const std::string &content) const
 {
     std::ofstream file(mFsPath, std::ios::binary);
-    REQUIRE(file.is_open());
+    ThrowIfNotOpen(file.is_open());
     file << content;
 }
 
@@ -262,13 +272,13 @@ std::filesystem::path FindTestTzdata()
         return found;
     }
 
-    FAIL(
+    throw std::runtime_error(
         "FindTestTzdata(): no `tzdata` directory found along the "
-        "ancestor chain of the current working directory ("
-        << std::filesystem::current_path().string()
-        << "). Run the binary via `ctest --preset local` or invoke it from a "
-           "directory whose ancestor chain contains the staged `tzdata/` "
-           "(typically `build/<preset>/bin/<config>/`)."
+        "ancestor chain of the current working directory (" +
+        std::filesystem::current_path().string() +
+        "). Run the binary via `ctest --preset local` or invoke it from a "
+        "directory whose ancestor chain contains the staged `tzdata/` "
+        "(typically `build/<preset>/bin/<config>/`)."
     );
     return {};
 }

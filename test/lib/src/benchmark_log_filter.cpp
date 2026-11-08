@@ -1,21 +1,14 @@
-// `loglib::RowPredicate` + `CompareRows` micro-benchmarks. Mirrors the
-// shape of the existing `[large]` JSON benchmarks: tagged
-// `[.][benchmark][log_filter][large]` (with `[level]` added on the
-// `Type::Level` siblings) so they land under the `benchmark` CTest
-// label and are hidden from the default run. Numbers are reported via
-// `WARN` so they print on success and end up in the CI log lines the
-// comparison script scrapes.
+// loglib::RowPredicate + CompareRows micro-benchmarks: filtering, comparing and sorting 1'000'000-row tables. See
+// CONTRIBUTING.md ## Benchmarking.
 //
-// The `Type::Enumeration` cases pin the column to a non-level key
-// (`region`) so the auto-promotion heuristic in
-// `LogTable::AppendBatch` cannot flip the column to `Type::Level` mid-
-// fixture and silently change which `CompareRows` branch is under
-// test. The `Type::Level` cases use the `level` key with a fully
-// canonical six-alias vocabulary and pin the column type via the
-// saved configuration so the path is exercised regardless of how the
+// The Type::Enumeration cases pin the column to a non-level key (region) so the auto-promotion heuristic in
+// LogTable::AppendBatch cannot flip the column to Type::Level mid-fixture and silently change which
+// CompareRows branch is under test. The Type::Level cases use the level key with a fully canonical six-alias
+// vocabulary and pin the column type via the saved configuration so the path is exercised regardless of how the
 // heuristic might evolve.
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 #include "common.hpp"
 #include "table_fixture.hpp"
 
@@ -31,22 +24,25 @@
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 using namespace loglib;
-using bench::RequireReleaseBuildForBenchmarks;
+
+namespace bench
+{
 
 namespace
 {
@@ -69,16 +65,18 @@ struct LargeTable
     std::unique_ptr<FileLineSource> sourceOwner; // keeps the file mmap alive
 };
 
-/// Build a `Type::Enumeration` `LogTable` with @p rowCount rows over a
-/// fixed four-value vocabulary. The column key is taken from
-/// @p columnKey so callers can pick one that does *not* match the
-/// log-level field-name heuristic (e.g. `region`); otherwise the
-/// auto-promotion logic on `LogTable::AppendBatch` would flip the
-/// column to `Type::Level` once the dictionary fills with
-/// canonical-level aliases, silently changing both the storage path
-/// (`CompareEnum` -> `CompareLevel`) and the `EnumDictRank` semantics
-/// the benchmarks below rely on. Used by the filter and enum-sort
-/// benchmarks below.
+/**
+ * Build a Type::Enumeration LogTable with @p rowCount rows over a
+ * fixed four-value vocabulary. The column key is taken from
+ * @p columnKey so callers can pick one that does *not* match the
+ * log-level field-name heuristic (e.g. region); otherwise the
+ * auto-promotion logic on LogTable::AppendBatch would flip the
+ * column to Type::Level once the dictionary fills with
+ * canonical-level aliases, silently changing both the storage path
+ * (CompareEnum -> CompareLevel) and the EnumDictRank semantics
+ * the benchmarks below rely on. Used by the filter and enum-sort
+ * benchmarks below.
+ */
 LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std::string_view columnKey)
 {
     auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
@@ -131,16 +129,18 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
-/// Build a `Type::Level` `LogTable` with @p rowCount rows over the
-/// canonical six-level vocabulary. The configuration pins the column
-/// to `Type::Level` so the table does *not* depend on the
-/// auto-promotion heuristic in `LogTable::AppendBatch`, which is
-/// content-sensitive and can flip the column type mid-fixture as the
-/// dictionary grows. The vocabulary deliberately covers all six
-/// canonical levels so the resulting `LevelRankCache` exercises every
-/// `LogLevel` ordinal -- otherwise a `tbb::parallel_sort` over
-/// near-identical ranks would understate the per-compare cost. Used
-/// by the level-sort benchmarks below.
+/**
+ * Build a Type::Level LogTable with @p rowCount rows over the
+ * canonical six-level vocabulary. The configuration pins the column
+ * to Type::Level so the table does *not* depend on the
+ * auto-promotion heuristic in LogTable::AppendBatch, which is
+ * content-sensitive and can flip the column type mid-fixture as the
+ * dictionary grows. The vocabulary deliberately covers all six
+ * canonical levels so the resulting LevelRankCache exercises every
+ * LogLevel ordinal -- otherwise a tbb::parallel_sort over
+ * near-identical ranks would understate the per-compare cost. Used
+ * by the level-sort benchmarks below.
+ */
 LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
 {
     auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
@@ -163,8 +163,8 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
     loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
-    // All six canonical aliases so the `LevelRankCache` covers the
-    // full `Trace`..`Fatal` range. The order is deliberately not the
+    // All six canonical aliases so the LevelRankCache covers the
+    // full Trace..Fatal range. The order is deliberately not the
     // canonical severity order so the parallel sort actually has
     // permutation work to do.
     const std::vector<std::string> values = {"info", "warn", "error", "debug", "trace", "fatal"};
@@ -194,9 +194,11 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
-/// Build a `Type::String` `LogTable` with @p rowCount rows over a
-/// pool of short message templates. Used by the
-/// `CallbackStringRowPredicate` benchmark below.
+/**
+ * Build a Type::String LogTable with @p rowCount rows over a
+ * pool of short message templates. Used by the
+ * CallbackStringRowPredicate benchmark below.
+ */
 LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
 {
     auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
@@ -257,480 +259,73 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
-template <typename Fn> std::chrono::nanoseconds TimeOnce(Fn fn)
+constexpr std::size_t ROW_COUNT = 1'000'000;
+
+// A 1'000'000-row table with its fixture file, built once and shared by the benchmarks that read it.
+struct TableInput
 {
-    const auto start = std::chrono::steady_clock::now();
-    fn();
-    return std::chrono::steady_clock::now() - start;
-}
+    std::unique_ptr<TestLogFile> fixture;
+    std::unique_ptr<LargeTable> owned;
+    const EnumDictionary *dict = nullptr;
+    std::unique_ptr<EnumDictRank> rank;
 
-} // namespace
+    LogTable &Table() const
+    {
+        return owned->table;
+    }
+};
 
-TEST_CASE("RowPredicate enum filter walks 1'000'000 rows under 100ms", "[.][benchmark][log_filter][large]")
+std::unique_ptr<TableInput> MakeEnumInput(const char *fileName)
 {
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_filter_enum.json");
-    fixture.Write("");
-    // `region` is not a known level key, so the column stays
-    // `Type::Enumeration` and exercises `EnumRowPredicate`.
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
+    auto input = std::make_unique<TableInput>();
+    input->fixture = std::make_unique<TestLogFile>(fileName);
+    input->fixture->Write("");
+    // region is not a known level key, so the column stays Type::Enumeration and exercises EnumRowPredicate.
+    input->owned = std::make_unique<LargeTable>(BuildLargeEnumTable(*input->fixture, ROW_COUNT, "region"));
+    LogTable &table = input->Table();
     const KeyId regionKey = table.Keys().Find("region");
-    REQUIRE(regionKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
-    REQUIRE(dict != nullptr);
-
-    const std::vector<std::string> selectedOwned = {"warn", "error"};
-    std::vector<std::string_view> selected;
-    selected.reserve(selectedOwned.size());
-    for (const auto &v : selectedOwned)
+    if (table.RowCount() != ROW_COUNT || regionKey == INVALID_KEY_ID)
     {
-        selected.emplace_back(v);
+        throw std::runtime_error("the enum table was not built");
     }
-    const EnumRowPredicate predicate(0, selected, dict);
-    REQUIRE(predicate.IsFastPathArmed());
-
-    constexpr int SAMPLES = 5;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    size_t accepted = 0;
-    for (int s = 0; s < SAMPLES; ++s)
+    input->dict = table.EnumDictionaries().Find(regionKey);
+    if (input->dict == nullptr)
     {
-        size_t hits = 0;
-        elapsed.push_back(TimeOnce([&]() {
-            for (size_t row = 0; row < ROW_COUNT; ++row)
-            {
-                if (predicate.MatchesRow(table, row))
-                {
-                    ++hits;
-                }
-            }
-        }));
-        accepted = hits;
+        throw std::runtime_error("the enum table has no dictionary");
     }
-    REQUIRE(accepted > 0);
-    REQUIRE(accepted < ROW_COUNT);
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    WARN(
-        "EnumRowPredicate over " << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
-                                 << ", high=" << Ms(high).count() << "), accepted=" << accepted
-    );
+    input->rank = std::make_unique<EnumDictRank>(*input->dict);
+    return input;
 }
 
-TEST_CASE(
-    "CallbackStringRowPredicate substring scan over 1'000'000 rows stays under 200ms",
-    "[.][benchmark][log_filter][large]"
-)
+std::unique_ptr<TableInput> MakeLevelInput(const char *fileName)
 {
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_filter_string.json");
-    fixture.Write("");
-    LargeTable owned = BuildLargeStringTable(fixture, ROW_COUNT);
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
-    // Naive substring matcher; mirrors the cheapest callback the
-    // GUI ever installs (the `Contains` match type without
-    // case-folding). Captured by value so the predicate owns its
-    // own state.
-    const std::string needle = "user-id";
-    // clang-tidy mistakes the lambda's implicit copy constructor (which allocates when duplicating
-    // the captured `std::string`) for an exception escaping the call operator; the operator only
-    // does a `string_view::contains`.
-    CallbackStringRowPredicate predicate(
-        0,
-        // NOLINTNEXTLINE(bugprone-exception-escape)
-        [needle](std::string_view slot) { return slot.contains(needle); }
-    );
-
-    constexpr int SAMPLES = 5;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    size_t accepted = 0;
-    for (int s = 0; s < SAMPLES; ++s)
+    auto input = std::make_unique<TableInput>();
+    input->fixture = std::make_unique<TestLogFile>(fileName);
+    input->fixture->Write("");
+    input->owned = std::make_unique<LargeTable>(BuildLargeLevelTable(*input->fixture, ROW_COUNT));
+    LogTable &table = input->Table();
+    if (table.RowCount() != ROW_COUNT || table.Keys().Find("level") == INVALID_KEY_ID ||
+        table.Configuration().Configuration().columns[0].type != ColumnType::Level)
     {
-        size_t hits = 0;
-        elapsed.push_back(TimeOnce([&]() {
-            for (size_t row = 0; row < ROW_COUNT; ++row)
-            {
-                if (predicate.MatchesRow(table, row))
-                {
-                    ++hits;
-                }
-            }
-        }));
-        accepted = hits;
+        throw std::runtime_error("the level table was not built");
     }
-    REQUIRE(accepted > 0);
-    REQUIRE(accepted < ROW_COUNT);
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    WARN(
-        "CallbackStringRowPredicate over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                           << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
-                                           << "), accepted=" << accepted
-    );
+    return input;
 }
 
-TEST_CASE(
-    "CompareRows sort over enum column on 1'000'000 rows scales linearly",
-    "[.][benchmark][log_filter][log_compare][large]"
-)
+std::unique_ptr<TableInput> MakeStringInput(const char *fileName)
 {
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_compare_enum.json");
-    fixture.Write("");
-    // `region` pins `Type::Enumeration`; a `level` key would auto-
-    // promote to `Type::Level` mid-build, making `CompareRows` ignore
-    // the `EnumDictRank` and breaking the sanity check below.
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
-    const KeyId regionKey = table.Keys().Find("region");
-    REQUIRE(regionKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
-    REQUIRE(dict != nullptr);
-    const EnumDictRank rank{*dict};
-
-    std::vector<size_t> indices(ROW_COUNT);
-    // `std::iota` rather than `std::ranges::iota`: the latter is C++23
-    // and AppleClang 17's libc++ still lacks it (macOS CI build).
-    std::iota(indices.begin(), indices.end(), size_t{0});
-
-    constexpr int SAMPLES = 3;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    for (int s = 0; s < SAMPLES; ++s)
+    auto input = std::make_unique<TableInput>();
+    input->fixture = std::make_unique<TestLogFile>(fileName);
+    input->fixture->Write("");
+    input->owned = std::make_unique<LargeTable>(BuildLargeStringTable(*input->fixture, ROW_COUNT));
+    if (input->Table().RowCount() != ROW_COUNT)
     {
-        // Reset the permutation before each timed sort.
-        std::iota(indices.begin(), indices.end(), size_t{0});
-        elapsed.push_back(TimeOnce([&]() {
-            std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, &rank) < 0; });
-        }));
+        throw std::runtime_error("the string table was not built");
     }
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-    WARN(
-        "CompareRows enum sort over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                      << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count() << ")"
-    );
-
-    // Sanity: the sort really did produce ascending ranks.
-    for (size_t i = 1; i < indices.size(); ++i)
-    {
-        const auto lhs = table.GetEnumValueId(indices[i - 1], 0);
-        const auto rhs = table.GetEnumValueId(indices[i], 0);
-        if (lhs.has_value() && rhs.has_value())
-        {
-            REQUIRE(rank.RankOf(*lhs) <= rank.RankOf(*rhs));
-        }
-    }
+    return input;
 }
 
-TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms", "[.][benchmark][log_filter][large]")
-{
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_filter_parallel.json");
-    fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
-    const KeyId regionKey = table.Keys().Find("region");
-    REQUIRE(regionKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
-    REQUIRE(dict != nullptr);
-
-    const std::vector<std::string> selectedOwned = {"warn", "error"};
-    std::vector<std::string_view> selected;
-    selected.reserve(selectedOwned.size());
-    for (const auto &v : selectedOwned)
-    {
-        selected.emplace_back(v);
-    }
-    // Wrap the single predicate in a `CompiledFilterExpression::Leaf`
-    // so the benchmark exercises the same evaluator the app takes.
-    CompiledFilterExpression compiled;
-    compiled.node = CompiledFilterExpression::Leaf{
-        RowPredicate{std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict}
-    };
-    compiled.referencedColumns.push_back(size_t{0});
-
-    constexpr int SAMPLES = 5;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    size_t accepted = 0;
-    for (int s = 0; s < SAMPLES; ++s)
-    {
-        std::vector<size_t> result;
-        elapsed.push_back(TimeOnce([&]() { result = FilterAcceptedRows(table, compiled); }));
-        accepted = result.size();
-    }
-    REQUIRE(accepted > 0);
-    REQUIRE(accepted < ROW_COUNT);
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    WARN(
-        "FilterAcceptedRows (parallel) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                              << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
-                                              << "), accepted=" << accepted
-    );
-}
-
-TEST_CASE(
-    "loglib::SortPermutationByColumn over 1'000'000 enum rows with rank stays under 500ms",
-    "[.][benchmark][log_filter][log_compare][large]"
-)
-{
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_sort_parallel.json");
-    fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
-    const KeyId regionKey = table.Keys().Find("region");
-    REQUIRE(regionKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
-    REQUIRE(dict != nullptr);
-    const EnumDictRank rank{*dict};
-
-    std::vector<size_t> logRows(ROW_COUNT);
-    std::iota(logRows.begin(), logRows.end(), size_t{0});
-
-    constexpr int SAMPLES = 3;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    std::vector<size_t> permutation;
-    for (int s = 0; s < SAMPLES; ++s)
-    {
-        elapsed.push_back(TimeOnce([&]() {
-            permutation =
-                SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, &rank);
-        }));
-    }
-    REQUIRE(permutation.size() == ROW_COUNT);
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    WARN(
-        "SortPermutationByColumn (parallel + pre-mat rank) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                                                  << " ms (low=" << Ms(low).count()
-                                                                  << ", high=" << Ms(high).count() << ")"
-    );
-
-    // Sanity: ascending rank order with input-index tie-break
-    // (`SortPermutationByColumn` documents this stability).
-    for (size_t i = 1; i < permutation.size(); ++i)
-    {
-        const auto lhsId = table.GetEnumValueId(logRows[permutation[i - 1]], 0);
-        const auto rhsId = table.GetEnumValueId(logRows[permutation[i]], 0);
-        if (lhsId.has_value() && rhsId.has_value())
-        {
-            const auto lhsRank = rank.RankOf(*lhsId);
-            const auto rhsRank = rank.RankOf(*rhsId);
-            REQUIRE(lhsRank <= rhsRank);
-            if (lhsRank == rhsRank)
-            {
-                REQUIRE(permutation[i - 1] < permutation[i]);
-            }
-        }
-    }
-}
-
-// --- `Type::Level` benchmarks --------------------------------------------
-//
-// Level-column siblings of the enum benchmarks. Guard the
-// pre-materialised `uint8_t` rank fast path in
-// `SortPermutationByColumn` and the `CompareLevel -> GetLevelForRow`
-// dispatch in `CompareRows`. Sanity checks use `LogLevel` (canonical
-// severity) rather than alphabetic rank.
-
-TEST_CASE(
-    "loglib::SortPermutationByColumn over 1'000'000 level rows stays under 500ms",
-    "[.][benchmark][log_filter][log_compare][large][level]"
-)
-{
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_sort_level_parallel.json");
-    fixture.Write("");
-    LargeTable owned = BuildLargeLevelTable(fixture, ROW_COUNT);
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
-
-    std::vector<size_t> logRows(ROW_COUNT);
-    std::iota(logRows.begin(), logRows.end(), size_t{0});
-
-    constexpr int SAMPLES = 3;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    std::vector<size_t> permutation;
-    for (int s = 0; s < SAMPLES; ++s)
-    {
-        elapsed.push_back(TimeOnce([&]() {
-            // Level columns read `LevelRankCache(columnIndex)` directly,
-            // ignoring the rank arg. Pass `nullptr` to match how the
-            // production proxy chain calls the helper.
-            permutation = SortPermutationByColumn(
-                table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, nullptr
-            );
-        }));
-    }
-    REQUIRE(permutation.size() == ROW_COUNT);
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    WARN(
-        "SortPermutationByColumn (parallel + pre-mat level rank) over "
-        << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
-        << ", high=" << Ms(high).count() << ")"
-    );
-
-    // Sanity: canonical severity non-decreasing with input-index
-    // tie-break. Go through `GetLevelForRow` (the public API the
-    // GUI uses) rather than the rank cache directly.
-    for (size_t i = 1; i < permutation.size(); ++i)
-    {
-        const auto lhs = table.GetLevelForRow(logRows[permutation[i - 1]], 0);
-        const auto rhs = table.GetLevelForRow(logRows[permutation[i]], 0);
-        if (lhs.has_value() && rhs.has_value())
-        {
-            const auto lhsRank = static_cast<uint8_t>(*lhs);
-            const auto rhsRank = static_cast<uint8_t>(*rhs);
-            REQUIRE(lhsRank <= rhsRank);
-            if (lhsRank == rhsRank)
-            {
-                REQUIRE(permutation[i - 1] < permutation[i]);
-            }
-        }
-    }
-}
-
-TEST_CASE(
-    "CompareRows sort over level column on 1'000'000 rows scales linearly",
-    "[.][benchmark][log_filter][log_compare][large][level]"
-)
-{
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_compare_level.json");
-    fixture.Write("");
-    LargeTable owned = BuildLargeLevelTable(fixture, ROW_COUNT);
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
-
-    std::vector<size_t> indices(ROW_COUNT);
-    std::iota(indices.begin(), indices.end(), size_t{0});
-
-    constexpr int SAMPLES = 3;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    for (int s = 0; s < SAMPLES; ++s)
-    {
-        std::iota(indices.begin(), indices.end(), size_t{0});
-        elapsed.push_back(TimeOnce([&]() {
-            // Level columns ignore the `EnumDictRank` arg; passing
-            // `nullptr` matches a non-Qt consumer that hasn't
-            // materialised any rank table.
-            std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, nullptr) < 0; });
-        }));
-    }
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-    WARN(
-        "CompareRows level sort over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                       << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count() << ")"
-    );
-
-    // Sanity: ascending canonical-severity order via `GetLevelForRow`.
-    for (size_t i = 1; i < indices.size(); ++i)
-    {
-        const auto lhs = table.GetLevelForRow(indices[i - 1], 0);
-        const auto rhs = table.GetLevelForRow(indices[i], 0);
-        if (lhs.has_value() && rhs.has_value())
-        {
-            REQUIRE(static_cast<uint8_t>(*lhs) <= static_cast<uint8_t>(*rhs));
-        }
-    }
-}
-
-// --- Boolean-expression benchmarks --------------------------------------
-//
-// These exercise `FilterAcceptedRows` on trees more interesting than a
-// single leaf. Two shapes:
-//
-//   1. **Deep AND** -- four enum leaves conjoined. This is what
-//      "multiple simple filters" produce; the visit path evaluates it
-//      row-by-row with a natural short-circuit at the first rejecting
-//      leaf, which is why `ShouldUseBitsetPath` deliberately leaves
-//      flat `And` trees alone no matter how many leaves they carry.
-//   2. **AND(OR, NOT)** -- the shape a `level in {...} AND NOT
-//      path:health` query compiles to. It has both `Or` and `Not`, so
-//      the bitset-materialisation heuristic in `FilterAcceptedRows`
-//      engages: each unique leaf becomes a `RowBitset`, then the tree
-//      collapses via word-parallel `&` / `|` / `~`.
-//
-// Numbers are `WARN`-reported so CI logs surface the run-to-run
-// distribution. Speed is judged by comparing runs, not by a limit here.
-
-namespace
-{
-
-/// Build the same enum leaf shape the `TEST_CASE` helpers do, but
-/// laid out inline so the benchmark file stays self-contained.
+// Build the same enum leaf shape the filter tests do, but laid out inline so the benchmark file stays self-contained.
 [[nodiscard]] CompiledFilterExpression MakeEnumLeaf(
     const LogTable &table, size_t columnIndex, const std::vector<std::string> &selectedOwned
 )
@@ -751,132 +346,345 @@ namespace
     return expr;
 }
 
+using SharedTable = std::shared_ptr<LazyInput<TableInput>>;
+
+// Counts the rows a predicate accepts, one pass per iteration.
+template <typename Predicate>
+void RunPredicateWalk(benchmark::State &state, const LogTable &table, const Predicate &predicate, bool warmUp = false)
+{
+    const auto walk = [&] {
+        std::size_t hits = 0;
+        for (std::size_t row = 0; row < ROW_COUNT; ++row)
+        {
+            if (predicate.MatchesRow(table, row))
+            {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+    std::size_t accepted = warmUp ? walk() : 0;
+    for (const auto _ : state)
+    {
+        accepted = walk();
+        benchmark::DoNotOptimize(accepted);
+    }
+    if (accepted == 0 || accepted >= ROW_COUNT)
+    {
+        Fail(state, "the predicate accepted none or all of the rows");
+        return;
+    }
+    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * ROW_COUNT));
+    state.counters["accepted"] = static_cast<double>(accepted);
+}
+
+// A shared table plus the scratch permutation a sort benchmark reuses.
+struct TableScratch
+{
+    SharedTable table;
+    std::vector<std::size_t> indices;
+};
+
+// Sorts a fresh identity permutation with CompareRows each iteration; the reset is not timed. The sorted order is
+// checked after the timed part with inOrder(input, table, lhsRow, rhsRow).
+template <typename Compare, typename InOrder>
+void RegisterCompareRowsSort(const std::string &name, const SharedTable &table, Compare compare, InOrder inOrder)
+{
+    RegisterLarge<TableScratch>(
+        name,
+        [table] {
+            auto scratch = std::make_unique<TableScratch>();
+            scratch->table = table;
+            scratch->indices.resize(ROW_COUNT);
+            return scratch;
+        },
+        [compare, inOrder](TableScratch &scratch, benchmark::State &state, bool first) {
+            const TableInput &input = scratch.table->Get();
+            const LogTable &logTable = input.Table();
+            const auto sortIdentity = [&] {
+                std::iota(scratch.indices.begin(), scratch.indices.end(), std::size_t{0});
+                std::ranges::sort(scratch.indices, [&](std::size_t a, std::size_t b) {
+                    return compare(input, logTable, a, b) < 0;
+                });
+            };
+            if (first)
+            {
+                sortIdentity();
+            }
+            for (const auto _ : state)
+            {
+                state.PauseTiming();
+                std::iota(scratch.indices.begin(), scratch.indices.end(), std::size_t{0});
+                state.ResumeTiming();
+                std::ranges::sort(scratch.indices, [&](std::size_t a, std::size_t b) {
+                    return compare(input, logTable, a, b) < 0;
+                });
+            }
+            for (std::size_t i = 1; i < scratch.indices.size(); ++i)
+            {
+                if (!inOrder(input, logTable, scratch.indices[i - 1], scratch.indices[i]))
+                {
+                    Fail(state, "the sort did not produce ascending order");
+                    return;
+                }
+            }
+            state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * ROW_COUNT));
+        }
+    );
+}
+
+// Registers SortPermutationByColumn over @p table. Rank is the enum rank, or null for a level column, which reads its
+// own rank cache the way the production proxy chain calls the helper.
+void RegisterSortPermutation(const std::string &name, const SharedTable &table, bool useEnumRank)
+{
+    RegisterSmall(name, [table, useEnumRank](benchmark::State &state) {
+        const TableInput &input = table->Get();
+        const LogTable &logTable = input.Table();
+        std::vector<std::size_t> logRows(ROW_COUNT);
+        std::iota(logRows.begin(), logRows.end(), std::size_t{0});
+        std::vector<std::size_t> permutation;
+        for (const auto _ : state)
+        {
+            permutation = SortPermutationByColumn(
+                logTable,
+                std::span<const std::size_t>{logRows},
+                std::size_t{0},
+                /*ascending=*/true,
+                useEnumRank ? input.rank.get() : nullptr
+            );
+            benchmark::DoNotOptimize(permutation);
+        }
+        // Ascending order with an input-index tie-break (SortPermutationByColumn documents this stability).
+        bool ordered = permutation.size() == ROW_COUNT;
+        for (std::size_t i = 1; ordered && i < permutation.size(); ++i)
+        {
+            std::uint32_t lhsRank = 0;
+            std::uint32_t rhsRank = 0;
+            if (useEnumRank)
+            {
+                const auto lhsId = logTable.GetEnumValueId(logRows[permutation[i - 1]], 0);
+                const auto rhsId = logTable.GetEnumValueId(logRows[permutation[i]], 0);
+                if (!lhsId.has_value() || !rhsId.has_value())
+                {
+                    continue;
+                }
+                lhsRank = input.rank->RankOf(*lhsId);
+                rhsRank = input.rank->RankOf(*rhsId);
+            }
+            else
+            {
+                const auto lhs = logTable.GetLevelForRow(logRows[permutation[i - 1]], 0);
+                const auto rhs = logTable.GetLevelForRow(logRows[permutation[i]], 0);
+                if (!lhs.has_value() || !rhs.has_value())
+                {
+                    continue;
+                }
+                lhsRank = static_cast<std::uint8_t>(*lhs);
+                rhsRank = static_cast<std::uint8_t>(*rhs);
+            }
+            ordered = lhsRank <= rhsRank && (lhsRank != rhsRank || permutation[i - 1] < permutation[i]);
+        }
+        if (!ordered)
+        {
+            Fail(state, "the permutation is not sorted");
+            return;
+        }
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * ROW_COUNT));
+    });
+}
+
+// Registers FilterAcceptedRows over a tree that @p makeExpression builds from the enum table.
+template <typename MakeExpression>
+void RegisterFilterAcceptedRows(
+    const std::string &name, const SharedTable &table, MakeExpression makeExpression, bool expectAny
+)
+{
+    RegisterSmall(name, [table, makeExpression, expectAny](benchmark::State &state) {
+        const TableInput &input = table->Get();
+        const LogTable &logTable = input.Table();
+        const CompiledFilterExpression expr = makeExpression(logTable, input.dict);
+        std::size_t accepted = 0;
+        std::vector<std::size_t> result;
+        for (const auto _ : state)
+        {
+            result = FilterAcceptedRows(logTable, expr);
+            accepted = result.size();
+            benchmark::DoNotOptimize(result);
+        }
+        if (expectAny ? (accepted == 0 || accepted >= ROW_COUNT) : accepted != 0)
+        {
+            Fail(state, "the filter accepted an unexpected number of rows");
+            return;
+        }
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * ROW_COUNT));
+        state.counters["accepted"] = static_cast<double>(accepted);
+    });
+}
+
 } // namespace
 
-TEST_CASE(
-    "loglib::FilterAcceptedRows AND of four enum leaves stays under 200ms",
-    "[.][benchmark][log_filter][expression][large]"
-)
+void RegisterLogFilterBenchmarks()
 {
-    RequireReleaseBuildForBenchmarks();
+    // Each table is built on first use and shared by the benchmarks that read it.
+    const SharedTable enumTable = MakeLazy<TableInput>([] { return MakeEnumInput("benchmark_log_filter_enum.json"); });
+    const SharedTable levelTable =
+        MakeLazy<TableInput>([] { return MakeLevelInput("benchmark_log_filter_level.json"); });
+    const SharedTable stringTable =
+        MakeLazy<TableInput>([] { return MakeStringInput("benchmark_log_filter_string.json"); });
 
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_filter_and.json");
-    fixture.Write("");
-    // `region` keeps the column Enumeration (no auto-promotion).
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
+    RegisterSmall("EnumRowPredicate over 1000000 rows", [enumTable](benchmark::State &state) {
+        const TableInput &input = enumTable->Get();
+        const std::vector<std::string> selectedOwned = {"warn", "error"};
+        std::vector<std::string_view> selected(selectedOwned.begin(), selectedOwned.end());
+        const EnumRowPredicate predicate(0, selected, input.dict);
+        if (!predicate.IsFastPathArmed())
+        {
+            Fail(state, "the enum fast path is not armed");
+            return;
+        }
+        RunPredicateWalk(state, input.Table(), predicate);
+    });
 
-    // Four disjoint-value AND leaves. Each of the four canonical
-    // values (`info` / `warn` / `error` / `debug`) is inclusive,
-    // and the fixture cycles over exactly those four -- so the
-    // intersection is empty. Purpose is timing shape, not the
-    // accepted count; short-circuiting after the first leaf will
-    // dominate, which is precisely what we want to measure.
-    std::vector<CompiledFilterExpression> children;
-    children.push_back(MakeEnumLeaf(table, 0, {"info"}));
-    children.push_back(MakeEnumLeaf(table, 0, {"warn"}));
-    children.push_back(MakeEnumLeaf(table, 0, {"error"}));
-    children.push_back(MakeEnumLeaf(table, 0, {"debug"}));
-    CompiledFilterExpression expr;
-    CompiledFilterExpression::And andNode;
-    andNode.children = std::move(children);
-    expr.node = std::move(andNode);
-    expr.referencedColumns.push_back(0);
+    // Naive substring matcher; mirrors the cheapest callback the GUI ever installs (the Contains match type
+    // without case-folding). Captured by value so the predicate owns its own state.
+    RegisterLarge<TableScratch>(
+        "CallbackStringRowPredicate over 1000000 rows",
+        [stringTable] {
+            auto scratch = std::make_unique<TableScratch>();
+            scratch->table = stringTable;
+            return scratch;
+        },
+        [](TableScratch &scratch, benchmark::State &state, bool first) {
+            const TableInput &input = scratch.table->Get();
+            const std::string needle = "user-id";
+            // clang-tidy mistakes the lambda's implicit copy constructor (which allocates when duplicating the
+            // captured std::string) for an exception escaping the call operator; the operator only does a
+            // string_view::contains.
+            const CallbackStringRowPredicate predicate(
+                0,
+                // NOLINTNEXTLINE(bugprone-exception-escape)
+                [needle](std::string_view slot) { return slot.contains(needle); }
+            );
+            RunPredicateWalk(state, input.Table(), predicate, first);
+        },
+        LargeOptions{}
+    );
 
-    constexpr int SAMPLES = 5;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    size_t accepted = 0;
-    for (int s = 0; s < SAMPLES; ++s)
-    {
-        std::vector<size_t> result;
-        elapsed.push_back(TimeOnce([&]() { result = FilterAcceptedRows(table, expr); }));
-        accepted = result.size();
-    }
-    // Disjoint AND -- no row can be all four values simultaneously.
-    CHECK(accepted == 0);
+    RegisterCompareRowsSort(
+        "CompareRows enum sort over 1000000 rows",
+        enumTable,
+        [](const TableInput &input, const LogTable &table, std::size_t a, std::size_t b) {
+            return CompareRows(table, a, b, 0, input.rank.get());
+        },
+        [](const TableInput &input, const LogTable &table, std::size_t lhsRow, std::size_t rhsRow) {
+            const auto lhs = table.GetEnumValueId(lhsRow, 0);
+            const auto rhs = table.GetEnumValueId(rhsRow, 0);
+            return !lhs.has_value() || !rhs.has_value() || input.rank->RankOf(*lhs) <= input.rank->RankOf(*rhs);
+        }
+    );
 
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
+    RegisterFilterAcceptedRows(
+        "FilterAcceptedRows (parallel) over 1000000 rows",
+        enumTable,
+        [](const LogTable &, const EnumDictionary *dict) {
+            const std::vector<std::string> selectedOwned = {"warn", "error"};
+            std::vector<std::string_view> selected(selectedOwned.begin(), selectedOwned.end());
+            // Wrap the single predicate in a CompiledFilterExpression::Leaf so the benchmark exercises the same
+            // evaluator the app takes.
+            CompiledFilterExpression compiled;
+            compiled.node = CompiledFilterExpression::Leaf{RowPredicate{
+                std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict
+            }};
+            compiled.referencedColumns.push_back(size_t{0});
+            return compiled;
+        },
+        /*expectAny=*/true
+    );
 
-    WARN(
-        "FilterAcceptedRows AND(4 enum leaves) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                                      << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
-                                                      << "), accepted=" << accepted
+    RegisterSortPermutation("SortPermutationByColumn (parallel + pre-mat rank) over 1000000 rows", enumTable, true);
+
+    // Level-column siblings of the enum benchmarks. They guard the pre-materialised uint8_t rank fast path in
+    // SortPermutationByColumn and the CompareLevel -> GetLevelForRow dispatch in CompareRows. The order checks
+    // use LogLevel (canonical severity) rather than alphabetic rank.
+    RegisterSortPermutation(
+        "SortPermutationByColumn (parallel + pre-mat level rank) over 1000000 rows", levelTable, false
+    );
+
+    RegisterCompareRowsSort(
+        "CompareRows level sort over 1000000 rows",
+        levelTable,
+        [](const TableInput &, const LogTable &table, std::size_t a, std::size_t b) {
+            // Level columns ignore the EnumDictRank argument; null matches a non-Qt consumer that has not
+            // materialised any rank table.
+            return CompareRows(table, a, b, 0, nullptr);
+        },
+        [](const TableInput &, const LogTable &table, std::size_t lhsRow, std::size_t rhsRow) {
+            const auto lhs = table.GetLevelForRow(lhsRow, 0);
+            const auto rhs = table.GetLevelForRow(rhsRow, 0);
+            return !lhs.has_value() || !rhs.has_value() ||
+                   static_cast<std::uint8_t>(*lhs) <= static_cast<std::uint8_t>(*rhs);
+        }
+    );
+
+    // Boolean-expression benchmarks: FilterAcceptedRows on trees more interesting than a single leaf.
+    //
+    // 1. Deep AND -- four enum leaves conjoined. This is what "multiple simple filters" produce; the visit path
+    //    evaluates it row by row with a natural short-circuit at the first rejecting leaf, which is why
+    //    ShouldUseBitsetPath deliberately leaves flat And trees alone no matter how many leaves they carry. The
+    //    four canonical values are disjoint, so no row is accepted; the purpose is timing shape, not the count.
+    RegisterFilterAcceptedRows(
+        "FilterAcceptedRows AND(4 enum leaves) over 1000000 rows",
+        enumTable,
+        [](const LogTable &table, const EnumDictionary *) {
+            std::vector<CompiledFilterExpression> children;
+            children.push_back(MakeEnumLeaf(table, 0, {"info"}));
+            children.push_back(MakeEnumLeaf(table, 0, {"warn"}));
+            children.push_back(MakeEnumLeaf(table, 0, {"error"}));
+            children.push_back(MakeEnumLeaf(table, 0, {"debug"}));
+            CompiledFilterExpression expr;
+            CompiledFilterExpression::And andNode;
+            andNode.children = std::move(children);
+            expr.node = std::move(andNode);
+            expr.referencedColumns.push_back(0);
+            return expr;
+        },
+        /*expectAny=*/false
+    );
+
+    // 2. AND(OR, NOT) -- the shape a level in {...} AND NOT path:health query compiles to. It has both Or and
+    //    Not, so the bitset-materialisation heuristic in FilterAcceptedRows engages: each unique leaf becomes a
+    //    RowBitset, then the tree collapses via word-parallel & / | / ~. Here: (region in {warn, error,
+    //    debug}) AND NOT region=debug.
+    RegisterFilterAcceptedRows(
+        "FilterAcceptedRows AND(OR, NOT) [bitset path] over 1000000 rows",
+        enumTable,
+        [](const LogTable &table, const EnumDictionary *) {
+            std::vector<CompiledFilterExpression> orChildren;
+            orChildren.push_back(MakeEnumLeaf(table, 0, {"warn"}));
+            orChildren.push_back(MakeEnumLeaf(table, 0, {"error"}));
+            orChildren.push_back(MakeEnumLeaf(table, 0, {"debug"}));
+            CompiledFilterExpression orExpr;
+            CompiledFilterExpression::Or orNode;
+            orNode.children = std::move(orChildren);
+            orExpr.node = std::move(orNode);
+            orExpr.referencedColumns.push_back(0);
+
+            CompiledFilterExpression notExpr;
+            notExpr.node = CompiledFilterExpression::Not{MakeEnumLeaf(table, 0, {"debug"})};
+            notExpr.referencedColumns.push_back(0);
+
+            std::vector<CompiledFilterExpression> andChildren;
+            andChildren.push_back(std::move(orExpr));
+            andChildren.push_back(std::move(notExpr));
+            CompiledFilterExpression expr;
+            CompiledFilterExpression::And andNode;
+            andNode.children = std::move(andChildren);
+            expr.node = std::move(andNode);
+            expr.referencedColumns.push_back(0);
+            return expr;
+        },
+        /*expectAny=*/true
     );
 }
 
-TEST_CASE(
-    "loglib::FilterAcceptedRows AND(OR, NOT) forces bitset materialisation under 200ms",
-    "[.][benchmark][log_filter][expression][bitset][large]"
-)
-{
-    RequireReleaseBuildForBenchmarks();
-
-    constexpr size_t ROW_COUNT = 1'000'000;
-    const TestLogFile fixture("benchmark_log_filter_or_not.json");
-    fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
-    LogTable &table = owned.table;
-    REQUIRE(table.RowCount() == ROW_COUNT);
-
-    // Shape: (region in {warn, error, debug}) AND NOT region=debug.
-    // The heuristic in `ShouldUseBitsetPath` fires on `hasOr` +
-    // `hasNot` with >=2 unique leaves, so this trees drives the
-    // bitset path deterministically.
-    std::vector<CompiledFilterExpression> orChildren;
-    orChildren.push_back(MakeEnumLeaf(table, 0, {"warn"}));
-    orChildren.push_back(MakeEnumLeaf(table, 0, {"error"}));
-    orChildren.push_back(MakeEnumLeaf(table, 0, {"debug"}));
-
-    CompiledFilterExpression orExpr;
-    CompiledFilterExpression::Or orNode;
-    orNode.children = std::move(orChildren);
-    orExpr.node = std::move(orNode);
-    orExpr.referencedColumns.push_back(0);
-
-    CompiledFilterExpression notExpr;
-    notExpr.node = CompiledFilterExpression::Not{MakeEnumLeaf(table, 0, {"debug"})};
-    notExpr.referencedColumns.push_back(0);
-
-    std::vector<CompiledFilterExpression> andChildren;
-    andChildren.push_back(std::move(orExpr));
-    andChildren.push_back(std::move(notExpr));
-    CompiledFilterExpression expr;
-    CompiledFilterExpression::And andNode;
-    andNode.children = std::move(andChildren);
-    expr.node = std::move(andNode);
-    expr.referencedColumns.push_back(0);
-
-    constexpr int SAMPLES = 5;
-    std::vector<std::chrono::nanoseconds> elapsed;
-    elapsed.reserve(SAMPLES);
-    size_t accepted = 0;
-    for (int s = 0; s < SAMPLES; ++s)
-    {
-        std::vector<size_t> result;
-        elapsed.push_back(TimeOnce([&]() { result = FilterAcceptedRows(table, expr); }));
-        accepted = result.size();
-    }
-    // Fixture cycles [info, warn, error, debug]; expected accept
-    // count is #warn + #error = 2/4 of the rows.
-    REQUIRE(accepted > ROW_COUNT / 4);
-    REQUIRE(accepted < ROW_COUNT);
-
-    using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
-                      static_cast<long long>(SAMPLES);
-    const auto low = *std::ranges::min_element(elapsed);
-    const auto high = *std::ranges::max_element(elapsed);
-
-    WARN(
-        "FilterAcceptedRows AND(OR, NOT) [bitset path] over "
-        << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
-        << ", high=" << Ms(high).count() << "), accepted=" << accepted
-    );
-}
+} // namespace bench
