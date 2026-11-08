@@ -32,7 +32,9 @@ int main(int argc, char **argv)
     }
 
     bench::RegisterCsvBenchmarks();
+    bench::RegisterHistogramBucketIndexBenchmarks();
     bench::RegisterJsonBenchmarks();
+    bench::RegisterLogFilterBenchmarks();
     bench::RegisterLogfmtBenchmarks();
     bench::RegisterRegexBenchmarks();
 

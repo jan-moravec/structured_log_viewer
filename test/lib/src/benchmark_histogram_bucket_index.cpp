@@ -1,32 +1,33 @@
-// Micro-benchmarks for `loglib::HistogramBucketIndex`. Gates the
-// ROADMAP-item-2 acceptance bar: rebuild the index over 1 M rows in
-// well under a frame (target ~5 ms on the developer workstation the
-// ROADMAP entry cites; CI machines vary, so the numbers are reported
-// via `WARN` instead of a hard cap and the comparison script scrapes
-// the log lines to flag regressions).
+// Micro-benchmarks for `loglib::HistogramBucketIndex`: rebuilding the index over 1 M rows has to take well under a
+// frame. The figures are reported, not capped; CI machines vary, and the comparison script flags regressions.
 
 #include "benchmark_common.hpp"
+#include "benchmark_registry.hpp"
 
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
 
-#include <catch2/catch_all.hpp>
+#include <benchmark/benchmark.h>
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
 #include <vector>
 
 using namespace loglib;
 
+namespace bench
+{
+
 namespace
 {
 
-// Synthetic (ts, level) stream. Timestamps step by `stepUs` from
-// `Base()`; levels come from a fixed info-heavy vocabulary.
+// Synthetic (ts, level) stream. Timestamps step by `step` from `BenchBase()`; levels come from a fixed info-heavy
+// vocabulary.
 struct Event
 {
     TimeStamp ts;
@@ -41,8 +42,7 @@ TimeStamp BenchBase()
 
 std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds step)
 {
-    // Weighted like a production log: mostly info, some warn,
-    // occasional error/debug. Deterministic (seeded).
+    // Weighted like a production log: mostly info, some warn, occasional error/debug. Deterministic (seeded).
     static constexpr std::array<LogLevel, 10> LEVELS = {
         LogLevel::Info,
         LogLevel::Info,
@@ -70,90 +70,122 @@ std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds s
     return events;
 }
 
+constexpr std::size_t ROWS = 1'000'000;
+
+struct RebuildInput
+{
+    std::vector<Event> events;
+};
+
+void RegisterRebuild(const char *name, HistogramBucketSize size, std::chrono::microseconds step)
+{
+    auto input = MakeLazy<RebuildInput>([step]() {
+        auto created = std::make_unique<RebuildInput>();
+        created->events = GenerateEvents(ROWS, step);
+        return created;
+    });
+    RegisterSmall(name, [input, size](benchmark::State &state) {
+        const RebuildInput &fixture = input->Get();
+        std::size_t total = 0;
+        for (auto _ : state)
+        {
+            HistogramBucketIndex index{size};
+            for (const auto &ev : fixture.events)
+            {
+                index.AddRow(ev.ts, ev.level);
+            }
+            total = index.TotalRowCount();
+            benchmark::DoNotOptimize(total);
+        }
+        if (total != ROWS)
+        {
+            Fail(state, "the index holds the wrong number of rows");
+            return;
+        }
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * ROWS));
+    });
+}
+
 } // namespace
 
-TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1s buckets", "[.][benchmark][histogram]")
+void RegisterHistogramBucketIndexBenchmarks()
 {
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    constexpr std::size_t ROWS = 1'000'000;
     // 1 ms/row -> 1000 s span with a heavy fill per bucket (hot path).
-    const auto step = std::chrono::microseconds{1000};
-    const auto events = GenerateEvents(ROWS, step);
+    RegisterRebuild(
+        "HistogramBucketIndex rebuild (1M rows / 1s buckets)",
+        HistogramBucketSize::OneSecond,
+        std::chrono::microseconds{1000}
+    );
+    // 60 ms/row -> 60000 s span.
+    RegisterRebuild(
+        "HistogramBucketIndex rebuild (1M rows / 1min buckets)",
+        HistogramBucketSize::OneMinute,
+        std::chrono::microseconds{60'000}
+    );
 
-    bench::RunTimedSamples("HistogramBucketIndex rebuild (1M rows / 1s buckets)", 5, [&]() {
-        HistogramBucketIndex index{HistogramBucketSize::OneSecond};
-        for (const auto &ev : events)
-        {
-            index.AddRow(ev.ts, ev.level);
-        }
-        REQUIRE(index.TotalRowCount() == ROWS);
-    });
-}
-
-TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1min buckets", "[.][benchmark][histogram]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    constexpr std::size_t ROWS = 1'000'000;
-    const auto step = std::chrono::microseconds{60'000}; // 60 ms/row -> 60000 s span.
-    const auto events = GenerateEvents(ROWS, step);
-
-    bench::RunTimedSamples("HistogramBucketIndex rebuild (1M rows / 1min buckets)", 5, [&]() {
-        HistogramBucketIndex index{HistogramBucketSize::OneMinute};
-        for (const auto &ev : events)
-        {
-            index.AddRow(ev.ts, ev.level);
-        }
-        REQUIRE(index.TotalRowCount() == ROWS);
-    });
-}
-
-TEST_CASE("HistogramBucketIndex: incremental live-tail append", "[.][benchmark][histogram]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    // Preload 900k events, then append 100k in small batches to
-    // simulate the 100 ms tail cadence. Reports mean over 5 runs.
+    // Preload 900k events, then append 100k in small batches to simulate the 100 ms tail cadence.
+    struct TailInput
+    {
+        std::vector<Event> preload;
+        std::vector<Event> tail;
+    };
     constexpr std::size_t PRELOAD = 900'000;
     constexpr std::size_t BATCH = 1'000;
     constexpr std::size_t BATCHES = 100;
-    const auto step = std::chrono::microseconds{1000};
-    const auto preloadEvents = GenerateEvents(PRELOAD, step);
-    const auto tailEvents = GenerateEvents(BATCH * BATCHES, step);
-
-    bench::RunTimedSamples("HistogramBucketIndex live-tail (100x 1k row batches)", 5, [&]() {
-        HistogramBucketIndex index{HistogramBucketSize::OneSecond};
-        for (const auto &ev : preloadEvents)
-        {
-            index.AddRow(ev.ts, ev.level);
-        }
-        const auto tailStart = BenchBase() + step * (PRELOAD + 1);
-        for (std::size_t b = 0; b < BATCHES; ++b)
-        {
-            for (std::size_t i = 0; i < BATCH; ++i)
+    const auto tailStep = std::chrono::microseconds{1000};
+    auto tailInput = MakeLazy<TailInput>([tailStep]() {
+        auto created = std::make_unique<TailInput>();
+        created->preload = GenerateEvents(PRELOAD, tailStep);
+        created->tail = GenerateEvents(BATCH * BATCHES, tailStep);
+        return created;
+    });
+    RegisterSmall(
+        "HistogramBucketIndex live-tail (100x 1k row batches)", [tailInput, tailStep](benchmark::State &state) {
+            const TailInput &fixture = tailInput->Get();
+            std::size_t total = 0;
+            for (auto _ : state)
             {
-                const auto idx = (b * BATCH) + i;
-                index.AddRow(tailStart + step * idx, tailEvents[idx].level);
+                HistogramBucketIndex index{HistogramBucketSize::OneSecond};
+                for (const auto &ev : fixture.preload)
+                {
+                    index.AddRow(ev.ts, ev.level);
+                }
+                const auto tailStart = BenchBase() + tailStep * (PRELOAD + 1);
+                for (std::size_t b = 0; b < BATCHES; ++b)
+                {
+                    for (std::size_t i = 0; i < BATCH; ++i)
+                    {
+                        const auto idx = (b * BATCH) + i;
+                        index.AddRow(tailStart + tailStep * idx, fixture.tail[idx].level);
+                    }
+                }
+                total = index.TotalRowCount();
+                benchmark::DoNotOptimize(total);
+            }
+            if (total != PRELOAD + (BATCH * BATCHES))
+            {
+                Fail(state, "the index holds the wrong number of rows");
+                return;
+            }
+            state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * total));
+        }
+    );
+
+    // AutoBucketSize is O(1): a million calls take as long as a million additions of two numbers.
+    RegisterSmall("HistogramBucketIndex::AutoBucketSize (1M calls)", [](benchmark::State &state) {
+        const TimeStamp min = BenchBase();
+        const TimeStamp max = BenchBase() + std::chrono::hours{24 * 365};
+        HistogramBucketSize last = HistogramBucketSize::OneSecond;
+        for (auto _ : state)
+        {
+            for (std::size_t i = 0; i < 1'000'000; ++i)
+            {
+                last = HistogramBucketIndex::AutoBucketSize(min, max);
+                benchmark::DoNotOptimize(last);
             }
         }
-        REQUIRE(index.TotalRowCount() == PRELOAD + (BATCH * BATCHES));
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * 1'000'000));
     });
 }
 
-TEST_CASE("HistogramBucketIndex: AutoBucketSize is O(1)", "[.][benchmark][histogram]")
-{
-    BENCHMARK_REQUIRES_RELEASE_BUILD();
-
-    const TimeStamp min = BenchBase();
-    const TimeStamp max = BenchBase() + std::chrono::hours{24 * 365};
-
-    bench::RunTimedSamples("HistogramBucketIndex::AutoBucketSize (1M calls)", 3, [&]() {
-        volatile HistogramBucketSize sink = HistogramBucketSize::OneSecond;
-        for (std::size_t i = 0; i < 1'000'000; ++i)
-        {
-            sink = HistogramBucketIndex::AutoBucketSize(min, max);
-        }
-        (void)sink;
-    });
-}
+} // namespace bench

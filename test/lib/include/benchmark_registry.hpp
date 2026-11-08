@@ -11,7 +11,9 @@ namespace bench
 {
 
 void RegisterCsvBenchmarks();
+void RegisterHistogramBucketIndexBenchmarks();
 void RegisterJsonBenchmarks();
+void RegisterLogFilterBenchmarks();
 void RegisterLogfmtBenchmarks();
 void RegisterRegexBenchmarks();
 
