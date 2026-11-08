@@ -441,10 +441,10 @@ void RegisterCancellationBenchmark()
             );
             return input;
         },
-        [](CancellationInput &input, benchmark::State &state, bool /*first*/) {
+        [](CancellationInput &input, benchmark::State &state, bool first) {
             const JsonParser parser;
-            for (auto _ : state)
-            {
+            // Returns the gap in seconds, or a negative number when the parse was not cancelled.
+            auto cancelOnce = [&]() {
                 FileLineSource source(input.file->GetFilePath());
                 LatencySink sink;
                 ParserOptions opts;
@@ -452,10 +452,24 @@ void RegisterCancellationBenchmark()
                 parser.ParseStreaming(source, sink, opts);
                 if (!sink.cancelled || sink.requestedAt.time_since_epoch().count() == 0)
                 {
+                    return -1.0;
+                }
+                return std::chrono::duration<double>(sink.finishedAt - sink.requestedAt).count();
+            };
+            // The first runs of a process are slower than the steady state; the warm-up is one untimed repetition.
+            for (int i = 0; first && i < 20; ++i)
+            {
+                cancelOnce();
+            }
+            for (auto _ : state)
+            {
+                const double gap = cancelOnce();
+                if (gap < 0.0)
+                {
                     Fail(state, "the parse was not cancelled");
                     return;
                 }
-                state.SetIterationTime(std::chrono::duration<double>(sink.finishedAt - sink.requestedAt).count());
+                state.SetIterationTime(gap);
             }
         },
         LargeOptions{.iterations = 20, .manualTime = true, .unit = benchmark::kMicrosecond}
@@ -487,17 +501,22 @@ void RegisterJsonBenchmarks()
     // Wide-row streaming benchmark (200'000 lines, ~30 fields per line). Stresses the per-line field-iteration cost
     // (`InsertSorted`, `ExtractFieldKey`, `ParseLine`, `IsKeyInAnyColumn`). The line count is lower than the large
     // one so total field operations stay comparable.
-    RegisterStreaming("Stream 200'000 wide JSON log entries to LogTable", []() {
-        return StreamingFixture{
-            .logFile = std::make_unique<TestStructuredLogFile>(
-                GenerateWideLogRecords(
-                    200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+    RegisterStreaming(
+        "Stream 200'000 wide JSON log entries to LogTable",
+        []() {
+            return StreamingFixture{
+                .logFile = std::make_unique<TestStructuredLogFile>(
+                    GenerateWideLogRecords(
+                        200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+                    ),
+                    test_common::JsonLines()
                 ),
-                test_common::JsonLines()
-            ),
-            .parser = JsonStream,
-        };
-    });
+                .parser = JsonStream,
+            };
+        },
+        /*parseLoopOnly=*/false,
+        FAST_LARGE_ITERATIONS
+    );
 
     RegisterLookupBenchmarks();
     RegisterAllocationBenchmark();

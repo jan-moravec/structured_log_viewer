@@ -68,15 +68,22 @@ void RegisterCsvBenchmarks()
 
     // Wide-row streaming benchmark. Field count matches the JSON one but per-field work differs (nested values land
     // as quoted compact-JSON cells), so cross-format lines/s is broadly -- not exactly -- comparable.
-    RegisterStreaming("Stream 200'000 wide CSV log entries to LogTable", []() {
-        auto records =
-            GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps());
-        const test_common::RecordSchema schema = test_common::DeriveSchemaFromRecord(records.front());
-        return StreamingFixture{
-            .logFile = std::make_unique<TestStructuredLogFile>(std::move(records), test_common::Csv(schema), schema),
-            .parser = CsvStream,
-        };
-    });
+    RegisterStreaming(
+        "Stream 200'000 wide CSV log entries to LogTable",
+        []() {
+            auto records = GenerateWideLogRecords(
+                200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+            );
+            const test_common::RecordSchema schema = test_common::DeriveSchemaFromRecord(records.front());
+            return StreamingFixture{
+                .logFile =
+                    std::make_unique<TestStructuredLogFile>(std::move(records), test_common::Csv(schema), schema),
+                .parser = CsvStream,
+            };
+        },
+        /*parseLoopOnly=*/false,
+        FAST_LARGE_ITERATIONS
+    );
 }
 
 } // namespace bench

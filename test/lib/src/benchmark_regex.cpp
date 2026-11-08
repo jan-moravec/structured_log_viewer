@@ -304,7 +304,8 @@ void RegisterRegexBenchmarks()
         []() {
             return MakePythonTracebackFixture("test-python-traceback-anchor", "", "bench_regex_header_baseline.log");
         },
-        /*parseLoopOnly=*/true
+        /*parseLoopOnly=*/true,
+        FAST_LARGE_ITERATIONS
     );
     RegisterStreaming(
         "Python-traceback header anchor (parse-loop only): anchored",
@@ -313,7 +314,8 @@ void RegisterRegexBenchmarks()
                 "test-python-traceback-anchor", PYTHON_TRACEBACK_ANCHOR, "bench_regex_header_anchored.log"
             );
         },
-        /*parseLoopOnly=*/true
+        /*parseLoopOnly=*/true,
+        FAST_LARGE_ITERATIONS
     );
 }
 

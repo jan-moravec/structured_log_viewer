@@ -45,7 +45,7 @@ namespace bench
 namespace
 {
 
-// 250'000 lines, about 25 MiB of JSONL. Large enough for the multi-threaded xz decoder to see several blocks, small
+// 250'000 lines, about 43 MiB of JSONL. Large enough for the multi-threaded xz decoder to see several blocks, small
 // enough that the slowest codec (bzip2) stays within the time budget of a benchmark.
 constexpr std::size_t BENCH_LINE_COUNT = 250'000;
 constexpr std::size_t IO_CHUNK = 256 * 1024;
@@ -357,7 +357,9 @@ void SetDecompressionCounters(benchmark::State &state, std::size_t readBytes, st
     state.counters["uncompressed_MiB"] = static_cast<double>(plainBytes) / MIB;
 }
 
-void RegisterCodec(const std::string &name, const SharedPlain &plain, const std::string &suffix, CompressFn compress)
+void RegisterCodec(
+    const std::string &name, const SharedPlain &plain, const std::string &suffix, CompressFn compress, int iterations
+)
 {
     RegisterLarge<CodecFixture>(
         name,
@@ -392,7 +394,8 @@ void RegisterCodec(const std::string &name, const SharedPlain &plain, const std:
                 return;
             }
             SetDecompressionCounters(state, fixture.compressedBytes, fixture.plain->Get().bytes);
-        }
+        },
+        LargeOptions{.iterations = iterations}
     );
 }
 
@@ -425,7 +428,8 @@ void RegisterDecompressionBenchmarks()
                 return;
             }
             SetDecompressionCounters(state, fixture.bytes, fixture.bytes);
-        }
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
     );
 
     // The same file through the path the GUI and slp use: open, detect, parse into a typed table and finish. Its
@@ -447,17 +451,22 @@ void RegisterDecompressionBenchmarks()
                 return;
             }
             SetDecompressionCounters(state, fixture.bytes, fixture.bytes);
-        }
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
     );
 
-    RegisterCodec("Decompress + parse (gzip)", plain, ".jsonl.gz", &CompressToGzip);
-    RegisterCodec("Decompress + parse (bzip2)", plain, ".jsonl.bz2", &CompressToBzip2);
+    // The iteration counts follow the cost of a run: bzip2 takes over a second, single-block xz a few hundred
+    // milliseconds, the others well under 150 ms.
+    RegisterCodec("Decompress + parse (gzip)", plain, ".jsonl.gz", &CompressToGzip, FAST_LARGE_ITERATIONS);
+    RegisterCodec("Decompress + parse (bzip2)", plain, ".jsonl.bz2", &CompressToBzip2, 1);
     // Single-block .xz: MT decoder falls back to ST here (baseline).
-    RegisterCodec("Decompress + parse (xz, single-block)", plain, ".jsonl.xz", &CompressToXz);
+    RegisterCodec("Decompress + parse (xz, single-block)", plain, ".jsonl.xz", &CompressToXz, 2);
     // Multi-block .xz: exercises the MT decoder path. Kept apart from the single-block fixture so the ST baseline stays
     // comparable.
-    RegisterCodec("Decompress + parse (xz, multi-block/MT)", plain, ".jsonl.mt.xz", &CompressToXzMt);
-    RegisterCodec("Decompress + parse (zstd)", plain, ".jsonl.zst", &CompressToZstd);
+    RegisterCodec(
+        "Decompress + parse (xz, multi-block/MT)", plain, ".jsonl.mt.xz", &CompressToXzMt, FAST_LARGE_ITERATIONS
+    );
+    RegisterCodec("Decompress + parse (zstd)", plain, ".jsonl.zst", &CompressToZstd, FAST_LARGE_ITERATIONS);
 }
 
 } // namespace bench

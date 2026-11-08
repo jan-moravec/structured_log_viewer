@@ -498,9 +498,10 @@ void RegisterFilterAcceptedRows(
         const LogTable &logTable = input.Table();
         const CompiledFilterExpression expr = makeExpression(logTable, input.dict);
         std::size_t accepted = 0;
+        std::vector<std::size_t> result;
         for (auto _ : state)
         {
-            std::vector<std::size_t> result = FilterAcceptedRows(logTable, expr);
+            result = FilterAcceptedRows(logTable, expr);
             accepted = result.size();
             benchmark::DoNotOptimize(result);
         }

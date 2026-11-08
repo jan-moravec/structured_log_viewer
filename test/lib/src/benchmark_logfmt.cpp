@@ -55,17 +55,22 @@ void RegisterLogfmtBenchmarks()
     // Wide-row streaming benchmark, mirror of the JSON one. Stresses the per-field hot loop in `LogfmtLineDecoder`.
     // Nested array/object fields land as quoted JSON strings in logfmt (see `Logfmt()`), so the field count matches
     // the JSON benchmark but per-field work differs -- treat cross-format lines/s as broadly comparable, not exactly.
-    RegisterStreaming("Stream 200'000 wide logfmt log entries to LogTable", []() {
-        return StreamingFixture{
-            .logFile = std::make_unique<TestStructuredLogFile>(
-                GenerateWideLogRecords(
-                    200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+    RegisterStreaming(
+        "Stream 200'000 wide logfmt log entries to LogTable",
+        []() {
+            return StreamingFixture{
+                .logFile = std::make_unique<TestStructuredLogFile>(
+                    GenerateWideLogRecords(
+                        200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+                    ),
+                    test_common::Logfmt()
                 ),
-                test_common::Logfmt()
-            ),
-            .parser = LogfmtStream,
-        };
-    });
+                .parser = LogfmtStream,
+            };
+        },
+        /*parseLoopOnly=*/false,
+        FAST_LARGE_ITERATIONS
+    );
 }
 
 } // namespace bench

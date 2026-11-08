@@ -265,7 +265,8 @@ void RegisterSessionBundleBenchmarks()
             }
             SetBundleCounters(state, fixture);
             state.counters["bundle_MiB"] = static_cast<double>(input.compressedBytes) / (1024.0 * 1024.0);
-        }
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
     );
 
     // End-to-end round-trip: encode + decode back-to-back. Approximates the "share and re-open" user story so the

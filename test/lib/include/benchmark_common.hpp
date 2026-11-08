@@ -81,7 +81,13 @@ inline constexpr int LARGE_REPETITIONS = 5;
 inline constexpr int SMALL_REPETITIONS = 5;
 
 /// Minimum time of one repetition of a small benchmark.
-inline constexpr double SMALL_MIN_TIME_SECONDS = 0.2;
+inline constexpr double SMALL_MIN_TIME_SECONDS = 0.3;
+
+/// Timed iterations per repetition of a large benchmark whose operation takes about 150 ms or less, and of one that
+/// takes up to about 500 ms. More work per repetition averages out the noise of a shared machine. A benchmark of
+/// about a second or more runs one iteration.
+inline constexpr int FAST_LARGE_ITERATIONS = 5;
+inline constexpr int MEDIUM_LARGE_ITERATIONS = 3;
 
 inline std::atomic<bool> &FailureFlag()
 {
@@ -104,6 +110,7 @@ inline bool AnyFailure()
 }
 
 /// How a large benchmark is timed. The default is one iteration per repetition, timed by the clock, in milliseconds.
+/// Operations that take less than about a second set iterations to FAST_LARGE_ITERATIONS or MEDIUM_LARGE_ITERATIONS.
 /// A benchmark that measures an interval itself sets manualTime and calls SetIterationTime in every iteration.
 struct LargeOptions
 {
@@ -437,7 +444,10 @@ struct StreamingInput
 /// the row count after the timed part. With parseLoopOnly the time of an iteration excludes the LogTable::AppendBatch
 /// time of the sink.
 inline void RegisterStreaming(
-    const std::string &name, std::function<StreamingFixture()> makeFixture, bool parseLoopOnly = false
+    const std::string &name,
+    std::function<StreamingFixture()> makeFixture,
+    bool parseLoopOnly = false,
+    int iterations = MEDIUM_LARGE_ITERATIONS
 )
 {
     RegisterLarge<StreamingInput>(
@@ -496,7 +506,7 @@ inline void RegisterStreaming(
             state.counters["peak_ws_delta_MiB"] = static_cast<double>(probe.peakWorkingSetDeltaBytes) / MIB;
             state.counters["peak_ws_MiB"] = static_cast<double>(probe.peakWorkingSetBytes) / MIB;
         },
-        LargeOptions{.manualTime = parseLoopOnly}
+        LargeOptions{.iterations = iterations, .manualTime = parseLoopOnly}
     );
 }
 
