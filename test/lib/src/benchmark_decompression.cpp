@@ -1,6 +1,6 @@
-// Decompression benchmark for `DecompressingByteSource`. Measures end-to-end `DecompressingByteSource` + `ParseFile`
+// Decompression benchmark for DecompressingByteSource. Measures end-to-end DecompressingByteSource + ParseFile
 // on a JSONL fixture per codec against the uncompressed baseline. The figures are MB/s of the file that is read: the
-// compressed size for a codec, the plain size for the baseline. See CONTRIBUTING.md `## Benchmarking`.
+// compressed size for a codec, the plain size for the baseline. See CONTRIBUTING.md ## Benchmarking.
 
 #include "parse_only.hpp"
 
@@ -59,7 +59,9 @@ void Check(bool ok)
     }
 }
 
-/// Delete @p path (best-effort) when the RAII guard goes out of scope.
+/**
+ * Delete @p path (best-effort) when the RAII guard goes out of scope.
+ */
 class FileScrubGuard
 {
 public:
@@ -143,7 +145,7 @@ void CompressToBzip2(const std::filesystem::path &input, const std::filesystem::
     std::array<char, IO_CHUNK> inBuf{};
     std::array<char, IO_CHUNK> outBuf{};
     int action = BZ_RUN;
-    // Loop until BZ_STREAM_END. Do NOT exit on `avail_in == 0` in
+    // Loop until BZ_STREAM_END. Do NOT exit on avail_in == 0 in
     // FINISH mode -- bzip2 returns BZ_FINISH_OK (not BZ_STREAM_END)
     // while flushing internal buffers, and the final flush can
     // exceed a single 256 KiB output buffer.
@@ -211,10 +213,10 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
     ::lzma_end(&strm);
 }
 
-// Multi-block .xz fixture (equivalent to `xz -T <N>`).
-// `lzma_stream_encoder_mt` emits per-block headers with populated
+// Multi-block .xz fixture (equivalent to xz -T <N>).
+// lzma_stream_encoder_mt emits per-block headers with populated
 // compressed-size fields -- both preconditions for the MT decoder.
-// The single-block `CompressToXz` fixture is invisible to the MT
+// The single-block CompressToXz fixture is invisible to the MT
 // decoder (it falls back to ST), so this variant is what actually
 // exercises the MT decoder path.
 void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::path &output)

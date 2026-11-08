@@ -1,9 +1,9 @@
 // RegexParser benchmarks; mirror of the JSON, logfmt and CSV large streaming benchmarks via the shared
-// `benchmark_common.hpp`. One large benchmark per shipped `test_common::LogFormat` synthesizer, so each streams lines
-// that the corresponding real `RegexTemplate` pattern parses.
+// benchmark_common.hpp. One large benchmark per shipped test_common::LogFormat synthesizer, so each streams lines
+// that the corresponding real RegexTemplate pattern parses.
 //
 // Lines/s is the primary regression-gate metric and is directly comparable across templates. MB/s isn't -- each
-// format's per-record punctuation lands files at different byte sizes. See CONTRIBUTING.md `## Benchmarking`.
+// format's per-record punctuation lands files at different byte sizes. See CONTRIBUTING.md ## Benchmarking.
 
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"

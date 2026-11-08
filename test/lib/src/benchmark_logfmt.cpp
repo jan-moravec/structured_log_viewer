@@ -1,6 +1,6 @@
 // logfmt parser benchmarks. Mirror of the JSON large and wide streaming benchmarks through the shared
-// `benchmark_common.hpp` harness; lines/s is directly comparable across formats (MB/s differs because logfmt has
-// fewer bytes/line than JSON). See CONTRIBUTING.md `## Benchmarking`.
+// benchmark_common.hpp harness; lines/s is directly comparable across formats (MB/s differs because logfmt has
+// fewer bytes/line than JSON). See CONTRIBUTING.md ## Benchmarking.
 
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"
@@ -27,8 +27,8 @@ namespace bench
 namespace
 {
 
-// `LogfmtParser::ParseStreaming` adapter for `RegisterStreaming`. Free function (rather than a `ParserStreamFn`
-// global) to avoid `bugprone-throwing-static-initialization` from `std::function`'s ctor.
+// LogfmtParser::ParseStreaming adapter for RegisterStreaming. Free function (rather than a ParserStreamFn
+// global) to avoid bugprone-throwing-static-initialization from std::function's ctor.
 void LogfmtStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
     LogfmtParser{}.ParseStreaming(source, sink, options);
@@ -52,8 +52,8 @@ void RegisterLogfmtBenchmarks()
         };
     });
 
-    // Wide-row streaming benchmark, mirror of the JSON one. Stresses the per-field hot loop in `LogfmtLineDecoder`.
-    // Nested array/object fields land as quoted JSON strings in logfmt (see `Logfmt()`), so the field count matches
+    // Wide-row streaming benchmark, mirror of the JSON one. Stresses the per-field hot loop in LogfmtLineDecoder.
+    // Nested array/object fields land as quoted JSON strings in logfmt (see Logfmt()), so the field count matches
     // the JSON benchmark but per-field work differs -- treat cross-format lines/s as broadly comparable, not exactly.
     RegisterStreaming(
         "Stream 200'000 wide logfmt log entries to LogTable",

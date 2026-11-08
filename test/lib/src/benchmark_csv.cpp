@@ -1,6 +1,6 @@
 // CSV parser benchmarks; mirror of the JSON and logfmt large and wide streaming benchmarks via the shared
-// `benchmark_common.hpp`. Lines/s is comparable across formats; MB/s is not (per-cell footprints differ). See
-// CONTRIBUTING.md `## Benchmarking`.
+// benchmark_common.hpp. Lines/s is comparable across formats; MB/s is not (per-cell footprints differ). See
+// CONTRIBUTING.md ## Benchmarking.
 
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"
@@ -29,8 +29,8 @@ namespace bench
 namespace
 {
 
-// Free-function adapter (a `bench::ParserStreamFn` global would trip
-// `bugprone-throwing-static-initialization` from `std::function`'s ctor).
+// Free-function adapter (a bench::ParserStreamFn global would trip
+// bugprone-throwing-static-initialization from std::function's ctor).
 void CsvStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
     CsvParser{}.ParseStreaming(source, sink, options);

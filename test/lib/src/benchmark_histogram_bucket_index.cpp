@@ -1,4 +1,4 @@
-// Micro-benchmarks for `loglib::HistogramBucketIndex`: rebuilding the index over 1 M rows has to take well under a
+// Micro-benchmarks for loglib::HistogramBucketIndex: rebuilding the index over 1 M rows has to take well under a
 // frame. The figures are reported, not capped; CI machines vary, and the comparison script flags regressions.
 
 #include "benchmark_common.hpp"
@@ -26,7 +26,7 @@ namespace bench
 namespace
 {
 
-// Synthetic (ts, level) stream. Timestamps step by `step` from `BenchBase()`; levels come from a fixed info-heavy
+// Synthetic (ts, level) stream. Timestamps step by step from BenchBase(); levels come from a fixed info-heavy
 // vocabulary.
 struct Event
 {

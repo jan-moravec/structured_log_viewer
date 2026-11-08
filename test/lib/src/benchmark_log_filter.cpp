@@ -1,9 +1,9 @@
-// `loglib::RowPredicate` + `CompareRows` micro-benchmarks: filtering, comparing and sorting 1'000'000-row tables. See
-// CONTRIBUTING.md `## Benchmarking`.
+// loglib::RowPredicate + CompareRows micro-benchmarks: filtering, comparing and sorting 1'000'000-row tables. See
+// CONTRIBUTING.md ## Benchmarking.
 //
-// The `Type::Enumeration` cases pin the column to a non-level key (`region`) so the auto-promotion heuristic in
-// `LogTable::AppendBatch` cannot flip the column to `Type::Level` mid-fixture and silently change which
-// `CompareRows` branch is under test. The `Type::Level` cases use the `level` key with a fully canonical six-alias
+// The Type::Enumeration cases pin the column to a non-level key (region) so the auto-promotion heuristic in
+// LogTable::AppendBatch cannot flip the column to Type::Level mid-fixture and silently change which
+// CompareRows branch is under test. The Type::Level cases use the level key with a fully canonical six-alias
 // vocabulary and pin the column type via the saved configuration so the path is exercised regardless of how the
 // heuristic might evolve.
 
@@ -65,16 +65,18 @@ struct LargeTable
     std::unique_ptr<FileLineSource> sourceOwner; // keeps the file mmap alive
 };
 
-/// Build a `Type::Enumeration` `LogTable` with @p rowCount rows over a
-/// fixed four-value vocabulary. The column key is taken from
-/// @p columnKey so callers can pick one that does *not* match the
-/// log-level field-name heuristic (e.g. `region`); otherwise the
-/// auto-promotion logic on `LogTable::AppendBatch` would flip the
-/// column to `Type::Level` once the dictionary fills with
-/// canonical-level aliases, silently changing both the storage path
-/// (`CompareEnum` -> `CompareLevel`) and the `EnumDictRank` semantics
-/// the benchmarks below rely on. Used by the filter and enum-sort
-/// benchmarks below.
+/**
+ * Build a Type::Enumeration LogTable with @p rowCount rows over a
+ * fixed four-value vocabulary. The column key is taken from
+ * @p columnKey so callers can pick one that does *not* match the
+ * log-level field-name heuristic (e.g. region); otherwise the
+ * auto-promotion logic on LogTable::AppendBatch would flip the
+ * column to Type::Level once the dictionary fills with
+ * canonical-level aliases, silently changing both the storage path
+ * (CompareEnum -> CompareLevel) and the EnumDictRank semantics
+ * the benchmarks below rely on. Used by the filter and enum-sort
+ * benchmarks below.
+ */
 LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std::string_view columnKey)
 {
     auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
@@ -127,16 +129,18 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
-/// Build a `Type::Level` `LogTable` with @p rowCount rows over the
-/// canonical six-level vocabulary. The configuration pins the column
-/// to `Type::Level` so the table does *not* depend on the
-/// auto-promotion heuristic in `LogTable::AppendBatch`, which is
-/// content-sensitive and can flip the column type mid-fixture as the
-/// dictionary grows. The vocabulary deliberately covers all six
-/// canonical levels so the resulting `LevelRankCache` exercises every
-/// `LogLevel` ordinal -- otherwise a `tbb::parallel_sort` over
-/// near-identical ranks would understate the per-compare cost. Used
-/// by the level-sort benchmarks below.
+/**
+ * Build a Type::Level LogTable with @p rowCount rows over the
+ * canonical six-level vocabulary. The configuration pins the column
+ * to Type::Level so the table does *not* depend on the
+ * auto-promotion heuristic in LogTable::AppendBatch, which is
+ * content-sensitive and can flip the column type mid-fixture as the
+ * dictionary grows. The vocabulary deliberately covers all six
+ * canonical levels so the resulting LevelRankCache exercises every
+ * LogLevel ordinal -- otherwise a tbb::parallel_sort over
+ * near-identical ranks would understate the per-compare cost. Used
+ * by the level-sort benchmarks below.
+ */
 LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
 {
     auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
@@ -159,8 +163,8 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
     loglib::LogTable table(mgr.Configuration());
     table.BeginStreaming(std::move(source));
 
-    // All six canonical aliases so the `LevelRankCache` covers the
-    // full `Trace`..`Fatal` range. The order is deliberately not the
+    // All six canonical aliases so the LevelRankCache covers the
+    // full Trace..Fatal range. The order is deliberately not the
     // canonical severity order so the parallel sort actually has
     // permutation work to do.
     const std::vector<std::string> values = {"info", "warn", "error", "debug", "trace", "fatal"};
@@ -190,9 +194,11 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
     return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
-/// Build a `Type::String` `LogTable` with @p rowCount rows over a
-/// pool of short message templates. Used by the
-/// `CallbackStringRowPredicate` benchmark below.
+/**
+ * Build a Type::String LogTable with @p rowCount rows over a
+ * pool of short message templates. Used by the
+ * CallbackStringRowPredicate benchmark below.
+ */
 LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
 {
     auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
@@ -274,7 +280,7 @@ std::unique_ptr<TableInput> MakeEnumInput(const char *fileName)
     auto input = std::make_unique<TableInput>();
     input->fixture = std::make_unique<TestLogFile>(fileName);
     input->fixture->Write("");
-    // `region` is not a known level key, so the column stays `Type::Enumeration` and exercises `EnumRowPredicate`.
+    // region is not a known level key, so the column stays Type::Enumeration and exercises EnumRowPredicate.
     input->owned = std::make_unique<LargeTable>(BuildLargeEnumTable(*input->fixture, ROW_COUNT, "region"));
     LogTable &table = input->Table();
     const KeyId regionKey = table.Keys().Find("region");
@@ -448,7 +454,7 @@ void RegisterSortPermutation(const std::string &name, SharedTable table, bool us
             );
             benchmark::DoNotOptimize(permutation);
         }
-        // Ascending order with an input-index tie-break (`SortPermutationByColumn` documents this stability).
+        // Ascending order with an input-index tie-break (SortPermutationByColumn documents this stability).
         bool ordered = permutation.size() == ROW_COUNT;
         for (std::size_t i = 1; ordered && i < permutation.size(); ++i)
         {
@@ -540,7 +546,7 @@ void RegisterLogFilterBenchmarks()
         RunPredicateWalk(state, input.Table(), predicate);
     });
 
-    // Naive substring matcher; mirrors the cheapest callback the GUI ever installs (the `Contains` match type
+    // Naive substring matcher; mirrors the cheapest callback the GUI ever installs (the Contains match type
     // without case-folding). Captured by value so the predicate owns its own state.
     RegisterLarge<TableScratch>(
         "CallbackStringRowPredicate over 1000000 rows",
@@ -553,8 +559,8 @@ void RegisterLogFilterBenchmarks()
             const TableInput &input = scratch.table->Get();
             const std::string needle = "user-id";
             // clang-tidy mistakes the lambda's implicit copy constructor (which allocates when duplicating the
-            // captured `std::string`) for an exception escaping the call operator; the operator only does a
-            // `string_view::contains`.
+            // captured std::string) for an exception escaping the call operator; the operator only does a
+            // string_view::contains.
             CallbackStringRowPredicate predicate(
                 0,
                 // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -584,7 +590,7 @@ void RegisterLogFilterBenchmarks()
         [](const LogTable &, const EnumDictionary *dict) {
             const std::vector<std::string> selectedOwned = {"warn", "error"};
             std::vector<std::string_view> selected(selectedOwned.begin(), selectedOwned.end());
-            // Wrap the single predicate in a `CompiledFilterExpression::Leaf` so the benchmark exercises the same
+            // Wrap the single predicate in a CompiledFilterExpression::Leaf so the benchmark exercises the same
             // evaluator the app takes.
             CompiledFilterExpression compiled;
             compiled.node = CompiledFilterExpression::Leaf{RowPredicate{
@@ -598,9 +604,9 @@ void RegisterLogFilterBenchmarks()
 
     RegisterSortPermutation("SortPermutationByColumn (parallel + pre-mat rank) over 1000000 rows", enumTable, true);
 
-    // Level-column siblings of the enum benchmarks. They guard the pre-materialised `uint8_t` rank fast path in
-    // `SortPermutationByColumn` and the `CompareLevel -> GetLevelForRow` dispatch in `CompareRows`. The order checks
-    // use `LogLevel` (canonical severity) rather than alphabetic rank.
+    // Level-column siblings of the enum benchmarks. They guard the pre-materialised uint8_t rank fast path in
+    // SortPermutationByColumn and the CompareLevel -> GetLevelForRow dispatch in CompareRows. The order checks
+    // use LogLevel (canonical severity) rather than alphabetic rank.
     RegisterSortPermutation(
         "SortPermutationByColumn (parallel + pre-mat level rank) over 1000000 rows", levelTable, false
     );
@@ -609,7 +615,7 @@ void RegisterLogFilterBenchmarks()
         "CompareRows level sort over 1000000 rows",
         levelTable,
         [](const TableInput &, const LogTable &table, std::size_t a, std::size_t b) {
-            // Level columns ignore the `EnumDictRank` argument; null matches a non-Qt consumer that has not
+            // Level columns ignore the EnumDictRank argument; null matches a non-Qt consumer that has not
             // materialised any rank table.
             return CompareRows(table, a, b, 0, nullptr);
         },
@@ -621,11 +627,11 @@ void RegisterLogFilterBenchmarks()
         }
     );
 
-    // Boolean-expression benchmarks: `FilterAcceptedRows` on trees more interesting than a single leaf.
+    // Boolean-expression benchmarks: FilterAcceptedRows on trees more interesting than a single leaf.
     //
     // 1. Deep AND -- four enum leaves conjoined. This is what "multiple simple filters" produce; the visit path
     //    evaluates it row by row with a natural short-circuit at the first rejecting leaf, which is why
-    //    `ShouldUseBitsetPath` deliberately leaves flat `And` trees alone no matter how many leaves they carry. The
+    //    ShouldUseBitsetPath deliberately leaves flat And trees alone no matter how many leaves they carry. The
     //    four canonical values are disjoint, so no row is accepted; the purpose is timing shape, not the count.
     RegisterFilterAcceptedRows(
         "FilterAcceptedRows AND(4 enum leaves) over 1000000 rows",
@@ -646,9 +652,9 @@ void RegisterLogFilterBenchmarks()
         /*expectAny=*/false
     );
 
-    // 2. AND(OR, NOT) -- the shape a `level in {...} AND NOT path:health` query compiles to. It has both `Or` and
-    //    `Not`, so the bitset-materialisation heuristic in `FilterAcceptedRows` engages: each unique leaf becomes a
-    //    `RowBitset`, then the tree collapses via word-parallel `&` / `|` / `~`. Here: (region in {warn, error,
+    // 2. AND(OR, NOT) -- the shape a level in {...} AND NOT path:health query compiles to. It has both Or and
+    //    Not, so the bitset-materialisation heuristic in FilterAcceptedRows engages: each unique leaf becomes a
+    //    RowBitset, then the tree collapses via word-parallel & / | / ~. Here: (region in {warn, error,
     //    debug}) AND NOT region=debug.
     RegisterFilterAcceptedRows(
         "FilterAcceptedRows AND(OR, NOT) [bitset path] over 1000000 rows",

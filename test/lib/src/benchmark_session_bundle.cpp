@@ -1,5 +1,5 @@
 // Session-bundle export / import benchmarks. Uses the same pinned-seed fixture as the parser benchmarks so
-// run-over-run numbers are directly comparable. See CONTRIBUTING.md `## Benchmarking` for the PR process.
+// run-over-run numbers are directly comparable. See CONTRIBUTING.md ## Benchmarking for the PR process.
 
 #include "parse_only.hpp"
 
@@ -44,7 +44,9 @@ namespace
 // warm-up and five repetitions stays within the time budget.
 constexpr std::size_t BUNDLE_RECORDS = 250'000;
 
-/// RAII bundle path that also removes unique staging siblings.
+/**
+ * RAII bundle path that also removes unique staging siblings.
+ */
 class TempBundlePath
 {
 public:
@@ -113,7 +115,7 @@ private:
     std::filesystem::path mPath;
 };
 
-// A large `LogTable` built from a JSON fixture with the same seed, timestamps and record shape as the parser
+// A large LogTable built from a JSON fixture with the same seed, timestamps and record shape as the parser
 // benchmarks. The fixture file stays alive because the table reads from it. Requires timezone init for the timestamp
 // columns.
 struct TableFixture
