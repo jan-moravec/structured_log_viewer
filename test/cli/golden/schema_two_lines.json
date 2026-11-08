@@ -51,18 +51,13 @@
       "keys": [
         "msg"
       ],
-      "type": "enumeration",
+      "type": "string",
       "autoDetect": true,
       "visible": true,
       "printFormat": "{}",
       "parseFormats": [],
       "nonNullCount": 2,
       "samples": [
-        "hello",
-        "boom"
-      ],
-      "enumCardinality": 2,
-      "enumValues": [
         "hello",
         "boom"
       ]

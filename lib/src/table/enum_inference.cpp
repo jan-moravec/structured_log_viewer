@@ -25,7 +25,7 @@ namespace loglib
 namespace
 {
 
-/// Feeds the value a row holds under the first present key in @p keys into @p tracker.
+/** Feeds the value a row holds under the first present key in keys into tracker. */
 void ObserveRow(EnumCandidateTracker &tracker, const LogLine &line, const std::vector<KeyId> &keys)
 {
     const CompactLogValue *slot = nullptr;
@@ -65,8 +65,8 @@ void ObserveRow(EnumCandidateTracker &tracker, const LogLine &line, const std::v
     }
 }
 
-/// Whether a finished column's values repeat enough to be an enumeration.
-/// Log levels qualify however few rows the file has.
+/** Whether a finished column's values repeat enough to be an enumeration. Log levels qualify however few rows the file
+ * has. */
 bool ValuesRepeatOrAreLevels(const EnumCandidateTracker &tracker, const Column &column)
 {
     return tracker.size * 2U <= tracker.presenceCount || std::ranges::any_of(column.keys, IsLogLevelKey);
@@ -454,51 +454,35 @@ void EnumInference::RunPassForAppendBatch(
         }
         EnumCandidateTracker &tracker = trackerIt->second;
 
+        // Every decision is made row by row against the tracker's running counts, so the outcome does not depend on
+        // how the rows are split across calls.
         const size_t scanCap = 2 * promotionMinRows;
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
             ObserveRow(tracker, data.Lines()[row], resolvedKeys);
             if (tracker.killed)
             {
+                configuration.SetColumnType(columnIndex, ColumnType::String);
+                mTrackers.erase(trackerIt);
                 break;
             }
             if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= promotionMinRows)
             {
+                PromoteColumnToEnum(data, configuration, columnIndex);
+                mTrackers.erase(trackerIt);
+                recordBackfill(columnIndex);
                 break;
             }
-            if (tracker.rowsObserved >= scanCap)
+            if (tracker.rowsObserved < scanCap)
             {
-                break;
+                continue;
             }
-        }
-
-        if (tracker.killed)
-        {
-            configuration.SetColumnType(columnIndex, ColumnType::String);
-            mTrackers.erase(trackerIt);
-            continue;
-        }
-
-        if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= promotionMinRows)
-        {
-            PromoteColumnToEnum(data, configuration, columnIndex);
-            mTrackers.erase(trackerIt);
-            recordBackfill(columnIndex);
-            continue;
-        }
-
-        if (tracker.rowsObserved >= scanCap)
-        {
             if (tracker.presenceCount == 0)
             {
                 tracker.rowsObserved = 0;
                 continue;
             }
-            const bool noStringSeen = tracker.size == 0;
-            const bool highCardinality = !mIsStreaming && tracker.size > 0 &&
-                                         static_cast<double>(tracker.size) >
-                                             ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.presenceCount);
-            if (noStringSeen)
+            if (tracker.size == 0)
             {
                 configuration.SetColumnType(
                     columnIndex,
@@ -510,11 +494,16 @@ void EnumInference::RunPassForAppendBatch(
                     )
                 );
                 mTrackers.erase(trackerIt);
+                break;
             }
-            else if (highCardinality)
+            const bool highCardinality =
+                !mIsStreaming && static_cast<double>(tracker.size) >
+                                     ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.presenceCount);
+            if (highCardinality)
             {
                 configuration.SetColumnType(columnIndex, ColumnType::String);
                 mTrackers.erase(trackerIt);
+                break;
             }
         }
     }
@@ -675,6 +664,18 @@ bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configurati
             if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, /*minSamples=*/1U))
             {
                 DemoteColumnFromEnum(data, configuration, columnIndex, /*recordForBatch=*/false);
+                continue;
+            }
+            // A streamed load promotes after a few rows, so a column of all-distinct values reaches here as an
+            // enumeration. Its dictionary then holds one value per present cell, which an enumeration should not.
+            if (column.type == ColumnType::Enumeration)
+            {
+                const EnumDictionary *dictionary = mDictionaries.Find(canonical);
+                const size_t presentCells = health.totalSlots - health.longValueSlots - health.wrongTypeSlots;
+                if (dictionary != nullptr && presentCells >= 2 && dictionary->Size() == presentCells)
+                {
+                    DemoteColumnFromEnum(data, configuration, columnIndex, /*recordForBatch=*/false);
+                }
             }
         }
     }

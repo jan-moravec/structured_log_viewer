@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <exception>
 #include <optional>
 #include <span>
 #include <string>
@@ -25,14 +26,35 @@
 namespace loglib
 {
 
+namespace
+{
+
+/** Whether a time format prints, by the same rule that FormatLogValue applies to a Time cell. */
+bool TimeFormatPrints(const std::string &format)
+{
+    try
+    {
+        static_cast<void>(TimeZoneContext{}.Format(TimeStamp{}, format));
+        return true;
+    }
+    catch (const std::exception &)
+    {
+        return false;
+    }
+}
+
+} // namespace
+
 LogTable::LogTable()
     : mEnum(std::make_unique<EnumInference>())
 {
+    mConfiguration.SetTimeFormatCheck(TimeFormatPrints);
 }
 
 LogTable::LogTable(LogConfiguration configuration)
     : mEnum(std::make_unique<EnumInference>())
 {
+    mConfiguration.SetTimeFormatCheck(TimeFormatPrints);
     mConfiguration.SetConfiguration(std::move(configuration));
 }
 
@@ -384,15 +406,16 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
         {
             continue;
         }
-        const KeyId key = mData.Keys().Find(column.keys.front());
-        if (key != INVALID_KEY_ID)
-        {
-            result.placements.push_back({.kind = ColumnPlacement::Kind::TimeToFront, .key = key});
-        }
+        result.placements.push_back({.kind = ColumnPlacement::Kind::TimeToFront, .column = columnIndex});
     }
     for (const KeyId key : levelBubbleKeys)
     {
-        result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .key = key});
+        if (const int columnIndex = FindColumnIndexByKey(key); columnIndex >= 0)
+        {
+            result.placements.push_back(
+                {.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = static_cast<size_t>(columnIndex)}
+            );
+        }
     }
     return result;
 }
@@ -772,7 +795,12 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
     }
     for (const KeyId key : levelBubbleKeys)
     {
-        result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .key = key});
+        if (const int columnIndex = FindColumnIndexByKey(key); columnIndex >= 0)
+        {
+            result.placements.push_back(
+                {.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = static_cast<size_t>(columnIndex)}
+            );
+        }
     }
     return result;
 }
@@ -895,12 +923,11 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
 
 std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &placement) const
 {
-    const int source = FindColumnIndexByKey(placement.key);
-    if (source < 0)
+    const size_t from = placement.column;
+    if (from >= mConfiguration.Configuration().columns.size())
     {
         return std::nullopt;
     }
-    const auto from = static_cast<size_t>(source);
     switch (placement.kind)
     {
     case ColumnPlacement::Kind::TimeToFront:
@@ -921,11 +948,16 @@ std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &plac
 
 void LogTable::ApplyPlacements(std::span<const ColumnPlacement> placements)
 {
-    for (const ColumnPlacement &placement : placements)
+    std::vector<ColumnPlacement> pending(placements.begin(), placements.end());
+    for (size_t i = 0; i < pending.size(); ++i)
     {
-        if (const std::optional<ColumnMove> move = ResolvePlacement(placement); move.has_value())
+        if (const std::optional<ColumnMove> move = ResolvePlacement(pending[i]); move.has_value())
         {
             MoveColumn(move->from, move->to);
+            for (size_t next = i + 1; next < pending.size(); ++next)
+            {
+                pending[next].column = move->Follow(pending[next].column);
+            }
         }
     }
 }

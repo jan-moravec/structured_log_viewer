@@ -559,6 +559,8 @@ EquivalenceFixtures MakeEquivalenceFixtures()
         const std::string service = "svc" + std::to_string(i % 7);
         const std::string message = "message number " + std::to_string(i);
         const bool late = i % 5 == 0;
+        // A key that first appears after 1000 rows, so its type is decided in a later batch than the others.
+        const bool afterThousand = i >= 1500 && i % 3 == 0;
 
         fixtures.json += std::format(
             "{{\"timestamp\":\"{}\",\"level\":\"{}\",\"service\":\"{}\",\"n\":{},\"msg\":\"{}\"",
@@ -572,6 +574,10 @@ EquivalenceFixtures MakeEquivalenceFixtures()
         {
             fixtures.json += std::format(",\"late\":{}", i * 2);
         }
+        if (afterThousand)
+        {
+            fixtures.json += std::format(",\"retry\":{}", i % 11);
+        }
         fixtures.json += "}\n";
 
         fixtures.logfmt +=
@@ -579,6 +585,10 @@ EquivalenceFixtures MakeEquivalenceFixtures()
         if (late)
         {
             fixtures.logfmt += std::format(" late={}", i * 2);
+        }
+        if (afterThousand)
+        {
+            fixtures.logfmt += std::format(" retry={}", i % 11);
         }
         fixtures.logfmt += '\n';
 

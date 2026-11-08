@@ -519,3 +519,51 @@ TEST_CASE("A print format that no value accepts is replaced on load and never th
         CHECK(table.GetFormattedValue(0, 1) == "1.5");
     }
 }
+
+TEST_CASE(
+    "A Time column with a print format that does not print gets the default and a warning", "[explicit_time_inputs]"
+)
+{
+    const char *const json = R"({"columns":[
+        {"header":"when","keys":["when"],"printFormat":"bad","type":"time","parseFormats":[],"visible":true},
+        {"header":"fine","keys":["fine"],"printFormat":"%H:%M","type":"time","parseFormats":[],"visible":true}
+    ]})";
+
+    LogConfigurationManager manager;
+    manager.SetTimeFormatCheck([](const std::string &format) { return format != "bad"; });
+    manager.LoadFromString(json);
+
+    const auto &columns = manager.Configuration().columns;
+    REQUIRE(columns.size() == 2);
+    CHECK(columns[0].printFormat == "%F %H:%M:%S");
+    CHECK(columns[1].printFormat == "%H:%M");
+
+    const std::vector<std::string> warnings = manager.TakeWarnings();
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0].contains("when"));
+    CHECK(warnings[0].contains("bad"));
+    CHECK(manager.TakeWarnings().empty());
+
+    SECTION("A format set on the column later is checked too")
+    {
+        manager.SetColumnPrintFormat(1, "bad");
+        CHECK(manager.Configuration().columns[1].printFormat == "%F %H:%M:%S");
+        CHECK(manager.TakeWarnings().size() == 1);
+    }
+
+    SECTION("Without a check the formats are left alone")
+    {
+        LogConfigurationManager unchecked;
+        unchecked.LoadFromString(json);
+        CHECK(unchecked.Configuration().columns[0].printFormat == "bad");
+        CHECK(unchecked.TakeWarnings().empty());
+    }
+
+    SECTION("A table installs the check that FormatLogValue applies, and keeps formats that print")
+    {
+        loglib::LogTable table;
+        table.Configuration().LoadFromString(json);
+        CHECK(table.Configuration().Configuration().columns[1].printFormat == "%H:%M");
+        CHECK(table.Configuration().TakeWarnings().empty());
+    }
+}

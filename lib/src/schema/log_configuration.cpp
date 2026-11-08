@@ -339,6 +339,8 @@ std::vector<std::string> LogConfigurationManager::TakeWarnings()
 namespace
 {
 
+constexpr const char *DEFAULT_TIME_PRINT_FORMAT = "%F %H:%M:%S";
+
 /**
  * @brief True if fmt accepts the format for at least one of the value types a cell can hold. A format such as {:d} is
  * fine for integers and not for doubles, so only a format that fails for every type counts as invalid.
@@ -362,12 +364,34 @@ bool PrintFormatIsUsable(const std::string &format)
 
 } // namespace
 
+void LogConfigurationManager::SetTimeFormatCheck(TimeFormatCheck check)
+{
+    mTimeFormatCheck = std::move(check);
+}
+
 void LogConfigurationManager::SanitizePrintFormats()
 {
     for (Column &column : mConfiguration.columns)
     {
-        // A Time column holds a time format, not an fmt format.
-        if (column.type == ColumnType::Time || PrintFormatIsUsable(column.printFormat))
+        if (column.type == ColumnType::Time)
+        {
+            // A Time column holds a time format, not an fmt format.
+            if (!mTimeFormatCheck || mTimeFormatCheck(column.printFormat))
+            {
+                continue;
+            }
+            mWarnings.push_back(
+                fmt::format(
+                    "Column '{}': the time format '{}' is not valid and was replaced by '{}'.",
+                    column.header,
+                    column.printFormat,
+                    DEFAULT_TIME_PRINT_FORMAT
+                )
+            );
+            column.printFormat = DEFAULT_TIME_PRINT_FORMAT;
+            continue;
+        }
+        if (PrintFormatIsUsable(column.printFormat))
         {
             continue;
         }
@@ -398,7 +422,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 Column{
                     .header = key,
                     .keys = {key},
-                    .printFormat = "%F %H:%M:%S",
+                    .printFormat = DEFAULT_TIME_PRINT_FORMAT,
                     .type = ColumnType::Time,
                     .parseFormats = DefaultTimeParseFormats(),
                 }

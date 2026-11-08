@@ -146,6 +146,11 @@ public:
         return mTable;
     }
 
+    [[nodiscard]] FileLineSource *Source() noexcept
+    {
+        return mSource;
+    }
+
 private:
     Described Take(const std::vector<EnumColumnEvent> &events, const std::vector<ColumnPlacement> &placements)
     {
@@ -158,12 +163,17 @@ private:
             );
             mAllEvents.push_back(event);
         }
-        for (const ColumnPlacement &placement : placements)
+        std::vector<ColumnPlacement> pending(placements);
+        for (size_t i = 0; i < pending.size(); ++i)
         {
-            if (const auto move = mTable.ResolvePlacement(placement); move.has_value())
+            if (const auto move = mTable.ResolvePlacement(pending[i]); move.has_value())
             {
                 described.push_back("move " + std::to_string(move->from) + "->" + std::to_string(move->to));
                 mTable.MoveColumn(move->from, move->to);
+                for (size_t next = i + 1; next < pending.size(); ++next)
+                {
+                    pending[next].column = move->Follow(pending[next].column);
+                }
             }
         }
         return described;
@@ -391,7 +401,8 @@ TEST_CASE("The append report moves two new time columns of one batch to the fron
     }));
     steps.push_back(stream.Finalize());
 
-    const std::vector<Described> expected{{}, {"Promoted 0 backfill", "move 1->0", "move 2->0"}, {}};
+    // The message column holds two distinct values in two rows, so Finalize demotes it.
+    const std::vector<Described> expected{{}, {"Promoted 0 backfill", "move 1->0", "move 2->0"}, {"Demoted 2"}};
     CHECK(steps == expected);
 
     const auto &columns = stream.Table().Configuration().Configuration().columns;
@@ -466,30 +477,57 @@ TEST_CASE("ResolvePlacement gives nothing for a missing or already placed column
         return MakeBatch(keys, source, {{{"msg", std::string("second")}, {"timestamp", TimeAt(1)}}}, 2);
     }));
     LogTable &table = stream.Table();
-    const KeyId timeKey = table.Keys().Find("timestamp");
-    const KeyId msgKey = table.Keys().Find("msg");
-    REQUIRE(timeKey != INVALID_KEY_ID);
     REQUIRE(table.GetHeader(0) == "timestamp");
 
     // Already at the front, and a column that does not exist.
-    CHECK_FALSE(table.ResolvePlacement({.kind = ColumnPlacement::Kind::TimeToFront, .key = timeKey}).has_value());
+    CHECK_FALSE(table.ResolvePlacement({.kind = ColumnPlacement::Kind::TimeToFront, .column = 0}).has_value());
+    CHECK_FALSE(table.ResolvePlacement({.kind = ColumnPlacement::Kind::TimeToFront, .column = 99}).has_value());
     CHECK_FALSE(
-        table.ResolvePlacement({.kind = ColumnPlacement::Kind::TimeToFront, .key = INVALID_KEY_ID}).has_value()
-    );
-    CHECK_FALSE(
-        table.ResolvePlacement({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .key = KeyId{999}}).has_value()
+        table.ResolvePlacement({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = 99}).has_value()
     );
 
     // A column that is not at the front gets a move to it.
-    const auto toFront = table.ResolvePlacement({.kind = ColumnPlacement::Kind::TimeToFront, .key = msgKey});
+    const auto toFront = table.ResolvePlacement({.kind = ColumnPlacement::Kind::TimeToFront, .column = 1});
     REQUIRE(toFront.has_value());
     CHECK(toFront->from == 1);
     CHECK(toFront->to == 0);
 
     // The canonical slot is taken by the column itself.
-    CHECK_FALSE(
-        table.ResolvePlacement({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .key = msgKey}).has_value()
+    CHECK_FALSE(table.ResolvePlacement({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = 1}).has_value());
+}
+
+TEST_CASE("ColumnMove::Follow tracks where a move sends the other columns", "[append_report][placement]")
+{
+    const ColumnMove forward{.from = 3, .to = 0};
+    CHECK(forward.Follow(3) == 0);
+    CHECK(forward.Follow(0) == 1);
+    CHECK(forward.Follow(2) == 3);
+    CHECK(forward.Follow(4) == 4);
+
+    const ColumnMove backward{.from = 0, .to = 2};
+    CHECK(backward.Follow(0) == 2);
+    CHECK(backward.Follow(1) == 0);
+    CHECK(backward.Follow(2) == 1);
+    CHECK(backward.Follow(3) == 3);
+}
+
+TEST_CASE("A new time column is placed without the table having streamed its keys", "[append_report][placement]")
+{
+    Stream stream("append_report_placement_no_streaming", /*streaming=*/false);
+    static_cast<void>(stream.Append([](KeyIndex &keys, LineSource &source) {
+        return MakeBatch(keys, source, {{{"msg", std::string("first")}}}, 1);
+    }));
+    LogTable &table = stream.Table();
+
+    // Only the second batch declares the time key.
+    const LogTable::AppendBatchResult result = table.AppendBatch(
+        MakeBatch(table.Keys(), *stream.Source(), {{{"msg", std::string("second")}, {"timestamp", TimeAt(1)}}}, 2)
     );
+    REQUIRE(result.placements.size() == 1);
+    CHECK(result.placements.front().kind == ColumnPlacement::Kind::TimeToFront);
+    CHECK(result.placements.front().column == 1);
+    table.ApplyPlacements(result.placements);
+    CHECK(table.GetHeader(0) == "timestamp");
 }
 
 TEST_CASE("AppendBatch returns the batch errors and the row and column counts", "[append_report][errors]")
@@ -571,4 +609,85 @@ TEST_CASE(
     }
     CHECK(table.GetFormattedValue(5, 0) == "e");
     CHECK(table.GetFormattedValue(8, 0) == "c");
+}
+
+namespace
+{
+
+// The column types after feeding the same rows in pieces of the given size. The key late appears from lateFrom on.
+std::vector<ColumnType> TypesAfterSplit(
+    const std::string &name, bool streaming, size_t rowCount, size_t lateFrom, size_t piece
+)
+{
+    Stream stream(name, streaming);
+    size_t next = 0;
+    while (next < rowCount)
+    {
+        const size_t end = std::min(rowCount, next + piece);
+        static_cast<void>(stream.Append([&](KeyIndex &keys, LineSource &source) {
+            std::vector<Fields> rows;
+            for (size_t i = next; i < end; ++i)
+            {
+                Fields fields{{"count", static_cast<int64_t>(i)}, {"tag", std::string(i % 3 == 0 ? "a" : "b")}};
+                if (i >= lateFrom)
+                {
+                    fields.emplace_back("late", static_cast<int64_t>(i));
+                }
+                rows.push_back(std::move(fields));
+            }
+            return MakeBatch(keys, source, rows, next + 1);
+        }));
+        next = end;
+    }
+    static_cast<void>(stream.Finalize());
+    std::vector<ColumnType> types;
+    for (const Column &column : stream.Table().Configuration().Configuration().columns)
+    {
+        types.push_back(column.type);
+    }
+    return types;
+}
+
+} // namespace
+
+TEST_CASE("Column types do not depend on how the rows are split across AppendBatch calls", "[append_report][types]")
+{
+    const bool streaming = GENERATE(true, false);
+    const size_t rowCount = streaming ? 60 : 9000;
+    const size_t lateFrom = streaming ? 20 : 1000;
+    const std::string name = streaming ? "append_report_split_stream" : "append_report_split_static";
+
+    const std::vector<ColumnType> whole = TypesAfterSplit(name, streaming, rowCount, lateFrom, rowCount);
+    REQUIRE(whole.size() == 3);
+    // count is the first key, tag the second, late the third.
+    CHECK(whole[0] == ColumnType::Integer);
+    CHECK(whole[2] == ColumnType::Integer);
+
+    for (const size_t piece : {size_t{1}, size_t{2}, size_t{7}})
+    {
+        CAPTURE(streaming, piece);
+        CHECK(TypesAfterSplit(name, streaming, rowCount, lateFrom, piece) == whole);
+    }
+}
+
+TEST_CASE("A streamed column of all-distinct values does not stay an enumeration", "[append_report][types]")
+{
+    Stream stream("append_report_distinct_ids");
+    static_cast<void>(stream.Append([](KeyIndex &keys, LineSource &source) {
+        std::vector<Fields> rows;
+        for (size_t i = 0; i < 30; ++i)
+        {
+            rows.push_back({{"id", "id-" + std::to_string(i)}, {"status", std::string(i % 3 == 0 ? "ok" : "bad")}});
+        }
+        return MakeBatch(keys, source, rows, 1);
+    }));
+    const LogTable::FinalizeResult result = stream.Table().FinalizeAutoDetection();
+
+    const auto &columns = stream.Table().Configuration().Configuration().columns;
+    REQUIRE(columns.size() == 2);
+    CHECK(columns[0].type == ColumnType::String);
+    CHECK(columns[1].type == ColumnType::Enumeration);
+    CHECK(std::ranges::any_of(result.enumEvents, [](const EnumColumnEvent &event) {
+        return event.column == 0 && event.change == EnumColumnChange::Demoted;
+    }));
 }

@@ -2438,9 +2438,9 @@ TEST_CASE(
 
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("id"));
 
-    // A stream promotes a column after two rows, so these three distinct values are an enumeration, as in the GUI and
-    // slp. The all-distinct rule of FinalizeAutoDetection only applies to columns that are still undecided.
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    // A stream promotes a column after two rows, but FinalizeAutoDetection demotes an enumeration whose values never
+    // repeat, so these three distinct values end as plain text.
+    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
 }
 
 TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay levels", "[log_table][finalize][enum]")
@@ -2914,7 +2914,7 @@ TEST_CASE(
 
     const auto levelPlacements =
         std::ranges::count_if(appendResult10.placements, [&](const ColumnPlacement &placement) {
-            return placement.kind == ColumnPlacement::Kind::LevelToCanonicalSlot && placement.key == levelKey;
+            return placement.kind == ColumnPlacement::Kind::LevelToCanonicalSlot && placement.column == 3;
         });
     CHECK(levelPlacements == 1);
 }
@@ -2957,7 +2957,7 @@ TEST_CASE(
     REQUIRE(levelKey != loglib::INVALID_KEY_ID);
     const auto levelPlacements =
         std::ranges::count_if(appendResult11.placements, [&](const ColumnPlacement &placement) {
-            return placement.kind == ColumnPlacement::Kind::LevelToCanonicalSlot && placement.key == levelKey;
+            return placement.kind == ColumnPlacement::Kind::LevelToCanonicalSlot && placement.column == 1;
         });
     CHECK(levelPlacements == 1);
 
