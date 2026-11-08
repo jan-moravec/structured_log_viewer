@@ -27,12 +27,12 @@ inline constexpr std::chrono::milliseconds DEFAULT_WAIT_INTERVAL{5};
 /**
  * @brief Calls predicate until it returns true or deadline passes, pausing interval between calls.
  *
- * Returns whether the predicate held. It is checked once more at the deadline, so a condition that became true during
- * the last pause is not missed.
+ * The predicate is taken by value, so pass a lambda that captures by reference. Returns whether the predicate held. It
+ * is checked once more at the deadline, so a condition that became true during the last pause is not missed.
  */
 template <class Predicate>
 [[nodiscard]] bool WaitUntil(
-    Predicate &&predicate,
+    Predicate predicate,
     std::chrono::milliseconds deadline = DEFAULT_WAIT_DEADLINE,
     std::chrono::milliseconds interval = DEFAULT_WAIT_INTERVAL
 )
