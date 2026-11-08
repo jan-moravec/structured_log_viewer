@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <iostream>
 
 namespace
 {
@@ -48,7 +49,7 @@ int main(int argc, char **argv)
     catch (const std::exception &e)
     {
         // An input that cannot be built is a failed run, not a crash.
-        std::fprintf(stderr, "benchmark setup failed: %s\n", e.what());
+        std::cerr << "benchmark setup failed: " << e.what() << '\n';
         return 1;
     }
     benchmark::Shutdown();

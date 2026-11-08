@@ -328,7 +328,9 @@ std::unique_ptr<PlainFixture> MakePlainFixture()
     auto fixture = std::make_unique<PlainFixture>();
     fixture->file = std::make_unique<TestStructuredLogFile>(
         StreamedRecords{
-            .count = BENCH_LINE_COUNT, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+            .count = BENCH_LINE_COUNT,
+            .seed = LARGE_FIXTURE_SEED,
+            .timestamps = DeterministicBenchmarkTimestamps(),
         },
         test_common::JsonLines(),
         test_common::RecordSchema{},
@@ -365,7 +367,7 @@ void RegisterCodec(
 {
     RegisterLarge<CodecFixture>(
         name,
-        [plain, suffix, compress]() {
+        [plain, suffix, compress] {
             auto fixture = std::make_unique<CodecFixture>();
             fixture->plain = plain;
             const PlainFixture &source = plain->Get();
@@ -377,7 +379,7 @@ void RegisterCodec(
         },
         [](CodecFixture &fixture, benchmark::State &state, bool first) {
             const JsonParser parser;
-            auto runOnce = [&]() {
+            const auto runOnce = [&] {
                 DecompressingByteSource dbs(fixture.compressed);
                 if (!dbs.WasDecompressed())
                 {
@@ -386,7 +388,7 @@ void RegisterCodec(
                 return ParseFile(parser, dbs.EffectivePath()).data.Lines().size();
             };
             std::size_t lines = first ? runOnce() : BENCH_LINE_COUNT;
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 lines = runOnce();
             }
@@ -414,13 +416,13 @@ void RegisterDecompressionBenchmarks()
     };
     RegisterLarge<PlainRun>(
         "Baseline: ParseFile on uncompressed JSONL",
-        [plain]() { return std::make_unique<PlainRun>(PlainRun{.plain = plain}); },
+        [plain] { return std::make_unique<PlainRun>(PlainRun{.plain = plain}); },
         [](PlainRun &run, benchmark::State &state, bool first) {
             const PlainFixture &fixture = run.plain->Get();
             const JsonParser parser;
             std::size_t lines =
                 first ? ParseFile(parser, fixture.file->GetFilePath()).data.Lines().size() : BENCH_LINE_COUNT;
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 lines = ParseFile(parser, fixture.file->GetFilePath()).data.Lines().size();
             }
@@ -438,11 +440,11 @@ void RegisterDecompressionBenchmarks()
     // figure is the reference for the table path, not a replacement for the parse-only baseline above.
     RegisterLarge<PlainRun>(
         "LoadFile on uncompressed JSONL",
-        [plain]() { return std::make_unique<PlainRun>(PlainRun{.plain = plain}); },
+        [plain] { return std::make_unique<PlainRun>(PlainRun{.plain = plain}); },
         [](PlainRun &run, benchmark::State &state, bool first) {
             const PlainFixture &fixture = run.plain->Get();
             std::size_t rows = first ? LoadFile(fixture.file->GetFilePath()).table.RowCount() : BENCH_LINE_COUNT;
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 const LoadResult loaded = LoadFile(fixture.file->GetFilePath());
                 rows = loaded.table.RowCount();

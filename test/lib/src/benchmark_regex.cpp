@@ -58,7 +58,9 @@ StreamingFixture MakeTemplateFixture(
     return StreamingFixture{
         .logFile = std::make_unique<TestStructuredLogFile>(
             StreamedRecords{
-                .count = REGEX_BENCH_LINES, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+                .count = REGEX_BENCH_LINES,
+                .seed = LARGE_FIXTURE_SEED,
+                .timestamps = DeterministicBenchmarkTimestamps(),
             },
             factory(),
             test_common::RecordSchema{},
@@ -74,7 +76,7 @@ void RegisterTemplateBenchmark(
     const std::string &name, std::string_view templateName, test_common::LogFormat (*factory)(), std::string fileName
 )
 {
-    RegisterStreaming(name, [templateName, factory, fileName = std::move(fileName)]() {
+    RegisterStreaming(name, [templateName, factory, fileName = std::move(fileName)] {
         return MakeTemplateFixture(templateName, factory, fileName);
     });
 }
@@ -210,12 +212,14 @@ StreamingFixture MakePythonTracebackFixture(
     const std::string &name, const std::string &headerAnchor, const std::string &fileName
 )
 {
-    auto guard = std::make_shared<ExtraTemplateGuard>(name, headerAnchor);
+    const auto guard = std::make_shared<ExtraTemplateGuard>(name, headerAnchor);
     const RegexTemplate &extra = guard->Template();
     return StreamingFixture{
         .logFile = std::make_unique<TestStructuredLogFile>(
             StreamedRecords{
-                .count = REGEX_BENCH_LINES, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+                .count = REGEX_BENCH_LINES,
+                .seed = LARGE_FIXTURE_SEED,
+                .timestamps = DeterministicBenchmarkTimestamps(),
             },
             PythonTracebackFormat(/*everyN=*/10),
             test_common::RecordSchema{},
@@ -266,7 +270,7 @@ void RegisterRegexBenchmarks()
         "bench_regex_java_log.log"
     );
 
-    RegisterStreaming("Stream 1'000'000 Java multi-line (indented) records to LogTable", []() {
+    RegisterStreaming("Stream 1'000'000 Java multi-line (indented) records to LogTable", [] {
         const RegexTemplate *tmpl = FindTemplateByName("Java / log4j / SLF4J Logback");
         if (tmpl == nullptr || tmpl->continuationMode != ContinuationMode::Indented)
         {
@@ -279,7 +283,7 @@ void RegisterRegexBenchmarks()
                 StreamedRecords{
                     .count = REGEX_BENCH_LINES,
                     .seed = LARGE_FIXTURE_SEED,
-                    .timestamps = DeterministicBenchmarkTimestamps()
+                    .timestamps = DeterministicBenchmarkTimestamps(),
                 },
                 MultilineIndentedFormat(test_common::JavaLogFormat(), /*everyN=*/10),
                 test_common::RecordSchema{},
@@ -292,7 +296,7 @@ void RegisterRegexBenchmarks()
         };
     });
 
-    RegisterStreaming("Stream 1'000'000 Python traceback (UntilNextHeader) records to LogTable", []() {
+    RegisterStreaming("Stream 1'000'000 Python traceback (UntilNextHeader) records to LogTable", [] {
         return MakePythonTracebackFixture("test-python-traceback", "", "bench_regex_python_traceback.log");
     });
 
@@ -301,7 +305,7 @@ void RegisterRegexBenchmarks()
     // excluded), so the gap between them is the speedup of the anchor.
     RegisterStreaming(
         "Python-traceback header anchor (parse-loop only): baseline (main-pattern probe)",
-        []() {
+        [] {
             return MakePythonTracebackFixture("test-python-traceback-anchor", "", "bench_regex_header_baseline.log");
         },
         /*parseLoopOnly=*/true,
@@ -309,7 +313,7 @@ void RegisterRegexBenchmarks()
     );
     RegisterStreaming(
         "Python-traceback header anchor (parse-loop only): anchored",
-        []() {
+        [] {
             return MakePythonTracebackFixture(
                 "test-python-traceback-anchor", PYTHON_TRACEBACK_ANCHOR, "bench_regex_header_anchored.log"
             );

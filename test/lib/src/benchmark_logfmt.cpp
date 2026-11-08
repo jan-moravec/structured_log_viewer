@@ -40,11 +40,13 @@ void RegisterLogfmtBenchmarks()
 {
     // Large-file streaming benchmark (1'000'000 lines). Mirrors the JSON one. The streaming constructor avoids
     // materializing the 1M records, and the pinned seed and timestamps make the bytes match the JSON fixture.
-    RegisterStreaming("Stream 1'000'000 logfmt log entries to LogTable", []() {
+    RegisterStreaming("Stream 1'000'000 logfmt log entries to LogTable", [] {
         return StreamingFixture{
             .logFile = std::make_unique<TestStructuredLogFile>(
                 StreamedRecords{
-                    .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+                    .count = 1'000'000,
+                    .seed = LARGE_FIXTURE_SEED,
+                    .timestamps = DeterministicBenchmarkTimestamps(),
                 },
                 test_common::Logfmt()
             ),
@@ -57,7 +59,7 @@ void RegisterLogfmtBenchmarks()
     // the JSON benchmark but per-field work differs -- treat cross-format lines/s as broadly comparable, not exactly.
     RegisterStreaming(
         "Stream 200'000 wide logfmt log entries to LogTable",
-        []() {
+        [] {
             return StreamingFixture{
                 .logFile = std::make_unique<TestStructuredLogFile>(
                     GenerateWideLogRecords(

@@ -352,7 +352,7 @@ using SharedTable = std::shared_ptr<LazyInput<TableInput>>;
 template <typename Predicate>
 void RunPredicateWalk(benchmark::State &state, const LogTable &table, const Predicate &predicate, bool warmUp = false)
 {
-    auto walk = [&]() {
+    const auto walk = [&] {
         std::size_t hits = 0;
         for (std::size_t row = 0; row < ROW_COUNT; ++row)
         {
@@ -364,7 +364,7 @@ void RunPredicateWalk(benchmark::State &state, const LogTable &table, const Pred
         return hits;
     };
     std::size_t accepted = warmUp ? walk() : 0;
-    for (auto _ : state)
+    for (const auto _ : state)
     {
         accepted = walk();
         benchmark::DoNotOptimize(accepted);
@@ -388,11 +388,11 @@ struct TableScratch
 // Sorts a fresh identity permutation with CompareRows each iteration; the reset is not timed. The sorted order is
 // checked after the timed part with inOrder(input, table, lhsRow, rhsRow).
 template <typename Compare, typename InOrder>
-void RegisterCompareRowsSort(const std::string &name, SharedTable table, Compare compare, InOrder inOrder)
+void RegisterCompareRowsSort(const std::string &name, const SharedTable &table, Compare compare, InOrder inOrder)
 {
     RegisterLarge<TableScratch>(
         name,
-        [table]() {
+        [table] {
             auto scratch = std::make_unique<TableScratch>();
             scratch->table = table;
             scratch->indices.resize(ROW_COUNT);
@@ -401,7 +401,7 @@ void RegisterCompareRowsSort(const std::string &name, SharedTable table, Compare
         [compare, inOrder](TableScratch &scratch, benchmark::State &state, bool first) {
             const TableInput &input = scratch.table->Get();
             const LogTable &logTable = input.Table();
-            auto sortIdentity = [&]() {
+            const auto sortIdentity = [&] {
                 std::iota(scratch.indices.begin(), scratch.indices.end(), std::size_t{0});
                 std::ranges::sort(scratch.indices, [&](std::size_t a, std::size_t b) {
                     return compare(input, logTable, a, b) < 0;
@@ -411,7 +411,7 @@ void RegisterCompareRowsSort(const std::string &name, SharedTable table, Compare
             {
                 sortIdentity();
             }
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 state.PauseTiming();
                 std::iota(scratch.indices.begin(), scratch.indices.end(), std::size_t{0});
@@ -435,7 +435,7 @@ void RegisterCompareRowsSort(const std::string &name, SharedTable table, Compare
 
 // Registers SortPermutationByColumn over @p table. Rank is the enum rank, or null for a level column, which reads its
 // own rank cache the way the production proxy chain calls the helper.
-void RegisterSortPermutation(const std::string &name, SharedTable table, bool useEnumRank)
+void RegisterSortPermutation(const std::string &name, const SharedTable &table, bool useEnumRank)
 {
     RegisterSmall(name, [table, useEnumRank](benchmark::State &state) {
         const TableInput &input = table->Get();
@@ -443,7 +443,7 @@ void RegisterSortPermutation(const std::string &name, SharedTable table, bool us
         std::vector<std::size_t> logRows(ROW_COUNT);
         std::iota(logRows.begin(), logRows.end(), std::size_t{0});
         std::vector<std::size_t> permutation;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             permutation = SortPermutationByColumn(
                 logTable,
@@ -496,7 +496,7 @@ void RegisterSortPermutation(const std::string &name, SharedTable table, bool us
 // Registers FilterAcceptedRows over a tree that @p makeExpression builds from the enum table.
 template <typename MakeExpression>
 void RegisterFilterAcceptedRows(
-    const std::string &name, SharedTable table, MakeExpression makeExpression, bool expectAny
+    const std::string &name, const SharedTable &table, MakeExpression makeExpression, bool expectAny
 )
 {
     RegisterSmall(name, [table, makeExpression, expectAny](benchmark::State &state) {
@@ -505,7 +505,7 @@ void RegisterFilterAcceptedRows(
         const CompiledFilterExpression expr = makeExpression(logTable, input.dict);
         std::size_t accepted = 0;
         std::vector<std::size_t> result;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             result = FilterAcceptedRows(logTable, expr);
             accepted = result.size();
@@ -526,12 +526,11 @@ void RegisterFilterAcceptedRows(
 void RegisterLogFilterBenchmarks()
 {
     // Each table is built on first use and shared by the benchmarks that read it.
-    const SharedTable enumTable =
-        MakeLazy<TableInput>([]() { return MakeEnumInput("benchmark_log_filter_enum.json"); });
+    const SharedTable enumTable = MakeLazy<TableInput>([] { return MakeEnumInput("benchmark_log_filter_enum.json"); });
     const SharedTable levelTable =
-        MakeLazy<TableInput>([]() { return MakeLevelInput("benchmark_log_filter_level.json"); });
+        MakeLazy<TableInput>([] { return MakeLevelInput("benchmark_log_filter_level.json"); });
     const SharedTable stringTable =
-        MakeLazy<TableInput>([]() { return MakeStringInput("benchmark_log_filter_string.json"); });
+        MakeLazy<TableInput>([] { return MakeStringInput("benchmark_log_filter_string.json"); });
 
     RegisterSmall("EnumRowPredicate over 1000000 rows", [enumTable](benchmark::State &state) {
         const TableInput &input = enumTable->Get();
@@ -550,7 +549,7 @@ void RegisterLogFilterBenchmarks()
     // without case-folding). Captured by value so the predicate owns its own state.
     RegisterLarge<TableScratch>(
         "CallbackStringRowPredicate over 1000000 rows",
-        [stringTable]() {
+        [stringTable] {
             auto scratch = std::make_unique<TableScratch>();
             scratch->table = stringTable;
             return scratch;
@@ -561,7 +560,7 @@ void RegisterLogFilterBenchmarks()
             // clang-tidy mistakes the lambda's implicit copy constructor (which allocates when duplicating the
             // captured std::string) for an exception escaping the call operator; the operator only does a
             // string_view::contains.
-            CallbackStringRowPredicate predicate(
+            const CallbackStringRowPredicate predicate(
                 0,
                 // NOLINTNEXTLINE(bugprone-exception-escape)
                 [needle](std::string_view slot) { return slot.contains(needle); }

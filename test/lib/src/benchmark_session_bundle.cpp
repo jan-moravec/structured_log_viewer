@@ -136,7 +136,9 @@ std::unique_ptr<TableFixture> BuildLargeJsonTable()
     auto fixture = std::make_unique<TableFixture>();
     fixture->file = std::make_unique<TestStructuredLogFile>(
         StreamedRecords{
-            .count = BUNDLE_RECORDS, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+            .count = BUNDLE_RECORDS,
+            .seed = LARGE_FIXTURE_SEED,
+            .timestamps = DeterministicBenchmarkTimestamps(),
         },
         test_common::JsonLines(),
         test_common::RecordSchema{},
@@ -211,12 +213,12 @@ void RegisterSessionBundleBenchmarks()
     // Bundle-write throughput. Level 3 is the writer's default.
     RegisterLarge<TableOnly>(
         "WriteSessionBundle 250'000 JSON entries (level=3, single-threaded)",
-        [table]() { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
+        [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
         [](TableOnly &input, benchmark::State &state, bool first) {
             const TableFixture &fixture = input.table->Get();
             const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
             std::size_t compressed = 0;
-            auto writeOnce = [&]() {
+            const auto writeOnce = [&] {
                 const TempBundlePath dest;
                 WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions());
                 compressed = std::filesystem::file_size(dest.Path());
@@ -225,7 +227,7 @@ void RegisterSessionBundleBenchmarks()
             {
                 writeOnce();
             }
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 writeOnce();
             }
@@ -239,7 +241,7 @@ void RegisterSessionBundleBenchmarks()
     // Bundle-read throughput.
     RegisterLarge<BundleInput>(
         "Decompress and parse session bundle (250'000 JSON entries)",
-        [table]() {
+        [table] {
             auto input = std::make_unique<BundleInput>();
             input->table = table;
             const TableFixture &fixture = table->Get();
@@ -256,7 +258,7 @@ void RegisterSessionBundleBenchmarks()
         [](BundleInput &input, benchmark::State &state, bool first) {
             const TableFixture &fixture = input.table->Get();
             bool ok = !first || DecodeAndParse(input.bundlePath->Path(), fixture.recordCount);
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 ok = DecodeAndParse(input.bundlePath->Path(), fixture.recordCount);
             }
@@ -275,17 +277,17 @@ void RegisterSessionBundleBenchmarks()
     // aggregate wall time is actionable.
     RegisterLarge<TableOnly>(
         "Round-trip 250'000 JSON entries (write + read)",
-        [table]() { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
+        [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
         [](TableOnly &input, benchmark::State &state, bool first) {
             const TableFixture &fixture = input.table->Get();
             const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
-            auto roundTrip = [&]() {
+            const auto roundTrip = [&] {
                 const TempBundlePath dest;
                 WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions());
                 return DecodeAndParse(dest.Path(), fixture.recordCount);
             };
             bool ok = !first || roundTrip();
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 ok = roundTrip();
             }

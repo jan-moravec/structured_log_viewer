@@ -53,6 +53,7 @@ void JsonStream(FileLineSource &source, LogParseSink &sink, const ParserOptions 
 }
 
 constexpr std::size_t SMALL_FILE_RECORDS = 10'000;
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 const std::array<std::string, 5> LOOKUP_KEYS = {"timestamp", "level", "message", "thread_id", "component"};
 
 // A parsed small file that the lookup benchmarks read.
@@ -184,7 +185,7 @@ template <typename Walk>
 void RunLookupBenchmark(benchmark::State &state, const LogData &data, std::size_t keysPerLine, Walk walk)
 {
     std::size_t hits = 0;
-    for (auto _ : state)
+    for (const auto _ : state)
     {
         hits = 0;
         for (const LogLine &line : data.Lines())
@@ -203,9 +204,8 @@ void RunLookupBenchmark(benchmark::State &state, const LogData &data, std::size_
 
 void RegisterLookupBenchmarks()
 {
-    auto plainInput =
-        MakeLazy<ParsedInput>([]() { return ParseFixture(SMALL_FILE_RECORDS, "bench_json_lookup.jsonl"); });
-    auto dictRefInput = MakeLazy<ParsedInput>(ParseFixtureWithDictRefLevel);
+    auto plainInput = MakeLazy<ParsedInput>([] { return ParseFixture(SMALL_FILE_RECORDS, "bench_json_lookup.jsonl"); });
+    const auto dictRefInput = MakeLazy<ParsedInput>(ParseFixtureWithDictRefLevel);
 
     // LogLine::GetValue micro-benchmarks: slow path (key string -> KeyIndex -> KeyId) vs. fast path (cached
     // KeyId) vs. the enum-encoded path. The file is parsed once outside the timed part, so the timed loop measures
@@ -250,14 +250,14 @@ void RegisterLookupBenchmarks()
 // all-owned-string regime. The timed part is the classification walk.
 void RegisterAllocationBenchmark()
 {
-    auto input = MakeLazy<ParsedInput>([]() { return ParseFixture(1'000, "bench_json_alloc.jsonl"); });
+    const auto input = MakeLazy<ParsedInput>([] { return ParseFixture(1'000, "bench_json_alloc.jsonl"); });
     RegisterSmall("Allocation footprint and string_view fast-path fraction", [input](benchmark::State &state) {
         const LogData &data = input->Get().result.data;
         std::size_t totalValues = 0;
         std::size_t mmapSliceValues = 0;
         std::size_t ownedStringValues = 0;
         std::size_t dictRefValues = 0;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             totalValues = mmapSliceValues = ownedStringValues = dictRefValues = 0;
             for (const LogLine &line : data.Lines())
@@ -312,7 +312,7 @@ void RegisterAllocationBenchmark()
 // into a fresh table; the counters report the DictRef fraction and the dictionary heap bytes.
 void RegisterEnumBenchmark()
 {
-    auto input = MakeLazy<EnumInput>([]() {
+    const auto input = MakeLazy<EnumInput>([] {
         auto created = std::make_unique<EnumInput>();
         created->file = std::make_unique<TestStructuredLogFile>(
             GenerateRandomLogRecords(20'000),
@@ -328,7 +328,7 @@ void RegisterEnumBenchmark()
     RegisterSmall("Enum auto-detection over 20000 lines", [input](benchmark::State &state) {
         EnumInput &fixture = input->Get();
         EnumRun run;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             run.table.reset();
             run.configManager = std::make_unique<LogConfigurationManager>();
@@ -352,7 +352,7 @@ void RegisterEnumBenchmark()
         const loglib::LogTable &table = *run.table;
         const KeyId levelKey = table.Keys().Find("level");
         const auto &columns = table.Configuration().Configuration().columns;
-        auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
+        const auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
             return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
         });
         // The level column auto-promotes from Enumeration to the canonical Level type once enough dictionary
@@ -387,7 +387,7 @@ void RegisterEnumBenchmark()
 // not the GUI hot path -- the large and wide streams cover that.
 void RegisterSyncBenchmark()
 {
-    auto input = MakeLazy<SyncInput>([]() {
+    const auto input = MakeLazy<SyncInput>([] {
         auto created = std::make_unique<SyncInput>();
         created->file = std::make_unique<TestStructuredLogFile>(
             GenerateRandomLogRecords(SMALL_FILE_RECORDS),
@@ -403,7 +403,7 @@ void RegisterSyncBenchmark()
         const JsonParser parser;
         std::size_t lines = 0;
         std::size_t errors = 0;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             ParseResult result = ParseFile(parser, fixture.file->GetFilePath());
             lines = result.data.Lines().size();
@@ -429,11 +429,13 @@ void RegisterCancellationBenchmark()
 {
     RegisterLarge<CancellationInput>(
         "Cancellation latency over 20 runs (us)",
-        []() {
+        [] {
             auto input = std::make_unique<CancellationInput>();
             input->file = std::make_unique<TestStructuredLogFile>(
                 StreamedRecords{
-                    .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+                    .count = 1'000'000,
+                    .seed = LARGE_FIXTURE_SEED,
+                    .timestamps = DeterministicBenchmarkTimestamps(),
                 },
                 test_common::JsonLines(),
                 test_common::RecordSchema{},
@@ -444,7 +446,7 @@ void RegisterCancellationBenchmark()
         [](CancellationInput &input, benchmark::State &state, bool first) {
             const JsonParser parser;
             // Returns the gap in seconds, or a negative number when the parse was not cancelled.
-            auto cancelOnce = [&]() {
+            const auto cancelOnce = [&] {
                 FileLineSource source(input.file->GetFilePath());
                 LatencySink sink;
                 ParserOptions opts;
@@ -461,7 +463,7 @@ void RegisterCancellationBenchmark()
             {
                 cancelOnce();
             }
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 const double gap = cancelOnce();
                 if (gap < 0.0)
@@ -486,11 +488,13 @@ void RegisterJsonBenchmarks()
     // a sink that calls LogTable::AppendBatch per OnBatch, with a Type::Time column so the streaming parser
     // does real inline timestamp promotion. Pinned seed and timestamps keep the record bytes identical across runs
     // and to the logfmt benchmark.
-    RegisterStreaming("Stream 1'000'000 JSON log entries to LogTable", []() {
+    RegisterStreaming("Stream 1'000'000 JSON log entries to LogTable", [] {
         return StreamingFixture{
             .logFile = std::make_unique<TestStructuredLogFile>(
                 StreamedRecords{
-                    .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+                    .count = 1'000'000,
+                    .seed = LARGE_FIXTURE_SEED,
+                    .timestamps = DeterministicBenchmarkTimestamps(),
                 },
                 test_common::JsonLines()
             ),
@@ -503,7 +507,7 @@ void RegisterJsonBenchmarks()
     // one so total field operations stay comparable.
     RegisterStreaming(
         "Stream 200'000 wide JSON log entries to LogTable",
-        []() {
+        [] {
             return StreamingFixture{
                 .logFile = std::make_unique<TestStructuredLogFile>(
                     GenerateWideLogRecords(

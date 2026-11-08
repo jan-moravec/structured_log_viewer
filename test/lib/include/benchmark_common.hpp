@@ -125,7 +125,7 @@ inline std::atomic<bool> &FailureFlag()
 inline void Fail(benchmark::State &state, const std::string &message)
 {
     FailureFlag().store(true);
-    state.SkipWithError(message.c_str());
+    state.SkipWithError(message);
 }
 
 /**
@@ -168,7 +168,7 @@ void RegisterLarge(
         std::unique_ptr<Input> input;
         int calls = 0;
     };
-    auto slot = std::make_shared<Slot>();
+    const auto slot = std::make_shared<Slot>();
     slot->setup = std::move(setup);
     benchmark::Benchmark *registered =
         benchmark::RegisterBenchmark(name, [slot, body = std::move(body)](benchmark::State &state) {
@@ -507,7 +507,7 @@ inline void RegisterStreaming(
 {
     RegisterLarge<StreamingInput>(
         name,
-        [makeFixture = std::move(makeFixture)]() {
+        [makeFixture = std::move(makeFixture)] {
             auto input = std::make_unique<StreamingInput>();
             input->fixture = makeFixture();
             input->bytes = std::filesystem::file_size(input->fixture.logFile->GetFilePath());
@@ -527,7 +527,7 @@ inline void RegisterStreaming(
                 );
             }
             std::size_t rows = input.probe.rowCount;
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 const StreamingRunResult run =
                     RunStreamingFlow(configPath, logPath, input.configuration, input.fixture.parser);

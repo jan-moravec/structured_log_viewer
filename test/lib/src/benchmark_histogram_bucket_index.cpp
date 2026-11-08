@@ -79,7 +79,7 @@ struct RebuildInput
 
 void RegisterRebuild(const char *name, HistogramBucketSize size, std::chrono::microseconds step)
 {
-    auto input = MakeLazy<RebuildInput>([step]() {
+    const auto input = MakeLazy<RebuildInput>([step] {
         auto created = std::make_unique<RebuildInput>();
         created->events = GenerateEvents(ROWS, step);
         return created;
@@ -87,7 +87,7 @@ void RegisterRebuild(const char *name, HistogramBucketSize size, std::chrono::mi
     RegisterSmall(name, [input, size](benchmark::State &state) {
         const RebuildInput &fixture = input->Get();
         std::size_t total = 0;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             HistogramBucketIndex index{size};
             for (const auto &ev : fixture.events)
@@ -133,7 +133,7 @@ void RegisterHistogramBucketIndexBenchmarks()
     constexpr std::size_t BATCH = 1'000;
     constexpr std::size_t BATCHES = 100;
     const auto tailStep = std::chrono::microseconds{1000};
-    auto tailInput = MakeLazy<TailInput>([tailStep]() {
+    const auto tailInput = MakeLazy<TailInput>([tailStep] {
         auto created = std::make_unique<TailInput>();
         created->preload = GenerateEvents(PRELOAD, tailStep);
         created->tail = GenerateEvents(BATCH * BATCHES, tailStep);
@@ -143,7 +143,7 @@ void RegisterHistogramBucketIndexBenchmarks()
         "HistogramBucketIndex live-tail (100x 1k row batches)", [tailInput, tailStep](benchmark::State &state) {
             const TailInput &fixture = tailInput->Get();
             std::size_t total = 0;
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 HistogramBucketIndex index{HistogramBucketSize::OneSecond};
                 for (const auto &ev : fixture.preload)
@@ -176,7 +176,7 @@ void RegisterHistogramBucketIndexBenchmarks()
         const TimeStamp min = BenchBase();
         const TimeStamp max = BenchBase() + std::chrono::hours{24 * 365};
         HistogramBucketSize last = HistogramBucketSize::OneSecond;
-        for (auto _ : state)
+        for (const auto _ : state)
         {
             for (std::size_t i = 0; i < 1'000'000; ++i)
             {

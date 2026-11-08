@@ -327,7 +327,7 @@ void RegisterStreamBenchmarks()
     // runs, never limited.
     RegisterLarge<NoInput>(
         "Stream Mode write-to-row latency",
-        []() { return std::make_unique<NoInput>(); },
+        [] { return std::make_unique<NoInput>(); },
         [](NoInput & /*input*/, benchmark::State &state, bool first) {
             if (first)
             {
@@ -336,7 +336,7 @@ void RegisterStreamBenchmarks()
             double p95 = 0.0;
             double maxLatency = 0.0;
             std::size_t measured = 0;
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 std::vector<double> latenciesMs = RunLatencyOnce();
                 if (latenciesMs.empty())

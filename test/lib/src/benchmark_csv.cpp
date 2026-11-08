@@ -53,7 +53,7 @@ void RegisterCsvBenchmarks()
 {
     // Large-file streaming benchmark, mirror of the JSON one. Records stream straight to disk -- no 1M-record vector
     // ever materialises.
-    RegisterStreaming("Stream 1'000'000 CSV log entries to LogTable", []() {
+    RegisterStreaming("Stream 1'000'000 CSV log entries to LogTable", [] {
         const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
         const test_common::RecordSchema schema = SampleStreamingSchema(LARGE_FIXTURE_SEED, timestamps);
         return StreamingFixture{
@@ -70,7 +70,7 @@ void RegisterCsvBenchmarks()
     // as quoted compact-JSON cells), so cross-format lines/s is broadly -- not exactly -- comparable.
     RegisterStreaming(
         "Stream 200'000 wide CSV log entries to LogTable",
-        []() {
+        [] {
             auto records = GenerateWideLogRecords(
                 200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
             );
