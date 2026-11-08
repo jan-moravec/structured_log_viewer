@@ -146,7 +146,7 @@
         {
             "name": "release-benchmark",
             "displayName": "Release benchmarks only (verbose)",
-            "description": "Runs CTest label `benchmark` verbosely so the WARN-line throughput / latency numbers are visible (parser fixtures plus GUI benches such as `apptest_session_tabs_bench`). See CONTRIBUTING.md `## Benchmarking` for the regression-gate convention.",
+            "description": "Runs CTest label `benchmark` verbosely so the benchmark throughput / latency figures are visible (the library benchmarks plus GUI benches such as `apptest_session_tabs_bench`). See CONTRIBUTING.md `## Benchmarking` for the regression-gate convention.",
             "configurePreset": "release",
             "inherits": "_test_base",
             "output":      { "outputOnFailure": true, "verbosity": "verbose" },
