@@ -57,8 +57,8 @@ public:
         uint16_t port = 0;
 
         /**
-         * @brief The receive buffer size, which is also the largest datagram accepted. A longer datagram is cut off by
-         * the operating system. 64 KiB is the IPv4 maximum.
+         * @brief The largest datagram accepted. A longer datagram is dropped whole, with no partial line delivered, and
+         * its size is counted in DroppedByteCount. 64 KiB is the IPv4 maximum.
          */
         size_t maxDatagramBytes = 64 * 1024;
 
@@ -107,14 +107,17 @@ public:
     /** @brief The port the socket is bound to. It is Options::port, or the port the system chose if that was zero. */
     [[nodiscard]] uint16_t BoundPort() const noexcept;
 
-    /** @brief How many datagrams were received. It includes datagrams whose bytes were later dropped from the queue. */
+    /**
+     * @brief How many datagrams were received. It includes the dropped ones: datagrams longer than
+     * Options::maxDatagramBytes, and datagrams whose bytes were later dropped from the queue.
+     */
     [[nodiscard]] size_t DatagramCount() const noexcept;
 
     /**
-     * @brief How many bytes were dropped from the queue because it was full. Zero when the limit is off or the parser
-     * kept up.
+     * @brief How many bytes were dropped: from the queue because it was full, and datagrams longer than
+     * Options::maxDatagramBytes. Zero when nothing was lost.
      */
-    [[nodiscard]] size_t DroppedByteCount() const noexcept;
+    [[nodiscard]] size_t DroppedByteCount() const noexcept override;
 
 private:
     std::unique_ptr<internal::UdpServerProducerImpl> mImpl;

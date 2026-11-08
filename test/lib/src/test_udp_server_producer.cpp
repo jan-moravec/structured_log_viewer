@@ -62,6 +62,25 @@ TEST_CASE("UdpServerProducer: receives single datagram and queues bytes", "[udp_
     REQUIRE(producer.DatagramCount() >= 1);
 }
 
+TEST_CASE("UdpServerProducer: counts an oversize datagram and delivers no partial line", "[udp_producer][network]")
+{
+    UdpServerProducer::Options opts;
+    opts.bindAddress = "127.0.0.1";
+    opts.maxDatagramBytes = 128;
+    UdpServerProducer producer(opts);
+
+    test_common::UdpLogClient client("127.0.0.1", producer.BoundPort());
+    const std::string oversize(1000, 'x');
+    client.Send(oversize);
+    CHECK(test_common::WaitUntil([&] { return producer.DroppedByteCount() > 0; }));
+    CHECK(producer.DroppedByteCount() >= opts.maxDatagramBytes);
+
+    // A datagram after it still arrives, and nothing from the long one does.
+    client.Send("after");
+    const std::string drained = DrainUntil(producer, /*target*/ 6, 60000ms);
+    CHECK(drained == "after\n");
+}
+
 TEST_CASE("UdpServerProducer: appends synthetic newline only when missing", "[udp_producer][network]")
 {
     UdpServerProducer::Options opts;

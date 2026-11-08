@@ -81,6 +81,9 @@ public:
     [[nodiscard]] BytesProducer *Producer() noexcept;
     [[nodiscard]] const BytesProducer *Producer() const noexcept;
 
+    /** @brief Bytes the producer dropped so far because the reader fell behind. Zero if there is no producer. */
+    [[nodiscard]] size_t DroppedByteCount() const noexcept;
+
     /** @brief Adds a line with its decoded strings, which may be empty, and returns the new line id. */
     size_t AppendLine(std::string rawLine, std::string ownedBytes);
 

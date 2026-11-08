@@ -4,6 +4,7 @@
 
 #include <asio.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -38,13 +39,13 @@ public:
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
 private:
-    /// Posts the next `async_receive_from` and chains the completion
-    /// handler back to itself. Runs on the I/O worker thread.
+    /** @brief Starts the next receive, whose handler starts the one after it. Runs on the I/O worker thread. */
     void StartReceive();
 
-    /// Append @p bytes to the byte queue, normalising the trailing
-    /// newline. Drops front bytes (under-the-hood FIFO) if the queue
-    /// would exceed `mOptions.maxQueueBytes`.
+    /**
+     * @brief Appends one datagram to the byte queue and adds a newline if it has none. When the queue would pass
+     * Options::maxQueueBytes, the oldest lines are dropped and counted.
+     */
     void AppendDatagramLocked(const char *data, size_t size);
 
     UdpServerProducer::Options mOptions;
@@ -52,8 +53,10 @@ private:
     asio::io_context mIoContext;
     asio::ip::udp::socket mSocket;
 
-    /// Reused per receive. Sized to `mOptions.maxDatagramBytes` so
-    /// `async_receive_from` writes directly into the final storage.
+    /**
+     * @brief Reused for every receive. It is one byte longer than Options::maxDatagramBytes, so a datagram that fills
+     * it is known to be too long even when the platform cuts it off without saying so.
+     */
     std::vector<char> mRecvBuffer;
     asio::ip::udp::endpoint mPeerEndpoint;
 
@@ -66,7 +69,7 @@ private:
 };
 
 UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
-    : mOptions(std::move(options)), mSocket(mIoContext), mRecvBuffer(mOptions.maxDatagramBytes)
+    : mOptions(std::move(options)), mSocket(mIoContext), mRecvBuffer(mOptions.maxDatagramBytes + 1)
 {
     asio::error_code ec;
     const asio::ip::address bindAddr = asio::ip::make_address(mOptions.bindAddress, ec);
@@ -188,6 +191,15 @@ void UdpServerProducerImpl::StartReceive()
         [this](const asio::error_code &ec, std::size_t bytes) {
             if (mStopRequested.load(std::memory_order_acquire))
             {
+                return;
+            }
+            if (ec == asio::error::message_size || (!ec && bytes > mOptions.maxDatagramBytes))
+            {
+                // The datagram is longer than the limit and was cut off. Delivering the cut part would give the parser
+                // a partial line, so the whole datagram is dropped and counted.
+                mDroppedByteCount.fetch_add(std::max<size_t>(bytes, mRecvBuffer.size()), std::memory_order_acq_rel);
+                mDatagramCount.fetch_add(1, std::memory_order_acq_rel);
+                StartReceive();
                 return;
             }
             if (ec)

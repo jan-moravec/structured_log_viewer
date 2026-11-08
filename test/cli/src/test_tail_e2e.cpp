@@ -301,6 +301,32 @@ TEST_CASE("slp tail receives rows over UDP", "[cli][tail][e2e][network]")
     CHECK(Contains(out, "\"msg\":\"two\""));
 }
 
+TEST_CASE("slp tail reports bytes dropped because the reader fell behind", "[cli][tail][e2e][network]")
+{
+    const std::uint16_t port = FreePort<loglib::TcpServerProducer>();
+    SlpChild child(TailArgs({"--queue-limit", "1024", "--for", "3s", "tcp://127.0.0.1:" + std::to_string(port)}));
+    (void)ListeningLine(child, "tcp");
+    {
+        // Much more data than the parser can take in at once, so the tiny queue overflows.
+        std::string block;
+        for (int i = 0; i < 4000; ++i)
+        {
+            block += Row("info", "row-" + std::to_string(i), i % 60);
+        }
+        test_common::TcpLogClient client("127.0.0.1", port);
+        for (int i = 0; i < 8; ++i)
+        {
+            client.SendRaw(block);
+        }
+    }
+    const auto exitCode = child.Wait(LONG_WAIT);
+    REQUIRE(exitCode.has_value());
+    const std::string err = child.Err();
+    INFO(err);
+    CHECK(*exitCode == 0);
+    CHECK(Contains(err, "bytes because the reader fell behind"));
+}
+
 TEST_CASE("slp tail --for ends an idle listener with exit 0", "[cli][tail][e2e][network]")
 {
     const std::uint16_t port = FreePort<loglib::TcpServerProducer>();

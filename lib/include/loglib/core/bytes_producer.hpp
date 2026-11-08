@@ -95,6 +95,14 @@ public:
      * Producers with a fixed status ignore it. An empty callback removes the previous one.
      */
     virtual void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
+
+    /**
+     * @brief How many bytes the producer discarded so far because the reader fell behind or a line was too long.
+     *
+     * A producer never blocks its sender, so it drops the oldest data when its queue is full. Callers show this count
+     * so the loss is not silent. Producers that never drop bytes return zero. Safe from any thread.
+     */
+    [[nodiscard]] virtual size_t DroppedByteCount() const noexcept;
 };
 
 } // namespace loglib

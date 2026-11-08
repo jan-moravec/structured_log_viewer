@@ -800,6 +800,14 @@ void AddTail(CLI::App &root, CommandParser &command)
             loglib::DEFAULT_RETENTION_LINES
         )
     );
+    AddOptional(
+        app,
+        "--queue-limit",
+        tail.queueLimit,
+        "Bytes a tcp:// or udp:// listener queues while the parser catches up. Past it the oldest data is dropped and "
+        "counted. 0 is unbounded. The default is 16 MiB."
+    )
+        ->type_name("BYTES");
     app.add_flag("--strict", tail.strict, "Exit 4 when the parse reported errors. The default is to keep going.");
     command.finish = [](CommandParser &self) {
         auto &options = std::get<TailOptions>(self.options);

@@ -13,4 +13,9 @@ void BytesProducer::SetStatusCallback(const std::function<void(SourceStatus)> & 
     // No-op: producers that never become unavailable stay `Running`.
 }
 
+size_t BytesProducer::DroppedByteCount() const noexcept
+{
+    return 0;
+}
+
 } // namespace loglib

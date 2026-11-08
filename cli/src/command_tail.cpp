@@ -751,6 +751,10 @@ struct LiveSource
                 loglib::TcpServerProducer::Options tcp;
                 tcp.bindAddress = host;
                 tcp.port = spec.port;
+                if (options.queueLimit)
+                {
+                    tcp.maxQueueBytes = static_cast<std::size_t>(*options.queueLimit);
+                }
                 live.producer = std::make_unique<loglib::TcpServerProducer>(std::move(tcp));
             }
             else
@@ -758,6 +762,10 @@ struct LiveSource
                 loglib::UdpServerProducer::Options udp;
                 udp.bindAddress = host;
                 udp.port = spec.port;
+                if (options.queueLimit)
+                {
+                    udp.maxQueueBytes = static_cast<std::size_t>(*options.queueLimit);
+                }
                 live.producer = std::make_unique<loglib::UdpServerProducer>(std::move(udp));
             }
         }
@@ -874,6 +882,13 @@ ExitCode RunTail(
     loglib::ParserOptions parserOptions = MakeParserOptions(global, options.input, table, stop.GetToken());
     parser.value()->ParseStreaming(*rawSource, sink, std::move(parserOptions));
     sink.Finish();
+
+    // A source never slows its writer, so it drops the oldest data when the parser falls behind, and it drops lines
+    // longer than its limit. Say so.
+    if (const std::size_t dropped = rawSource->DroppedByteCount(); dropped > 0)
+    {
+        console.Warn(std::format("dropped {} bytes because the reader fell behind or a line was too long", dropped));
+    }
 
     if (sink.Failed())
     {

@@ -169,9 +169,12 @@ Follows **one** source and emits rows as they arrive.
 | `--max-rows N`                      | none        | Stop after N emitted rows, exit 0.                                                                                                                          |
 | `--for DURATION`                    | none        | Stop after `30s`, `5m`, `1h`, …, exit 0.                                                                                                                    |
 | `--retention N`                     | 10000       | Rows kept in memory. `0` is unbounded; otherwise 1000–1000000.                                                                                              |
+| `--queue-limit BYTES`               | 16 MiB      | Bytes a `tcp://` or `udp://` listener queues while the parser catches up. Past it the oldest data is dropped. `0` is unbounded.                             |
 | `--strict`                          | off         | Exit 4 when any line failed to parse.                                                                                                                       |
 
 Output is flushed once per batch. Filters apply per arriving batch. Rows are emitted before retention can evict them, so the cap never drops output. `--filter`, `--since`, `--min-level`, and `--columns` that name a column the stream has not shown yet hold rows back until it appears; the run fails with that flag's message at end of stream, or once 10 000 rows are waiting.
+
+A source never slows down the program writing to it. When the parser falls behind, a listener or standard input drops the oldest queued data. A listener or a followed file also drops lines longer than its limit. If anything was dropped, `slp tail` ends with `dropped N bytes because the reader fell behind or a line was too long` on stderr.
 
 `--max-rows`, `--for`, end of standard input, and `SIGINT` / `Ctrl+C` all exit 0. A second signal terminates immediately.
 

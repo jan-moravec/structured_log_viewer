@@ -98,10 +98,8 @@ public:
 
     [[nodiscard]] std::string DisplayName() const override;
 
-    /**
-     * @brief How many bytes were dropped because the queue was full. Tests use it to check that memory stays bounded.
-     */
-    [[nodiscard]] std::size_t DroppedByteCount() const noexcept;
+    /** @brief How many bytes were dropped because the queue was full. */
+    [[nodiscard]] std::size_t DroppedByteCount() const noexcept override;
 
 private:
     friend struct internal::StdinBytesProducerTestAccess;
