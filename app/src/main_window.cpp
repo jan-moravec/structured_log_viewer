@@ -11074,6 +11074,16 @@ void MainWindow::FilterTimeStampSubmitted(
         return;
     }
 
+    if (endTimeStamp.has_value() && *endTimeStamp < 0)
+    {
+        statusBar()->showMessage(
+            QString("Time-range filter rejected: end (%1) is before the epoch").arg(*endTimeStamp),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+
     ClearFilter(filterID, /*deferSync=*/true);
 
     loglib::LeafRule filter;

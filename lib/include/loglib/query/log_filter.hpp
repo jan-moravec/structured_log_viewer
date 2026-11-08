@@ -94,12 +94,15 @@ private:
 };
 
 /**
- * @brief Accepts rows whose time lies in a range. Both ends are included and are microseconds since the epoch. A range
- * whose begin is after its end accepts nothing.
+ * @brief Accepts rows whose time lies in a range. Both ends are included and are microseconds since the epoch.
+ *
+ * The end must not be before the epoch, and the begin must not be after the end. Check both before building the
+ * predicate, because a range that breaks them can never accept a row. A begin before the epoch is fine.
  */
 class TimeRangeRowPredicate
 {
 public:
+    /** @brief Asserts begin <= end and end >= 0. */
     TimeRangeRowPredicate(size_t columnIndex, int64_t begin, int64_t end);
 
     TimeRangeRowPredicate(const TimeRangeRowPredicate &) = default;
