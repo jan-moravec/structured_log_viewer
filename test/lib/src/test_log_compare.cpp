@@ -44,7 +44,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
 
 /// Single-column `LogTable` of @p type seeded with one slot per row.
 LogTable BuildSingleColumnTable(
-    const TestLogFile &testFile,
+    const MemoryLogFile &testFile,
     const std::string &columnKey,
     ColumnType type,
     const std::vector<LogValue> &perRowValues,
@@ -125,7 +125,7 @@ TEST_CASE("EnumDictRank handles an empty dictionary", "[log_compare][enum_dict_r
 
 TEST_CASE("CompareRows handles Integer columns with monostate-tail order", "[log_compare][integer]")
 {
-    const TestLogFile fixture("log_compare_integer.json");
+    const MemoryLogFile fixture("log_compare_integer.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{3}, int64_t{1}, std::monostate{}, int64_t{2}};
     const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
@@ -148,7 +148,7 @@ TEST_CASE(
     //  - NaN -> tail (was UB via `static_cast<int64_t>`).
     //  - +inf / large positive -> clamped to `INT64_MAX`.
     //  - -inf / large negative -> clamped to `INT64_MIN`.
-    const TestLogFile fixture("log_compare_integer_double_slot.json");
+    const MemoryLogFile fixture("log_compare_integer_double_slot.json");
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double posInf = std::numeric_limits<double>::infinity();
@@ -212,7 +212,7 @@ TEST_CASE("CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_
     // Tail-bucket invariant: NaN-in-Int and monostate tie. Pre-fix
     // `CompareMonostateOrder` ran before `Extract` so the order was
     // `representable < NaN < monostate`.
-    const TestLogFile fixture("log_compare_int_nan_vs_monostate.json");
+    const MemoryLogFile fixture("log_compare_int_nan_vs_monostate.json");
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {int64_t{0}, nan, std::monostate{}, int64_t{42}};
@@ -237,7 +237,7 @@ TEST_CASE(
 {
     // Tail-bucket invariant for `Floating`: a stray string slot ties
     // with monostate rather than sorting below it.
-    const TestLogFile fixture("log_compare_float_string_vs_monostate.json");
+    const MemoryLogFile fixture("log_compare_float_string_vs_monostate.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
         1.5,                 // 0: representable double
@@ -260,7 +260,7 @@ TEST_CASE(
 
 TEST_CASE("CompareRows handles Floating columns with NaN at the tail", "[log_compare][floating]")
 {
-    const TestLogFile fixture("log_compare_floating.json");
+    const MemoryLogFile fixture("log_compare_floating.json");
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {1.5, -2.0, nan, 4.25};
@@ -274,7 +274,7 @@ TEST_CASE("CompareRows handles Floating columns with NaN at the tail", "[log_com
 
 TEST_CASE("CompareRows handles Time columns by microseconds-since-epoch", "[log_compare][time]")
 {
-    const TestLogFile fixture("log_compare_time.json");
+    const MemoryLogFile fixture("log_compare_time.json");
     fixture.Write("");
     const TimeStamp t100{std::chrono::microseconds{100}};
     const TimeStamp t300{std::chrono::microseconds{300}};
@@ -293,7 +293,7 @@ TEST_CASE("CompareRows handles Time columns by microseconds-since-epoch", "[log_
 // already accepted `uint64_t`; this restores parity.
 TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[log_compare][time][regression]")
 {
-    const TestLogFile fixture("log_compare_time_uint.json");
+    const MemoryLogFile fixture("log_compare_time_uint.json");
     fixture.Write("");
     const TimeStamp t100{std::chrono::microseconds{100}};
     const TimeStamp t300{std::chrono::microseconds{300}};
@@ -307,7 +307,7 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
 
     // Oversized `uint64_t` (past `int64_t::max`) clamps so it
     // sorts strictly above every representable `TimeStamp`.
-    const TestLogFile fixtureBig("log_compare_time_uint_big.json");
+    const MemoryLogFile fixtureBig("log_compare_time_uint_big.json");
     fixtureBig.Write("");
     const uint64_t huge = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 100;
     const std::vector<LogValue> bigValues = {t100, huge};
@@ -321,7 +321,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     // Non-level key (`category`) so the column stays Enumeration even
     // though the dict happens to hold canonical level names. Pins the
     // rank-table compare path against alphabetic order.
-    const TestLogFile fixture("log_compare_enum.json");
+    const MemoryLogFile fixture("log_compare_enum.json");
     fixture.Write("");
 
     auto source = fixture.CreateFileLineSource();
@@ -375,7 +375,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
 // both ids resolved. Triggered by sort over an unpromoted enum column.
 TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket order", "[log_compare][enum][monostate]")
 {
-    const TestLogFile fixture("log_compare_enum_monostate.json");
+    const MemoryLogFile fixture("log_compare_enum_monostate.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -420,7 +420,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
 {
     // Non-level key (`category`) so the column stays Enumeration and
     // exercises `CompareEnum` rather than `CompareLevel`.
-    const TestLogFile fixture("log_compare_enum_tail_bucket.json");
+    const MemoryLogFile fixture("log_compare_enum_tail_bucket.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -501,7 +501,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
 {
     // Non-level key (`category`) keeps the column Enumeration so we
     // hit the no-rank `CompareEnum` fallback (not `CompareLevel`).
-    const TestLogFile fixture("log_compare_enum_no_rank.json");
+    const MemoryLogFile fixture("log_compare_enum_no_rank.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -538,7 +538,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
 
 TEST_CASE("CompareRows on Boolean columns orders false < true and sinks non-bool to tail", "[log_compare][boolean]")
 {
-    const TestLogFile fixture("log_compare_boolean.json");
+    const MemoryLogFile fixture("log_compare_boolean.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
         true,
@@ -560,7 +560,7 @@ TEST_CASE("CompareRows on Boolean columns orders false < true and sinks non-bool
 
 TEST_CASE("CompareRows on String/Any columns compares byte-wise", "[log_compare][string]")
 {
-    const TestLogFile fixture("log_compare_string.json");
+    const MemoryLogFile fixture("log_compare_string.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
         std::string("delta"),
@@ -578,7 +578,7 @@ TEST_CASE("CompareRows on String/Any columns compares byte-wise", "[log_compare]
 
 TEST_CASE("CompareRows is total: a<b iff b>a, and a=a", "[log_compare][properties]")
 {
-    const TestLogFile fixture("log_compare_total_order.json");
+    const MemoryLogFile fixture("log_compare_total_order.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{42}, int64_t{-7}, std::monostate{}, int64_t{42}};
     const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
@@ -600,7 +600,7 @@ TEST_CASE(
     "CompareRows on Type::Level columns orders rows by canonical severity rank, not byte order", "[log_compare][level]"
 )
 {
-    const TestLogFile fixture("log_compare_level.json");
+    const MemoryLogFile fixture("log_compare_level.json");
     fixture.Write("");
     // Pinned `Type::Level` with mixed-case aliases. Sort must use
     // canonical rank (Info < Warn < Error < Fatal), not bytes
@@ -649,7 +649,7 @@ TEST_CASE(
     // `SortPermutationByColumn` (pre-materialised `uint8_t` ranks +
     // sentinel for unmapped slots) must agree with `CompareLevel` for
     // both ascending and descending sorts.
-    const TestLogFile fixture("log_compare_level_sort_perm.json");
+    const MemoryLogFile fixture("log_compare_level_sort_perm.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
