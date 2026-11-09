@@ -30,7 +30,7 @@
 #include <variant>
 #include <vector>
 
-// logfmt fixtures are raw bytes; use `TestLogFile::Write(...)` from
+// logfmt fixtures are raw bytes; use `MemoryLogFile::Write(...)` from
 // common.hpp. Record-driven fixtures go through `TestStructuredLogFile`.
 
 TEST_CASE("Validate non-existent file [logfmt]", "[logfmt_parser]")
@@ -348,10 +348,10 @@ TEST_CASE(
 
     // Move into the fixture and read back via `Records()` so we don't
     // keep two copies of the generated vector alive.
-    const TestStructuredLogFile fixture(std::move(records), test_common::Logfmt());
+    const MemoryStructuredLog fixture(std::move(records), test_common::Logfmt());
 
     const LogfmtParser parser;
-    const ParseResult result = ParseFile(parser, fixture.GetFilePath());
+    const ParseResult result = ParseSource(parser, fixture.OpenSource());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == LINE_COUNT);
 
@@ -628,7 +628,7 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    const TestLogFile file{"logfmt_static_multiline.log"};
+    const MemoryLogFile file{"logfmt_static_multiline.log"};
     file.Write(
         "level=error msg=\"boom\"\n"
         "\tgoroutine 1 [running]:\n"
@@ -637,7 +637,7 @@ TEST_CASE(
     );
 
     const LogfmtParser parser;
-    const auto result = ParseFile(parser, file.GetFilePath());
+    const auto result = ParseSource(parser, file.OpenSource());
     for (const auto &e : result.errors)
     {
         UNSCOPED_INFO("parse error: " << loglib::FormatParseError(e));
@@ -670,7 +670,7 @@ TEST_CASE(
     ParserOptions options;
     options.batchSizeBytes = 24; // Force a cross-batch continuation.
 
-    const TestLogFile file{"logfmt_static_crossbatch.log"};
+    const MemoryLogFile file{"logfmt_static_crossbatch.log"};
     file.Write(
         "level=error msg=\"boom\"\n"
         "\tgoroutine 1 [running]:\n"
@@ -679,7 +679,7 @@ TEST_CASE(
         "level=info msg=\"recovered\"\n"
     );
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -731,7 +731,7 @@ TEST_CASE(
     ParserOptions options;
     options.batchSizeBytes = 24;
 
-    const TestLogFile file{"logfmt_static_crossbatch_blank.log"};
+    const MemoryLogFile file{"logfmt_static_crossbatch_blank.log"};
     file.Write(
         "level=error msg=\"boom\"\n"
         "\n"
@@ -739,7 +739,7 @@ TEST_CASE(
         "level=info msg=\"recovered\"\n"
     );
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -782,7 +782,7 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    const TestLogFile file{"logfmt_static_multiline_disabled.log"};
+    const MemoryLogFile file{"logfmt_static_multiline_disabled.log"};
     file.Write(
         "level=info msg=\"first record\"\n"
         "\ttab-indented continuation\n"
@@ -791,7 +791,7 @@ TEST_CASE(
     const LogfmtParser parser(false);
     ParserOptions options;
 
-    auto fileSource = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto fileSource = file.OpenSource();
     FileLineSource *sourcePtr = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
     parser.ParseStreaming(*sourcePtr, sink, options);
