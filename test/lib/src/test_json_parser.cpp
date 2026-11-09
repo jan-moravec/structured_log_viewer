@@ -37,9 +37,10 @@ constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
 
 // Drives a synchronous parse against the streaming pipeline for tests that
 // need to dial tuning knobs but still consume a `ParseResult`.
-loglib::ParseResult ParseWithSink(const std::filesystem::path &path, const loglib::ParserOptions &options = {})
+loglib::ParseResult ParseWithSink(
+    std::unique_ptr<loglib::FileLineSource> source, const loglib::ParserOptions &options = {}
+)
 {
-    auto source = std::make_unique<loglib::FileLineSource>(path);
     loglib::FileLineSource *sourcePtr = source.get();
     loglib::internal::BufferingSink sink(std::move(source));
     loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
@@ -133,6 +134,7 @@ TEST_CASE("Parse non-existent file", "[json_parser]")
 
 TEST_CASE("Parse empty file", "[json_parser]")
 {
+    // ParseFile refuses an empty file, so this test needs a real one.
     const loglib::JsonParser parser;
     const TestLogFile testFile;
     CHECK_THROWS_AS(ParseFile(parser, testFile.GetFilePath()), std::runtime_error);
@@ -223,7 +225,7 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
         body.push_back('\n');
     }
     static_cast<void>(VALID_LINES);
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write(body);
 
     // Force several Stage A batches by capping `batchSizeBytes` well below
@@ -232,7 +234,7 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     options.batchSizeBytes = 8 * 1024;
     options.threads = 1;
 
-    auto result = ParseWithSink(testFile.GetFilePath(), options);
+    auto result = ParseWithSink(testFile.OpenSource(), options);
 
     REQUIRE(result.errors.size() == 2);
     const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
@@ -410,9 +412,9 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
             {"boolean", true}
         },
     };
-    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
+    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, testFile.OpenSource());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
@@ -452,9 +454,9 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
         },
         glz::generic_sorted_u64{{"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}}
     };
-    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
+    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, testFile.OpenSource());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
@@ -501,9 +503,9 @@ TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
     std::vector<test_common::LogRecord> records = {
         glz::generic_sorted_u64{{"key1", "value1"}}, glz::generic_sorted_u64{{"key2", "value2"}}
     };
-    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
+    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
-    auto result = ParseFile(parser, testFile.GetFilePath());
+    auto result = ParseSource(parser, testFile.OpenSource());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
     CHECK(
@@ -651,7 +653,7 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
         json["counter"] = static_cast<int64_t>(intDist(rng));
         records.emplace_back(std::move(json));
     }
-    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
+    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
     ParserOptions singleThread;
     singleThread.threads = 1;
@@ -659,8 +661,8 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     ParserOptions multiThread;
     multiThread.threads = std::max(2u, std::thread::hardware_concurrency());
 
-    auto singleResult = ParseWithSink(testFile.GetFilePath(), singleThread);
-    auto multiResult = ParseWithSink(testFile.GetFilePath(), multiThread);
+    auto singleResult = ParseWithSink(testFile.OpenSource(), singleThread);
+    auto multiResult = ParseWithSink(testFile.OpenSource(), multiThread);
 
     REQUIRE(singleResult.errors.empty());
     REQUIRE(multiResult.errors.empty());
@@ -718,14 +720,14 @@ TEST_CASE(
         json["key5"] = static_cast<double>(i) * 0.5;
         records.emplace_back(std::move(json));
     }
-    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
+    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
     const JsonParser parser;
     ParserOptions opts;
     opts.threads = THREADS;
 
     KeyIndex::ResetInstrumentationCounters();
-    const auto cachedResult = ParseWithSink(testFile.GetFilePath(), opts);
+    const auto cachedResult = ParseWithSink(testFile.OpenSource(), opts);
     const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
 
     REQUIRE(cachedResult.errors.empty());
@@ -899,7 +901,7 @@ TEST_CASE(
         json["message"] = std::string("hello");
         records.emplace_back(std::move(json));
     }
-    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
+    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
     // Configuration mirrors the production timestamp column shape: one key
     // (`timestamp`) and one parse format (`%FT%T`). Stage B pre-resolves the
@@ -918,7 +920,7 @@ TEST_CASE(
     opts.timeColumns = TimeColumnsOf(*configuration);
 
     const JsonParser parser;
-    const ParseResult result = ParseWithSink(testFile.GetFilePath(), opts);
+    const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);
 
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == LINE_COUNT);
@@ -957,7 +959,7 @@ TEST_CASE(
 
     InitializeTimezoneData();
 
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write(
         R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})"
         "\n"
@@ -983,7 +985,7 @@ TEST_CASE(
     opts.timeColumns = TimeColumnsOf(*configuration);
 
     const JsonParser parser;
-    const ParseResult result = ParseWithSink(testFile.GetFilePath(), opts);
+    const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);
 
     // Promotion failures are silent; only genuine JSON-parse errors land in `errors`.
     CHECK(result.errors.empty());
