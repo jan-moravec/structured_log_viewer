@@ -107,15 +107,9 @@ std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std:
     return raw;
 }
 
-ParseResult ParseText(const test_common::TempDir &dir, const LogParser &parser, std::string_view text)
+ParseResult ParseText(const LogParser &parser, std::string_view text)
 {
-    const std::filesystem::path path = dir.Write("input.log", text);
-    auto source = std::make_unique<FileLineSource>(path);
-    FileLineSource &sourceRef = *source;
-    internal::BufferingSink sink(std::move(source));
-    parser.ParseStreaming(sourceRef, sink, ParserOptions{});
-    LogData data = sink.TakeData();
-    return ParseResult{.data = std::move(data), .errors = sink.TakeErrors()};
+    return ParseSource(parser, MemorySource(std::string(text), "input.log"));
 }
 
 LogTable TableOf(LogData data)
@@ -247,9 +241,7 @@ TEST_CASE("Raw lines stay aligned when batches contain no records", "[parser_pip
 
 TEST_CASE("Malformed JSON values fail the line instead of dropping fields", "[json_parser][malformed]")
 {
-    const test_common::TempDir dir("json");
     const ParseResult result = ParseText(
-        dir,
         JsonParser{},
         "{\"a\":1,\"b\":2}\n"
         "{\"a\":1,\"b\":truex}\n"
@@ -289,8 +281,7 @@ TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser]
 
 TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed]")
 {
-    const test_common::TempDir dir("json");
-    const ParseResult result = ParseText(dir, JsonParser{}, "{\"id\":123456789012345678901234567890}\n");
+    const ParseResult result = ParseText(JsonParser{}, "{\"id\":123456789012345678901234567890}\n");
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     const LogValue value = result.data.Lines()[0].GetValue(result.data.Keys(), "id");
@@ -301,11 +292,8 @@ TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed
 
 TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_parser][scalars]")
 {
-    const test_common::TempDir dir("scalars");
     const ParseResult result = ParseText(
-        dir,
-        LogfmtParser{},
-        "zip=007 big=18446744073709551616 neg=-007 small=-99999999999999999999 plus=+5 n=42 f=1.5 z=0\n"
+        LogfmtParser{}, "zip=007 big=18446744073709551616 neg=-007 small=-99999999999999999999 plus=+5 n=42 f=1.5 z=0\n"
     );
     REQUIRE(result.data.Lines().size() == 1);
     const LogLine &line = result.data.Lines()[0];
@@ -325,8 +313,7 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
 
 TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
 {
-    const test_common::TempDir dir("bom");
-    const ParseResult result = ParseText(dir, LogfmtParser{}, "\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n");
+    const ParseResult result = ParseText(LogfmtParser{}, "\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n");
     CHECK(result.data.Keys().Find("ts") != INVALID_KEY_ID);
     CHECK(result.data.Keys().Find("\xEF\xBB\xBFts") == INVALID_KEY_ID);
 
@@ -354,9 +341,7 @@ TEST_CASE("ParseQuery rejects excessive nesting instead of overflowing the stack
 
 TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule_compile][level]")
 {
-    const test_common::TempDir dir("level");
-    ParseResult result =
-        ParseText(dir, JsonParser{}, "{\"level\":\"info\"}\n{\"level\":\"warn\"}\n{\"level\":\"info\"}\n");
+    ParseResult result = ParseText(JsonParser{}, "{\"level\":\"info\"}\n{\"level\":\"warn\"}\n{\"level\":\"info\"}\n");
     const LogTable table = TableOf(std::move(result.data));
     const auto &columns = table.Configuration().Configuration().columns;
     REQUIRE(columns.at(0).type == ColumnType::Level);
