@@ -40,7 +40,7 @@ TEST_CASE("FileLineSource: throws IoError when the file does not exist", "[FileL
 
 TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLineSource]")
 {
-    const TestLogFile testLogFile;
+    const MemoryLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2\nLine 3\n");
 
     const auto source = testLogFile.CreateFileLineSource();
@@ -54,7 +54,7 @@ TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLin
 TEST_CASE("FileLineSource: RawLine strips CRLF line endings", "[FileLineSource]")
 {
     // Byte offsets and CRLF stripping must work regardless of the host's line-ending conventions.
-    const TestLogFile testLogFile;
+    const MemoryLogFile testLogFile;
     testLogFile.Write("Line 1\r\nLine 2\r\nLine 3\r\n");
 
     const auto source = testLogFile.CreateFileLineSource();
@@ -67,7 +67,7 @@ TEST_CASE("FileLineSource: RawLine strips CRLF line endings", "[FileLineSource]"
 TEST_CASE("FileLineSource: RawLine reads a last line without a trailing newline", "[FileLineSource]")
 {
     // The parsers push a virtual terminator one byte past the end for such a line.
-    const TestLogFile testLogFile;
+    const MemoryLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2");
 
     const auto source = testLogFile.CreateFileLineSource();
@@ -91,7 +91,7 @@ TEST_CASE("FileLineSource: an empty file maps no bytes", "[FileLineSource]")
 
 TEST_CASE("FileLineSource: RawLine returns joined bytes for multi-line records", "[FileLineSource][multiline]")
 {
-    const TestLogFile testLogFile;
+    const MemoryLogFile testLogFile;
     testLogFile.Write(
         "level=info msg=first\n"
         "\tframe A1\n"
@@ -119,7 +119,7 @@ TEST_CASE("FileLineSource: RawLine returns joined bytes for multi-line records",
 
 TEST_CASE("FileLineSource: a single-line span is not a multi-line record", "[FileLineSource][multiline]")
 {
-    const TestLogFile testLogFile;
+    const MemoryLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2\nLine 3\n");
 
     const auto source = testLogFile.CreateFileLineSource();
@@ -188,7 +188,7 @@ TEST_CASE("FileLineSource: TryExtendOwnedString extends only the newest string",
 
 TEST_CASE("FileLineSource: eviction is a no-op for a file source", "[FileLineSource]")
 {
-    const TestLogFile testLogFile;
+    const MemoryLogFile testLogFile;
     testLogFile.Write("a\nb\nc\n");
 
     const auto source = testLogFile.CreateFileLineSource();
