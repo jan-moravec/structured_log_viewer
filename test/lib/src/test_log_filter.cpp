@@ -47,7 +47,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
 
 /// Single-column `Type::Enumeration` `LogTable`; rows cycle @p distinctValues.
 LogTable BuildEnumTable(
-    const TestLogFile &testFile,
+    const MemoryLogFile &testFile,
     const std::string &columnKey,
     const std::vector<std::string> &distinctValues,
     size_t rowCount
@@ -94,7 +94,7 @@ LogTable BuildEnumTable(
 /// land as strings (no auto-promotion) so the string-fallback path
 /// can be exercised.
 LogTable BuildStringTable(
-    const TestLogFile &testFile, const std::string &columnKey, const std::vector<std::string> &perRowValues
+    const MemoryLogFile &testFile, const std::string &columnKey, const std::vector<std::string> &perRowValues
 )
 {
     auto source = testFile.CreateFileLineSource();
@@ -137,7 +137,7 @@ LogTable BuildStringTable(
 
 /// Single-column `Type::Time` `LogTable` from microseconds since epoch.
 LogTable BuildTimeTable(
-    const TestLogFile &testFile, const std::string &columnKey, const std::vector<int64_t> &microsSinceEpoch
+    const MemoryLogFile &testFile, const std::string &columnKey, const std::vector<int64_t> &microsSinceEpoch
 )
 {
     auto source = testFile.CreateFileLineSource();
@@ -204,7 +204,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
     // Non-level key (`category`) keeps the column Enumeration; a
     // `level`-named column with the same values would auto-promote
     // to Level and break the REQUIRE below.
-    const TestLogFile fixture("log_filter_enum_accept.json");
+    const MemoryLogFile fixture("log_filter_enum_accept.json");
     fixture.Write("");
     const std::vector<std::string> values = {"info", "warn", "error"};
     LogTable table = BuildEnumTable(fixture, "category", values, 12);
@@ -229,7 +229,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
 
 TEST_CASE("EnumRowPredicate rejects every row on an empty selection", "[log_filter][enum]")
 {
-    const TestLogFile fixture("log_filter_enum_empty.json");
+    const MemoryLogFile fixture("log_filter_enum_empty.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 6);
     const EnumDictionary *dict = FindDictionary(table, "level");
@@ -249,7 +249,7 @@ TEST_CASE(
     "EnumRowPredicate falls back to the string set when the column isn't promoted", "[log_filter][enum][fallback]"
 )
 {
-    const TestLogFile fixture("log_filter_enum_string_fallback.json");
+    const MemoryLogFile fixture("log_filter_enum_string_fallback.json");
     fixture.Write("");
     const std::vector<std::string> values = {"alpha", "beta", "gamma", "alpha", "beta"};
     LogTable table = BuildStringTable(fixture, "label", values);
@@ -273,7 +273,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
     // Fully-resolved predicate: an id past the bitset is provably for
     // an unselected value, so the predicate must reject (not fall
     // through to the string set).
-    const TestLogFile fixture("log_filter_enum_oob.json");
+    const MemoryLogFile fixture("log_filter_enum_oob.json");
     fixture.Write("");
     LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
     const EnumDictionary *dict = FindDictionary(table, "level");
@@ -287,7 +287,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
 
     // Append a batch whose value mints a new id past the bitset.
     KeyIndex &keys = table.Keys();
-    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
+    auto source = fixture.OpenSource();
     FileLineSource *sourcePtr = source.get();
     table.AppendStreaming(std::move(source));
     RowBatch batch;
@@ -325,7 +325,7 @@ TEST_CASE(
     // and is later interned past the bitset must still match via the
     // string-set fallback. Predicate correctness must not rely on the
     // GUI's `enumColumnsChanged` rebuild gate.
-    const TestLogFile fixture("log_filter_enum_stale.json");
+    const MemoryLogFile fixture("log_filter_enum_stale.json");
     fixture.Write("");
     LogTable table = BuildEnumTable(fixture, "level", {"info"}, 2);
     const EnumDictionary *dict = FindDictionary(table, "level");
@@ -343,7 +343,7 @@ TEST_CASE(
     // Append a batch interning "debug" past the bitset, then verify the
     // stale predicate accepts the new row via the string fallback.
     KeyIndex &keys = table.Keys();
-    auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
+    auto source = fixture.OpenSource();
     FileLineSource *sourcePtr = source.get();
     table.AppendStreaming(std::move(source));
     RowBatch batch;
@@ -376,7 +376,7 @@ TEST_CASE(
 // the predicate outlive it; ASan would catch a regression here.
 TEST_CASE("EnumRowPredicate does not retain references into the selection span", "[log_filter][enum][lifetime]")
 {
-    const TestLogFile fixture("log_filter_enum_lifetime.json");
+    const MemoryLogFile fixture("log_filter_enum_lifetime.json");
     fixture.Write("");
     // Two values so one selected value resolves (bitset) and one
     // doesn't (string-set fallback) -- exercises both storage paths.
@@ -418,7 +418,7 @@ TEST_CASE(
     // input length. Duplicate input must not flip the resolved-vs-
     // unresolved accounting (otherwise stale-predicate behaviour
     // diverges from caller-deduped vs caller-not-deduped paths).
-    const TestLogFile fixture("log_filter_enum_dedupe.json");
+    const MemoryLogFile fixture("log_filter_enum_dedupe.json");
     fixture.Write("");
     LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
     const EnumDictionary *dict = FindDictionary(table, "level");
@@ -436,7 +436,7 @@ TEST_CASE(
         REQUIRE(predicate.IsFastPathArmed());
 
         KeyIndex &keys = table.Keys();
-        auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
+        auto source = fixture.OpenSource();
         FileLineSource *sourcePtr = source.get();
         table.AppendStreaming(std::move(source));
         RowBatch batch;
@@ -465,7 +465,7 @@ TEST_CASE(
         REQUIRE(predicate.IsFastPathArmed());
 
         KeyIndex &keys = table.Keys();
-        auto source = std::make_unique<FileLineSource>(fixture.GetFilePath());
+        auto source = fixture.OpenSource();
         FileLineSource *sourcePtr = source.get();
         table.AppendStreaming(std::move(source));
         RowBatch batch;
@@ -486,7 +486,7 @@ TEST_CASE(
 
 TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside", "[log_filter][time]")
 {
-    const TestLogFile fixture("log_filter_time.json");
+    const MemoryLogFile fixture("log_filter_time.json");
     fixture.Write("");
     const std::vector<int64_t> times = {100, 200, 300, 400, 500};
     const LogTable table = BuildTimeTable(fixture, "ts", times);
@@ -502,7 +502,7 @@ TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside
 
 TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[log_filter][time]")
 {
-    const TestLogFile fixture("log_filter_time_wrong_column.json");
+    const MemoryLogFile fixture("log_filter_time_wrong_column.json");
     fixture.Write("");
     const LogTable table = BuildStringTable(fixture, "label", {"alpha", "beta"});
 
@@ -513,7 +513,7 @@ TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[log_filter][time]"
 
 TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[log_filter][callback]")
 {
-    const TestLogFile fixture("log_filter_callback_string.json");
+    const MemoryLogFile fixture("log_filter_callback_string.json");
     fixture.Write("");
     const std::vector<std::string> values = {"GET /a", "POST /b", "GET /c"};
     const LogTable table = BuildStringTable(fixture, "path", values);
@@ -532,7 +532,7 @@ TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[
 TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column printFormat", "[log_filter][callback]")
 {
     InitializeTimezoneData();
-    const TestLogFile fixture("log_filter_callback_time.json");
+    const MemoryLogFile fixture("log_filter_callback_time.json");
     fixture.Write("");
     const LogTable table = BuildTimeTable(fixture, "ts", {1'700'000'000'000'000});
 
@@ -553,7 +553,7 @@ namespace
 /// `test_log_compare.cpp` so the numeric / boolean tests can build
 /// mixed-type tables without pulling in the bigger compare helpers.
 LogTable BuildSingleColumnTable(
-    const TestLogFile &testFile,
+    const MemoryLogFile &testFile,
     const std::string &columnKey,
     ColumnType type,
     const std::vector<LogValue> &perRowValues
@@ -594,7 +594,7 @@ LogTable BuildSingleColumnTable(
 
 TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_filter][numeric_range]")
 {
-    const TestLogFile fixture("log_filter_numeric_bounded.json");
+    const MemoryLogFile fixture("log_filter_numeric_bounded.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
         int64_t{-5}, int64_t{0}, int64_t{5}, int64_t{10}, int64_t{15}, std::monostate{}
@@ -615,7 +615,7 @@ TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals
     // `min == max` is a valid single-point filter. Inverted ranges
     // (`min > max`) are caught by the GUI; the predicate doesn't
     // enforce ordering itself.
-    const TestLogFile fixture("log_filter_numeric_single_point.json");
+    const MemoryLogFile fixture("log_filter_numeric_single_point.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{4}, int64_t{5}, int64_t{6}, 5.0};
     const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Number, values);
@@ -629,7 +629,7 @@ TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals
 
 TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][numeric_range]")
 {
-    const TestLogFile fixture("log_filter_numeric_unbounded.json");
+    const MemoryLogFile fixture("log_filter_numeric_unbounded.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{-100}, int64_t{0}, int64_t{100}, int64_t{1000}};
     const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
@@ -664,7 +664,7 @@ TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][nume
 
 TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[log_filter][numeric_range]")
 {
-    const TestLogFile fixture("log_filter_numeric_mixed.json");
+    const MemoryLogFile fixture("log_filter_numeric_mixed.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
         int64_t{1}, uint64_t{2}, 3.5, std::numeric_limits<double>::quiet_NaN(), std::string("not-a-number")
@@ -681,7 +681,7 @@ TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[log_fi
 
 TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[log_filter][numeric_range]")
 {
-    const TestLogFile fixture("log_filter_numeric_nan_bounds.json");
+    const MemoryLogFile fixture("log_filter_numeric_nan_bounds.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{-50}, int64_t{0}, int64_t{50}};
     const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
@@ -700,7 +700,7 @@ TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[l
     // never be a meaningful match. Reject explicitly (matches
     // `loglib::AsEpochMicroseconds`) rather than relying on uint
     // arithmetic to accidentally produce the right answer.
-    const TestLogFile fixture("log_filter_time_uint64_overflow.json");
+    const MemoryLogFile fixture("log_filter_time_uint64_overflow.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
         uint64_t{500},                                                   // in range
@@ -719,7 +719,7 @@ TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[l
 
 TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
 {
-    const TestLogFile fixture("log_filter_boolean.json");
+    const MemoryLogFile fixture("log_filter_boolean.json");
     fixture.Write("");
     const std::vector<LogValue> values = {true, false, true, false, std::monostate{}};
     const LogTable table = BuildSingleColumnTable(fixture, "flag", ColumnType::Boolean, values);
@@ -772,7 +772,7 @@ TEST_CASE(
     // Mirrors `MainWindow::BuildRowPredicates` for Level columns:
     // canonical names ("Info", "Warn") on the UI side are translated
     // to the raw dictionary entries, then fed into `EnumRowPredicate`.
-    const TestLogFile fixture("log_filter_level.json");
+    const MemoryLogFile fixture("log_filter_level.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -930,7 +930,7 @@ CompiledFilterExpression MakeCompiledNot(CompiledFilterExpression child)
 
 TEST_CASE("EvaluateExpression: default expression matches every row", "[log_filter][expression]")
 {
-    const TestLogFile fixture("log_filter_expr_matchall.json");
+    const MemoryLogFile fixture("log_filter_expr_matchall.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
 
@@ -944,7 +944,7 @@ TEST_CASE("EvaluateExpression: default expression matches every row", "[log_filt
 
 TEST_CASE("EvaluateExpression: empty Or rejects every row", "[log_filter][expression]")
 {
-    const TestLogFile fixture("log_filter_expr_empty_or.json");
+    const MemoryLogFile fixture("log_filter_expr_empty_or.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
 
@@ -961,7 +961,7 @@ TEST_CASE("EvaluateExpression: default Not (null child) matches every row", "[lo
     // code paths; the compile factory always seeds `child`. The
     // evaluator still needs to be well-defined: an empty NOT is
     // "NOT (match-none)" = match-all.
-    const TestLogFile fixture("log_filter_expr_empty_not.json");
+    const MemoryLogFile fixture("log_filter_expr_empty_not.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
 
@@ -977,7 +977,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
 {
     // Two-column enum table: col 0 is "category" (a/b), col 1 is
     // "region" (x/y). A row is accepted iff category=a AND region=x.
-    const TestLogFile fixture("log_filter_expr_and.json");
+    const MemoryLogFile fixture("log_filter_expr_and.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -1028,7 +1028,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
 
 TEST_CASE("EvaluateExpression: OR short-circuits when a child accepts", "[log_filter][expression]")
 {
-    const TestLogFile fixture("log_filter_expr_or.json");
+    const MemoryLogFile fixture("log_filter_expr_or.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c", "d"}, 12);
 
@@ -1049,7 +1049,7 @@ TEST_CASE("EvaluateExpression: OR short-circuits when a child accepts", "[log_fi
 
 TEST_CASE("EvaluateExpression: NOT inverts its child", "[log_filter][expression]")
 {
-    const TestLogFile fixture("log_filter_expr_not.json");
+    const MemoryLogFile fixture("log_filter_expr_not.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 9);
 
@@ -1067,7 +1067,7 @@ TEST_CASE("EvaluateExpression: NOT inverts its child", "[log_filter][expression]
 TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expression]")
 {
     // Same 2-column shape as the AND short-circuit test above.
-    const TestLogFile fixture("log_filter_expr_composite.json");
+    const MemoryLogFile fixture("log_filter_expr_composite.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -1129,7 +1129,7 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
 
 TEST_CASE("FilterAcceptedRows: visit-path result matches sequential reference", "[log_filter][expression]")
 {
-    const TestLogFile fixture("log_filter_accepted_visit.json");
+    const MemoryLogFile fixture("log_filter_accepted_visit.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 2'000);
 
@@ -1162,7 +1162,7 @@ TEST_CASE(
     // the eligibility heuristic engages. `BuildEnumTable` cycles the
     // vocabulary, so an OR of four disjoint values covers the whole
     // vocabulary, and the NOT then trims it back down.
-    const TestLogFile fixture("log_filter_accepted_bitset.json");
+    const MemoryLogFile fixture("log_filter_accepted_bitset.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c", "d", "e"}, 4'000);
 
@@ -1255,7 +1255,7 @@ TEST_CASE("FilterAcceptedRows: bitset path handles an empty And{} nested inside 
 {
     // 100 rows -> `rowCount` isn't a multiple of `WORD_BITS`; the
     // tail-mask branch of `MaskTail` must fire on `FillTrue`.
-    const TestLogFile fixture("log_filter_bitset_empty_and.json");
+    const MemoryLogFile fixture("log_filter_bitset_empty_and.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 100);
     REQUIRE(table.RowCount() == 100);
@@ -1279,7 +1279,7 @@ TEST_CASE("FilterAcceptedRows: bitset path handles an empty And{} nested inside 
 
 TEST_CASE("FilterAcceptedRows: bitset path handles an empty Or{} nested inside Or", "[log_filter][expression][bitset]")
 {
-    const TestLogFile fixture("log_filter_bitset_empty_or.json");
+    const MemoryLogFile fixture("log_filter_bitset_empty_or.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 100);
 
@@ -1311,7 +1311,7 @@ TEST_CASE(
     "FilterAcceptedRows: bitset path handles Not{child=null} nested inside Or", "[log_filter][expression][bitset]"
 )
 {
-    const TestLogFile fixture("log_filter_bitset_null_not.json");
+    const MemoryLogFile fixture("log_filter_bitset_null_not.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 100);
 
@@ -1344,7 +1344,7 @@ TEST_CASE(
     // word set), `Count()` and `CollectInto` would report rows >=
     // rowCount, which the `assert(row < mRowCount)` in `CollectInto`
     // would trip.
-    const TestLogFile fixture("log_filter_bitset_mask_tail.json");
+    const MemoryLogFile fixture("log_filter_bitset_mask_tail.json");
     fixture.Write("");
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 130);
     REQUIRE(table.RowCount() == 130);
@@ -1373,7 +1373,7 @@ TEST_CASE(
     // caller returns an empty vector immediately. Not a bitset-
     // path test per se, but it's the sibling degenerate case that
     // pins the top-level early-out.
-    const TestLogFile fixture("log_filter_empty_table.json");
+    const MemoryLogFile fixture("log_filter_empty_table.json");
     fixture.Write("");
     // `BuildEnumTable` with 0 rows still sets up the columns and
     // dictionary; the table has zero data rows.
