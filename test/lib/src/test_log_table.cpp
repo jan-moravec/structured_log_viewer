@@ -32,7 +32,7 @@ using namespace loglib;
 TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager", "[log_table]")
 {
     // Setup test data
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write("line1\nline2");
     auto source = testFile.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -84,8 +84,8 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
 
 TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_table]")
 {
-    const TestLogFile testFile("log_file.json");
-    const TestLogFile newTestFile("new_log_file.json");
+    const MemoryLogFile testFile("log_file.json");
+    const MemoryLogFile newTestFile("new_log_file.json");
 
     // Setup initial test data
     testFile.Write("file1\nfile2");
@@ -159,7 +159,7 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
 {
     // Regression: `Reset()` clears data but must keep the configuration
     // (otherwise `LoadConfiguration → File → Open` would lose column layout).
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write("line1\nline2");
     auto source = testFile.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -266,9 +266,9 @@ TEST_CASE(
     "LogTable::AppendBatch -- steady-state batches with no new keys do not extend columns", "[log_table][append_batch]"
 )
 {
-    const TestLogFile testFile("steady.json");
+    const MemoryLogFile testFile("steady.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -298,9 +298,9 @@ TEST_CASE(
 
 TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", "[log_table][append_batch]")
 {
-    const TestLogFile testFile("append_columns.json");
+    const MemoryLogFile testFile("append_columns.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -333,9 +333,9 @@ TEST_CASE("LogTable::ApplyPlacements moves a new time column to the front", "[lo
 {
     InitializeTimezoneData();
 
-    const TestLogFile testFile("arranged_time_column.json");
+    const MemoryLogFile testFile("arranged_time_column.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -365,9 +365,9 @@ TEST_CASE("LogTable::ApplyPlacements moves a new time column to the front", "[lo
 
 TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log_table][append_batch]")
 {
-    const TestLogFile testFile("empty_rows.json");
+    const MemoryLogFile testFile("empty_rows.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
 
     LogTable table;
     table.BeginStreaming(std::move(source));
@@ -405,9 +405,9 @@ TEST_CASE(
     "LogTable column to KeyId cache is append-only across appended data and AppendBatch", "[log_table][append_only]"
 )
 {
-    const TestLogFile testFile("append_only.json");
+    const MemoryLogFile testFile("append_only.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -508,9 +508,9 @@ TEST_CASE(
 // Avoids timestamp keys so the auto-promotion reorder stays out of scope.
 TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][append_only]")
 {
-    const TestLogFile fileA("log_file_initial.json");
-    const TestLogFile fileB("log_file_second.json");
-    const TestLogFile fileC("log_file_third.json");
+    const MemoryLogFile fileA("log_file_initial.json");
+    const MemoryLogFile fileB("log_file_second.json");
+    const MemoryLogFile fileC("log_file_third.json");
 
     fileA.Write("a1\n");
     auto sourceA = fileA.CreateFileLineSource();
@@ -586,9 +586,9 @@ TEST_CASE(
 {
     InitializeTimezoneData();
 
-    const TestLogFile testFile("backfill.json");
+    const MemoryLogFile testFile("backfill.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -697,9 +697,9 @@ TEST_CASE(
 {
     InitializeTimezoneData();
 
-    const TestLogFile testFile("snapshot_time_keys.json");
+    const MemoryLogFile testFile("snapshot_time_keys.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -805,9 +805,9 @@ TEST_CASE(
     constexpr int KEY_COUNT = 100;
     constexpr int BATCHES = 1'000;
 
-    const TestLogFile testFile("refresh_no_alloc.json");
+    const MemoryLogFile testFile("refresh_no_alloc.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     // Single column with KEY_COUNT keys; an empty `newKeys` must short-circuit
@@ -889,9 +889,9 @@ TEST_CASE(
 {
     constexpr int UNTOUCHED_KEY_COUNT = 50;
 
-    const TestLogFile testFile("refresh_no_alloc_incremental.json");
+    const MemoryLogFile testFile("refresh_no_alloc_incremental.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1131,16 +1131,12 @@ TEST_CASE(
     "[log_table][append_streaming]"
 )
 {
-    // Declare *both* `TestLogFile`s above `LogTable`: their dtors run
-    // `std::filesystem::remove` (throwing variant); on Windows you cannot
-    // delete an mmap'd file, so they must outlive the table that holds
-    // the mmap.
-    const TestLogFile fileA("multifile_a.json");
+    const MemoryLogFile fileA("multifile_a.json");
     fileA.Write("alpha\nbeta\n");
-    const TestLogFile fileB("multifile_b.json");
+    const MemoryLogFile fileB("multifile_b.json");
     fileB.Write("gamma\ndelta\n");
 
-    auto sourceA = std::make_unique<FileLineSource>(fileA.GetFilePath());
+    auto sourceA = fileA.OpenSource();
     FileLineSource *sourceAPtr = sourceA.get();
 
     LogTable table;
@@ -1171,7 +1167,7 @@ TEST_CASE(
 
     // Append a second file. Existing rows / KeyIndex / column cache must
     // survive.
-    auto sourceB = std::make_unique<FileLineSource>(fileB.GetFilePath());
+    auto sourceB = fileB.OpenSource();
     FileLineSource *sourceBPtr = sourceB.get();
 
     table.AppendStreaming(std::move(sourceB));
@@ -1248,9 +1244,9 @@ TEST_CASE(
 {
     // Streaming promotes at `STREAM_PROMOTION_MIN_ROWS = 2`; the dictionary
     // cap and length cap still bound false positives.
-    const TestLogFile testFile("enum_promote.json");
+    const MemoryLogFile testFile("enum_promote.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -1306,9 +1302,9 @@ TEST_CASE(
     // Regression: `RunEnumPassForAppendBatch` used to free the backing
     // `LogValue` before `Observe` ran, dangling non-SSO `OwnedString`
     // payloads. Long values reach the heap so ASan catches a regression.
-    const TestLogFile testFile("enum_promote_long_strings.json");
+    const MemoryLogFile testFile("enum_promote_long_strings.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -1358,9 +1354,9 @@ TEST_CASE(
     // Non-level key (`category`) keeps the column Enumeration. A
     // `level`-named column would flip to Level here, which is not
     // what this test is exercising.
-    const TestLogFile testFile("enum_preconfigured.json");
+    const MemoryLogFile testFile("enum_preconfigured.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1407,9 +1403,9 @@ TEST_CASE(
     "LogTable::AppendBatch -- (cap+1)th distinct value demotes enum column to string", "[log_table][append_batch][enum]"
 )
 {
-    const TestLogFile testFile("enum_demote.json");
+    const MemoryLogFile testFile("enum_demote.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1484,9 +1480,9 @@ TEST_CASE(
 {
     // A loaded `Type::Any` is terminal and never re-promotes, even if
     // the data shape looks enum-like.
-    const TestLogFile testFile("enum_locked_any.json");
+    const MemoryLogFile testFile("enum_locked_any.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1523,9 +1519,9 @@ TEST_CASE(
 {
     // Regression: a multi-key column killed via its alias used to
     // re-promote once the canonical key arrived in a later batch.
-    const TestLogFile testFile("enum_multi_key_kill_stable.json");
+    const MemoryLogFile testFile("enum_multi_key_kill_stable.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1583,9 +1579,9 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     // Non-level key (`category`) so `Reset` doesn't have to walk the
     // extra `Type::Level` transition; the contract under test is
     // "configured type survives `Reset`".
-    const TestLogFile testFile("enum_reset.json");
+    const MemoryLogFile testFile("enum_reset.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1638,9 +1634,9 @@ TEST_CASE(
 {
     // A tracker overflow flips the column to `Type::String`; the type itself
     // blocks future re-promotion via `IsEnumPassEligible`.
-    const TestLogFile testFile("enum_kill_once.json");
+    const MemoryLogFile testFile("enum_kill_once.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -1688,9 +1684,9 @@ TEST_CASE(
 {
     // Aliased keys share a dictionary; a row populating both ends up with
     // a single `DictRef` slot.
-    const TestLogFile testFile("enum_multi_key.json");
+    const MemoryLogFile testFile("enum_multi_key.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1741,9 +1737,9 @@ TEST_CASE("Appending data -- snapshot-enum keys are seeded against the merged Ke
 {
     // Appending data must refresh the enum-key snapshot so configured
     // enum columns survive the merge.
-    const TestLogFile testFile("enum_update.json");
+    const MemoryLogFile testFile("enum_update.json");
     testFile.Write("");
-    auto sourceA = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto sourceA = testFile.OpenSource();
     FileLineSource *sourceAPtr = sourceA.get();
 
     LogConfiguration cfg;
@@ -1783,9 +1779,9 @@ TEST_CASE("Appending data -- snapshot-enum keys are seeded against the merged Ke
 
 TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[log_table][enum][get_value]")
 {
-    const TestLogFile testFile("enum_get_value.json");
+    const MemoryLogFile testFile("enum_get_value.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1827,9 +1823,9 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
     // Pin the column to `Type::Any` with `autoDetect = false` so the
     // auto-detector skips it; pre-promotion / post-demote slots stay
     // `OwnedString` for the filter's string-set fallback path.
-    const TestLogFile testFile("enum_get_value_owned.json");
+    const MemoryLogFile testFile("enum_get_value_owned.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -1871,9 +1867,9 @@ TEST_CASE(
     // Length-cap policy is percentile-based: a single overlong line in an
     // otherwise enum-shaped column stays under the 1% tolerance and the
     // column still promotes.
-    const TestLogFile testFile("enum_length_cap.json");
+    const MemoryLogFile testFile("enum_length_cap.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -1918,9 +1914,9 @@ TEST_CASE(
 {
     // Inverse of the previous test: 10% long values blow the 1% tolerance
     // once the 50-sample min is satisfied; column flips to `Type::String`.
-    const TestLogFile testFile("enum_length_cap_demote.json");
+    const MemoryLogFile testFile("enum_length_cap_demote.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -1960,9 +1956,9 @@ TEST_CASE(
     // under the 50-sample min, so the column stays `Type::Enumeration`
     // even though 50% of slots are over-cap; long values stay as
     // `OwnedString` and never enter the dictionary.
-    const TestLogFile testFile("enum_length_cap_pinned.json");
+    const MemoryLogFile testFile("enum_length_cap_pinned.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -2002,9 +1998,9 @@ TEST_CASE(
     // accumulates across batches. Once the sample size is large enough
     // and the over-cap fraction breaks 1%, the column demotes to
     // `Type::String` (no more "pinned forever" escape hatch).
-    const TestLogFile testFile("enum_length_cap_pinned_demote.json");
+    const MemoryLogFile testFile("enum_length_cap_pinned_demote.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -2053,9 +2049,9 @@ TEST_CASE(
     // Regression: leading missing rows used to trip the no-string bail
     // and route the column to `Type::Any` permanently. `presenceCount`
     // now gates that bail and the candidate stays alive across batches.
-    const TestLogFile testFile("enum_sparse_stream.json");
+    const MemoryLogFile testFile("enum_sparse_stream.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2121,9 +2117,9 @@ TEST_CASE(
     // To opt out of auto-detection per-column, save the column with
     // `autoDetect = false`. The candidate-scan gate
     // (`IsEnumPassEligible`) requires `Type::Any + autoDetect == true`.
-    const TestLogFile testFile("enum_loaded_any_opt_out.json");
+    const MemoryLogFile testFile("enum_loaded_any_opt_out.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -2167,9 +2163,9 @@ TEST_CASE(
     // A user-pinned `Type::Enumeration` column still encodes as
     // `DictRef`. Non-level key (`category`) so the data doesn't flip
     // to `Type::Level` -- that path has its own tests.
-    const TestLogFile testFile("enum_user_pinned.json");
+    const MemoryLogFile testFile("enum_user_pinned.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -2233,9 +2229,9 @@ TEST_CASE(
 {
     // The candidate scan counts `Int64`/`UInt64` tags so the no-string
     // bail flips int-only columns straight to `Type::Integer`.
-    const TestLogFile testFile("enum_no_string_int.json");
+    const MemoryLogFile testFile("enum_no_string_int.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2253,9 +2249,9 @@ TEST_CASE(
     "[log_table][append_batch][enum][routing][double]"
 )
 {
-    const TestLogFile testFile("enum_no_string_double.json");
+    const MemoryLogFile testFile("enum_no_string_double.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2273,9 +2269,9 @@ TEST_CASE(
 )
 {
     // Mixed int + double observations route to `Type::Number`.
-    const TestLogFile testFile("enum_no_string_mixed.json");
+    const MemoryLogFile testFile("enum_no_string_mixed.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2308,9 +2304,9 @@ TEST_CASE(
 {
     // Bool-only columns route through the dedicated `Type::Boolean`
     // branch instead of the historical `Type::Any` fallback.
-    const TestLogFile testFile("enum_no_string_bool.json");
+    const MemoryLogFile testFile("enum_no_string_bool.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2336,9 +2332,9 @@ TEST_CASE(
 {
     // Mixed bool + integer has no single specialised widget, so the
     // no-string bail falls through to `Type::Any`.
-    const TestLogFile testFile("enum_no_string_bool_mixed.json");
+    const MemoryLogFile testFile("enum_no_string_bool_mixed.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2395,9 +2391,9 @@ TEST_CASE(
     // dict-cap kill in `EnumCandidateTracker::Observe` (cap = 64).
     // The cardinality ratio bail rarely fires under the default cap;
     // the cap kill catches unique columns first.
-    const TestLogFile testFile("enum_cardinality_bail.json");
+    const MemoryLogFile testFile("enum_cardinality_bail.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex keys;
@@ -2423,9 +2419,9 @@ TEST_CASE(
     "[log_table][finalize][enum]"
 )
 {
-    const TestLogFile testFile("enum_finalize_distinct.json");
+    const MemoryLogFile testFile("enum_finalize_distinct.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex keys;
@@ -2445,9 +2441,9 @@ TEST_CASE(
 
 TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay levels", "[log_table][finalize][enum]")
 {
-    const TestLogFile testFile("enum_finalize_levels.json");
+    const MemoryLogFile testFile("enum_finalize_levels.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex keys;
@@ -2471,9 +2467,9 @@ TEST_CASE(
     // Static parse with only 4 rows: per-batch promotion never fires (4096
     // row threshold). `FinalizeAutoDetection` applies the permissive
     // end-of-parse rule and promotes the column anyway.
-    const TestLogFile testFile("enum_finalize_small.json");
+    const MemoryLogFile testFile("enum_finalize_small.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex keys;
@@ -2506,9 +2502,9 @@ TEST_CASE(
     // The permissive rule needs `rowsObserved >= 2`; a 1-row file
     // leaves the column at `Type::Any + autoDetect = true` so a later
     // re-load can decide.
-    const TestLogFile testFile("enum_finalize_one_row.json");
+    const MemoryLogFile testFile("enum_finalize_one_row.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex keys;
@@ -2532,9 +2528,9 @@ TEST_CASE(
     // 100 rows do not hit the static per-batch threshold (4096); the
     // constructor's `FinalizeAutoDetection` sweep promotes them anyway.
     // Also confirms the constructor leaves `mIsStreaming = false`.
-    const TestLogFile testFile("enum_static_threshold.json");
+    const MemoryLogFile testFile("enum_static_threshold.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex keys;
@@ -2561,9 +2557,9 @@ TEST_CASE(
     // 30-row file where most slots are over-cap-length stays stuck
     // at `Enumeration`. `FinalizeAutoDetection` rechecks the ratio
     // without the floor and demotes at end-of-parse.
-    const TestLogFile testFile("enum_finalize_small_demote.json");
+    const MemoryLogFile testFile("enum_finalize_small_demote.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2605,9 +2601,9 @@ TEST_CASE(
 {
     // Counterpart to the demote test: a 30-row file with short,
     // genuinely-enum values must keep the streaming promotion.
-    const TestLogFile testFile("enum_finalize_small_keep.json");
+    const MemoryLogFile testFile("enum_finalize_small_keep.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2641,9 +2637,9 @@ TEST_CASE(
     // User pinned the column to `Enumeration`; finalize-time
     // demote must respect that. Only the dictionary cap and the
     // per-batch `ShouldDemote` (firing >=50 samples) override a pin.
-    const TestLogFile testFile("enum_finalize_pinned_keep.json");
+    const MemoryLogFile testFile("enum_finalize_pinned_keep.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -2691,9 +2687,9 @@ TEST_CASE(
 {
     // Key matches `IsLogLevelKey` + canonical dict entries trigger
     // the `Enumeration -> Level` second-step promotion.
-    const TestLogFile testFile("level_auto_promote.json");
+    const MemoryLogFile testFile("level_auto_promote.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2719,9 +2715,9 @@ TEST_CASE(
     // moves it when the placements are applied. Asserting both
     // halves blocks a regression to silent in-`AppendBatch`
     // rotation that would desync Qt's column-keyed state.
-    const TestLogFile testFile("level_bubble.json");
+    const MemoryLogFile testFile("level_bubble.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2762,9 +2758,9 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     // index in a >2-column config, pushing the previous occupant
     // outward. (Time bubbling is covered in
     // `test_log_configuration.cpp`.)
-    const TestLogFile testFile("level_bubble_multi.json");
+    const MemoryLogFile testFile("level_bubble_multi.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2819,9 +2815,9 @@ TEST_CASE(
     // Pre-fix bug: each iteration moved the freshly-checked Level
     // column to index 1, displacing the previous occupant. Only
     // the last drained column ended up at canonical.
-    const TestLogFile testFile("level_bubble_multi_level.json");
+    const MemoryLogFile testFile("level_bubble_multi_level.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2889,9 +2885,9 @@ TEST_CASE(
     // The AppendBatch result reports the `KeyId` of the column that
     // flipped to Level. Fixture uses three pre-existing columns so
     // the bubble is multi-step (clearly distinct from a self-move).
-    const TestLogFile testFile("level_bubble_take.json");
+    const MemoryLogFile testFile("level_bubble_take.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2932,9 +2928,9 @@ TEST_CASE(
     // (run after `MaybePromoteToLevel`) can shift level out of
     // canonical. Without a queue entry the drainer wouldn't
     // know to bubble level back.
-    const TestLogFile testFile("level_bubble_canonical_at_promotion.json");
+    const MemoryLogFile testFile("level_bubble_canonical_at_promotion.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2976,9 +2972,9 @@ TEST_CASE(
 {
     // Same dictionary, but key `tier` isn't a level key. Promotion
     // stops at `Type::Enumeration`.
-    const TestLogFile testFile("level_no_name_match.json");
+    const MemoryLogFile testFile("level_no_name_match.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -2999,9 +2995,9 @@ TEST_CASE(
 {
     // Key matches but most dict entries don't resolve to canonical
     // levels, so the tolerance fails and the column stays Enumeration.
-    const TestLogFile testFile("level_threshold.json");
+    const MemoryLogFile testFile("level_threshold.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3026,9 +3022,9 @@ TEST_CASE(
     // A pinned `Type::Level` column with `levelMapping` overrides
     // keeps raw user strings in the dictionary; the rank cache holds
     // the canonical mapping separately.
-    const TestLogFile testFile("level_user_pinned.json");
+    const MemoryLogFile testFile("level_user_pinned.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -3072,9 +3068,9 @@ TEST_CASE(
     // tolerance holds and the column promotes to `Type::Level`. The
     // unrecognized entry stays in the dictionary (display fidelity);
     // `GetLevelForRow` returns nullopt for its rows.
-    const TestLogFile testFile("level_unmapped_value.json");
+    const MemoryLogFile testFile("level_unmapped_value.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3109,9 +3105,9 @@ TEST_CASE(
     // The full pipeline (`PromoteColumnToEnum -> MaybePromoteToLevel
     // -> RefreshLevelRankCache -> GetLevelForRow`) must round-trip
     // the single-letter input to the canonical severity ordinal.
-    const TestLogFile testFile("level_short_form.json");
+    const MemoryLogFile testFile("level_short_form.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3140,9 +3136,9 @@ TEST_CASE(
     // Single-letter keys are accepted by `IsLogLevelKey` despite
     // false-positive risk; the dict-content check is the safety net.
     // `l` with non-canonical values must stop at Enumeration.
-    const TestLogFile testFile("level_short_form_safety_net.json");
+    const MemoryLogFile testFile("level_short_form_safety_net.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3165,9 +3161,9 @@ TEST_CASE(
     // User-pinned `Type::Integer` column over data that mixes ints
     // and strings: the diagnostic should report all rows present and
     // only the int rows as matching, so the UI can flag the mismatch.
-    const TestLogFile testFile("column_health_int_vs_string.json");
+    const MemoryLogFile testFile("column_health_int_vs_string.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -3220,9 +3216,9 @@ TEST_CASE(
     "[log_table][diagnostics][column_health][type_any]"
 )
 {
-    const TestLogFile testFile("column_health_any.json");
+    const MemoryLogFile testFile("column_health_any.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
@@ -3274,9 +3270,9 @@ TEST_CASE(
     // would promote -- before the fix that meant the column
     // permanently stayed at `Type::Any` because batch-2 started
     // with a fresh, empty tracker keyed on the new header.
-    const TestLogFile testFile("enum_rename_header.json");
+    const MemoryLogFile testFile("enum_rename_header.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3321,9 +3317,9 @@ TEST_CASE(
     // as a literal -- every freshly-arriving row then renders the
     // raw format string instead of its value. Clearing the format
     // pair on the way out keeps rendering sane.
-    const TestLogFile testFile("on_user_changed_time_format_reset.json");
+    const MemoryLogFile testFile("on_user_changed_time_format_reset.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3373,9 +3369,9 @@ TEST_CASE(
     // demotes outside a batch when the user picks a non-enum type
     // from the editor; the application announces that itself, so
     // the next batch result must not repeat it.
-    const TestLogFile testFile("demote_record_for_batch.json");
+    const MemoryLogFile testFile("demote_record_for_batch.json");
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -3414,9 +3410,9 @@ TEST_CASE(
     // streaming path can't help (no more batches arrive), so
     // `RescanColumnForAutoDetection` walks every row for the single
     // column and applies the finalize-style thresholds.
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex testKeys;
@@ -3484,9 +3480,9 @@ TEST_CASE(
     // distinct from the enum-promote branch above prevents a
     // regression where someone reorders the decision ladder and
     // accidentally drops the numeric route.
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex testKeys;
@@ -3552,9 +3548,9 @@ TEST_CASE(
     // isn't currently in candidate state. Otherwise a stray call
     // from a future code path could clobber a deliberately-pinned
     // type.
-    const TestLogFile testFile;
+    const MemoryLogFile testFile;
     testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
+    auto source = testFile.OpenSource();
     FileLineSource *sourcePtr = source.get();
 
     KeyIndex testKeys;
