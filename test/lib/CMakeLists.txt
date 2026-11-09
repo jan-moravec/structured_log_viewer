@@ -24,12 +24,14 @@ add_executable(
     "src/test_column_type_health.cpp"
     "src/test_correctness_regressions.cpp"
     "src/test_csv_parser.cpp"
+    "src/test_csv_tokenize.cpp"
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
     "src/test_enum_inference.cpp"
     "src/test_exports.cpp"
     "src/test_explicit_time_inputs.cpp"
     "src/test_file_busy_retry.cpp"
+    "src/test_file_identity.cpp"
     "src/test_file_line_source.cpp"
     "src/test_file_loading.cpp"
     "src/test_format_detection.cpp"
@@ -37,6 +39,7 @@ add_executable(
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
     "src/test_leaf_rule_compile.cpp"
+    "src/test_line_bytes_queue.cpp"
     "src/test_log_configuration.cpp"
     "src/test_log_compare.cpp"
     "src/test_log_data.cpp"
@@ -69,10 +72,12 @@ add_executable(
     "src/test_tailing_bytes_producer.cpp"
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"
+    "src/test_timestamp_promotion.cpp"
     "src/test_udp_server_producer.cpp"
     "src/test_tzdata_search.cpp"
     "src/test_user_paths.cpp"
     "src/test_user_timestamp.cpp"
+    "src/test_version.cpp"
     "src/test_worker_threads.cpp"
 )
 
@@ -105,6 +110,9 @@ target_link_libraries(
 # `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
 # at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
 target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
+
+# The version the library must report, taken from the same project() call that sets it.
+target_compile_definitions(tests PRIVATE "LOGLIB_TEST_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
 
 # Benchmarks: a separate executable on Google Benchmark, so changing one does not relink the unit tests and two builds
 # can be compared by copying only this binary. It has its own main (benchmark_main.cpp).
