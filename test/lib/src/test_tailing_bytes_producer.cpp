@@ -787,3 +787,86 @@ TEST_CASE(
         CHECK(observed[i] != observed[i - 1]);
     }
 }
+
+TEST_CASE(
+    "TailingBytesProducer delivers every line once and in order across repeated rotations",
+    "[TailingBytesProducer][rotation][fs-events]"
+)
+{
+    constexpr int ROUNDS = 6;
+    constexpr int LINES_PER_ROUND = 40;
+    constexpr int TOTAL_LINES = ROUNDS * LINES_PER_ROUND;
+
+    const TempDir dir;
+    const auto path = dir.File("rotating.log");
+    Overwrite(path, "");
+
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
+
+    const auto lineText = [](int number) {
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "line-%05d\n", number);
+        return std::string(buffer);
+    };
+
+    std::atomic<int> linesSeen{0};
+
+    // The writer writes numbered lines and rotates after each round. Rounds alternate between rename-and-create and
+    // copy-and-truncate. A rename comes right after the write, because the producer reads the renamed file to its end.
+    // Copy-and-truncate loses whatever was written after the reader's last read, so that rotation waits until the
+    // reader has every line written so far.
+    std::thread writer([&] {
+        int next = 0;
+        for (int round = 0; round < ROUNDS; ++round)
+        {
+            std::string chunk;
+            for (int i = 0; i < LINES_PER_ROUND; ++i)
+            {
+                chunk += lineText(next++);
+            }
+            Append(path, chunk);
+            const bool byRename = round % 2 == 0;
+            if (round == ROUNDS - 1 || (!byRename && !test_common::WaitUntil([&] {
+                    return linesSeen.load(std::memory_order_acquire) >= next;
+                })))
+            {
+                return;
+            }
+
+            const auto rotated = dir.File("rotating.log." + std::to_string(round));
+            if (byRename)
+            {
+                std::filesystem::rename(path, rotated);
+                Overwrite(path, "");
+            }
+            else
+            {
+                std::filesystem::copy_file(path, rotated);
+                Overwrite(path, "");
+            }
+            // The worker must see the new, empty file before it grows again, or a truncation to the same size could go
+            // unnoticed.
+            if (!WaitForRotationCount(source, static_cast<size_t>(round) + 1, 60000ms))
+            {
+                return;
+            }
+        }
+    });
+
+    const std::string received = DrainUntil(source, 60000ms, [&](const std::string &acc) {
+        const int count = static_cast<int>(std::count(acc.begin(), acc.end(), '\n'));
+        linesSeen.store(count, std::memory_order_release);
+        return count >= TOTAL_LINES;
+    });
+    // Let the writer finish before the checks, and unblock it if the reader gave up.
+    linesSeen.store(TOTAL_LINES, std::memory_order_release);
+    writer.join();
+
+    const std::vector<std::string> lines = SplitLines(received);
+    REQUIRE(lines.size() == static_cast<size_t>(TOTAL_LINES));
+    for (int i = 0; i < TOTAL_LINES; ++i)
+    {
+        REQUIRE(lines[static_cast<size_t>(i)] + "\n" == lineText(i));
+    }
+    CHECK(source.RotationCount() >= static_cast<size_t>(ROUNDS - 1));
+}
