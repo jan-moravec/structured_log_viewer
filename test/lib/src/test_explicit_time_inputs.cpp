@@ -700,13 +700,13 @@ TEST_CASE(
     auto source = stream.MakeSource();
 
     LogConfiguration configuration;
-    configuration.columns.push_back(
-        {.header = "ts",
-         .keys = {"ts"},
-         .printFormat = "%F %H:%M:%S",
-         .type = ColumnType::Time,
-         .parseFormats = {"%b %e %H:%M:%S"}}
-    );
+    configuration.columns.push_back({
+        .header = "ts",
+        .keys = {"ts"},
+        .printFormat = "%F %H:%M:%S",
+        .type = ColumnType::Time,
+        .parseFormats = {"%b %e %H:%M:%S"},
+    });
     LogTable table(configuration);
     table.SetClock([&stream] { return stream.now; });
     StreamLineSource *sourcePtr = source.get();

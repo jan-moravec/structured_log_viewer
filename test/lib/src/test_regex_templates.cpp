@@ -884,6 +884,7 @@ TEST_CASE(
     };
 
     std::vector<std::thread> readers;
+    readers.reserve(3);
     for (int i = 0; i < 3; ++i)
     {
         readers.emplace_back(reader);
