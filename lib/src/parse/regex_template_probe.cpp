@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <shared_mutex>
@@ -100,6 +101,18 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
     static std::shared_ptr<const CompiledProbeSnapshot> cached;
 
     const uint64_t generation = internal::TemplatesGeneration();
+    {
+        const std::shared_lock<std::shared_mutex> read(mutex);
+        if (cached && cached->generation == generation)
+        {
+            return cached;
+        }
+    }
+
+    // One thread compiles at a time. Compiling is slow, and the PCRE2 JIT compiler sets up global state on its first
+    // call without a lock, so two threads must not compile together.
+    static std::mutex buildMutex;
+    const std::scoped_lock build(buildMutex);
     {
         const std::shared_lock<std::shared_mutex> read(mutex);
         if (cached && cached->generation == generation)
