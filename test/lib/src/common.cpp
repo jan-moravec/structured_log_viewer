@@ -263,6 +263,47 @@ std::unique_ptr<loglib::FileLineSource> TestLogFile::CreateFileLineSource() cons
     return source;
 }
 
+std::unique_ptr<loglib::FileLineSource> MemoryLogFile::OpenSource() const
+{
+    return MemorySource(mText, mDisplayName);
+}
+
+std::unique_ptr<loglib::FileLineSource> MemoryLogFile::CreateFileLineSource() const
+{
+    auto source = MemorySource(mText, mDisplayName);
+    source->AppendLineOffsets(LineEndOffsets(mText));
+    return source;
+}
+
+std::unique_ptr<loglib::FileLineSource> MemoryStructuredLog::OpenSource() const
+{
+    return MemorySource(mText, mDisplayName);
+}
+
+MemoryStructuredLog::MemoryStructuredLog(
+    std::vector<test_common::LogRecord> records,
+    const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema,
+    std::string displayName
+)
+    : mDisplayName(displayName.empty() ? "test" + std::string(format.suggestedExtension) : std::move(displayName)),
+      mRecords(std::move(records))
+{
+    const std::string header = format.writeHeader(schema);
+    if (!header.empty())
+    {
+        mText += header;
+        mText += '\n';
+    }
+    for (const auto &record : mRecords)
+    {
+        const std::string line = format.writeLine(record);
+        assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
+        mText += line;
+        mText += '\n';
+    }
+}
+
 std::filesystem::path FindTestTzdata()
 {
     std::vector<std::filesystem::path> searched;
