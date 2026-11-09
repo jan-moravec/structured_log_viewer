@@ -16,6 +16,7 @@
 #include "loglib/schema/session_view.hpp"
 #include "loglib/schema/source_descriptor.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -135,8 +136,16 @@ public:
      *
      * The scope has no default, so a caller must choose between columns only and everything, and cannot be caught out
      * when the configuration grows.
+     *
+     * The file is replaced by a rename. If the destination stays busy, for example held open by another program, the
+     * rename is retried for up to busyRetryTimeout and then Save throws.
      */
-    static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
+    static void Save(
+        const LogConfiguration &configuration,
+        const std::filesystem::path &path,
+        SaveScope scope,
+        std::chrono::milliseconds busyRetryTimeout = std::chrono::milliseconds{1000}
+    );
 
     /** @brief Resets to an empty configuration, as for a new session. */
     void Reset();

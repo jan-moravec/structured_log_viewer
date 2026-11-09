@@ -26,6 +26,13 @@
 #include <variant>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 using namespace loglib;
 
 namespace
@@ -2521,3 +2528,40 @@ TEST_CASE("LogConfigurationManager::Save waits for a briefly busy destination", 
 
     CHECK_NOTHROW(LogConfigurationManager::Save(configuration, path, SaveScope::Full));
 }
+
+#ifdef _WIN32
+TEST_CASE("Save gives up when the destination stays busy", "[LogConfigurationManager][file_busy_retry]")
+{
+    const test_common::TempDir dir("config_busy");
+    const std::filesystem::path destination = dir.Path() / "busy.json";
+    {
+        std::ofstream seed(destination);
+        seed << "{}";
+    }
+
+    // Open the destination with no sharing, so replacing it by a rename fails with an access error until it closes.
+    const HANDLE held =
+        CreateFileW(destination.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(held != INVALID_HANDLE_VALUE);
+
+    const auto start = std::chrono::steady_clock::now();
+    CHECK_THROWS_WITH(
+        LogConfigurationManager::Save(LogConfiguration{}, destination, SaveScope::Full, std::chrono::milliseconds{60}),
+        Catch::Matchers::ContainsSubstring("Failed to rename")
+    );
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    CHECK(elapsed < std::chrono::milliseconds{900});
+
+    // The half-written temporary file does not stay behind.
+    std::filesystem::path temporary = destination;
+    temporary += ".tmp";
+    CHECK_FALSE(std::filesystem::exists(temporary));
+
+    CloseHandle(held);
+
+    // Once the destination is free, the same save succeeds.
+    CHECK_NOTHROW(
+        LogConfigurationManager::Save(LogConfiguration{}, destination, SaveScope::Full, std::chrono::milliseconds{60})
+    );
+}
+#endif
