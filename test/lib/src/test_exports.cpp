@@ -845,3 +845,101 @@ TEST_CASE("exports: ExtensionFor and LabelFor cover every format", "[exports]")
     REQUIRE(std::string_view(loglib::exports::LabelFor(ExportFormat::Snapshot)) == "Source snapshot");
     REQUIRE(std::string_view(loglib::exports::LabelFor(ExportFormat::Markdown)) == "Markdown table");
 }
+
+namespace
+{
+
+/** Accepts bytes until a limit and then fails, as a disk does when it fills up part way through a write. */
+class FailAfterBytesSink : public loglib::exports::ExportSink
+{
+public:
+    explicit FailAfterBytesSink(std::size_t limit) noexcept
+        : mLimit(limit)
+    {
+    }
+
+    void Write(std::string_view bytes) override
+    {
+        if (mAccepted + bytes.size() > mLimit)
+        {
+            mAccepted = mLimit;
+            throw std::runtime_error("simulated disk full");
+        }
+        mAccepted += bytes.size();
+    }
+
+    void Finish() override
+    {
+        mFinished = true;
+    }
+
+    [[nodiscard]] bool Finished() const noexcept
+    {
+        return mFinished;
+    }
+
+private:
+    std::size_t mLimit;
+    std::size_t mAccepted = 0;
+    bool mFinished = false;
+};
+
+class CountingBytesSink : public loglib::exports::ExportSink
+{
+public:
+    void Write(std::string_view bytes) override
+    {
+        total += bytes.size();
+    }
+
+    void Finish() override
+    {
+    }
+
+    std::size_t total = 0;
+};
+
+} // namespace
+
+TEST_CASE(
+    "exports: a write that fails after N bytes fails the export in every format", "[exports][row_exporter][failure]"
+)
+{
+    std::vector<std::string> raws = {"first raw line", "second raw line", "third raw line"};
+    const auto table = BuildFixtureTable(std::move(raws), 3);
+
+    std::vector<std::size_t> rows = {0, 1, 2};
+    std::vector<std::size_t> cols = {1, 2, 3, 4, 5};
+    const RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = false,
+        .includeHeaderRow = true,
+    };
+
+    for (const ExportFormat format :
+         {ExportFormat::JsonLines, ExportFormat::Csv, ExportFormat::Snapshot, ExportFormat::Markdown})
+    {
+        auto exporter = loglib::exports::MakeExporter(format);
+        REQUIRE(exporter != nullptr);
+
+        CountingBytesSink counting;
+        exporter->Run(src, counting, loglib::StopToken{});
+        REQUIRE(counting.total > 4);
+
+        for (const std::size_t limit : {std::size_t{0}, std::size_t{1}, counting.total / 2, counting.total - 1})
+        {
+            INFO(
+                "format " << loglib::exports::LabelFor(format) << ", fails after " << limit << " of " << counting.total
+            );
+            FailAfterBytesSink sink(limit);
+            CHECK_THROWS_AS(exporter->Run(src, sink, loglib::StopToken{}), std::runtime_error);
+            CHECK_FALSE(sink.Finished());
+        }
+
+        // A limit of the full size lets the export finish.
+        FailAfterBytesSink roomy(counting.total);
+        CHECK_NOTHROW(exporter->Run(src, roomy, loglib::StopToken{}));
+    }
+}

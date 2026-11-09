@@ -7,6 +7,7 @@ add_executable(
     src/test_options.cpp
     src/test_formats.cpp
     src/test_platform.cpp
+    src/test_output_failure_e2e.cpp
     src/test_query_e2e.cpp
     src/test_query_golden.cpp
     src/test_query_sources_e2e.cpp

@@ -1611,3 +1611,118 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         CHECK(sink.batchCalls >= 1);
     }
 }
+
+namespace
+{
+
+/**
+ * Serves bytes up to an offset and then throws from Read while more bytes are left, as a producer does when its
+ * connection or device fails in the middle of a stream.
+ */
+class ThrowingProducer final : public BytesProducer
+{
+public:
+    ThrowingProducer(std::string bytes, std::size_t failAt, std::size_t chunkSize)
+        : mBytes(std::move(bytes)), mFailAt(failAt), mChunkSize(chunkSize)
+    {
+    }
+
+    std::size_t Read(std::span<char> buffer) override
+    {
+        if (mCursor >= mFailAt)
+        {
+            throw std::runtime_error("producer failed");
+        }
+        const std::size_t give = std::min({mFailAt - mCursor, buffer.size(), mChunkSize});
+        std::copy_n(mBytes.data() + mCursor, give, buffer.data());
+        mCursor += give;
+        return give;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    {
+    }
+
+    void Stop() noexcept override
+    {
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "throwing";
+    }
+
+private:
+    std::string mBytes;
+    std::size_t mFailAt;
+    std::size_t mChunkSize;
+    std::size_t mCursor = 0;
+};
+
+} // namespace
+
+TEST_CASE(
+    "A stream gives the same batches for every short read size from one byte", "[batch_contract][failure][short_reads]"
+)
+{
+    const std::string jsonBytes = JsonInput();
+    const std::string logfmtBytes = LogfmtInput();
+    const std::string csvBytes = CsvInput();
+    const std::string regexBytes = RegexInput();
+    const RegexParser regexParser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+
+    const auto check = [](const LogParser &parser, const std::string &bytes, const std::string &fileName) {
+        RecordingSink reference;
+        ParseAsFile(parser, fileName, bytes, 4096, reference);
+        const Observed expected = Observe(reference);
+        for (std::size_t chunk = 1; chunk <= 48; ++chunk)
+        {
+            RecordingSink sink;
+            ParseAsStream(parser, bytes, chunk, sink);
+            INFO(fileName << ", short read size " << chunk);
+            CheckSame(Observe(sink), expected);
+        }
+    };
+    check(JsonParser{}, jsonBytes, "short_reads.jsonl");
+    check(LogfmtParser{}, logfmtBytes, "short_reads.log");
+    check(CsvParser{}, csvBytes, "short_reads.csv");
+    check(regexParser, regexBytes, "short_reads_regex.log");
+}
+
+TEST_CASE("A producer that throws while streaming still finishes the sink once", "[batch_contract][failure][producer]")
+{
+    // The producer fails after 20 of 40 lines, with the rest of the stream still unread.
+    std::string bytes;
+    std::size_t failAt = 0;
+    for (int i = 0; i < 40; ++i)
+    {
+        bytes += R"({"id":)" + std::to_string(i) + "}\n";
+        if (i == 19)
+        {
+            failAt = bytes.size();
+        }
+    }
+
+    for (const std::size_t chunk : {std::size_t{1}, std::size_t{7}, std::size_t{4096}})
+    {
+        CAPTURE(chunk);
+        RecordingSink sink;
+        sink.streamSource =
+            std::make_unique<StreamLineSource>("memory.log", std::make_unique<ThrowingProducer>(bytes, failAt, chunk));
+
+        CHECK_THROWS_AS(JsonParser{}.ParseStreaming(*sink.streamSource, sink, ParserOptions{}), std::runtime_error);
+        CHECK(sink.started == 1);
+        CHECK(sink.finished == 1);
+        // Every complete line read before the failure reached the sink, and nothing after it.
+        CHECK(sink.RowCount() == 20);
+        // The failure is reported to the sink as an error, and then it goes on to the caller.
+        const std::vector<ParseError> errors = sink.Errors();
+        REQUIRE(errors.size() == 1);
+        CHECK(errors.front().message.contains("producer failed"));
+    }
+}
