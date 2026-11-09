@@ -47,11 +47,11 @@ ParseResult ParseLinesWith(std::string_view pattern, std::span<const std::string
         content.append(line);
         content.push_back('\n');
     }
-    const TestLogFile file{std::string(filePath)};
+    const MemoryLogFile file{std::string(filePath)};
     file.Write(content);
 
     const RegexParser parser{std::string(pattern)};
-    return ParseFile(parser, file.GetFilePath());
+    return ParseSource(parser, file.OpenSource());
 }
 
 } // namespace
@@ -481,13 +481,13 @@ TEST_CASE(
     REQUIRE_FALSE(javaPattern.empty());
     const RegexParser parser{javaPattern};
 
-    const TestLogFile file{"regex_templates_java_colon_fused.log"};
+    const MemoryLogFile file{"regex_templates_java_colon_fused.log"};
     file.Write(
         "2024-04-28 04:02:05.789 ERROR [pool-1-thread-3] com.example.Worker$Inner: Task failed after 3 retries\n"
         "2024-04-28 04:02:06.123 INFO  [main] com.example.App - Application starting\n"
     );
 
-    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    const ParseResult result = ParseSource(parser, file.OpenSource());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
@@ -519,13 +519,13 @@ TEST_CASE("Apache error log splits module:level into module and level", "[regex_
     REQUIRE(tmpl != nullptr);
     const RegexParser parser{tmpl->pattern};
 
-    const TestLogFile file{"regex_templates_apache_error_module_level.log"};
+    const MemoryLogFile file{"regex_templates_apache_error_module_level.log"};
     file.Write(
         "[Sun Mar 01 00:00:00.017 2026] [authz_core:error] [pid 29982] [client 198.51.100.9:43994] AH01630: denied\n"
         "[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] File does not exist: /var/www/html/foo\n"
     );
 
-    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    const ParseResult result = ParseSource(parser, file.OpenSource());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
@@ -558,7 +558,7 @@ TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][
         REQUIRE(tmpl != nullptr);
         const RegexParser parser{tmpl->pattern};
 
-        const TestLogFile file{"regex_templates_apache_dash_bytes.log"};
+        const MemoryLogFile file{"regex_templates_apache_dash_bytes.log"};
         const std::string tail = name.contains("Combined") ? R"( "-" "curl/8.5.0")" : "";
         std::string content = R"(10.0.0.1 - - [11/Feb/2013:06:43:36 +0000] "GET /a HTTP/1.1" 200 5778)";
         content.append(tail).append("\n");
@@ -566,7 +566,7 @@ TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][
         content.append(tail).append("\n");
         file.Write(content);
 
-        const ParseResult result = ParseFile(parser, file.GetFilePath());
+        const ParseResult result = ParseSource(parser, file.OpenSource());
         REQUIRE(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 2);
         CHECK_FALSE(
@@ -622,11 +622,11 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
     content.append(tc.nextHeader);
     content.push_back('\n');
 
-    const TestLogFile file{"regex_templates_multiline_" + SlugifyName(tc.templateName) + ".log"};
+    const MemoryLogFile file{"regex_templates_multiline_" + SlugifyName(tc.templateName) + ".log"};
     file.Write(content);
 
     const RegexParser parser{t.pattern, t.continuationMode, t.headerAnchor};
-    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    const ParseResult result = ParseSource(parser, file.OpenSource());
 
     for (const auto &e : result.errors)
     {
