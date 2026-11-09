@@ -262,6 +262,8 @@ struct TailOptions
     std::optional<std::chrono::milliseconds> duration;
     /** @brief nullopt means the shared default retention. 0 means unbounded. */
     std::optional<std::uint64_t> retention;
+    /** @brief Bytes a tcp:// or udp:// listener queues before it drops the oldest data. nullopt means the default. */
+    std::optional<std::uint64_t> queueLimit;
 };
 
 /** @brief Options of the selected subcommand. */

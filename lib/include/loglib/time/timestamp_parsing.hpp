@@ -109,8 +109,8 @@ bool TryParseGenericTimestamp(
 /**
  * @brief Parses a timestamp with the parser that kind selects.
  *
- * referenceTime is the "now" used for formats without a year. The caller fixes it once per parse, so every line of one
- * file gets the same year.
+ * referenceTime is the "now" used for formats without a year. A static parse fixes it once, so every line of one file
+ * gets the same year. A live stream reads the clock again for each batch.
  */
 bool TryParseTimestamp(
     std::string_view sv,

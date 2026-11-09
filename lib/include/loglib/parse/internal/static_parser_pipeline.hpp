@@ -24,8 +24,8 @@
 #include <fmt/format.h>
 
 #include <oneapi/tbb/enumerable_thread_specific.h>
-#include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_pipeline.h>
+#include <oneapi/tbb/task_arena.h>
 
 #include <algorithm>
 #include <cassert>
@@ -527,9 +527,9 @@ void RunStaticParserPipelineBody(
         }
     };
 
-    oneapi::tbb::global_control gc(
-        oneapi::tbb::global_control::max_allowed_parallelism, static_cast<size_t>(settings.effectiveThreads)
-    );
+    // The pipeline runs in its own arena, so its thread limit applies to this parse only. Other TBB users in the
+    // process, such as a filter running for another tab, keep their own concurrency.
+    oneapi::tbb::task_arena arena(static_cast<int>(settings.effectiveThreads));
 
     // Moves the open final record and the open orphan run into the batch being built.
     auto sealHeldTail = [&] {
@@ -558,12 +558,16 @@ void RunStaticParserPipelineBody(
 
     try
     {
-        oneapi::tbb::parallel_pipeline(
-            settings.ntokens,
-            oneapi::tbb::make_filter<void, Token>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
-                oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
-                oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
-        );
+        arena.execute([&] {
+            oneapi::tbb::parallel_pipeline(
+                settings.ntokens,
+                oneapi::tbb::make_filter<void, Token>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
+                    oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
+                    oneapi::tbb::make_filter<ParsedPipelineBatch, void>(
+                        oneapi::tbb::filter_mode::serial_in_order, stageC
+                    )
+            );
+        });
     }
     catch (...)
     {

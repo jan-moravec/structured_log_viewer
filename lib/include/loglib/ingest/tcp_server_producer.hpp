@@ -167,7 +167,7 @@ public:
     [[nodiscard]] size_t TotalClientsRejected() const noexcept;
 
     /** @brief How many bytes were dropped from the queue because it was full. */
-    [[nodiscard]] size_t DroppedByteCount() const noexcept;
+    [[nodiscard]] size_t DroppedByteCount() const noexcept override;
 
 private:
     std::unique_ptr<internal::TcpServerProducerImpl> mImpl;

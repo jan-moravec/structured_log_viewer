@@ -14,6 +14,10 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <oneapi/tbb/global_control.h>
+#include <oneapi/tbb/info.h>
+#include <oneapi/tbb/task_arena.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -22,6 +26,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1066,4 +1071,55 @@ TEST_CASE("Mock parser (multiline): final multi-line record commits at EOF", "[m
     CHECK(msgStr.contains("only"));
     CHECK(msgStr.contains("followup 1"));
     CHECK(msgStr.contains("followup 2"));
+}
+
+namespace
+{
+
+/** @brief A sink that reads the TBB limits inside and outside the parse while the parse delivers its first batch. */
+class ConcurrencyProbeSink : public CollectingSink
+{
+public:
+    void OnBatch(RowBatch batch) override
+    {
+        if (!probed)
+        {
+            probed = true;
+            insideConcurrency = oneapi::tbb::this_task_arena::max_concurrency();
+            // A thread that is not part of the parse keeps the process limits.
+            std::thread other([this] {
+                outsideConcurrency = oneapi::tbb::this_task_arena::max_concurrency();
+                outsideParallelism =
+                    oneapi::tbb::global_control::active_value(oneapi::tbb::global_control::max_allowed_parallelism);
+            });
+            other.join();
+        }
+        CollectingSink::OnBatch(std::move(batch));
+    }
+
+    bool probed = false;
+    int insideConcurrency = 0;
+    int outsideConcurrency = 0;
+    size_t outsideParallelism = 0;
+};
+
+} // namespace
+
+TEST_CASE("Static pipeline limits its own threads and not the process", "[mock_parser][threading]")
+{
+    const TempTextFile fixture(GenerateRecords(1000), "test_kv_arena.log");
+    loglib::ParserOptions options;
+    options.threads = 1;
+    const size_t parallelismBefore =
+        oneapi::tbb::global_control::active_value(oneapi::tbb::global_control::max_allowed_parallelism);
+
+    ConcurrencyProbeSink sink;
+    FileLineSource source(fixture.Path());
+    KeyValueLineParser::ParseStreaming(source, sink, options);
+
+    REQUIRE(sink.probed);
+    CHECK(sink.insideConcurrency == 1);
+    CHECK(sink.outsideConcurrency == oneapi::tbb::info::default_concurrency());
+    // The parse sets no process-wide limit, so other TBB users keep the parallelism they had before it.
+    CHECK(sink.outsideParallelism == parallelismBefore);
 }

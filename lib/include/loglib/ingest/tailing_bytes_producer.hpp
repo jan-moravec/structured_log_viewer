@@ -148,7 +148,7 @@ public:
     [[nodiscard]] size_t PollCount() const noexcept;
 
     /** @brief How many bytes were dropped from lines longer than Options::maxLineBytes. */
-    [[nodiscard]] size_t DroppedByteCount() const noexcept;
+    [[nodiscard]] size_t DroppedByteCount() const noexcept override;
 
 private:
     std::unique_ptr<internal::TailingBytesProducerImpl> mImpl;

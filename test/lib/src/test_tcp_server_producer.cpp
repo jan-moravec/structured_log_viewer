@@ -1,3 +1,4 @@
+#include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/tcp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
@@ -8,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <span>
 #include <string>
 #include <thread>
@@ -71,6 +73,28 @@ TEST_CASE("TcpServerProducer: drops an oversized line and resumes after it", "[t
     const std::string drained = DrainUntil(producer, /*target*/ 5, 60000ms);
     CHECK(drained == "next\n");
     CHECK(producer.DroppedByteCount() > 0);
+}
+
+TEST_CASE("TcpServerProducer: dropped bytes are visible through StreamLineSource", "[tcp_producer][network]")
+{
+    TcpServerProducer::Options opts;
+    opts.bindAddress = "127.0.0.1";
+    opts.maxQueueBytes = 256;
+    auto producer = std::make_unique<TcpServerProducer>(opts);
+    const uint16_t port = producer->BoundPort();
+    loglib::StreamLineSource source("tcp", std::move(producer));
+    CHECK(source.DroppedByteCount() == 0);
+
+    // Nobody reads, so a later chunk finds earlier bytes in the full queue and drops them. Chunks can arrive together,
+    // so keep sending until a drop shows.
+    test_common::TcpLogClient client("127.0.0.1", port);
+    const std::string line = "a log line that is long enough to overflow the tiny queue\n";
+    for (int i = 0; i < 5000 && source.DroppedByteCount() == 0; ++i)
+    {
+        client.SendRaw(line);
+    }
+
+    CHECK(test_common::WaitUntil([&] { return source.DroppedByteCount() > 0; }));
 }
 
 TEST_CASE("TcpServerProducer: per-session carry preserves line boundaries with two clients", "[tcp_producer][network]")

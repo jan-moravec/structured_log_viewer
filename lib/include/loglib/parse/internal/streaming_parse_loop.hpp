@@ -172,11 +172,11 @@ void RunStreamingParseLoopBody(
 {
     KeyIndex &keys = sink.Keys();
 
-    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
-        keys,
-        options.timeColumns,
-        options.defaultSourceTimeZone,
-        options.referenceTime.value_or(std::chrono::system_clock::now())
+    // Without a fixed reference time, every batch reads the clock again, so a stream that runs across New Year gives
+    // the rows after it the new year. The first row of a batch refreshes the reference time of the time columns.
+    const auto readClock = [&options] { return options.clock ? options.clock() : std::chrono::system_clock::now(); };
+    std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
+        keys, options.timeColumns, options.defaultSourceTimeZone, options.referenceTime.value_or(readClock())
     );
     const std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
     coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumnsSpan));
@@ -347,6 +347,14 @@ void RunStreamingParseLoopBody(
 
         const size_t lineId = source.AppendLine(std::move(rec.rawText), std::move(rec.ownedArena));
         LogLine logLine(std::move(rec.compactValues), source, lineId);
+        if (!options.referenceTime.has_value() && coalescer.Pending().lines.empty())
+        {
+            const auto now = readClock();
+            for (TimeColumnSpec &spec : timeColumns)
+            {
+                spec.referenceTime = now;
+            }
+        }
         // Promote only after all continuations have joined the record.
         promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
         coalescer.Prime(rec.startLineNumber);

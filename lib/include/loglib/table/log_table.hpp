@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -429,9 +430,16 @@ public:
 
     /**
      * @brief Fixes the "now" the table uses to convert timestamp formats without a year. Without a call, the table
-     * reads the clock when it is created and again when BeginStreaming starts a parse, so one parse sees one year.
+     * reads the clock when it is created and again when BeginStreaming starts a parse. While a live stream is
+     * appended, it reads the clock for each batch in AppendBatch, so a stream that runs across New Year gives the
+     * rows after it the new year. A static load keeps one value, so one file gives the same result however long it
+     * takes to read.
      */
     void SetReferenceTime(std::chrono::system_clock::time_point referenceTime) noexcept;
+
+    /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. Tests inject one.
+     */
+    void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
 
     /** @brief The "now" the table uses to convert timestamp formats without a year. */
     [[nodiscard]] std::chrono::system_clock::time_point ReferenceTime() const noexcept;
@@ -470,6 +478,9 @@ private:
         ColumnType typeBefore = ColumnType::Any;
     };
 
+    /** @brief The current time from the injected clock, or from the system clock. */
+    [[nodiscard]] std::chrono::system_clock::time_point ReadClock() const;
+
     LogData mData;
     LogConfigurationManager mConfiguration;
 
@@ -477,6 +488,10 @@ private:
     TimeZoneContext mDefaultSourceTimeZone;
     std::chrono::system_clock::time_point mReferenceTime = std::chrono::system_clock::now();
     bool mReferenceTimeFixed = false;
+    /** @brief Empty means the system clock. */
+    std::function<std::chrono::system_clock::time_point()> mClock;
+    /** @brief True while the table holds a live stream, whose batches read the clock again. */
+    bool mLiveSource = false;
 
     /** @brief The key ids of each column, indexed by column. */
     std::vector<std::vector<KeyId>> mColumnKeyIds;

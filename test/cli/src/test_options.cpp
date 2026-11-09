@@ -283,6 +283,12 @@ TEST_CASE("tail accepts network sources and retention bounds", "[cli][options]")
     CHECK(*unbounded.retention == 0);
     REQUIRE(unbounded.input.sources.size() == 1);
     CHECK(unbounded.input.sources[0].kind == slp::SourceKind::Stdin);
+    CHECK_FALSE(unbounded.queueLimit.has_value());
+
+    const auto queueParsed = Parse({"slp", "tail", "--queue-limit", "4096", "tcp://127.0.0.1:514"});
+    const auto &queue = As<slp::TailOptions>(queueParsed);
+    REQUIRE(queue.queueLimit.has_value());
+    CHECK(*queue.queueLimit == 4096);
 
     const auto durationParsed = Parse({"slp", "tail", "--for", "30s", "a.log"});
     const auto &duration = As<slp::TailOptions>(durationParsed);

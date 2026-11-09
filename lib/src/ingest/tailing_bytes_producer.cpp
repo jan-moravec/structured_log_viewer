@@ -82,11 +82,12 @@ void CloseNativeHandle(internal::NativeFileHandle handle) noexcept
 #endif
 }
 
-/// Canonicalize @p path so the efsw watcher is always installed on an
-/// absolute parent directory. Covers relative paths (`"app.log"`), `..`
-/// components, and Windows root-relative paths like `"C:foo.log"`
-/// whose `parent_path()` would otherwise be empty. Falls back to the
-/// untouched input on error.
+/**
+ * @brief Makes path absolute, so the file watcher is always installed on an absolute parent folder.
+ *
+ * This covers a bare file name, parent folder steps, and a Windows path relative to a drive such as C:foo.log, whose
+ * parent path would otherwise be empty. On error the path is returned unchanged.
+ */
 std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
 {
     std::error_code ec;
@@ -98,8 +99,10 @@ std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
     return canon;
 }
 
-/// Open @p path for read with maximum producer-friendly share flags.
-/// Returns `INVALID_HANDLE` on failure.
+/**
+ * @brief Opens path for reading, sharing it as widely as possible so the writer can still rename or delete it. Returns
+ * INVALID_HANDLE on failure.
+ */
 internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
 {
 #ifdef _WIN32
@@ -120,8 +123,10 @@ internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexce
 #endif
 }
 
-/// Sample the open handle's current size. Returns `std::nullopt` if the
-/// OS call fails (e.g. the handle has been closed or the inode is gone).
+/**
+ * @brief The current size of the open file, or nullopt if the system call fails, for example because the handle was
+ * closed.
+ */
 std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noexcept
 {
     if (!IsValidHandle(handle))
@@ -146,9 +151,10 @@ std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noex
 }
 
 #ifdef _WIN32
-/// Split a 64-bit file offset into `OVERLAPPED::Offset` / `OffsetHigh`.
-/// `OVERLAPPED` stores these fields in a union; this is the documented
-/// Win32 pattern for overlapped reads.
+/**
+ * @brief Masks that split a 64-bit file offset into the low and high halves of an OVERLAPPED structure. Windows keeps
+ * those fields in a union, and this is the documented way to set them for a read at an offset.
+ */
 constexpr DWORD K_OVERLAPPED_OFFSET_LOW_MASK = 0xFFFFFFFFu;
 constexpr unsigned K_OVERLAPPED_OFFSET_HIGH_SHIFT = 32U;
 
@@ -161,9 +167,10 @@ void SetOverlappedFileOffset(OVERLAPPED &ov, uint64_t offset) noexcept
 }
 #endif
 
-/// Pread-style read: up to @p size bytes from @p offset, without
-/// advancing a persistent file pointer. Short reads at EOF are normal.
-/// Returns -1 on hard error.
+/**
+ * @brief Reads up to size bytes at offset without moving a shared file position. A short read at the end of the file is
+ * normal. Returns -1 on an error.
+ */
 SsizeType ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size, uint64_t offset) noexcept
 {
     if (!IsValidHandle(handle) || size == 0)
@@ -220,8 +227,7 @@ class TailingBytesProducerImpl;
 namespace
 {
 
-/// efsw listener glue. Filters parent-directory events down to the
-/// basename of our open file and forwards to the source.
+/** @brief Receives the watcher's events for the parent folder and passes on those for the tailed file. */
 class TailingBytesProducerWatcherListener final : public efsw::FileWatchListener
 {
 public:
@@ -245,8 +251,10 @@ private:
 
 } // namespace
 
-/// Pimpl for `TailingBytesProducer`. Owns the worker thread, the mutex /
-/// cv pair guarding the byte queue, and the efsw watcher.
+/**
+ * @brief The implementation of TailingBytesProducer. It owns the worker thread, the mutex and condition variable that
+ * guard the byte queue, and the file watcher.
+ */
 class TailingBytesProducerImpl
 {
 public:
@@ -270,31 +278,32 @@ public:
     [[nodiscard]] size_t PollCount() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
-    /// Called from the efsw thread. Wakes the worker.
+    /** @brief Wakes the worker. Called from the watcher's thread. */
     void OnWatcherEvent() noexcept;
 
 private:
     void WorkerMain();
+    /**
+     * @brief Queues the last retention lines of the file before tailing starts. If they do not fit in the scan budget,
+     * it queues the complete lines inside the scanned range.
+     */
     void Prefill();
-    /// Worker-thread-only. Returns true if a rotation branch matched.
+    /** @brief Returns true if the file was rotated and the producer moved to the new file. Worker thread only. */
     bool DetectAndRecoverRotation();
-    /// Worker-thread-only. Reads up to `options.readChunkBytes`, splits
-    /// at `\n`, and pushes complete lines into `mReadyBuffer`.
+    /** @brief Reads up to Options::readChunkBytes and queues the complete lines. Worker thread only. */
     size_t ReadMoreBytes();
-    /// Worker-thread-only.
+    /** @brief Worker thread only. */
     void CloseHandle() noexcept;
-    /// Caller must hold `mMutex`.
+    /** @brief The caller holds mMutex. */
     void AppendBytesAndSplitLocked(const char *data, size_t size);
-    /// Caller must hold `mMutex`. Appends `mPartialLine` to ready (with
-    /// a synthetic `\n` if absent) and clears it.
+    /** @brief Queues the unfinished last line, adding a newline, and clears it. The caller holds mMutex. */
     void FlushPartialLineLocked();
-    /// Caller must hold `mMutex`. Compacts after substantial consumption.
+    /** @brief Frees the consumed front of the queue once enough of it was read. The caller holds mMutex. */
     void CompactReadyBufferIfNeededLocked();
-    /// Fires the rotation callback debounced by `rotationDebounce`.
+    /** @brief Calls the rotation callback, at most once per Options::rotationDebounce. */
     void FireRotationCallbackIfDebounced();
 
-    /// Edge-triggered: fires only on transition. Caller must NOT hold
-    /// `mMutex`.
+    /** @brief Calls the status callback only when the status changes. The caller must not hold mMutex. */
     void FireStatusCallbackIfChanged(SourceStatus status);
 
     std::filesystem::path mPath;
@@ -651,9 +660,8 @@ void TailingBytesProducerImpl::Prefill()
     }
     const uint64_t fileSize = *sizeOpt;
 
-    // Walk backwards in `prefillChunkBytes` slices, counting newlines
-    // until we have N+1 (the byte after the (N+1)-th newline from the
-    // end is the start of the last N complete lines).
+    // Walk backwards in chunks of Options::prefillChunkBytes, counting newlines up to N+1. The byte after the (N+1)-th
+    // newline from the end starts the last N complete lines.
     const size_t targetNewlines = mRetentionLines + 1;
     uint64_t pos = fileSize;
     size_t newlinesSeen = 0;
@@ -662,9 +670,12 @@ void TailingBytesProducerImpl::Prefill()
     std::vector<char> chunk;
     chunk.resize(mOptions.prefillChunkBytes);
 
-    // Bound the pre-fill scan so a newline-less or pathologically large
-    // file can't wedge the worker. On overflow, skip to EOF.
+    // Bound the scan, so a file without newlines or with huge lines cannot hold up the worker. When the budget runs out
+    // first, the complete lines inside the scanned range are kept.
     uint64_t scannedBytes = 0;
+    // The start of the earliest complete line seen so far. Pre-fill starts there if the budget runs out before N lines
+    // are found.
+    std::optional<uint64_t> earliestLineStart;
 
     while (pos > 0 && !boundaryFound)
     {
@@ -683,6 +694,7 @@ void TailingBytesProducerImpl::Prefill()
             const size_t idx = i - 1U;
             if (chunk.at(idx) == '\n')
             {
+                earliestLineStart = pos + i; // first byte AFTER this newline
                 ++newlinesSeen;
                 if (newlinesSeen == targetNewlines)
                 {
@@ -694,9 +706,15 @@ void TailingBytesProducerImpl::Prefill()
         }
         if (!boundaryFound && mOptions.prefillMaxScanBytes != 0 && scannedBytes >= mOptions.prefillMaxScanBytes)
         {
-            // Scan budget exhausted; yield no lines and tail from EOF.
-            mReadOffset = fileSize;
-            return;
+            // Scan budget exhausted. Keep the complete lines that were scanned, even if they are fewer than the
+            // retention. With no line boundary in the range there is nothing to keep, so tailing starts at EOF.
+            if (!earliestLineStart.has_value())
+            {
+                mReadOffset = fileSize;
+                return;
+            }
+            lineStart = *earliestLineStart;
+            break;
         }
     }
 

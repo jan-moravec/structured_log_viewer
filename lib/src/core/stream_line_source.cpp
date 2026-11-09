@@ -120,6 +120,11 @@ const BytesProducer *StreamLineSource::Producer() const noexcept
     return mProducer.get();
 }
 
+size_t StreamLineSource::DroppedByteCount() const noexcept
+{
+    return mProducer ? mProducer->DroppedByteCount() : 0;
+}
+
 size_t StreamLineSource::AppendLine(std::string rawLine, std::string ownedBytes)
 {
     const std::scoped_lock guard(mLock);
