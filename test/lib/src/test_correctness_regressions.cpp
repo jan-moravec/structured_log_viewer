@@ -713,3 +713,70 @@ TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicod
     const std::filesystem::path missing = dir.Path() / std::filesystem::path(u8"無.log");
     CHECK_THROWS_WITH(DecompressingByteSource(missing), Catch::Matchers::ContainsSubstring("does not exist"));
 }
+
+TEST_CASE("Evicting a prefix that spans two sources keeps the bytes of the rows that remain", "[log_table][retention]")
+{
+    LogTable table;
+    auto firstSource = std::make_unique<StreamLineSource>("<first>", nullptr);
+    StreamLineSource &first = *firstSource;
+    table.BeginStreaming(std::move(firstSource));
+    auto secondSource = std::make_unique<StreamLineSource>("<second>", nullptr);
+    StreamLineSource &second = *secondSource;
+    table.AppendStreaming(std::move(secondSource));
+
+    KeyIndex &keys = table.Keys();
+    const KeyId valueKey = keys.GetOrInsert("value");
+
+    // Rows alternate between the two sources, so any prefix of them reaches both.
+    const auto addRows = [&](std::string_view prefix, int count) {
+        RowBatch batch;
+        batch.newKeys.emplace_back("value");
+        for (int i = 0; i < count; ++i)
+        {
+            for (StreamLineSource *source : {&first, &second})
+            {
+                const std::string text =
+                    std::string(prefix) + (source == &first ? "-first-" : "-second-") + std::to_string(i);
+                const size_t lineId = source->AppendLine(text, "");
+                std::vector<std::pair<KeyId, LogValue>> values;
+                values.emplace_back(valueKey, LogValue{text});
+                batch.lines.emplace_back(std::move(values), *source, lineId);
+            }
+        }
+        AppendFixtureBatch(table, std::move(batch));
+    };
+
+    addRows("a", 4);
+    REQUIRE(table.RowCount() == 8);
+
+    // Five rows go: a-first-0..2 and a-second-0..1. Both sources keep rows.
+    table.EvictPrefixRows(5);
+    REQUIRE(table.RowCount() == 3);
+    CHECK(first.Size() == 1);
+    CHECK(second.Size() == 2);
+
+    const auto checkRow = [&](size_t row, const LineSource &source, std::string_view expected) {
+        const LogLine &line = table.Data().Lines()[row];
+        CHECK(line.Source() == &source);
+        CHECK(source.RawLine(line.LineId()) == expected);
+        CHECK(std::string(*AsStringView(table.GetValue(row, 0))) == expected);
+    };
+    checkRow(0, second, "a-second-2");
+    checkRow(1, first, "a-first-3");
+    checkRow(2, second, "a-second-3");
+
+    // New batches from both sources append after the survivors and read their own bytes.
+    addRows("b", 2);
+    REQUIRE(table.RowCount() == 7);
+    checkRow(3, first, "b-first-0");
+    checkRow(4, second, "b-second-0");
+    checkRow(5, first, "b-first-1");
+    checkRow(6, second, "b-second-1");
+    checkRow(0, second, "a-second-2");
+
+    // Evicting everything that is left empties both sources.
+    table.EvictPrefixRows(table.RowCount());
+    CHECK(table.RowCount() == 0);
+    CHECK(first.Size() == 0);
+    CHECK(second.Size() == 0);
+}
