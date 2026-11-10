@@ -65,14 +65,19 @@ template <typename Attempt>
  * replaced.
  */
 [[nodiscard]] inline std::error_code RenameRetryingWhileFileBusy(
-    const std::filesystem::path &from, const std::filesystem::path &to
+    const std::filesystem::path &from,
+    const std::filesystem::path &to,
+    std::chrono::milliseconds timeout = DEFAULT_BUSY_RETRY_TIMEOUT
 )
 {
-    return RetryWhileFileBusy([&from, &to] {
-        std::error_code error;
-        std::filesystem::rename(from, to, error);
-        return error;
-    });
+    return RetryWhileFileBusy(
+        [&from, &to] {
+            std::error_code error;
+            std::filesystem::rename(from, to, error);
+            return error;
+        },
+        timeout
+    );
 }
 
 } // namespace loglib::internal

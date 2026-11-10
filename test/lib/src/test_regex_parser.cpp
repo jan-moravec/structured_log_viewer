@@ -775,7 +775,7 @@ TEST_CASE(
     ParserOptions options;
     options.batchSizeBytes = 32; // Force a cross-batch continuation.
 
-    const TestLogFile file("regex_static_crossbatch.log");
+    const MemoryLogFile file("regex_static_crossbatch.log");
     file.Write(
         "error boom\n"
         "\tat com.example.Foo.bar(Foo.java:42)\n"
@@ -784,7 +784,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -849,7 +849,7 @@ TEST_CASE(
     ParserOptions options;
     options.batchSizeBytes = 16;
 
-    const TestLogFile file("regex_static_crossbatch_blank.log");
+    const MemoryLogFile file("regex_static_crossbatch_blank.log");
     file.Write(
         "error boom\n"
         "\n"
@@ -857,7 +857,7 @@ TEST_CASE(
         "info recovered\n"
     );
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -915,14 +915,14 @@ TEST_CASE(
     ParserOptions options;
     options.batchSizeBytes = 16;
 
-    const TestLogFile file("regex_static_crossbatch_blank_no_cont.log");
+    const MemoryLogFile file("regex_static_crossbatch_blank_no_cont.log");
     file.Write(
         "error boom\n"
         "\n"
         "info recovered\n"
     );
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1143,7 +1143,7 @@ TEST_CASE(
     ParserOptions options;
     options.batchSizeBytes = 24;
 
-    const TestLogFile file("regex_header_anchor_crossbatch.log");
+    const MemoryLogFile file("regex_header_anchor_crossbatch.log");
     file.Write(
         "2026-01-01 ERROR boom\n"
         "Traceback (most recent call last):\n"
@@ -1153,7 +1153,7 @@ TEST_CASE(
         "2026-01-02 INFO recovered\n"
     );
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
@@ -1241,10 +1241,10 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
         .headerAnchor = R"((?<a)",
     };
 
-    const TestLogFile file("regex_header_anchor_bad_static.log");
+    const MemoryLogFile file("regex_header_anchor_bad_static.log");
     file.Write("2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n");
 
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 

@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Streaming-fixture spec: generate and write `count` random records on the
@@ -106,6 +107,87 @@ private:
     static constexpr char FILE_PATH[] = "test_file.json";
     std::string mFilePath;
     std::filesystem::path mFsPath;
+};
+
+/**
+ * A log file held in memory, for tests that would otherwise write a temporary file only to parse it. It has the same
+ * calls as TestLogFile, but nothing touches the disk. GetFilePath is the display name of the source, so a comparison
+ * with a source's Path works. Tests whose subject is the file itself (detection, paths, mapping) keep TestLogFile.
+ */
+class MemoryLogFile
+{
+public:
+    explicit MemoryLogFile(std::string displayName = "test_file.json")
+        : mDisplayName(std::move(displayName))
+    {
+    }
+
+    [[nodiscard]] const std::string &GetFilePath() const
+    {
+        return mDisplayName;
+    }
+
+    void Write(const std::string &content) const
+    {
+        mText = content;
+    }
+
+    [[nodiscard]] const std::string &Text() const
+    {
+        return mText;
+    }
+
+    /**
+     * A source whose line offsets are already recorded, for tests that build a LogLine by hand and read its raw text. A
+     * parse of such a source asserts, because the offsets are already there, so use OpenSource for that.
+     */
+    [[nodiscard]] std::unique_ptr<loglib::FileLineSource> CreateFileLineSource() const;
+
+    /** A source with no line offsets yet, so a parse fills them in, just as it does for a mapped file. */
+    [[nodiscard]] std::unique_ptr<loglib::FileLineSource> OpenSource() const;
+
+private:
+    std::string mDisplayName;
+    mutable std::string mText;
+};
+
+/** The same records as TestStructuredLogFile, serialized in memory. Records and GetFilePath behave as they do there. */
+class MemoryStructuredLog
+{
+public:
+    MemoryStructuredLog(
+        std::vector<test_common::LogRecord> records,
+        const test_common::LogFormat &format,
+        const test_common::RecordSchema &schema = {},
+        std::string displayName = {}
+    );
+
+    [[nodiscard]] const std::string &GetFilePath() const
+    {
+        return mDisplayName;
+    }
+
+    [[nodiscard]] const std::string &Text() const
+    {
+        return mText;
+    }
+
+    [[nodiscard]] std::size_t RecordCount() const
+    {
+        return mRecords.size();
+    }
+
+    [[nodiscard]] const std::vector<test_common::LogRecord> &Records() const
+    {
+        return mRecords;
+    }
+
+    [[nodiscard]] std::unique_ptr<loglib::FileLineSource> OpenSource() const;
+
+private:
+    std::string mDisplayName;
+    std::string mText;
+    std::vector<test_common::LogRecord> mRecords;
 };
 
 /// The offsets a parser records for text: one past each line feed, and for a last line without a line feed, the text

@@ -247,7 +247,10 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
 }
 
 void LogConfigurationManager::Save(
-    const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope
+    const LogConfiguration &configuration,
+    const std::filesystem::path &path,
+    SaveScope scope,
+    std::chrono::milliseconds busyRetryTimeout
 )
 {
     std::string json;
@@ -304,7 +307,7 @@ void LogConfigurationManager::Save(
             throw std::runtime_error("Failed to close file '" + internal::PathToUtf8(tempPath) + "'.");
         }
     }
-    const std::error_code ec = internal::RenameRetryingWhileFileBusy(tempPath, path);
+    const std::error_code ec = internal::RenameRetryingWhileFileBusy(tempPath, path, busyRetryTimeout);
     if (ec)
     {
         std::error_code cleanupEc;

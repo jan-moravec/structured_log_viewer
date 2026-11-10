@@ -17,6 +17,7 @@
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
@@ -25,6 +26,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <memory>
@@ -58,6 +60,16 @@ public:
 
     void OnBatch(RowBatch batch) override
     {
+        // A file source learns its line offsets from the batches, as it does when a table consumes them. Without
+        // them its rows cannot give their raw text.
+        if (fileSource != nullptr)
+        {
+            fileSource->AppendLineOffsets(batch.localLineOffsets);
+            for (const MultiLineRecordSpan &span : batch.multiLineSpans)
+            {
+                fileSource->RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
+            }
+        }
         batches.push_back(std::move(batch));
     }
 
@@ -482,6 +494,7 @@ struct Observed
     std::size_t lastLine = 0;
     std::vector<std::string> errors;
     std::vector<std::string> rows;
+    std::vector<std::string> rawLines;
     std::vector<std::string> newKeys;
 };
 
@@ -490,7 +503,22 @@ void CheckSame(const Observed &actual, const Observed &expected)
     CHECK(actual.lastLine == expected.lastLine);
     CHECK(actual.errors == expected.errors);
     CHECK(actual.rows == expected.rows);
+    CHECK(actual.rawLines == expected.rawLines);
     CHECK(actual.newKeys == expected.newKeys);
+}
+
+/** The raw text of every row, read back through the row's own source. */
+[[nodiscard]] std::vector<std::string> RawLinesOf(const RecordingSink &sink)
+{
+    std::vector<std::string> raw;
+    for (const RowBatch &batch : sink.batches)
+    {
+        for (const LogLine &line : batch.lines)
+        {
+            raw.push_back(line.Source()->RawLine(line.LineId()));
+        }
+    }
+    return raw;
 }
 
 [[nodiscard]] Observed Observe(RecordingSink &sink)
@@ -504,6 +532,7 @@ void CheckSame(const Observed &actual, const Observed &expected)
         .lastLine = sink.LastLineNumber(),
         .errors = std::move(errors),
         .rows = DescribeRows(sink),
+        .rawLines = RawLinesOf(sink),
         .newKeys = NewKeysOf(sink),
     };
 }
@@ -682,6 +711,160 @@ TEST_CASE(
     }
 }
 
+TEST_CASE(
+    "Every built-in regex template gives the same batches as a file and as a stream",
+    "[batch_contract][equivalence][templates]"
+)
+{
+    for (const BuiltinRegexTemplateInfo &info : BuiltinRegexTemplateCatalog())
+    {
+        const RegexTemplate &tmpl = info.tmpl;
+        REQUIRE_FALSE(tmpl.sampleLines.empty());
+        // The samples are repeated so that the parse spans several batches at the smallest batch size.
+        std::string bytes;
+        for (int repeat = 0; repeat < 12; ++repeat)
+        {
+            for (const std::string &sample : tmpl.sampleLines)
+            {
+                bytes += sample + "\n";
+            }
+        }
+        const RegexParser parser(tmpl.pattern, tmpl.continuationMode, tmpl.headerAnchor);
+
+        INFO("template " << info.slug);
+        RecordingSink reference;
+        ParseAsFile(parser, info.slug + ".log", bytes, 4096, reference);
+        const Observed expected = Observe(reference);
+        CHECK(reference.finished == 1);
+        CHECK(expected.errors.empty());
+        CHECK(expected.rows.size() >= tmpl.sampleLines.size() * 12);
+
+        for (const std::size_t batchSize : {std::size_t{64}, std::size_t{257}})
+        {
+            RecordingSink sink;
+            ParseAsFile(parser, info.slug + ".log", bytes, batchSize, sink);
+            INFO("file, batch size " << batchSize);
+            CheckSame(Observe(sink), expected);
+        }
+        for (const std::size_t chunk : {std::size_t{1}, std::size_t{257}, std::size_t{4096}})
+        {
+            RecordingSink sink;
+            ParseAsStream(parser, bytes, chunk, sink);
+            INFO("stream, chunk size " << chunk);
+            CheckSame(Observe(sink), expected);
+        }
+    }
+}
+
+namespace
+{
+
+/** What a table shows for a parse: the headers, the column types, and every cell as a type, text and enum id. */
+struct TableText
+{
+    std::vector<std::string> headers;
+    std::vector<ColumnType> columnTypes;
+    std::vector<std::string> cells;
+};
+
+[[nodiscard]] TableText DescribeTable(const LogTable &table)
+{
+    TableText text;
+    const auto &columns = table.Configuration().Configuration().columns;
+    for (std::size_t column = 0; column < table.ColumnCount(); ++column)
+    {
+        text.headers.push_back(table.GetHeader(column));
+        text.columnTypes.push_back(column < columns.size() ? columns[column].type : ColumnType::Any);
+    }
+    for (std::size_t row = 0; row < table.RowCount(); ++row)
+    {
+        for (std::size_t column = 0; column < table.ColumnCount(); ++column)
+        {
+            const auto enumId = table.GetEnumValueId(row, column);
+            const auto level = table.GetLevelForRow(row, column);
+            // A string is a view into the file or an owned string, depending on the source. Both are text.
+            const std::size_t rawType = table.GetValue(row, column).index();
+            const std::size_t valueType = rawType <= 1 ? 0 : rawType;
+            text.cells.push_back(
+                std::to_string(valueType) + "|" + table.GetFormattedValue(row, column) +
+                "|enum:" + (enumId.has_value() ? std::to_string(static_cast<unsigned>(*enumId)) : std::string("-")) +
+                "|level:" + (level.has_value() ? std::to_string(static_cast<int>(*level)) : std::string("-"))
+            );
+        }
+    }
+    return text;
+}
+
+[[nodiscard]] TableText TableFromFile(
+    const LogParser &parser, const std::string &bytes, const std::string &fileName, std::size_t batchSizeBytes
+)
+{
+    auto source = MemorySource(bytes, fileName);
+    FileLineSource *sourcePtr = source.get();
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    AppendingSink sink(table);
+    ParserOptions options;
+    options.batchSizeBytes = batchSizeBytes;
+    parser.ParseStreaming(*sourcePtr, sink, options);
+    static_cast<void>(table.FinalizeAutoDetection());
+    return DescribeTable(table);
+}
+
+[[nodiscard]] TableText TableFromStream(const LogParser &parser, const std::string &bytes, std::size_t chunkSize)
+{
+    auto source =
+        std::make_unique<StreamLineSource>("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, chunkSize));
+    StreamLineSource *sourcePtr = source.get();
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    AppendingSink sink(table);
+    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{});
+    static_cast<void>(table.FinalizeAutoDetection());
+    return DescribeTable(table);
+}
+
+} // namespace
+
+TEST_CASE(
+    "Enumeration and level columns come out the same from a file and from a stream",
+    "[batch_contract][equivalence][table]"
+)
+{
+    std::string bytes;
+    constexpr std::array<const char *, 5> LEVELS{"INFO", "WARN", "ERROR", "DEBUG", "info"};
+    constexpr std::array<const char *, 3> SERVICES{"auth", "billing", "search"};
+    for (int i = 0; i < 150; ++i)
+    {
+        bytes += R"({"level":")" + std::string(LEVELS.at(static_cast<std::size_t>(i) % LEVELS.size())) +
+                 R"(","svc":")" + SERVICES.at(static_cast<std::size_t>(i) % SERVICES.size()) + R"(","id":)" +
+                 std::to_string(i) + R"(,"msg":"unique message )" + std::to_string(i) + "\"}\n";
+    }
+
+    const TableText expected = TableFromFile(JsonParser{}, bytes, "batch_contract_table.jsonl", 4096);
+    REQUIRE(expected.headers.size() == 4);
+    REQUIRE(expected.cells.size() == 150 * 4);
+    // The test is only worth something if the table did classify the columns.
+    CHECK(std::ranges::find(expected.columnTypes, ColumnType::Level) != expected.columnTypes.end());
+    CHECK(std::ranges::find(expected.columnTypes, ColumnType::Enumeration) != expected.columnTypes.end());
+
+    const auto checkSame = [&](const TableText &actual) {
+        CHECK(actual.headers == expected.headers);
+        CHECK(actual.columnTypes == expected.columnTypes);
+        CHECK(actual.cells == expected.cells);
+    };
+    for (const std::size_t batchSize : {std::size_t{64}, std::size_t{257}})
+    {
+        INFO("file, batch size " << batchSize);
+        checkSame(TableFromFile(JsonParser{}, bytes, "batch_contract_table.jsonl", batchSize));
+    }
+    for (const std::size_t chunk : {std::size_t{1}, std::size_t{257}, std::size_t{4096}})
+    {
+        INFO("stream, chunk size " << chunk);
+        checkSame(TableFromStream(JsonParser{}, bytes, chunk));
+    }
+}
+
 TEST_CASE("Declared keys are announced before the keys of rows", "[batch_contract][declared_keys]")
 {
     SECTION("a CSV column that is empty in every row still appears")
@@ -820,9 +1003,15 @@ struct TableFacts
     std::string jsonLines;
 };
 
-[[nodiscard]] TableFacts ParseIntoTable(const std::string &bytes, unsigned int threads, std::size_t batchSizeBytes)
+[[nodiscard]] TableFacts ParseIntoTable(
+    const LogParser &parser,
+    const std::string &bytes,
+    const std::string &fileName,
+    unsigned int threads,
+    std::size_t batchSizeBytes
+)
 {
-    auto source = MemorySource(bytes, "batch_contract_determinism_" + std::to_string(threads) + ".jsonl");
+    auto source = MemorySource(bytes, fileName);
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
@@ -831,7 +1020,7 @@ struct TableFacts
     options.threads = threads;
     options.batchSizeBytes = batchSizeBytes;
     AppendingSink sink(table);
-    JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
+    parser.ParseStreaming(*sourcePtr, sink, options);
 
     TableFacts facts;
     const std::size_t columns = table.ColumnCount();
@@ -866,20 +1055,76 @@ struct TableFacts
 
 } // namespace
 
-TEST_CASE(
-    "The same file gives the same columns, cell types and export for every thread count and batch size",
-    "[batch_contract][determinism]"
-)
+namespace
 {
-    const std::string bytes = DeterminismInput();
-    const TableFacts expected = ParseIntoTable(bytes, 1, 1024 * 1024);
-    REQUIRE(expected.headers.size() == 18);
-    REQUIRE_FALSE(expected.jsonLines.empty());
 
-    // The first row of the first block decides the order of the keys it holds, and a later key follows in input order.
-    CHECK(expected.headers[0] == "id");
-    CHECK(expected.headers[1] == "num");
-    CHECK(expected.headers[2] == "key_15");
+constexpr int DETERMINISM_ROWS = 6800;
+
+/** The same rows as DeterminismInput, written as logfmt. The keys of a block start in the same odd order. */
+[[nodiscard]] std::string DeterminismLogfmtInput()
+{
+    constexpr int KEY_COUNT = 16;
+    std::string bytes;
+    for (int row = 0; row < DETERMINISM_ROWS; ++row)
+    {
+        const int block = row / 400;
+        const int keysInBlock = std::min(block + 1, KEY_COUNT);
+        bytes += "id=" + std::to_string(row);
+        bytes += (row % 3 == block % 2) ? " num=5" : " num=5.5";
+        for (int k = 0; k < keysInBlock; ++k)
+        {
+            bytes +=
+                " key_" + std::to_string((KEY_COUNT - 1) - k) + "=\"value in block " + std::to_string(block) + "\"";
+        }
+        bytes += '\n';
+        if (row % 97 == 0)
+        {
+            bytes += "  continuation of row " + std::to_string(row) + "\n";
+        }
+    }
+    return bytes;
+}
+
+/** CSV with a fixed header, a number column that mixes 5 and 5.5, and empty cells in a column that fills up later. */
+[[nodiscard]] std::string DeterminismCsvInput()
+{
+    std::string bytes = "id,num,msg,late\n";
+    for (int row = 0; row < DETERMINISM_ROWS; ++row)
+    {
+        const int block = row / 400;
+        bytes += std::to_string(row);
+        bytes += (row % 3 == block % 2) ? ",5" : ",5.5";
+        bytes += ",\"message, number " + std::to_string(row) + "\"";
+        bytes += (block > 8) ? ",late value\n" : ",\n";
+    }
+    return bytes;
+}
+
+/** Records of a regex format with continuation lines, and a number group that mixes 5 and 5.5. */
+[[nodiscard]] std::string DeterminismRegexInput()
+{
+    std::string bytes;
+    for (int row = 0; row < DETERMINISM_ROWS; ++row)
+    {
+        const int block = row / 400;
+        bytes += std::to_string(row);
+        bytes += (row % 3 == block % 2) ? " 5 " : " 5.5 ";
+        bytes += (block % 2 == 0) ? "INFO" : "WARN";
+        bytes += " message " + std::to_string(row) + "\n";
+        if (row % 53 == 0)
+        {
+            bytes += "    at frame " + std::to_string(row) + "\n";
+        }
+    }
+    return bytes;
+}
+
+/** Parses with every thread count and batch size, five times each, and compares each result with a single thread. */
+void CheckDeterministic(const LogParser &parser, const std::string &bytes, const std::string &fileName)
+{
+    const TableFacts expected = ParseIntoTable(parser, bytes, fileName, 1, 1024 * 1024);
+    REQUIRE(expected.headers.size() >= 4);
+    REQUIRE_FALSE(expected.jsonLines.empty());
 
     for (const unsigned int threads : {1U, 2U, 8U})
     {
@@ -887,13 +1132,50 @@ TEST_CASE(
         {
             for (int run = 0; run < 5; ++run)
             {
-                const TableFacts actual = ParseIntoTable(bytes, threads, batchSize);
+                const TableFacts actual = ParseIntoTable(parser, bytes, fileName, threads, batchSize);
                 INFO("threads " << threads << ", batch size " << batchSize << ", run " << run);
                 CHECK(actual.headers == expected.headers);
                 CHECK(actual.cellTypes == expected.cellTypes);
                 CHECK(actual.jsonLines == expected.jsonLines);
             }
         }
+    }
+}
+
+} // namespace
+
+TEST_CASE(
+    "The same file gives the same columns, cell types and export for every thread count and batch size",
+    "[batch_contract][determinism]"
+)
+{
+    SECTION("json")
+    {
+        const std::string bytes = DeterminismInput();
+        const TableFacts expected =
+            ParseIntoTable(JsonParser{}, bytes, "batch_contract_determinism.jsonl", 1, 1024 * 1024);
+        REQUIRE(expected.headers.size() == 18);
+        // The first row of the first block decides the order of the keys it holds, and a later key follows in input
+        // order.
+        CHECK(expected.headers[0] == "id");
+        CHECK(expected.headers[1] == "num");
+        CHECK(expected.headers[2] == "key_15");
+        CheckDeterministic(JsonParser{}, bytes, "batch_contract_determinism.jsonl");
+    }
+    SECTION("logfmt")
+    {
+        CheckDeterministic(LogfmtParser{}, DeterminismLogfmtInput(), "batch_contract_determinism.log");
+    }
+    SECTION("csv")
+    {
+        CheckDeterministic(CsvParser{}, DeterminismCsvInput(), "batch_contract_determinism.csv");
+    }
+    SECTION("regex")
+    {
+        const RegexParser parser(
+            R"(^(?<id>\d+) (?<num>\S+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader
+        );
+        CheckDeterministic(parser, DeterminismRegexInput(), "batch_contract_determinism_regex.log");
     }
 }
 
@@ -1327,5 +1609,120 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
         CHECK(sink.finishedCalls == 1);
         CHECK(sink.batchCalls >= 1);
+    }
+}
+
+namespace
+{
+
+/**
+ * Serves bytes up to an offset and then throws from Read while more bytes are left, as a producer does when its
+ * connection or device fails in the middle of a stream.
+ */
+class ThrowingProducer final : public BytesProducer
+{
+public:
+    ThrowingProducer(std::string bytes, std::size_t failAt, std::size_t chunkSize)
+        : mBytes(std::move(bytes)), mFailAt(failAt), mChunkSize(chunkSize)
+    {
+    }
+
+    std::size_t Read(std::span<char> buffer) override
+    {
+        if (mCursor >= mFailAt)
+        {
+            throw std::runtime_error("producer failed");
+        }
+        const std::size_t give = std::min({mFailAt - mCursor, buffer.size(), mChunkSize});
+        std::copy_n(mBytes.data() + mCursor, give, buffer.data());
+        mCursor += give;
+        return give;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    {
+    }
+
+    void Stop() noexcept override
+    {
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "throwing";
+    }
+
+private:
+    std::string mBytes;
+    std::size_t mFailAt;
+    std::size_t mChunkSize;
+    std::size_t mCursor = 0;
+};
+
+} // namespace
+
+TEST_CASE(
+    "A stream gives the same batches for every short read size from one byte", "[batch_contract][failure][short_reads]"
+)
+{
+    const std::string jsonBytes = JsonInput();
+    const std::string logfmtBytes = LogfmtInput();
+    const std::string csvBytes = CsvInput();
+    const std::string regexBytes = RegexInput();
+    const RegexParser regexParser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+
+    const auto check = [](const LogParser &parser, const std::string &bytes, const std::string &fileName) {
+        RecordingSink reference;
+        ParseAsFile(parser, fileName, bytes, 4096, reference);
+        const Observed expected = Observe(reference);
+        for (std::size_t chunk = 1; chunk <= 48; ++chunk)
+        {
+            RecordingSink sink;
+            ParseAsStream(parser, bytes, chunk, sink);
+            INFO(fileName << ", short read size " << chunk);
+            CheckSame(Observe(sink), expected);
+        }
+    };
+    check(JsonParser{}, jsonBytes, "short_reads.jsonl");
+    check(LogfmtParser{}, logfmtBytes, "short_reads.log");
+    check(CsvParser{}, csvBytes, "short_reads.csv");
+    check(regexParser, regexBytes, "short_reads_regex.log");
+}
+
+TEST_CASE("A producer that throws while streaming still finishes the sink once", "[batch_contract][failure][producer]")
+{
+    // The producer fails after 20 of 40 lines, with the rest of the stream still unread.
+    std::string bytes;
+    std::size_t failAt = 0;
+    for (int i = 0; i < 40; ++i)
+    {
+        bytes += R"({"id":)" + std::to_string(i) + "}\n";
+        if (i == 19)
+        {
+            failAt = bytes.size();
+        }
+    }
+
+    for (const std::size_t chunk : {std::size_t{1}, std::size_t{7}, std::size_t{4096}})
+    {
+        CAPTURE(chunk);
+        RecordingSink sink;
+        sink.streamSource =
+            std::make_unique<StreamLineSource>("memory.log", std::make_unique<ThrowingProducer>(bytes, failAt, chunk));
+
+        CHECK_THROWS_AS(JsonParser{}.ParseStreaming(*sink.streamSource, sink, ParserOptions{}), std::runtime_error);
+        CHECK(sink.started == 1);
+        CHECK(sink.finished == 1);
+        // Every complete line read before the failure reached the sink, and nothing after it.
+        CHECK(sink.RowCount() == 20);
+        // The failure is reported to the sink as an error, and then it goes on to the caller.
+        const std::vector<ParseError> errors = sink.Errors();
+        REQUIRE(errors.size() == 1);
+        CHECK(errors.front().message.contains("producer failed"));
     }
 }

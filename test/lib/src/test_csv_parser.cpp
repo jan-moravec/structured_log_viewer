@@ -120,15 +120,15 @@ TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[cs
     // hand-off no `newKeys` reach the table and rows show no columns.
     //
     // Note: build the `FileLineSource` directly from the path.
-    // `TestLogFile::CreateFileLineSource()` pre-scans the
+    // `MemoryLogFile::CreateFileLineSource()` pre-scans the
     // file's line offsets; the static pipeline also writes its own,
     // which trips `FileLineSource::AppendLineOffsets`'s strict-monotonic
     // debug assert.
-    const TestLogFile file("static_columns.csv");
+    const MemoryLogFile file("static_columns.csv");
     file.Write("level,message\ninfo,hello\nerror,boom\n");
 
     loglib::LogTable table;
-    auto source = std::make_unique<loglib::FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     loglib::FileLineSource *sourceRaw = source.get();
     table.BeginStreaming(std::move(source));
 
@@ -419,10 +419,10 @@ TEST_CASE("test_common::Csv() round-trips the generator's record shape end-to-en
     REQUIRE(records.front().is_object());
     const auto schema = test_common::DeriveSchemaFromRecord(records.front());
 
-    const TestStructuredLogFile fixture(std::move(records), test_common::Csv(schema), schema);
+    const MemoryStructuredLog fixture(std::move(records), test_common::Csv(schema), schema);
 
     const CsvParser parser;
-    const ParseResult result = ParseFile(parser, fixture.GetFilePath());
+    const ParseResult result = ParseSource(parser, fixture.OpenSource());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == LINE_COUNT);
 
@@ -454,7 +454,7 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     // offset in Stage B.
     //
     // See the static-columns test for why we bypass
-    // `TestLogFile::CreateFileLineSource()`.
+    // `MemoryLogFile::CreateFileLineSource()`.
     using namespace loglib;
 
     std::string content;
@@ -464,11 +464,11 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     }
     content += "level,message\ninfo,hello\nerror,boom\n";
 
-    const TestLogFile file("header_in_late_batch.csv");
+    const MemoryLogFile file("header_in_late_batch.csv");
     file.Write(content);
 
     loglib::LogTable table;
-    auto source = std::make_unique<FileLineSource>(file.GetFilePath());
+    auto source = file.OpenSource();
     FileLineSource *sourceRaw = source.get();
     table.BeginStreaming(std::move(source));
 

@@ -16,6 +16,7 @@
 #include "loglib/schema/session_view.hpp"
 #include "loglib/schema/source_descriptor.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -130,13 +131,24 @@ public:
     /** @brief Saves the parts that scope selects. */
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
+    /** @brief How long the static Save retries a busy destination when the caller gives no timeout. */
+    static constexpr std::chrono::milliseconds DEFAULT_SAVE_BUSY_TIMEOUT{1000};
+
     /**
      * @brief Saves a configuration value that is not held by a manager. Throws if it cannot be written.
      *
      * The scope has no default, so a caller must choose between columns only and everything, and cannot be caught out
      * when the configuration grows.
+     *
+     * The file is replaced by a rename. If the destination stays busy, for example held open by another program, the
+     * rename is retried for up to busyRetryTimeout and then Save throws.
      */
-    static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
+    static void Save(
+        const LogConfiguration &configuration,
+        const std::filesystem::path &path,
+        SaveScope scope,
+        std::chrono::milliseconds busyRetryTimeout = DEFAULT_SAVE_BUSY_TIMEOUT
+    );
 
     /** @brief Resets to an empty configuration, as for a new session. */
     void Reset();
