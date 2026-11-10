@@ -465,12 +465,22 @@ namespace
 constexpr int MAX_FORMAT_NUMBER = 9;
 
 /**
- * True if every number in the format is small, and every field width is at least 1.
+ * True for the specifiers that the general parser reads as a signed number: century, year and ISO week-based year.
+ * A sign uses one character of the field width, so a width of 1 leaves none for the digits, which the parser then reads
+ * without any limit.
+ */
+constexpr bool IsSignedField(char specifier) noexcept
+{
+    return specifier == 'C' || specifier == 'F' || specifier == 'Y' || specifier == 'G';
+}
+
+/**
+ * True if every number in the format is small, every field width is at least 1, and a signed field is at least 2 wide.
  *
  * After some specifiers the general parser reads the following digits as a field width. A long run overflows the int
  * that holds the width, a wide field lets the text give seconds that overflow the 64-bit microsecond count, and a width
- * of zero means no limit at all. A number above 9 would let a field take enough digits to overflow, and no real format
- * needs one.
+ * of zero, or of one for a signed field, means no limit at all. A number above 9 would let a field take enough digits
+ * to overflow, and no real format needs one.
  */
 bool FormatNumbersAreSmall(const std::string &format) noexcept
 {
@@ -492,7 +502,7 @@ bool FormatNumbersAreSmall(const std::string &format) noexcept
             }
             continue;
         }
-        if (isWidth && value == 0)
+        if (isWidth && (value == 0 || (value == 1 && IsSignedField(ch))))
         {
             return false;
         }
