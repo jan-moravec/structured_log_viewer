@@ -461,20 +461,27 @@ void DropExcessFractionDigits(std::string &text)
 namespace
 {
 
-/** The longest run of digits a format may contain. Ten digits can overflow the width the general parser reads. */
-constexpr std::size_t MAX_FORMAT_DIGIT_RUN = 9;
+/** The largest number a run of digits in a format may spell. */
+constexpr int MAX_FORMAT_NUMBER = 9;
 
 /**
- * True if no run of digits in the format is long. After some specifiers the general parser reads digits as a field
- * width and adds them up in an int, so a long run overflows it. A real format has no such run.
+ * True if every run of digits in the format spells a small number. After some specifiers the general parser reads the
+ * following digits as a field width. A long run overflows the int that holds the width, and a wide field lets the text
+ * give seconds that overflow the 64-bit microsecond count. A number above 9 would let a field take enough digits to
+ * overflow, and no real format needs one.
  */
-bool FormatDigitRunsAreShort(const std::string &format) noexcept
+bool FormatNumbersAreSmall(const std::string &format) noexcept
 {
-    std::size_t run = 0;
+    int value = 0;
     for (const char ch : format)
     {
-        run = (ch >= '0' && ch <= '9') ? run + 1 : 0;
-        if (run > MAX_FORMAT_DIGIT_RUN)
+        if (ch < '0' || ch > '9')
+        {
+            value = 0;
+            continue;
+        }
+        value = (value * DECIMAL_RADIX) + (ch - '0');
+        if (value > MAX_FORMAT_NUMBER)
         {
             return false;
         }
@@ -488,7 +495,7 @@ bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
 {
-    if (!FormatDigitRunsAreShort(format))
+    if (!FormatNumbersAreSmall(format))
     {
         out = TimeStamp{};
         return false;

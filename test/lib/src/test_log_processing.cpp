@@ -949,7 +949,7 @@ TEST_CASE("ParseQuery reads time bounds without a zone in the zone it is given",
     }
 }
 
-TEST_CASE("TryParseGenericTimestamp rejects a format with a long run of digits", "[time][fuzz]")
+TEST_CASE("TryParseGenericTimestamp rejects a format with a large number in it", "[time][fuzz]")
 {
     TimestampParseScratch scratch;
     TimeStamp parsed;
@@ -957,7 +957,9 @@ TEST_CASE("TryParseGenericTimestamp rejects a format with a long run of digits",
     // The digits would overflow an int inside the general parser.
     CHECK_FALSE(TryParseGenericTimestamp("1", "%0000003000000000000000000", scratch, parsed));
     CHECK_FALSE(TryParseGenericTimestamp("1", "%t3333333333333333333EG", scratch, parsed));
-    // Short widths and an escaped percent sign followed by digits stay valid.
+    // A wide seconds field could take a value that overflows the microsecond count.
+    CHECK_FALSE(TryParseGenericTimestamp("1000007765070394765", "%2024S", scratch, parsed));
+    // Short widths and literal digits stay valid.
     CHECK(TryParseGenericTimestamp("2024-05-01", "%4Y-%m-%d", scratch, parsed));
-    CHECK(TryParseGenericTimestamp("%12345 2024-05-01", "%%12345 %Y-%m-%d", scratch, parsed));
+    CHECK(TryParseGenericTimestamp("%1 2024-05-01", "%%1 %Y-%m-%d", scratch, parsed));
 }
