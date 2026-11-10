@@ -959,6 +959,8 @@ TEST_CASE("TryParseGenericTimestamp rejects a format with a large number in it",
     CHECK_FALSE(TryParseGenericTimestamp("1", "%t3333333333333333333EG", scratch, parsed));
     // A wide seconds field could take a value that overflows the microsecond count.
     CHECK_FALSE(TryParseGenericTimestamp("1000007765070394765", "%2024S", scratch, parsed));
+    // A width of zero would mean no limit.
+    CHECK_FALSE(TryParseGenericTimestamp("5700000000000000", "%000S", scratch, parsed));
     // Short widths and literal digits stay valid.
     CHECK(TryParseGenericTimestamp("2024-05-01", "%4Y-%m-%d", scratch, parsed));
     CHECK(TryParseGenericTimestamp("%1 2024-05-01", "%%1 %Y-%m-%d", scratch, parsed));

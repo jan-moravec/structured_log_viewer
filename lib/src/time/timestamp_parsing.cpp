@@ -465,28 +465,41 @@ namespace
 constexpr int MAX_FORMAT_NUMBER = 9;
 
 /**
- * True if every run of digits in the format spells a small number. After some specifiers the general parser reads the
- * following digits as a field width. A long run overflows the int that holds the width, and a wide field lets the text
- * give seconds that overflow the 64-bit microsecond count. A number above 9 would let a field take enough digits to
- * overflow, and no real format needs one.
+ * True if every number in the format is small, and every field width is at least 1.
+ *
+ * After some specifiers the general parser reads the following digits as a field width. A long run overflows the int
+ * that holds the width, a wide field lets the text give seconds that overflow the 64-bit microsecond count, and a width
+ * of zero means no limit at all. A number above 9 would let a field take enough digits to overflow, and no real format
+ * needs one.
  */
 bool FormatNumbersAreSmall(const std::string &format) noexcept
 {
     int value = 0;
-    for (const char ch : format)
+    bool isWidth = false;
+    for (std::size_t i = 0; i < format.size(); ++i)
     {
-        if (ch < '0' || ch > '9')
+        const char ch = format[i];
+        if (ch >= '0' && ch <= '9')
         {
-            value = 0;
+            if (value == 0 && i > 0 && format[i - 1] == '%')
+            {
+                isWidth = true;
+            }
+            value = (value * DECIMAL_RADIX) + (ch - '0');
+            if (value > MAX_FORMAT_NUMBER)
+            {
+                return false;
+            }
             continue;
         }
-        value = (value * DECIMAL_RADIX) + (ch - '0');
-        if (value > MAX_FORMAT_NUMBER)
+        if (isWidth && value == 0)
         {
             return false;
         }
+        value = 0;
+        isWidth = false;
     }
-    return true;
+    return !(isWidth && value == 0);
 }
 
 } // namespace
