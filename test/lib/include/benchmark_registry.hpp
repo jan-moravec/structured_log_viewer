@@ -19,5 +19,6 @@ void RegisterLogfmtBenchmarks();
 void RegisterRegexBenchmarks();
 void RegisterSessionBundleBenchmarks();
 void RegisterStreamBenchmarks();
+void RegisterTimestampBenchmarks();
 
 } // namespace bench

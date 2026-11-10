@@ -1,5 +1,9 @@
-// Fuzz target for the timestamp parsers. The first byte picks the parser. For the general parser the text up to the
+// Fuzz target for the timestamp parsers. The first byte picks the parser. For a format of its own the text up to the
 // first newline is the format and the rest is the timestamp. For the others the rest is the timestamp.
+//
+// A format that TimestampFormat compiles into steps must give exactly what date::parse gives, so for those formats the
+// target parses with both and aborts on any difference. Formats with digits are left out of that check, because the
+// general parser refuses some of them to stay safe while the steps read them as plain characters.
 
 #include "fuzz_common.hpp"
 
@@ -9,6 +13,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <iostream>
 #include <string>
 #include <string_view>
 
@@ -49,9 +55,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
         const std::size_t newline = rest.find('\n');
         const std::string format{rest.substr(0, newline)};
         const std::string_view text = newline == std::string_view::npos ? std::string_view{} : rest.substr(newline + 1);
-        const loglib::TimestampFormatKind kind = loglib::ClassifyTimestampFormat(format);
-        (void)loglib::TryParseTimestamp(text, format, kind, scratch, REFERENCE_TIME, out);
-        (void)loglib::TryParseGenericTimestamp(text, format, scratch, out);
+        const loglib::TimestampFormat prepared(format);
+        const bool parsed = prepared.Parse(text, scratch, REFERENCE_TIME, out);
+
+        loglib::TimeStamp reference;
+        const bool referenceParsed = loglib::TryParseGenericTimestamp(text, format, scratch, reference);
+        const bool comparable = prepared.Kind() == loglib::TimestampFormatKind::Compiled &&
+                                format.find_first_of("0123456789") == std::string::npos;
+        if (comparable && (parsed != referenceParsed || (parsed && out != reference)))
+        {
+            std::cerr << "compiled format disagrees with date::parse: format '" << format << "', text '" << text
+                      << "', compiled " << parsed << ' ' << out.time_since_epoch().count() << ", date::parse "
+                      << referenceParsed << ' ' << reference.time_since_epoch().count() << '\n';
+            std::abort();
+        }
         break;
     }
     }

@@ -159,6 +159,11 @@ bool IsNaiveTimestamp(std::string_view text, std::string_view format) noexcept
     return !FormatHasZoneSpecifier(format) && !EndsWithUtcDesignator(text);
 }
 
+bool IsNaiveTimestamp(std::string_view text, const TimestampFormat &format) noexcept
+{
+    return !format.HasZone() && !EndsWithUtcDesignator(text);
+}
+
 std::optional<UserTimestampParse> ParseUserTimestamp(
     std::string_view input, std::span<const std::string> columnParseFormats, std::chrono::system_clock::time_point now
 )
@@ -191,12 +196,13 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
     TimestampParseScratch scratch;
     for (const auto &fmt : candidates)
     {
+        const TimestampFormat format(fmt);
         TimeStamp parsed{};
-        if (TryParseTimestamp(trimmed, fmt, ClassifyTimestampFormat(fmt), scratch, now, parsed))
+        if (format.Parse(trimmed, scratch, now, parsed))
         {
             return UserTimestampParse{
                 .micros = parsed.time_since_epoch().count(),
-                .isNaive = IsNaiveTimestamp(trimmed, fmt),
+                .isNaive = IsNaiveTimestamp(trimmed, format),
             };
         }
     }

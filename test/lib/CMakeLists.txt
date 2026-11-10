@@ -74,6 +74,7 @@ add_executable(
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"
     "src/test_timestamp_corpus.cpp"
+    "src/test_timestamp_format.cpp"
     "src/test_timestamp_promotion.cpp"
     "src/test_udp_server_producer.cpp"
     "src/test_tzdata_search.cpp"
@@ -131,6 +132,7 @@ add_executable(
     "src/benchmark_regex.cpp"
     "src/benchmark_session_bundle.cpp"
     "src/benchmark_stream.cpp"
+    "src/benchmark_timestamp.cpp"
 )
 
 target_link_libraries(

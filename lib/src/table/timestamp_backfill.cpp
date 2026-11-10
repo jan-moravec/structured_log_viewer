@@ -46,11 +46,10 @@ bool MakeBackfillState(
     {
         spec.keyIds.push_back(keyIndex.Find(key));
     }
-    spec.parseFormats = column.parseFormats;
-    spec.formatKinds.reserve(spec.parseFormats.size());
-    for (const std::string &format : spec.parseFormats)
+    spec.formats.reserve(column.parseFormats.size());
+    for (const std::string &format : column.parseFormats)
     {
-        spec.formatKinds.push_back(ClassifyTimestampFormat(format));
+        spec.formats.emplace_back(format);
     }
     spec.timeZone = timeZone;
     spec.referenceTime = referenceTime;

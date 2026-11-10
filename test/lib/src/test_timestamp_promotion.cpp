@@ -47,10 +47,9 @@ TimeColumnSpec MakeSpec(KeyIndex &keys, const std::vector<std::string> &keyNames
     {
         spec.keyIds.push_back(keys.GetOrInsert(name));
     }
-    spec.parseFormats = std::move(formats);
-    for (const std::string &format : spec.parseFormats)
+    for (std::string &format : formats)
     {
-        spec.formatKinds.push_back(ClassifyTimestampFormat(format));
+        spec.formats.emplace_back(std::move(format));
     }
     spec.timeZone = TimeZoneContext::Utc();
     spec.referenceTime =
@@ -95,7 +94,7 @@ TEST_CASE("PromoteLineTimestamps replaces the text of a time column with a times
     CHECK(TimeOf(line, keys, "time") == Micros(2024, 5, 1, 12, 30, 45));
     CHECK(std::get<std::string>(line.GetValue(keys, "msg")) == "hi");
     REQUIRE(state.lastValid[0].has_value());
-    CHECK(state.lastValid[0]->format == "%F %T");
+    CHECK(specs[0].formats[state.lastValid[0]->formatIndex].Text() == "%F %T");
 }
 
 TEST_CASE("PromoteLineTimestamps leaves a line without a matching key or format alone", "[timestamp_promotion]")
@@ -157,7 +156,7 @@ TEST_CASE("PromoteLineTimestamps tries the keys and the formats in order", "[tim
         REQUIRE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
         CHECK(TimeOf(line, keys, "ts") == Micros(2024, 5, 3, 3, 0, 0));
         REQUIRE(state.lastValid[0].has_value());
-        CHECK(state.lastValid[0]->format == "%d/%m/%Y %T");
+        CHECK(specs[0].formats[state.lastValid[0]->formatIndex].Text() == "%d/%m/%Y %T");
     }
 }
 
@@ -171,7 +170,7 @@ TEST_CASE("PromoteLineTimestamps reuses the last format and the last text", "[ti
     LogLine first(LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 0);
     REQUIRE(PromoteLineTimestamps(first, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     REQUIRE(state.lastValid[0].has_value());
-    CHECK(state.lastValid[0]->format == "%F %T");
+    CHECK(specs[0].formats[state.lastValid[0]->formatIndex].Text() == "%F %T");
     CHECK(state.bytesHits[0].valid);
     CHECK(state.bytesHits[0].bytes == "2024-05-01 12:00:00");
 

@@ -41,12 +41,11 @@ struct LastTimestampBytesHit
     LocalOffsetWindow offsetWindow;
 };
 
-/** @brief A Time column prepared for parsing: its keys as ids and its formats already classified. */
+/** @brief A Time column prepared for parsing: its keys as ids and its formats already prepared. */
 struct TimeColumnSpec
 {
     std::vector<KeyId> keyIds;
-    std::vector<std::string> parseFormats;
-    std::vector<TimestampFormatKind> formatKinds;
+    std::vector<TimestampFormat> formats;
     /** @brief The zone in which values that name no zone are read. */
     TimeZoneContext timeZone;
     /** @brief The "now" for formats that carry no year, fixed once per parse. */
