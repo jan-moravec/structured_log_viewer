@@ -1076,7 +1076,7 @@ constexpr int DETERMINISM_ROWS = 6800;
             bytes +=
                 " key_" + std::to_string((KEY_COUNT - 1) - k) + "=\"value in block " + std::to_string(block) + "\"";
         }
-        bytes += "\n";
+        bytes += '\n';
         if (row % 97 == 0)
         {
             bytes += "  continuation of row " + std::to_string(row) + "\n";

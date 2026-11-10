@@ -59,12 +59,12 @@ std::string ReadBytes(const std::filesystem::path &path)
 {
     std::ifstream in(path, std::ios::binary);
     REQUIRE(in.is_open());
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
 std::string BytesOf(std::span<const char> bytes)
 {
-    return std::string(bytes.data(), bytes.size());
+    return {bytes.data(), bytes.size()};
 }
 
 std::string Compress(std::string_view bytes)

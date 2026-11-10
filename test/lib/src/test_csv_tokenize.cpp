@@ -78,7 +78,7 @@ TEST_CASE("TokenizeCsvLine reads a quoted cell with a separator inside", "[csv_t
 
 TEST_CASE("TokenizeCsvLine unescapes doubled quotes through the scratch string", "[csv_tokenize]")
 {
-    const Tokenized result = Tokenize("\"say \"\"hi\"\"\",\"\"\"\"");
+    const Tokenized result = Tokenize(R"csv("say ""hi""","""")csv");
     CHECK(result.complete);
     CHECK(result.values == Strings{"say \"hi\"", "\""});
     CHECK(result.fromScratch == Flags{true, true});

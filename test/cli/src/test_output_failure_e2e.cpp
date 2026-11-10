@@ -20,7 +20,11 @@ constexpr int OUTPUT_ERROR = 5;
 [[nodiscard]] std::vector<std::string> QueryArgs(std::vector<std::string> extra)
 {
     std::vector<std::string> args = {
-        "query", "--tz", "UTC", "--template-dir", (FixturesDir() / "empty_templates").string()
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        (FixturesDir() / "empty_templates").string(),
     };
     args.insert(args.end(), extra.begin(), extra.end());
     args.push_back((FixturesDir() / "two_lines.jsonl").string());
@@ -91,14 +95,16 @@ TEST_CASE("slp tail reports an output file that cannot be opened as exit 5", "[c
     const auto destination = directory / "missing_dir" / "tail.jsonl";
 
     const auto result = RunSlpWithStdin(
-        {"tail",
-         "--tz",
-         "UTC",
-         "--template-dir",
-         (FixturesDir() / "empty_templates").string(),
-         "--output",
-         destination.string(),
-         "-"},
+        {
+            "tail",
+            "--tz",
+            "UTC",
+            "--template-dir",
+            (FixturesDir() / "empty_templates").string(),
+            "--output",
+            destination.string(),
+            "-",
+        },
         "{\"ts\":\"2024-01-01T00:00:00Z\",\"msg\":\"alpha\"}\n"
     );
     INFO(result.err);

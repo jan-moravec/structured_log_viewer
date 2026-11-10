@@ -7,8 +7,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <mutex>
 #include <random>
@@ -803,11 +803,7 @@ TEST_CASE(
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
-    const auto lineText = [](int number) {
-        char buffer[32];
-        std::snprintf(buffer, sizeof(buffer), "line-%05d\n", number);
-        return std::string(buffer);
-    };
+    const auto lineText = [](int number) { return std::format("line-{:05d}\n", number); };
 
     std::atomic<int> linesSeen{0};
 

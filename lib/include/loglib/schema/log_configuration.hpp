@@ -131,6 +131,9 @@ public:
     /** @brief Saves the parts that scope selects. */
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
+    /** @brief How long the static Save retries a busy destination when the caller gives no timeout. */
+    static constexpr std::chrono::milliseconds DEFAULT_SAVE_BUSY_TIMEOUT{1000};
+
     /**
      * @brief Saves a configuration value that is not held by a manager. Throws if it cannot be written.
      *
@@ -144,7 +147,7 @@ public:
         const LogConfiguration &configuration,
         const std::filesystem::path &path,
         SaveScope scope,
-        std::chrono::milliseconds busyRetryTimeout = std::chrono::milliseconds{1000}
+        std::chrono::milliseconds busyRetryTimeout = DEFAULT_SAVE_BUSY_TIMEOUT
     );
 
     /** @brief Resets to an empty configuration, as for a new session. */
