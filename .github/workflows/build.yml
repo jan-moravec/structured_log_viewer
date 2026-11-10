@@ -17,6 +17,10 @@ on:
         description: "Build with LTO and run the benchmarks (always on for main, release/** and tags)"
         type: boolean
         default: false
+      fuzz_seconds:
+        description: "Seconds to run each fuzz target in the fuzz job"
+        type: number
+        default: 60
 
 permissions:
   contents: read
@@ -186,6 +190,52 @@ jobs:
         run: |
           echo "clang-tidy reported $TIDY_FAILED finding(s) on changed lines; see the step summary." >&2
           exit 1
+
+  fuzz:
+    # Runs each libFuzzer target for a short time, so a change that breaks a parser on hostile input fails the PR. The
+    # saved corpora also run as ordinary tests (label fuzz-replay) in every build. Start the job by hand with a longer
+    # fuzz_seconds for a deeper run.
+    needs: pre-commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Clang 23
+        # The preset names clang-23 directly. libFuzzer comes with the sanitizer runtimes.
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci/llvm.sh
+          sudo ./scripts/ci/llvm.sh 23 all
+          clang-23 --version
+
+      - name: Set up build
+        uses: ./.github/actions/setup-build
+
+      - name: Configure
+        run: cmake --preset clang-fuzz
+
+      - name: Build
+        run: cmake --build --preset clang-fuzz
+
+      - name: Fuzz
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || 60 }}
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1
+        run: scripts/ci/run-fuzz.sh "$FUZZ_SECONDS"
+
+      - name: Upload fuzz findings
+        # The crashing inputs and the logs of every target. Kept 14 days.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-findings
+          path: fuzz-artifacts/
+          retention-days: 14
+          if-no-files-found: warn
 
   build-qt-free:
     # Builds and tests `slp` with no Qt installed, so it fails if Qt leaks out of `app/`.

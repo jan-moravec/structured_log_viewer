@@ -33,6 +33,7 @@ Thanks for your interest in contributing! This document is the developer referen
   - [Running](#running)
   - [Comparing two builds](#comparing-two-builds)
   - [Acceptance bar](#acceptance-bar)
+- [Fuzzing](#fuzzing)
 - [Code style and pre-commit](#code-style-and-pre-commit)
 - [Pull requests](#pull-requests)
 - [Repository security (maintainers)](#repository-security-maintainers)
@@ -483,6 +484,7 @@ All build configurations are defined in [`CMakePresets.json`](CMakePresets.json)
 | `clang-asan-ubsan` | `RelWithDebInfo` | Clang 23 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).                                                                                  |
 | `clang-tsan`       | `RelWithDebInfo` | Clang 23 + ThreadSanitizer (excludes `apptest` / `apptest_overview_rail` / `apptest_histogram` / `apptest_highlight_rules` / `apptest_session_tabs` for Qt-internal false positives). CI gating; same section. |
 | `clang-coverage`   | `RelWithDebInfo` | Clang 23 + source-based coverage. CI leg also runs `cpp-linter-action` against this build's `compile_commands.json`; no separate tidy preset.                                                                  |
+| `clang-fuzz`       | `RelWithDebInfo` | Clang 23 + ASan + UBSan + libFuzzer instrumentation, Linux only. Builds only the `fuzz_<target>` executables. See [Fuzzing](#fuzzing).                                                                         |
 
 Each preset uses the **Ninja** generator and writes to `build/<presetName>/`. They also enable `CMAKE_EXPORT_COMPILE_COMMANDS` so `clangd`, `clang-tidy`, and other tools work out of the box. Matching `buildPresets`, `testPresets`, and `workflowPresets` are defined with the same names. Two extra benchmark-only test presets — `release-benchmark` and `relwithdebinfo-benchmark` — opt into the long-running parser benchmarks (see [Benchmarking](#benchmarking)).
 
@@ -789,6 +791,37 @@ Capture **before** (clean-tree baseline) and **after** (your branch tip) numbers
 - `apptest_session_tabs_bench` — tab-switch p95 ≤ 100 ms on two 100,000-row tabs with 1,000 anchors each and visible shared docks (10 warm-up switches, 50 measured). Also stay within 20 % of the controlled-CI baseline once that number is recorded in the PR. The test prints hardware class on every run; do not disable it if a machine misses 100 ms.
 - Session bundle figures — compare write, read and round-trip before and after changes to bundle serialization, reading, or UI export/open paths.
 - Predicate, sort and filter figures — PRs touching `loglib::RowPredicate`, `EnumDictRank`, `LogFilterModel::lessThan`, `GetLevelForRow`, `LevelRankCache` invalidation or `SortPermutationByColumn` quote the matching figures.
+
+## Fuzzing
+
+The code that reads untrusted input has fuzz targets in `test/fuzz/`: the filter query parser, the JSON, logfmt, CSV and regex parsers, the regex template reader, the configuration reader, the timestamp parsers and the decompressors. Each target is one file with an `LLVMFuzzerTestOneInput` function and no call into libFuzzer, so the same file runs under libFuzzer, under another engine such as AFL++, and under the replay driver. The rule for every target is that any input must not crash, hang, read out of bounds or leak. A `loglib::Error` from the documented failure paths counts as a result. Any other exception is a finding.
+
+Every target has two builds:
+
+- `fuzz_replay_<target>` is built with the tests on every platform. It runs each file in `test/fuzz/corpus/<target>/` and `test/fuzz/regressions/<target>/` once and prints the name of each file first, so a failure names its input. It is a CTest test with the label `fuzz-replay`, so the sanitizer presets run it too.
+- `fuzz_<target>` is the libFuzzer executable. It needs Clang and Linux.
+
+Run the replay tests with:
+
+```sh
+cmake --build --preset local
+ctest --preset local -L fuzz-replay
+```
+
+Build and run a libFuzzer target (Linux, Clang 23):
+
+```sh
+cmake --preset clang-fuzz
+cmake --build --preset clang-fuzz
+mkdir -p build/fuzz-work/query
+build/clang-fuzz/bin/RelWithDebInfo/fuzz_query -max_total_time=60 -dict=test/fuzz/dictionaries/query.dict build/fuzz-work/query test/fuzz/corpus/query
+```
+
+New inputs go to the first directory, so the saved corpus stays unchanged. `scripts/ci/run-fuzz.sh [seconds]` runs every target the way CI does. CI runs each target for 60 seconds on every PR and uploads the crashing input if one fails. Start the `Build` workflow by hand with `fuzz_seconds` set higher for a longer run.
+
+To add a seed, put a small file (under 64 KiB) in `test/fuzz/corpus/<target>/`. Keep the corpus small, because the replay of one target must take well under a second. To add a regression input, minimize the crashing file with `-minimize_crash=1`, and save it as `test/fuzz/regressions/<target>/<bug-name>`. Name it after the bug, and fix the bug in the same change. A bug that needs a larger change instead gets a Catch2 test marked `[!shouldfail]` that feeds the input, because a failing file in `regressions/` would fail the replay on every platform.
+
+To add a target, add `fuzz_<name>.cpp` to `test/fuzz/`, list `<name>` in `LOGLIB_FUZZ_TARGETS` in `test/fuzz/CMakeLists.txt` and in `scripts/ci/run-fuzz.sh`, add it to the `targets` of the `clang-fuzz` build preset, and add a seed corpus.
 
 ## Code style and pre-commit
 
