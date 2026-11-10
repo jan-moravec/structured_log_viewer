@@ -461,34 +461,22 @@ void DropExcessFractionDigits(std::string &text)
 namespace
 {
 
-/** The widest field width a format may ask for. No timestamp field needs more than a few digits. */
-constexpr int MAX_FORMAT_FIELD_WIDTH = 99;
+/** The longest run of digits a format may contain. Ten digits can overflow the width the general parser reads. */
+constexpr std::size_t MAX_FORMAT_DIGIT_RUN = 9;
 
 /**
- * True if every field width written after a percent sign is small. The general parser adds up the digits of a width
- * in an int, so a long run of digits overflows it.
+ * True if no run of digits in the format is long. After some specifiers the general parser reads digits as a field
+ * width and adds them up in an int, so a long run overflows it. A real format has no such run.
  */
-bool FormatWidthsAreSmall(const std::string &format) noexcept
+bool FormatDigitRunsAreShort(const std::string &format) noexcept
 {
-    for (std::size_t i = 0; i < format.size(); ++i)
+    std::size_t run = 0;
+    for (const char ch : format)
     {
-        if (format[i] != '%')
+        run = (ch >= '0' && ch <= '9') ? run + 1 : 0;
+        if (run > MAX_FORMAT_DIGIT_RUN)
         {
-            continue;
-        }
-        if (i + 1 < format.size() && format[i + 1] == '%')
-        {
-            ++i; // An escaped percent sign, not the start of a field.
-            continue;
-        }
-        int width = 0;
-        while (i + 1 < format.size() && format[i + 1] >= '0' && format[i + 1] <= '9')
-        {
-            width = (width * 10) + (format[++i] - '0');
-            if (width > MAX_FORMAT_FIELD_WIDTH)
-            {
-                return false;
-            }
+            return false;
         }
     }
     return true;
@@ -500,7 +488,7 @@ bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
 {
-    if (!FormatWidthsAreSmall(format))
+    if (!FormatDigitRunsAreShort(format))
     {
         out = TimeStamp{};
         return false;
