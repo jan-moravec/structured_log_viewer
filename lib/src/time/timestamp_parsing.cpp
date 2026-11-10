@@ -465,6 +465,8 @@ namespace
 
 /** The largest number a run of digits in a format may spell. */
 constexpr int MAX_FORMAT_NUMBER = 9;
+/** The widest century field the general parser can combine with a two-digit year without overflowing an int. */
+constexpr int MAX_CENTURY_WIDTH = 7;
 
 /**
  * True for the specifiers that the general parser reads as a signed number: century, year and ISO week-based year.
@@ -482,7 +484,8 @@ constexpr bool IsSignedField(char specifier) noexcept
  * After some specifiers the general parser reads the following digits as a field width. A long run overflows the int
  * that holds the width, a wide field lets the text give seconds that overflow the 64-bit microsecond count, and a width
  * of zero, or of one for a signed field, means no limit at all. A number above 9 would let a field take enough digits
- * to overflow, and no real format needs one.
+ * to overflow, and no real format needs one. The parser multiplies a century by 100 to add a two-digit year, so a
+ * century wider than 7 digits overflows that product.
  */
 bool FormatNumbersAreSmall(const std::string &format) noexcept
 {
@@ -504,7 +507,7 @@ bool FormatNumbersAreSmall(const std::string &format) noexcept
             }
             continue;
         }
-        if (isWidth && (value == 0 || (value == 1 && IsSignedField(ch))))
+        if (isWidth && (value == 0 || (value == 1 && IsSignedField(ch)) || (value > MAX_CENTURY_WIDTH && ch == 'C')))
         {
             return false;
         }
