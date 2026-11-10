@@ -458,10 +458,53 @@ void DropExcessFractionDigits(std::string &text)
 
 } // namespace
 
+namespace
+{
+
+/** The widest field width a format may ask for. No timestamp field needs more than a few digits. */
+constexpr int MAX_FORMAT_FIELD_WIDTH = 99;
+
+/**
+ * True if every field width written after a percent sign is small. The general parser adds up the digits of a width
+ * in an int, so a long run of digits overflows it.
+ */
+bool FormatWidthsAreSmall(const std::string &format) noexcept
+{
+    for (std::size_t i = 0; i < format.size(); ++i)
+    {
+        if (format[i] != '%')
+        {
+            continue;
+        }
+        if (i + 1 < format.size() && format[i + 1] == '%')
+        {
+            ++i; // An escaped percent sign, not the start of a field.
+            continue;
+        }
+        int width = 0;
+        while (i + 1 < format.size() && format[i + 1] >= '0' && format[i + 1] <= '9')
+        {
+            width = (width * 10) + (format[++i] - '0');
+            if (width > MAX_FORMAT_FIELD_WIDTH)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+} // namespace
+
 bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
 {
+    if (!FormatWidthsAreSmall(format))
+    {
+        out = TimeStamp{};
+        return false;
+    }
     scratch.str.assign(sv.data(), sv.size());
     DropExcessFractionDigits(scratch.str);
     scratch.stream.clear();
