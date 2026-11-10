@@ -17,3 +17,7 @@
 *.jpeg binary
 *.gif  binary
 *.pdf  binary
+
+# Fuzz inputs are byte-exact: no line-ending conversion.
+test/fuzz/corpus/** -text
+test/fuzz/regressions/** -text

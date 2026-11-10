@@ -1,0 +1,1 @@
+{"name":"x","pattern":"^(?<a>\w+) (?<b>.*)$","sampleLines":["foo bar"],"priority":5,"continuationMode":"untilNextHeader","headerAnchor":"^(?<a>\w+)"}

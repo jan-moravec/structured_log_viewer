@@ -1,0 +1,1 @@
+level="error" AND (service:auth OR service:billing) AND NOT msg~/time.?out/
