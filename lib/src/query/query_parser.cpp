@@ -830,13 +830,26 @@ private:
         if (allBool)
         {
             rule.type = LeafRule::Type::Boolean;
-            // Lowercase so `True`/`FALSE` still round-trip through
-            // the pretty printer's lowercase output.
+            // A boolean list is a set of at most two values. Keep it in the printer's form, true before false and
+            // each value once, so a printed list parses back to the same rule.
+            bool hasTrue = false;
+            bool hasFalse = false;
             for (std::string &v : rule.filterValues)
             {
                 std::ranges::transform(v, v.begin(), [](unsigned char ch) {
                     return static_cast<char>(std::tolower(ch));
                 });
+                hasTrue = hasTrue || v == "true";
+                hasFalse = hasFalse || v == "false";
+            }
+            rule.filterValues.clear();
+            if (hasTrue)
+            {
+                rule.filterValues.emplace_back("true");
+            }
+            if (hasFalse)
+            {
+                rule.filterValues.emplace_back("false");
             }
         }
         else if (rule.filterValues.size() == 1)
