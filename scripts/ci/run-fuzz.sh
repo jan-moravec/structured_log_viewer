@@ -11,16 +11,20 @@ run_one() {
     local target=$1 seconds=$2
     local work="build/fuzz-work/$target"
     local dict="test/fuzz/dictionaries/$target.dict"
-    local args=()
+    local dict_args=()
+    local dirs=("$work" "test/fuzz/corpus/$target")
     mkdir -p "$work" fuzz-artifacts
     if [ -f "$dict" ]; then
-        args+=("-dict=$dict")
+        dict_args+=("-dict=$dict")
+    fi
+    # libFuzzer exits when a corpus directory is missing, and a target may have no regression inputs yet.
+    if [ -d "test/fuzz/regressions/$target" ]; then
+        dirs+=("test/fuzz/regressions/$target")
     fi
     # New inputs go to the first directory, so the seed corpus in the repository stays unchanged.
     "$BIN_DIR/fuzz_$target" \
         -max_total_time="$seconds" -timeout=10 -rss_limit_mb=2048 -print_final_stats=1 \
-        -artifact_prefix="fuzz-artifacts/$target-" "${args[@]}" \
-        "$work" "test/fuzz/corpus/$target" "test/fuzz/regressions/$target" >"fuzz-artifacts/$target.log" 2>&1 ||
+        -artifact_prefix="fuzz-artifacts/$target-" "${dict_args[@]}" "${dirs[@]}" >"fuzz-artifacts/$target.log" 2>&1 ||
         {
             echo "fuzz_$target failed:" >&2
             tail -n 60 "fuzz-artifacts/$target.log" >&2
