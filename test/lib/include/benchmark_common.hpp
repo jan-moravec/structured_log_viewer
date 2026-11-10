@@ -15,6 +15,8 @@
 #pragma once
 
 #include "common.hpp"
+#include "fixture_params.hpp"
+#include "row_memory.hpp"
 #include "table_fixture.hpp"
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -57,39 +59,6 @@ namespace bench
 {
 
 /**
- * Pinned RNG seed for the large cross-format fixture ([json_parser][large],
- * [logfmt_parser][large], …). Combined with DeterministicBenchmarkTimestamps(),
- * it makes every format consume byte-identical records so cross-format
- * lines/s is directly comparable. Always pair the two — without pinned
- * timestamps, per-record system_clock::now() drifts fixtures by a few
- * bytes per run.
- */
-inline constexpr std::uint32_t LARGE_FIXTURE_SEED = 0xC0FFEEu;
-
-/**
- * Pinned RNG seed for the wide-row fixture ([json_parser][wide],
- * [logfmt_parser][wide]). Distinct from LARGE_FIXTURE_SEED to avoid
- * state collisions if both shapes load in one run. Same pairing
- * requirement with DeterministicBenchmarkTimestamps().
- */
-inline constexpr std::uint32_t WIDE_FIXTURE_SEED = 0xDEC0DEu;
-
-/**
- * Pinned TimestampPolicy for benchmark fixtures: 2026-01-01 00:00:00 UTC
- * + 1 ms per record. The 1 ms step keeps the formatted-string length
- * constant across the whole fixture.
- */
-inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
-{
-    // 2026-01-01T00:00:00Z = 1767225600 seconds since the Unix epoch.
-    constexpr std::chrono::seconds BENCHMARK_BASE_TIME_EPOCH{1767225600};
-    return {
-        .baseTime = std::chrono::system_clock::time_point{BENCHMARK_BASE_TIME_EPOCH},
-        .interval = std::chrono::milliseconds{1},
-    };
-}
-
-/**
  * Repetitions of a large benchmark. Each repetition is one timed iteration.
  */
 inline constexpr int LARGE_REPETITIONS = 5;
@@ -111,6 +80,55 @@ inline constexpr double SMALL_MIN_TIME_SECONDS = 0.3;
  */
 inline constexpr int FAST_LARGE_ITERATIONS = 5;
 inline constexpr int MEDIUM_LARGE_ITERATIONS = 3;
+
+/**
+ * How big a benchmark is and how often it repeats. The full tier is the one whose figures are compared between
+ * builds. The smoke tier registers the same benchmarks again at a smaller size and with fewer repetitions, to check
+ * that they work and to give rough figures. Its names end in " (smoke)" so the two never mix in a comparison.
+ */
+struct Tier
+{
+    std::size_t rows = 0;
+    bool smoke = false;
+    int largeRepetitions = LARGE_REPETITIONS;
+    int smallRepetitions = SMALL_REPETITIONS;
+    double smallMinTimeSeconds = SMALL_MIN_TIME_SECONDS;
+};
+
+inline constexpr Tier FULL_TIER{.rows = 1'000'000};
+inline constexpr Tier SMOKE_TIER{
+    .rows = 50'000,
+    .smoke = true,
+    .largeRepetitions = 3,
+    .smallRepetitions = 3,
+    .smallMinTimeSeconds = 0.1,
+};
+
+/**
+ * A count with a quote between groups of three digits, as the benchmark names write it: 1'000'000.
+ */
+inline std::string CountText(std::size_t count)
+{
+    std::string digits = std::to_string(count);
+    std::string text;
+    for (std::size_t i = 0; i < digits.size(); ++i)
+    {
+        if (i != 0 && (digits.size() - i) % 3 == 0)
+        {
+            text += '\'';
+        }
+        text += digits[i];
+    }
+    return text;
+}
+
+/**
+ * The name a benchmark gets in a tier: unchanged in the full tier, with " (smoke)" added in the smoke tier.
+ */
+inline std::string TierName(const std::string &name, const Tier &tier)
+{
+    return tier.smoke ? name + " (smoke)" : name;
+}
 
 inline std::atomic<bool> &FailureFlag()
 {
@@ -143,6 +161,7 @@ inline bool AnyFailure()
  */
 struct LargeOptions
 {
+    int repetitions = LARGE_REPETITIONS;
     int iterations = 1;
     bool manualTime = false;
     benchmark::TimeUnit unit = benchmark::kMillisecond;
@@ -171,21 +190,21 @@ void RegisterLarge(
     const auto slot = std::make_shared<Slot>();
     slot->setup = std::move(setup);
     benchmark::Benchmark *registered =
-        benchmark::RegisterBenchmark(name, [slot, body = std::move(body)](benchmark::State &state) {
+        benchmark::RegisterBenchmark(name, [slot, body = std::move(body), options](benchmark::State &state) {
             if (!slot->input)
             {
                 slot->input = slot->setup();
             }
             const bool first = slot->calls == 0;
             body(*slot->input, state, first);
-            if (++slot->calls >= LARGE_REPETITIONS)
+            if (++slot->calls >= options.repetitions)
             {
                 slot->input.reset();
             }
         });
     registered->Unit(options.unit)
         ->Iterations(options.iterations)
-        ->Repetitions(LARGE_REPETITIONS)
+        ->Repetitions(options.repetitions)
         ->ReportAggregatesOnly(true);
     if (options.manualTime)
     {
@@ -234,13 +253,14 @@ template <typename Input> std::shared_ptr<LazyInput<Input>> MakeLazy(std::functi
 inline void RegisterSmall(
     const std::string &name,
     std::function<void(benchmark::State &)> fn,
-    benchmark::TimeUnit unit = benchmark::kMillisecond
+    benchmark::TimeUnit unit = benchmark::kMillisecond,
+    const Tier &tier = FULL_TIER
 )
 {
     benchmark::RegisterBenchmark(name, std::move(fn))
         ->Unit(unit)
-        ->MinTime(SMALL_MIN_TIME_SECONDS)
-        ->Repetitions(SMALL_REPETITIONS)
+        ->MinTime(tier.smallMinTimeSeconds)
+        ->Repetitions(tier.smallRepetitions)
         ->ReportAggregatesOnly(true)
         ->UseRealTime();
 }
@@ -268,21 +288,13 @@ struct StructuralBytesWithEnums : StructuralBytes
 
 inline StructuralBytes ComputeStructuralBytes(const loglib::LogTable &table)
 {
-    StructuralBytes result;
-    const loglib::LogData &data = table.Data();
-
-    for (const loglib::LogLine &line : data.Lines())
-    {
-        result.lines += line.OwnedMemoryBytes();
-    }
-    if (const loglib::FileLineSource *fileSource = data.FrontFileSource())
-    {
-        const loglib::FileLineSource &file = *fileSource;
-        result.lineOffsets += file.LineOffsetsMemoryBytes();
-        result.ownedStrings += file.OwnedStringsMemoryBytes();
-    }
-    result.keyIndex = data.Keys().EstimatedMemoryBytes();
-    return result;
+    const RowMemory memory = MeasureRowMemory(table);
+    return StructuralBytes{
+        .lines = memory.ownedByRows,
+        .lineOffsets = memory.lineOffsets,
+        .ownedStrings = memory.arena,
+        .keyIndex = memory.keyIndex,
+    };
 }
 
 inline StructuralBytesWithEnums ComputeStructuralBytesWithEnums(const loglib::LogTable &table)
@@ -502,7 +514,8 @@ inline void RegisterStreaming(
     const std::string &name,
     std::function<StreamingFixture()> makeFixture,
     bool parseLoopOnly = false,
-    int iterations = MEDIUM_LARGE_ITERATIONS
+    int iterations = MEDIUM_LARGE_ITERATIONS,
+    int repetitions = LARGE_REPETITIONS
 )
 {
     RegisterLarge<StreamingInput>(
@@ -561,7 +574,7 @@ inline void RegisterStreaming(
             state.counters["peak_ws_delta_MiB"] = static_cast<double>(probe.peakWorkingSetDeltaBytes) / MIB;
             state.counters["peak_ws_MiB"] = static_cast<double>(probe.peakWorkingSetBytes) / MIB;
         },
-        LargeOptions{.iterations = iterations, .manualTime = parseLoopOnly}
+        LargeOptions{.repetitions = repetitions, .iterations = iterations, .manualTime = parseLoopOnly}
     );
 }
 

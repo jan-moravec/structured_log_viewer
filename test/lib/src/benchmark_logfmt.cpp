@@ -40,19 +40,29 @@ void RegisterLogfmtBenchmarks()
 {
     // Large-file streaming benchmark (1'000'000 lines). Mirrors the JSON one. The streaming constructor avoids
     // materializing the 1M records, and the pinned seed and timestamps make the bytes match the JSON fixture.
-    RegisterStreaming("Stream 1'000'000 logfmt log entries to LogTable", [] {
-        return StreamingFixture{
-            .logFile = std::make_unique<TestStructuredLogFile>(
-                StreamedRecords{
-                    .count = 1'000'000,
-                    .seed = LARGE_FIXTURE_SEED,
-                    .timestamps = DeterministicBenchmarkTimestamps(),
-                },
-                test_common::Logfmt()
-            ),
-            .parser = LogfmtStream,
-        };
-    });
+    // It is registered a second time at the smoke size.
+    for (const Tier &tier : {FULL_TIER, SMOKE_TIER})
+    {
+        RegisterStreaming(
+            TierName("Stream " + CountText(tier.rows) + " logfmt log entries to LogTable", tier),
+            [rows = tier.rows] {
+                return StreamingFixture{
+                    .logFile = std::make_unique<TestStructuredLogFile>(
+                        StreamedRecords{
+                            .count = rows,
+                            .seed = LARGE_FIXTURE_SEED,
+                            .timestamps = DeterministicBenchmarkTimestamps(),
+                        },
+                        test_common::Logfmt()
+                    ),
+                    .parser = LogfmtStream,
+                };
+            },
+            /*parseLoopOnly=*/false,
+            MEDIUM_LARGE_ITERATIONS,
+            tier.largeRepetitions
+        );
+    }
 
     // Wide-row streaming benchmark, mirror of the JSON one. Stresses the per-field hot loop in LogfmtLineDecoder.
     // Nested array/object fields land as quoted JSON strings in logfmt (see Logfmt()), so the field count matches

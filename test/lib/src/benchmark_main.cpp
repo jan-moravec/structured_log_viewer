@@ -32,15 +32,26 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // Without a filter the full tier runs. The smoke tier is selected by its own filter, and a filter given on the
+    // command line or in BENCHMARK_FILTER replaces this default.
+    if (benchmark::GetBenchmarkFilter().empty())
+    {
+        benchmark::SetBenchmarkFilter("-.*[(]smoke[)]");
+    }
+
     bench::RegisterCsvBenchmarks();
     bench::RegisterDecompressionBenchmarks();
+    bench::RegisterExportBenchmarks();
     bench::RegisterHistogramBucketIndexBenchmarks();
     bench::RegisterJsonBenchmarks();
     bench::RegisterLogFilterBenchmarks();
     bench::RegisterLogfmtBenchmarks();
+    bench::RegisterMemoryBenchmarks();
+    bench::RegisterNetworkBenchmarks();
     bench::RegisterRegexBenchmarks();
     bench::RegisterSessionBundleBenchmarks();
     bench::RegisterStreamBenchmarks();
+    bench::RegisterTableBenchmarks();
     bench::RegisterTimestampBenchmarks();
 
     try

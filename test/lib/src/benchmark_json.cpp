@@ -7,12 +7,14 @@
 #include "benchmark_registry.hpp"
 #include "common.hpp"
 
+#include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/stop_token.hpp>
+#include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -29,6 +31,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -182,13 +185,13 @@ struct EnumRun
 
 // Walks every key of every line and counts the matches; fn(line) returns how many values it found.
 template <typename Walk>
-void RunLookupBenchmark(benchmark::State &state, const LogData &data, std::size_t keysPerLine, Walk walk)
+void RunLookupBenchmark(benchmark::State &state, std::span<const LogLine> lines, std::size_t keysPerLine, Walk walk)
 {
     std::size_t hits = 0;
     for (const auto _ : state)
     {
         hits = 0;
-        for (const LogLine &line : data.Lines())
+        for (const LogLine &line : lines)
         {
             hits += walk(line);
         }
@@ -199,7 +202,51 @@ void RunLookupBenchmark(benchmark::State &state, const LogData &data, std::size_
         Fail(state, "no lookup found a value");
         return;
     }
-    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * data.Lines().size() * keysPerLine));
+    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * lines.size() * keysPerLine));
+}
+
+// Rows that came from a StreamLineSource. Their strings sit in the source, behind its lock, and not in a mapped file.
+struct StreamRows
+{
+    StreamLineSource source{std::filesystem::path("bench_stream_rows"), nullptr};
+    std::vector<LogLine> lines;
+    std::array<KeyId, 5> keyIds{};
+};
+
+std::unique_ptr<StreamRows> MakeStreamRows()
+{
+    auto rows = std::make_unique<StreamRows>();
+    KeyIndex keys;
+    for (std::size_t i = 0; i < LOOKUP_KEYS.size(); ++i)
+    {
+        rows->keyIds[i] = keys.GetOrInsert(LOOKUP_KEYS[i]);
+    }
+    rows->lines.reserve(SMALL_FILE_RECORDS);
+    for (std::size_t row = 0; row < SMALL_FILE_RECORDS; ++row)
+    {
+        // The keys are timestamp, level, message, thread_id and component. All but thread_id are strings.
+        const std::array<std::string, 5> texts = {
+            "2026-01-01T00:00:00.000Z", "info", "request handled for user " + std::to_string(row), "", "api"
+        };
+        std::string arena;
+        std::vector<std::pair<KeyId, CompactLogValue>> values;
+        for (std::size_t i = 0; i < texts.size(); ++i)
+        {
+            if (i == 3)
+            {
+                values.emplace_back(rows->keyIds[i], CompactLogValue::MakeInt64(static_cast<std::int64_t>(row % 16)));
+                continue;
+            }
+            values.emplace_back(
+                rows->keyIds[i],
+                CompactLogValue::MakeOwnedString(arena.size(), static_cast<std::uint32_t>(texts[i].size()))
+            );
+            arena += texts[i];
+        }
+        const std::size_t lineId = rows->source.AppendLine("raw line", std::move(arena));
+        rows->lines.emplace_back(std::move(values), rows->source, lineId);
+    }
+    return rows;
 }
 
 void RegisterLookupBenchmarks()
@@ -213,7 +260,7 @@ void RegisterLookupBenchmarks()
     // lookup cost only. One iteration looks up every key of every line.
     RegisterSmall("LogLine::GetValue(string) - slow path", [plainInput](benchmark::State &state) {
         const LogData &data = plainInput->Get().result.data;
-        RunLookupBenchmark(state, data, LOOKUP_KEYS.size(), [&data](const LogLine &line) {
+        RunLookupBenchmark(state, data.Lines(), LOOKUP_KEYS.size(), [&data](const LogLine &line) {
             std::size_t found = 0;
             for (const std::string &key : LOOKUP_KEYS)
             {
@@ -225,7 +272,21 @@ void RegisterLookupBenchmarks()
 
     RegisterSmall("LogLine::GetValue(KeyId) - fast path", [plainInput](benchmark::State &state) {
         const ParsedInput &input = plainInput->Get();
-        RunLookupBenchmark(state, input.result.data, input.keyIds.size(), [&input](const LogLine &line) {
+        RunLookupBenchmark(state, input.result.data.Lines(), input.keyIds.size(), [&input](const LogLine &line) {
+            std::size_t found = 0;
+            for (const KeyId id : input.keyIds)
+            {
+                found += !std::holds_alternative<std::monostate>(line.GetValue(id));
+            }
+            return found;
+        });
+    });
+
+    // The same lookups on rows from a live stream, whose strings resolve through the source's lock.
+    const auto streamInput = MakeLazy<StreamRows>(MakeStreamRows);
+    RegisterSmall("LogLine::GetValue(KeyId) - stream rows", [streamInput](benchmark::State &state) {
+        const StreamRows &input = streamInput->Get();
+        RunLookupBenchmark(state, input.lines, input.keyIds.size(), [&input](const LogLine &line) {
             std::size_t found = 0;
             for (const KeyId id : input.keyIds)
             {
@@ -237,7 +298,7 @@ void RegisterLookupBenchmarks()
 
     RegisterSmall("LogLine::GetValue(KeyId) - DictRef path", [dictRefInput](benchmark::State &state) {
         const ParsedInput &input = dictRefInput->Get();
-        RunLookupBenchmark(state, input.result.data, 1, [&input](const LogLine &line) {
+        RunLookupBenchmark(state, input.result.data.Lines(), 1, [&input](const LogLine &line) {
             return static_cast<std::size_t>(!std::holds_alternative<std::monostate>(line.GetValue(input.levelKey)));
         });
     });
@@ -489,19 +550,29 @@ void RegisterJsonBenchmarks()
     // a sink that calls LogTable::AppendBatch per OnBatch, with a Type::Time column so the streaming parser
     // does real inline timestamp promotion. Pinned seed and timestamps keep the record bytes identical across runs
     // and to the logfmt benchmark.
-    RegisterStreaming("Stream 1'000'000 JSON log entries to LogTable", [] {
-        return StreamingFixture{
-            .logFile = std::make_unique<TestStructuredLogFile>(
-                StreamedRecords{
-                    .count = 1'000'000,
-                    .seed = LARGE_FIXTURE_SEED,
-                    .timestamps = DeterministicBenchmarkTimestamps(),
-                },
-                test_common::JsonLines()
-            ),
-            .parser = JsonStream,
-        };
-    });
+    // It is registered a second time at the smoke size.
+    for (const Tier &tier : {FULL_TIER, SMOKE_TIER})
+    {
+        RegisterStreaming(
+            TierName("Stream " + CountText(tier.rows) + " JSON log entries to LogTable", tier),
+            [rows = tier.rows] {
+                return StreamingFixture{
+                    .logFile = std::make_unique<TestStructuredLogFile>(
+                        StreamedRecords{
+                            .count = rows,
+                            .seed = LARGE_FIXTURE_SEED,
+                            .timestamps = DeterministicBenchmarkTimestamps(),
+                        },
+                        test_common::JsonLines()
+                    ),
+                    .parser = JsonStream,
+                };
+            },
+            /*parseLoopOnly=*/false,
+            MEDIUM_LARGE_ITERATIONS,
+            tier.largeRepetitions
+        );
+    }
 
     // Wide-row streaming benchmark (200'000 lines, ~30 fields per line). Stresses the per-line field-iteration cost
     // (InsertSorted, ExtractFieldKey, ParseLine, IsKeyInAnyColumn). The line count is lower than the large

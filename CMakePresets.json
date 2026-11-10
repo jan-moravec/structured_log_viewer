@@ -168,7 +168,16 @@
             "configurePreset": "release",
             "inherits": "_test_base",
             "output":      { "outputOnFailure": true, "verbosity": "verbose" },
-            "filter":      { "include": { "label": "benchmark" } }
+            "filter":      { "include": { "label": "^benchmark$" } }
+        },
+        {
+            "name": "release-benchmark-smoke",
+            "displayName": "Release benchmark smoke tier",
+            "description": "Runs CTest label `benchmark-smoke`: a few benchmarks at a smaller size, to check that they work and to get rough figures. The figures are not used to compare builds. See CONTRIBUTING.md `## Benchmarking`.",
+            "configurePreset": "release",
+            "inherits": "_test_base",
+            "output":      { "outputOnFailure": true, "verbosity": "verbose" },
+            "filter":      { "include": { "label": "^benchmark-smoke$" } }
         },
         {
             "name": "relwithdebinfo-benchmark",
