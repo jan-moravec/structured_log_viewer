@@ -1349,3 +1349,11 @@ TEST_CASE(
     // line N:" wrapper is composed by the streaming pipeline.
     CHECK(loglib::FormatParseError(errors.front()).contains("Error on line 2:"));
 }
+
+TEST_CASE("JsonParser::IsValidBytes reads a line that ends in a lot of whitespace", "[json_parser][fuzz]")
+{
+    const loglib::JsonParser parser;
+    // Under AddressSanitizer this fails if the probe lets simdjson read past the end of its copy of the line.
+    CHECK(parser.IsValidBytes("{\"a\":1}" + std::string(100, ' ')));
+    CHECK_FALSE(parser.IsValidBytes("[1,2]" + std::string(100, '\t')));
+}

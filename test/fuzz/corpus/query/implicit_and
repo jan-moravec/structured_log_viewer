@@ -1,0 +1,1 @@
+status>=500 latency<2.5 host%"web-*"

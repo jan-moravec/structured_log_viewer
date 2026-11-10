@@ -105,6 +105,23 @@
                 "CMAKE_SHARED_LINKER_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
                 "CMAKE_MODULE_LINKER_FLAGS": "-fprofile-instr-generate -fcoverage-mapping"
             }
+        },
+        {
+            "name": "clang-fuzz",
+            "displayName": "Clang libFuzzer targets (Linux)",
+            "description": "Clang 23 RelWithDebInfo with ASan, UBSan and libFuzzer coverage instrumentation, and the fuzz_<target> executables enabled. Builds only loglib and the fuzz targets, with no GUI, no CLI and no TLS, so it needs no Qt or OpenSSL. Linux only. Run one with `build/clang-fuzz/bin/RelWithDebInfo/fuzz_query build/fuzz-work/query test/fuzz/corpus/query`, which writes new inputs to the first directory and leaves the saved corpus unchanged.",
+            "inherits": "_clang_ci_base",
+            "cacheVariables": {
+                "LOGLIB_FUZZ": "ON",
+                "LOGLIB_NETWORK_TLS": "OFF",
+                "SLV_BUILD_GUI": "OFF",
+                "SLV_BUILD_CLI": "OFF",
+                "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+                "CMAKE_C_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=address,undefined"
+            }
         }
     ],
 
@@ -114,7 +131,8 @@
         { "name": "relwithdebinfo",   "configurePreset": "relwithdebinfo" },
         { "name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan" },
         { "name": "clang-tsan",       "configurePreset": "clang-tsan" },
-        { "name": "clang-coverage",   "configurePreset": "clang-coverage" }
+        { "name": "clang-coverage",   "configurePreset": "clang-coverage" },
+        { "name": "clang-fuzz",       "configurePreset": "clang-fuzz", "targets": ["fuzz_query", "fuzz_json", "fuzz_logfmt", "fuzz_csv", "fuzz_regex", "fuzz_regex_template", "fuzz_log_configuration", "fuzz_timestamp", "fuzz_decompress"] }
     ],
 
     "testPresets": [

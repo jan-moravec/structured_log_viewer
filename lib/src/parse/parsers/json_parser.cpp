@@ -337,12 +337,15 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             {
                 const loglib::CompactLogValue rawValue =
                     ExtractRawJsonValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
-                if (rawValue.tag != loglib::CompactTag::Monostate)
+                if (rawValue.tag == loglib::CompactTag::Monostate)
                 {
-                    InsertSorted(result, keyId, rawValue);
-                    continue;
+                    // Reading a malformed container has already moved the iterator past its start, so the value
+                    // cannot be asked for its type again. The line is an error, as it is on the uncached path.
+                    outError = simdjson::TAPE_ERROR;
+                    return result;
                 }
-                break;
+                InsertSorted(result, keyId, rawValue);
+                continue;
             }
             case simdjson::ondemand::json_type::null:
                 if (value.is_null())
@@ -649,13 +652,11 @@ bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
         {
             continue;
         }
-        // simdjson::pad returns a padded view that aliases its
-        // string argument; keep the padded buffer alive for the
-        // duration of the parse (matches the historical
-        // std::getline flow, which held `line` as a local).
-        std::string padded(probe.line);
+        // padded_string owns a copy with the padding simdjson reads past the end. simdjson::pad would count trailing
+        // whitespace of the line as padding and let the parser read beyond the string.
+        const simdjson::padded_string padded(probe.line);
         simdjson::ondemand::parser parser;
-        auto doc = parser.iterate(simdjson::pad(padded));
+        auto doc = parser.iterate(padded);
         return !doc.get_object().error();
     }
     return false;

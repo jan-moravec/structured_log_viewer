@@ -1,0 +1,1 @@
+level IN [info, warn, "error"] and port IN [1000..2000]

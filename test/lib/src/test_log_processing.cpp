@@ -948,3 +948,23 @@ TEST_CASE("ParseQuery reads time bounds without a zone in the zone it is given",
         CHECK(*inUtc - *inTokyo == 9 * HOUR_US);
     }
 }
+
+TEST_CASE("TryParseGenericTimestamp rejects a format with a large number in it", "[time][fuzz]")
+{
+    TimestampParseScratch scratch;
+    TimeStamp parsed;
+
+    // The digits would overflow an int inside the general parser.
+    CHECK_FALSE(TryParseGenericTimestamp("1", "%0000003000000000000000000", scratch, parsed));
+    CHECK_FALSE(TryParseGenericTimestamp("1", "%t3333333333333333333EG", scratch, parsed));
+    // A wide seconds field could take a value that overflows the microsecond count.
+    CHECK_FALSE(TryParseGenericTimestamp("1000007765070394765", "%2024S", scratch, parsed));
+    // A width of zero would mean no limit.
+    CHECK_FALSE(TryParseGenericTimestamp("5700000000000000", "%000S", scratch, parsed));
+    // A sign takes the only character of a one-wide signed field, which leaves the digits without a limit.
+    CHECK_FALSE(TryParseGenericTimestamp("-8880000777777777777777777", "%1G %z", scratch, parsed));
+    CHECK_FALSE(TryParseGenericTimestamp("-88800007777777777-05-01", "%1Y-%m-%d", scratch, parsed));
+    // Short widths and literal digits stay valid.
+    CHECK(TryParseGenericTimestamp("2024-05-01", "%4Y-%m-%d", scratch, parsed));
+    CHECK(TryParseGenericTimestamp("%1 2024-05-01", "%%1 %Y-%m-%d", scratch, parsed));
+}

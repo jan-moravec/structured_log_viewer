@@ -1,0 +1,1 @@
+{"columns":[{"header":"service","keys":["service"]},{"header":"time","keys":["ts"],"type":"time","printFormat":"%F %T"}],"filters":[],"sort":{"columnIndex":-1,"descending":false},"anchors":[{"locator":"c:/logs/legacy.json","lineId":7,"colorIndex":2}]}

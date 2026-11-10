@@ -27,6 +27,8 @@ struct LogConfigOpts : glz::opts
     uint8_t indentation_width = 4; // NOLINT(readability-identifier-naming)
 };
 // MSVC requires designated initializers to follow the declaration order of the members.
-constexpr LogConfigOpts LOG_CONFIG_OPTS{{.error_on_unknown_keys = false, .prettify = true}};
+// null_terminated is off because the readers take a string_view, which has no terminator, and Glaze would read one byte
+// past its end.
+constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unknown_keys = false, .prettify = true}};
 
 } // namespace loglib::internal

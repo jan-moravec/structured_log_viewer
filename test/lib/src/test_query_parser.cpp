@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 using namespace loglib;
 
@@ -352,6 +353,37 @@ TEST_CASE("FormatExpression: round-trips composite trees", "[query_parser][prett
     CHECK(*parsed == *reparsed);
 }
 
+TEST_CASE("FormatExpression: round-trips exclusive bounds next to zero", "[query_parser][pretty]")
+{
+    // An exclusive bound is written as the next double, which for zero is the smallest subnormal number.
+    for (const std::string query : {"latency>0", "latency<0", "latency<2.5", "latency>-1"})
+    {
+        CAPTURE(query);
+        const auto parsed = ParseQuery(query);
+        REQUIRE(parsed.has_value());
+        const std::string formatted = FormatExpression(*parsed);
+        CAPTURE(formatted);
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(*parsed == *reparsed);
+    }
+}
+
+TEST_CASE("FormatExpression: keeps a group inside a group of the same kind", "[query_parser][pretty]")
+{
+    for (const std::string query : {"a:1 AND (b:2 AND c:3)", "a:1 OR (b:2 OR c:3)", "(a:1 AND b:2) AND c:3"})
+    {
+        CAPTURE(query);
+        const auto parsed = ParseQuery(query);
+        REQUIRE(parsed.has_value());
+        const std::string formatted = FormatExpression(*parsed);
+        CAPTURE(formatted);
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(*parsed == *reparsed);
+    }
+}
+
 TEST_CASE("FormatExpression: numeric range renders as IN [..]", "[query_parser][pretty]")
 {
     const auto parsed = ParseOrFail("latency in [10..100]");
@@ -402,6 +434,19 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
         REQUIRE(leaf->filterValues.size() == 2);
         CHECK(leaf->filterValues[0] == "true");
         CHECK(leaf->filterValues[1] == "false");
+    }
+    SECTION("repeated and reordered values keep the printed form")
+    {
+        // The printer writes a boolean set as =true, =false or IN [true, false], so the parser keeps each value once,
+        // true first. Otherwise a printed query would parse back to a different rule.
+        const auto repeatedExpr = ParseOrFail("level IN [false,false ]");
+        const LeafRule *repeated = AsLeaf(repeatedExpr);
+        REQUIRE(repeated != nullptr);
+        CHECK(repeated->filterValues == std::vector<std::string>{"false"});
+        const auto reorderedExpr = ParseOrFail("level IN [false, true, false]");
+        const LeafRule *reordered = AsLeaf(reorderedExpr);
+        REQUIRE(reordered != nullptr);
+        CHECK(reordered->filterValues == std::vector<std::string>{"true", "false"});
     }
     SECTION("mixed list stays Enumeration")
     {
