@@ -1,7 +1,14 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Helpers shared by the unit tests and the benchmarks: fixture generation, parse-only drivers and table builders.
-add_library(loglib_test_support STATIC "src/common.cpp" "src/parse_only.cpp" "src/table_from_data.cpp")
+add_library(
+    loglib_test_support
+    STATIC
+    "src/common.cpp"
+    "src/parse_only.cpp"
+    "src/row_memory.cpp"
+    "src/table_from_data.cpp"
+)
 
 target_include_directories(loglib_test_support PUBLIC include)
 
@@ -61,6 +68,7 @@ add_executable(
     "src/test_regex_templates.cpp"
     "src/test_rotation_siblings.cpp"
     "src/test_row_batch.cpp"
+    "src/test_row_memory.cpp"
     "src/test_row_ordering.cpp"
     "src/test_session_bundle.cpp"
     "src/test_source_plan.cpp"
@@ -124,14 +132,18 @@ add_executable(
     loglib_benchmarks
     "src/benchmark_csv.cpp"
     "src/benchmark_decompression.cpp"
+    "src/benchmark_export.cpp"
     "src/benchmark_histogram_bucket_index.cpp"
     "src/benchmark_json.cpp"
     "src/benchmark_log_filter.cpp"
     "src/benchmark_logfmt.cpp"
     "src/benchmark_main.cpp"
+    "src/benchmark_memory.cpp"
+    "src/benchmark_network.cpp"
     "src/benchmark_regex.cpp"
     "src/benchmark_session_bundle.cpp"
     "src/benchmark_stream.cpp"
+    "src/benchmark_table.cpp"
     "src/benchmark_timestamp.cpp"
 )
 
@@ -173,8 +185,12 @@ endif()
 # are labels too. Select with `ctest -L <tag>`, exclude with `-LE <tag>`.
 catch_discover_tests(tests ADD_TAGS_AS_LABELS)
 
-# All library benchmarks are one CTest test. Google Benchmark writes its figures as JSON to the build tree; the console
-# output still goes to the CTest log. Set BENCHMARK_FILTER (a regex) in the environment to run only some of them.
+# The library benchmarks are two CTest tests. loglib_benchmarks runs the full benchmarks: with no filter, the benchmark
+# main leaves out the smoke tier with a negative filter. The smoke tier is the same benchmarks at a smaller size,
+# registered a second time with names that end in " (smoke)", for checking that they work and for rough figures.
+# Google Benchmark writes the figures as JSON to the build tree, one file for each test; the console output still goes
+# to the CTest log. Set BENCHMARK_FILTER (a regex) in the environment to run only some of the benchmarks by hand. It
+# replaces the filter that leaves out the smoke tier, so it selects smoke benchmarks too when their names match.
 # SKIP_RETURN_CODE 4 is the exit code of a Debug build, which refuses to run benchmarks.
 set(LOGLIB_BENCHMARK_RESULTS_DIR "${CMAKE_BINARY_DIR}/benchmark-results")
 file(MAKE_DIRECTORY "${LOGLIB_BENCHMARK_RESULTS_DIR}")
@@ -185,6 +201,14 @@ add_test(
         --benchmark_out_format=json
 )
 set_tests_properties(loglib_benchmarks PROPERTIES LABELS "benchmark" SKIP_RETURN_CODE 4)
+
+add_test(
+    NAME loglib_benchmarks_smoke
+    COMMAND
+        loglib_benchmarks "--benchmark_filter=.*[(]smoke[)]"
+        "--benchmark_out=${LOGLIB_BENCHMARK_RESULTS_DIR}/loglib_benchmarks_smoke.json" --benchmark_out_format=json
+)
+set_tests_properties(loglib_benchmarks_smoke PROPERTIES LABELS "benchmark-smoke" SKIP_RETURN_CODE 4)
 
 # Installs the loglib component and compiles a consumer that includes every installed header. Skipped for sanitizer
 # and coverage builds, because the consumer is built without their flags.

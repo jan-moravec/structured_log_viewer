@@ -53,18 +53,28 @@ void RegisterCsvBenchmarks()
 {
     // Large-file streaming benchmark, mirror of the JSON one. Records stream straight to disk -- no 1M-record vector
     // ever materialises.
-    RegisterStreaming("Stream 1'000'000 CSV log entries to LogTable", [] {
-        const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
-        const test_common::RecordSchema schema = SampleStreamingSchema(LARGE_FIXTURE_SEED, timestamps);
-        return StreamingFixture{
-            .logFile = std::make_unique<TestStructuredLogFile>(
-                StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
-                test_common::Csv(schema),
-                schema
-            ),
-            .parser = CsvStream,
-        };
-    });
+    // It is registered a second time at the smoke size.
+    for (const Tier &tier : {FULL_TIER, SMOKE_TIER})
+    {
+        RegisterStreaming(
+            TierName("Stream " + CountText(tier.rows) + " CSV log entries to LogTable", tier),
+            [rows = tier.rows] {
+                const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
+                const test_common::RecordSchema schema = SampleStreamingSchema(LARGE_FIXTURE_SEED, timestamps);
+                return StreamingFixture{
+                    .logFile = std::make_unique<TestStructuredLogFile>(
+                        StreamedRecords{.count = rows, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
+                        test_common::Csv(schema),
+                        schema
+                    ),
+                    .parser = CsvStream,
+                };
+            },
+            /*parseLoopOnly=*/false,
+            MEDIUM_LARGE_ITERATIONS,
+            tier.largeRepetitions
+        );
+    }
 
     // Wide-row streaming benchmark. Field count matches the JSON one but per-field work differs (nested values land
     // as quoted compact-JSON cells), so cross-format lines/s is broadly -- not exactly -- comparable.
