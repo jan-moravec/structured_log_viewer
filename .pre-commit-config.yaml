@@ -47,6 +47,8 @@ repos:
     hooks:
       - id: codespell
         args: ["--ignore-words-list=merrors,unparseable,worstcase"]
+        # Fuzz inputs are arbitrary bytes that the fuzzer chose, not prose.
+        exclude: ^test/fuzz/(corpus|regressions)/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.17.3

@@ -439,11 +439,11 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
     {
         // The printer writes a boolean set as =true, =false or IN [true, false], so the parser keeps each value once,
         // true first. Otherwise a printed query would parse back to a different rule.
-        const auto repeatedExpr = ParseOrFail("leve IN [false,false ]");
+        const auto repeatedExpr = ParseOrFail("level IN [false,false ]");
         const LeafRule *repeated = AsLeaf(repeatedExpr);
         REQUIRE(repeated != nullptr);
         CHECK(repeated->filterValues == std::vector<std::string>{"false"});
-        const auto reorderedExpr = ParseOrFail("leve IN [false, true, false]");
+        const auto reorderedExpr = ParseOrFail("level IN [false, true, false]");
         const LeafRule *reordered = AsLeaf(reorderedExpr);
         REQUIRE(reordered != nullptr);
         CHECK(reordered->filterValues == std::vector<std::string>{"true", "false"});
