@@ -225,6 +225,7 @@ struct CivilDate
 
 enum class Precedence : std::uint8_t
 {
+    Root,
     Or,
     And,
     Not,
@@ -415,7 +416,9 @@ void AppendAnd(const FilterExpression::And &node, Precedence parent, std::string
         out.append("*");
         return;
     }
-    const bool needParens = parent > Precedence::And;
+    // A group inside a group of the same kind keeps its parentheses, because the parser reads "a AND (b AND c)" as a
+    // nested And and "a AND b AND c" as one flat And.
+    const bool needParens = parent >= Precedence::And;
     if (needParens)
     {
         out.push_back('(');
@@ -443,7 +446,7 @@ void AppendOr(const FilterExpression::Or &node, Precedence parent, std::string &
         out.append("()");
         return;
     }
-    const bool needParens = parent > Precedence::Or;
+    const bool needParens = parent >= Precedence::Or;
     if (needParens)
     {
         out.push_back('(');
@@ -528,7 +531,7 @@ std::string FormatExpression(const FilterExpression &expression)
         effective = &andNode->children.front();
     }
     std::string out;
-    AppendExpression(*effective, Precedence::Or, out);
+    AppendExpression(*effective, Precedence::Root, out);
     return out;
 }
 

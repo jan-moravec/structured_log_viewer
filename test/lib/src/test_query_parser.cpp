@@ -352,6 +352,21 @@ TEST_CASE("FormatExpression: round-trips composite trees", "[query_parser][prett
     CHECK(*parsed == *reparsed);
 }
 
+TEST_CASE("FormatExpression: keeps a group inside a group of the same kind", "[query_parser][pretty]")
+{
+    for (const std::string query : {"a:1 AND (b:2 AND c:3)", "a:1 OR (b:2 OR c:3)", "(a:1 AND b:2) AND c:3"})
+    {
+        CAPTURE(query);
+        const auto parsed = ParseQuery(query);
+        REQUIRE(parsed.has_value());
+        const std::string formatted = FormatExpression(*parsed);
+        CAPTURE(formatted);
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(*parsed == *reparsed);
+    }
+}
+
 TEST_CASE("FormatExpression: numeric range renders as IN [..]", "[query_parser][pretty]")
 {
     const auto parsed = ParseOrFail("latency in [10..100]");
