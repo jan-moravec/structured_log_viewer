@@ -652,13 +652,11 @@ bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
         {
             continue;
         }
-        // simdjson::pad returns a padded view that aliases its
-        // string argument; keep the padded buffer alive for the
-        // duration of the parse (matches the historical
-        // std::getline flow, which held `line` as a local).
-        std::string padded(probe.line);
+        // padded_string owns a copy with the padding simdjson reads past the end. simdjson::pad would count trailing
+        // whitespace of the line as padding and let the parser read beyond the string.
+        const simdjson::padded_string padded(probe.line);
         simdjson::ondemand::parser parser;
-        auto doc = parser.iterate(simdjson::pad(padded));
+        auto doc = parser.iterate(padded);
         return !doc.get_object().error();
     }
     return false;
