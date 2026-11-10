@@ -226,7 +226,11 @@ std::unique_ptr<StreamRows> MakeStreamRows()
     {
         // The keys are timestamp, level, message, thread_id and component. All but thread_id are strings.
         const std::array<std::string, 5> texts = {
-            "2026-01-01T00:00:00.000Z", "info", "request handled for user " + std::to_string(row), "", "api"
+            "2026-01-01T00:00:00.000Z",
+            "info",
+            "request handled for user " + std::to_string(row),
+            "",
+            "api",
         };
         std::string arena;
         std::vector<std::pair<KeyId, CompactLogValue>> values;
