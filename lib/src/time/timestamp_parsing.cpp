@@ -499,7 +499,7 @@ bool FormatNumbersAreSmall(const std::string &format) noexcept
         value = 0;
         isWidth = false;
     }
-    return !(isWidth && value == 0);
+    return !isWidth || value != 0;
 }
 
 } // namespace
