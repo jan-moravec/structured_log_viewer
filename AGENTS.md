@@ -126,6 +126,12 @@ cmake --build --preset relwithdebinfo
 ctest --preset relwithdebinfo-benchmark
 ```
 
+The smoke tier runs a few benchmarks at a small size in seconds, to check that they work. CI runs it on every pull request. Its figures are not used to compare builds:
+
+```sh
+ctest --preset release-benchmark-smoke
+```
+
 `CMakePresets.json` is the source of truth for preset names and behavior. Machine-specific overrides, usually a local Qt path, belong in the gitignored `CMakeUserPresets.json`; see `CONTRIBUTING.md` §Machine-specific overrides.
 
 ## Scripted PowerShell runs and interrupted builds
