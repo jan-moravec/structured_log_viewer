@@ -41,6 +41,7 @@ int main(int argc, char **argv)
     bench::RegisterRegexBenchmarks();
     bench::RegisterSessionBundleBenchmarks();
     bench::RegisterStreamBenchmarks();
+    bench::RegisterTimestampBenchmarks();
 
     try
     {

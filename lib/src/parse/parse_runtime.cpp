@@ -33,11 +33,10 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
         {
             spec.keyIds.push_back(keys.GetOrInsert(key));
         }
-        spec.parseFormats = column.parseFormats;
-        spec.formatKinds.reserve(spec.parseFormats.size());
-        for (const std::string &format : spec.parseFormats)
+        spec.formats.reserve(column.parseFormats.size());
+        for (const std::string &format : column.parseFormats)
         {
-            spec.formatKinds.push_back(ClassifyTimestampFormat(format));
+            spec.formats.emplace_back(format);
         }
         result.push_back(std::move(spec));
     }

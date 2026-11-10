@@ -117,8 +117,7 @@ bool PromoteLineTimestamps(
         std::optional<LastValidTimestampParse> &lv = lastValid[i];
         LastTimestampBytesHit &bytesHit = bytesHits[i];
 
-        const auto tryPromote =
-            [&](KeyId keyId, const std::string &format, TimestampFormatKind kind, std::string_view sv) -> bool {
+        const auto tryPromote = [&](KeyId keyId, const TimestampFormat &format, std::string_view sv) -> bool {
             if (bytesHit.valid && bytesHit.keyId == keyId && bytesHit.bytes.size() == sv.size() &&
                 std::memcmp(bytesHit.bytes.data(), sv.data(), sv.size()) == 0)
             {
@@ -126,7 +125,7 @@ bool PromoteLineTimestamps(
                 return true;
             }
             TimeStamp parsed;
-            if (!TryParseTimestamp(sv, format, kind, tsScratch, spec.referenceTime, parsed))
+            if (!format.Parse(sv, tsScratch, spec.referenceTime, parsed))
             {
                 return false;
             }
@@ -145,14 +144,12 @@ bool PromoteLineTimestamps(
         };
 
         bool promoted = false;
-        if (lv.has_value())
+        if (lv.has_value() && lv->formatIndex < spec.formats.size())
         {
-            if (auto sv = ExtractStringBytes(line, lv->keyId, ownedArena); sv.has_value())
+            if (auto sv = ExtractStringBytes(line, lv->keyId, ownedArena);
+                sv.has_value() && tryPromote(lv->keyId, spec.formats[lv->formatIndex], *sv))
             {
-                if (tryPromote(lv->keyId, lv->format, lv->kind, *sv))
-                {
-                    promoted = true;
-                }
+                promoted = true;
             }
         }
 
@@ -166,13 +163,11 @@ bool PromoteLineTimestamps(
                 {
                     continue;
                 }
-                for (size_t f = 0; f < spec.parseFormats.size(); ++f)
+                for (size_t f = 0; f < spec.formats.size(); ++f)
                 {
-                    const std::string &format = spec.parseFormats[f];
-                    const TimestampFormatKind kind = spec.formatKinds[f];
-                    if (tryPromote(keyId, format, kind, *sv))
+                    if (tryPromote(keyId, spec.formats[f], *sv))
                     {
-                        lv = LastValidTimestampParse{.keyId = keyId, .format = format, .kind = kind};
+                        lv = LastValidTimestampParse{.keyId = keyId, .formatIndex = f};
                         promoted = true;
                         break;
                     }

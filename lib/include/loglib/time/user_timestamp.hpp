@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include "loglib/time/timestamp_parsing.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -42,6 +44,9 @@ struct UserTimestampParse
 
 /** @brief True if neither the format nor a trailing Z in the text that it parsed gives a zone. */
 [[nodiscard]] bool IsNaiveTimestamp(std::string_view text, std::string_view format) noexcept;
+
+/** @brief Like the overload above, for a prepared format, which knows whether it has a zone without scanning. */
+[[nodiscard]] bool IsNaiveTimestamp(std::string_view text, const TimestampFormat &format) noexcept;
 
 /**
  * @brief Parses a time the user typed, either absolute or relative.

@@ -320,12 +320,11 @@ TEST_CASE("Timestamps as real programs write them are read to the expected UTC t
     TimestampParseScratch scratch;
     for (const CorpusEntry &entry : Corpus())
     {
-        const std::string format(entry.format);
-        const TimestampFormatKind kind = ClassifyTimestampFormat(format);
+        const TimestampFormat format{std::string(entry.format)};
         INFO(entry.source << ": " << entry.text << " with " << entry.format);
 
         TimeStamp parsed;
-        REQUIRE(TryParseTimestamp(entry.text, format, kind, scratch, ReferenceTime(), parsed));
+        REQUIRE(format.Parse(entry.text, scratch, ReferenceTime(), parsed));
         CHECK(parsed.time_since_epoch().count() == entry.expectedUtcMicros);
     }
 }
@@ -366,7 +365,7 @@ bool ParsesTo(std::string_view text, std::string_view format, std::int64_t expec
     TimestampParseScratch scratch;
     TimeStamp parsed;
     const std::string formatText(format);
-    return TryParseTimestamp(text, formatText, ClassifyTimestampFormat(formatText), scratch, ReferenceTime(), parsed) &&
+    return TimestampFormat(formatText).Parse(text, scratch, ReferenceTime(), parsed) &&
            parsed.time_since_epoch().count() == expectedUtcMicros;
 }
 

@@ -133,15 +133,27 @@ TEST_CASE("Converting time columns accepts different formats", "[log_processing]
     CHECK(std::get<TimeStamp>(logData.Lines()[3].GetValue(logData.Keys(), "key")) == timestamp);
 }
 
-TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")
+TEST_CASE("TimestampFormat picks the parser for a format", "[log_processing][iso8601_fast_path]")
 {
-    CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601T);
-    CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601Space);
-    CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Iso8601TOffset);
-    CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Iso8601SpaceOffset);
-    CHECK(ClassifyTimestampFormat("") == TimestampFormatKind::Generic);
-    CHECK(ClassifyTimestampFormat(" %FT%T") == TimestampFormatKind::Generic);
-    CHECK(ClassifyTimestampFormat("%FT%T ") == TimestampFormatKind::Generic);
+    const auto kind = [](std::string format) { return TimestampFormat(std::move(format)).Kind(); };
+    CHECK(kind("%FT%T") == TimestampFormatKind::Iso8601T);
+    CHECK(kind("%F %T") == TimestampFormatKind::Iso8601Space);
+    CHECK(kind("%FT%T%Ez") == TimestampFormatKind::Iso8601TOffset);
+    CHECK(kind("%F %T%Ez") == TimestampFormatKind::Iso8601SpaceOffset);
+    CHECK(kind(" %FT%T") == TimestampFormatKind::Compiled);
+    CHECK(kind("%FT%T ") == TimestampFormatKind::Compiled);
+    CHECK(kind("%Y-%m-%dT%H:%M:%S") == TimestampFormatKind::Compiled);
+    CHECK(kind("%d/%b/%Y:%H:%M:%S %z") == TimestampFormatKind::Compiled);
+    CHECK(kind("%a %b %d %H:%M:%S %Y") == TimestampFormatKind::Compiled);
+    // No date, a field given twice, a field width and an unsupported specifier all go to date::parse.
+    CHECK(kind("") == TimestampFormatKind::Generic);
+    CHECK(kind("%H:%M:%S") == TimestampFormatKind::Generic);
+    CHECK(kind("%F %Y") == TimestampFormatKind::Generic);
+    CHECK(kind("%F %4H") == TimestampFormatKind::Generic);
+    CHECK(kind("%D %T") == TimestampFormatKind::Generic);
+    // A width that date::parse cannot read safely never matches.
+    CHECK(kind("%F %0S") == TimestampFormatKind::Rejected);
+    CHECK(kind("%F %99S") == TimestampFormatKind::Rejected);
 }
 
 TEST_CASE(
@@ -153,7 +165,7 @@ TEST_CASE(
         for (const std::string &format : DefaultTimeParseFormats())
         {
             TimeStamp out{};
-            if (TryParseTimestamp(text, format, ClassifyTimestampFormat(format), scratch, ReferenceNow(), out))
+            if (TimestampFormat(format).Parse(text, scratch, ReferenceNow(), out))
             {
                 return out;
             }
@@ -523,16 +535,12 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp rejects malformed inputs", "[log_proce
     }
 }
 
-TEST_CASE("ClassifyTimestampFormat maps syslog format strings to the fast path", "[log_processing]")
+TEST_CASE("TimestampFormat sends both syslog day shapes to the syslog parser", "[log_processing]")
 {
-    // The classifier is what wires `%b %e %H:%M:%S` /
-    // `%b %d %H:%M:%S` into `TryParseSyslogRfc3164Timestamp`. Both
-    // day-padding shapes must land on the same fast-path kind so a
-    // sender variance never silently degrades to the slow generic
-    // parser.
-    CHECK(ClassifyTimestampFormat("%b %e %H:%M:%S") == TimestampFormatKind::SyslogRfc3164NoYear);
-    CHECK(ClassifyTimestampFormat("%b %d %H:%M:%S") == TimestampFormatKind::SyslogRfc3164NoYear);
-    CHECK(ClassifyTimestampFormat("%b %H:%M:%S") == TimestampFormatKind::Generic);
+    // Both day paddings must land on the same parser, so a sender that pads the other way still gets the year rule.
+    CHECK(TimestampFormat("%b %e %H:%M:%S").Kind() == TimestampFormatKind::SyslogRfc3164NoYear);
+    CHECK(TimestampFormat("%b %d %H:%M:%S").Kind() == TimestampFormatKind::SyslogRfc3164NoYear);
+    CHECK(TimestampFormat("%b %H:%M:%S").Kind() == TimestampFormatKind::Generic);
 }
 
 TEST_CASE("TryParseIsoTimestamp matches date::parse for representative inputs", "[log_processing][iso8601_fast_path]")
@@ -561,40 +569,47 @@ TEST_CASE("TryParseIsoTimestamp matches date::parse for representative inputs", 
     }
 }
 
-TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast_path]")
+TEST_CASE("TimestampFormat parses with the parser it picked", "[log_processing][iso8601_fast_path]")
 {
     TimestampParseScratch scratch;
     TimeStamp out{};
+    constexpr std::int64_t EXPECTED_US = 1745584496000000;
 
-    SECTION("Iso8601T routes to fast path")
+    SECTION("Iso8601T")
     {
-        REQUIRE(TryParseTimestamp(
-            "2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601T, scratch, ReferenceNow(), out
-        ));
-        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
+        REQUIRE(TimestampFormat("%FT%T").Parse("2025-04-25T12:34:56", scratch, ReferenceNow(), out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{EXPECTED_US}});
     }
 
-    SECTION("Iso8601Space routes to fast path")
+    SECTION("Iso8601Space")
     {
-        REQUIRE(TryParseTimestamp(
-            "2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601Space, scratch, ReferenceNow(), out
-        ));
-        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
+        REQUIRE(TimestampFormat("%F %T").Parse("2025-04-25 12:34:56", scratch, ReferenceNow(), out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{EXPECTED_US}});
     }
 
-    SECTION("Generic routes to date::parse")
+    SECTION("Compiled")
     {
-        REQUIRE(TryParseTimestamp(
-            "2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, ReferenceNow(), out
-        ));
-        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
-    }
-
-    SECTION("Generic rejects malformed input")
-    {
-        CHECK_FALSE(
-            TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, ReferenceNow(), out)
+        REQUIRE(
+            TimestampFormat("%Y-%m-%dT%H:%M:%S%Ez").Parse("2025-04-25T14:34:56+02:00", scratch, ReferenceNow(), out)
         );
+        CHECK(out == TimeStamp{std::chrono::microseconds{EXPECTED_US}});
+    }
+
+    SECTION("Generic")
+    {
+        REQUIRE(TimestampFormat("%D %T").Parse("04/25/25 12:34:56", scratch, ReferenceNow(), out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{EXPECTED_US}});
+    }
+
+    SECTION("Malformed input fails")
+    {
+        CHECK_FALSE(TimestampFormat("%Y-%m-%dT%H:%M:%S%Ez").Parse("not a date", scratch, ReferenceNow(), out));
+        CHECK_FALSE(TimestampFormat("%D %T").Parse("not a date", scratch, ReferenceNow(), out));
+    }
+
+    SECTION("Rejected never matches")
+    {
+        CHECK_FALSE(TimestampFormat("%F %0S").Parse("2025-04-25 12", scratch, ReferenceNow(), out));
     }
 }
 
@@ -616,7 +631,7 @@ TEST_CASE("Default parse formats accept Apache error log timestamps", "[log_proc
         for (const std::string &format : loglib::DefaultTimeParseFormats())
         {
             TimeStamp out{};
-            if (TryParseTimestamp(input, format, ClassifyTimestampFormat(format), scratch, ReferenceNow(), out))
+            if (TimestampFormat(format).Parse(input, scratch, ReferenceNow(), out))
             {
                 parsed = out;
                 break;
