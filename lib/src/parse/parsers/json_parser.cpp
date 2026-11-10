@@ -337,12 +337,15 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             {
                 const loglib::CompactLogValue rawValue =
                     ExtractRawJsonValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
-                if (rawValue.tag != loglib::CompactTag::Monostate)
+                if (rawValue.tag == loglib::CompactTag::Monostate)
                 {
-                    InsertSorted(result, keyId, rawValue);
-                    continue;
+                    // Reading a malformed container has already moved the iterator past its start, so the value
+                    // cannot be asked for its type again. The line is an error, as it is on the uncached path.
+                    outError = simdjson::TAPE_ERROR;
+                    return result;
                 }
-                break;
+                InsertSorted(result, keyId, rawValue);
+                continue;
             }
             case simdjson::ondemand::json_type::null:
                 if (value.is_null())
