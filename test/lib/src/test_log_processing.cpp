@@ -979,6 +979,8 @@ TEST_CASE("TryParseGenericTimestamp rejects a format with a large number in it",
     // A sign takes the only character of a one-wide signed field, which leaves the digits without a limit.
     CHECK_FALSE(TryParseGenericTimestamp("-8880000777777777777777777", "%1G %z", scratch, parsed));
     CHECK_FALSE(TryParseGenericTimestamp("-88800007777777777-05-01", "%1Y-%m-%d", scratch, parsed));
+    // A century is multiplied by 100 to add a two-digit year, which overflows for a century of eight digits.
+    CHECK_FALSE(TryParseGenericTimestamp("90040001 01", "%8C %y", scratch, parsed));
     // Short widths and literal digits stay valid.
     CHECK(TryParseGenericTimestamp("2024-05-01", "%4Y-%m-%d", scratch, parsed));
     CHECK(TryParseGenericTimestamp("%1 2024-05-01", "%%1 %Y-%m-%d", scratch, parsed));
