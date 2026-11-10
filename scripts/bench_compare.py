@@ -11,7 +11,8 @@ Two kinds of file are read:
 
 - Google Benchmark JSON (a ".json" file, written by loglib_benchmarks with --benchmark_out): one figure per benchmark,
   the median aggregate of the real time, lower is better. Where a benchmark reports bytes or items per second, the
-  median of that rate is compared as well, higher is better. The suffixes Google Benchmark adds to a name (iterations,
+  median of that rate is compared as well, higher is better. A counter whose name contains "bytes" is a size and is
+  compared too, lower is better. The suffixes Google Benchmark adds to a name (iterations,
   repeats, min time and the time kind) are dropped so the same benchmark matches across builds.
 - A CTest log (any other file, UTF-8 or UTF-16): the GUI benchmarks print one QDEBUG line per figure. The name is the
   test function plus the text before the first ": <number>", and the figure is the first number followed by "ms" (a
@@ -85,6 +86,9 @@ def add_entry(figures: Figures, name: str, entry: dict) -> None:
         figures[f"{name} [bytes/s]"] = (entry["bytes_per_second"], "rate")
     if "items_per_second" in entry:
         figures[f"{name} [items/s]"] = (entry["items_per_second"], "rate")
+    for counter, value in entry.items():
+        if "bytes" in counter and counter != "bytes_per_second" and isinstance(value, (int, float)):
+            figures[f"{name} [{counter}]"] = (float(value), "size")
 
 
 def gui_figures(text: str) -> Figures:
@@ -152,7 +156,7 @@ def main() -> int:
         (old, kind), (new, _) = before[name], after[name]
         if old == 0 or new == 0:
             continue
-        change = (old / new - 1) * 100 if kind == "time" else (new / old - 1) * 100
+        change = (old / new - 1) * 100 if kind in ("time", "size") else (new / old - 1) * 100
         rows.append((change, name, old, new, kind))
     rows.sort()
 

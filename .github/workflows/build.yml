@@ -301,6 +301,11 @@ jobs:
       - name: Run unit tests
         run: ctest --preset release
 
+      - name: Run benchmark smoke tier
+        # A few benchmarks at a small size, so a benchmark that breaks shows up before the next change to speed. It does
+        # not need LTO and its figures are not compared with anything.
+        run: ctest --preset release-benchmark-smoke
+
       - name: Run parser benchmarks
         if: env.SLV_LTO == 'ON'
         run: |
@@ -398,6 +403,11 @@ jobs:
       - name: Run unit tests
         run: ctest --preset release
 
+      - name: Run benchmark smoke tier
+        # A few benchmarks at a small size, so a benchmark that breaks shows up before the next change to speed. It does
+        # not need LTO and its figures are not compared with anything.
+        run: ctest --preset release-benchmark-smoke
+
       - name: Run parser benchmarks
         if: env.SLV_LTO == 'ON'
         run: |
@@ -469,6 +479,11 @@ jobs:
 
       - name: Run unit tests
         run: ctest --preset release
+
+      - name: Run benchmark smoke tier
+        # A few benchmarks at a small size, so a benchmark that breaks shows up before the next change to speed. It does
+        # not need LTO and its figures are not compared with anything.
+        run: ctest --preset release-benchmark-smoke
 
       - name: Run parser benchmarks
         if: env.SLV_LTO == 'ON'
