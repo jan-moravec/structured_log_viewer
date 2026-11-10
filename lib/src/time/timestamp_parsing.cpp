@@ -721,6 +721,8 @@ bool CompileSpecifier(char specifier, StepBuilder &builder)
  */
 bool CompileSteps(std::string_view format, std::vector<Step> &steps)
 {
+    // date::parse reads the format as a C string, so it ends at the first null character.
+    format = format.substr(0, format.find('\0'));
     StepBuilder builder;
     for (std::size_t i = 0; i < format.size(); ++i)
     {

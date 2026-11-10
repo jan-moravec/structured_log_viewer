@@ -46,7 +46,7 @@ std::vector<std::string> MakeValues(const std::string &format)
 template <typename Parse> void RunParse(benchmark::State &state, const std::vector<std::string> &values, Parse parse)
 {
     TimestampParseScratch scratch;
-    for (auto _ : state)
+    for (const auto _ : state)
     {
         std::int64_t sum = 0;
         for (const std::string &value : values)

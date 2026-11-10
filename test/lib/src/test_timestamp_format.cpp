@@ -210,6 +210,14 @@ TEST_CASE("A compiled format reads the same as date::parse on edge cases", "[tim
     }
 }
 
+TEST_CASE("A compiled format ends at a null character, as date::parse does", "[timestamp_format]")
+{
+    // date::parse takes the format as a C string, so whatever follows a null character is not part of it.
+    const std::string format("%F\0\0 %H", 7);
+    CheckAgrees(format, "08-2-2");
+    CheckAgrees(format, "2024-05-01 12");
+}
+
 TEST_CASE("A compiled format reads the same as date::parse on random text", "[timestamp_format]")
 {
     const std::vector<std::string> formats = {
