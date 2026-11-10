@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -649,13 +648,14 @@ private:
     const std::string nulTerminated(text);
     const char *first = nulTerminated.c_str();
     char *end = nullptr;
-    errno = 0;
     const double value = std::strtod(first, &end);
     if (end == nullptr || end != first + nulTerminated.size())
     {
         return std::nullopt;
     }
-    if (errno == ERANGE)
+    // Some libraries set ERANGE for a result that underflows to a tiny number, which is a valid bound and which the
+    // printer writes for an exclusive bound next to zero. Only a result too large for a double is rejected.
+    if (!std::isfinite(value))
     {
         return std::nullopt;
     }
