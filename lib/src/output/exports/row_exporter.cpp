@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace loglib::exports
@@ -33,40 +34,6 @@ void PollStop(const loglib::StopToken &token)
     if (token.StopRequested())
     {
         throw OperationCancelled{"Export cancelled by user"};
-    }
-}
-
-/// Calls @p writeRow for every source row that still exists, polling cancellation between batches and reporting
-/// progress. Rows past the end of the table, for example after a live-tail eviction, are skipped.
-template <typename WriteRow>
-void ForEachSourceRow(
-    const RowSource &source,
-    size_t lineCount,
-    const loglib::StopToken &stopToken,
-    const RowProgressCallback &progress,
-    WriteRow writeRow
-)
-{
-    const size_t total = source.sourceRows.size();
-    for (size_t slot = 0; slot < total; ++slot)
-    {
-        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            PollStop(stopToken);
-        }
-        const std::size_t sourceRow = source.sourceRows[slot];
-        if (sourceRow < lineCount)
-        {
-            writeRow(sourceRow);
-        }
-        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            progress(slot + 1, total);
-        }
-    }
-    if (progress)
-    {
-        progress(total, total);
     }
 }
 
@@ -290,26 +257,34 @@ void SnapshotExporter::Run(
     assert(source.table != nullptr);
     const auto &lines = source.table->Data().Lines();
 
-    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
-        const auto &line = lines[sourceRow];
-        const auto *lineSource = line.Source();
-        if (lineSource == nullptr)
-        {
-            return;
+    ExportRows<std::monostate>(
+        source,
+        lines.size(),
+        sink,
+        stopToken,
+        progress,
+        [] { return std::monostate{}; },
+        [&](std::monostate &, size_t sourceRow, std::string &text) {
+            const auto &line = lines[sourceRow];
+            const auto *lineSource = line.Source();
+            if (lineSource == nullptr)
+            {
+                return;
+            }
+            // Skip unavailable source rows, but let sink failures abort.
+            const size_t rowStart = text.size();
+            try
+            {
+                lineSource->AppendRawLine(line.LineId(), text);
+            }
+            catch (const std::exception &)
+            {
+                text.resize(rowStart);
+                return;
+            }
+            text.push_back('\n');
         }
-        // Skip unavailable source rows, but let sink failures abort.
-        std::string raw;
-        try
-        {
-            raw = lineSource->RawLine(line.LineId());
-        }
-        catch (const std::exception &)
-        {
-            return;
-        }
-        sink.Write(raw);
-        sink.WriteChar('\n');
-    });
+    );
 }
 
 // -----------------------------------------------------------------

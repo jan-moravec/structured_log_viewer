@@ -145,10 +145,20 @@ const std::filesystem::path &FileLineSource::Path() const noexcept
 
 std::string FileLineSource::RawLine(size_t lineId) const
 {
+    return std::string(RawLineBytes(lineId));
+}
+
+void FileLineSource::AppendRawLine(size_t lineId, std::string &out) const
+{
+    out.append(RawLineBytes(lineId));
+}
+
+std::string_view FileLineSource::RawLineBytes(size_t lineId) const
+{
     assert(lineId + 1 < mLineOffsets.size() && "RawLine: line past the end");
     if (lineId + 1 >= mLineOffsets.size())
     {
-        return std::string{};
+        return {};
     }
 
     // Multi-line headers use the offset after their final continuation.
@@ -166,7 +176,7 @@ std::string FileLineSource::RawLine(size_t lineId) const
     const uint64_t stopOffset = mLineOffsets[stopLine];
     if (stopOffset <= startOffset || startOffset >= mSize)
     {
-        return std::string{};
+        return {};
     }
 
     // Stop offset is one byte past the trailing '\n'. Files without a trailing
@@ -177,12 +187,12 @@ std::string FileLineSource::RawLine(size_t lineId) const
         length = mSize - static_cast<size_t>(startOffset);
     }
 
-    std::string buffer(mData + startOffset, length);
-    if (!buffer.empty() && buffer.back() == '\r')
+    std::string_view bytes(mData + startOffset, length);
+    if (!bytes.empty() && bytes.back() == '\r')
     {
-        buffer.pop_back();
+        bytes.remove_suffix(1);
     }
-    return buffer;
+    return bytes;
 }
 
 std::string_view FileLineSource::ResolveMmapBytes(uint64_t offset, uint32_t length, size_t /*lineId*/) const noexcept

@@ -32,6 +32,16 @@ std::string StreamLineSource::RawLine(size_t lineId) const
     return mLines[IndexForLocked(lineId)];
 }
 
+void StreamLineSource::AppendRawLine(size_t lineId, std::string &out) const
+{
+    const std::scoped_lock guard(mLock);
+    if (!LineIsLiveLocked(lineId))
+    {
+        throw std::out_of_range("StreamLineSource::RawLine: lineId " + std::to_string(lineId) + " is not available");
+    }
+    out.append(mLines[IndexForLocked(lineId)]);
+}
+
 std::string_view StreamLineSource::ResolveMmapBytes(
     uint64_t /*offset*/, uint32_t /*length*/, size_t /*lineId*/
 ) const noexcept
