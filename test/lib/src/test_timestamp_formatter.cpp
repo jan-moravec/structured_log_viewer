@@ -187,6 +187,33 @@ TEST_CASE("The timestamp formatter writes the same text as the general formatter
     }
 }
 
+TEST_CASE("The timestamp formatter is right when times arrive out of order", "[timestamp_formatter]")
+{
+    InitializeTimezoneData();
+    const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
+    std::vector<std::int64_t> instants = TransitionInstants(berlin);
+    std::mt19937_64 generator(3);
+    for (int i = 0; i < 300; ++i)
+    {
+        instants.push_back(
+            std::uniform_int_distribution<std::int64_t>(0, 4'102'444'800 * MICROS_PER_SECOND)(generator)
+        );
+    }
+    std::ranges::shuffle(instants, generator);
+
+    TimestampFormatter formatter(berlin, "%F %T %Z %z", FractionPrecision::Milliseconds);
+    for (const std::int64_t micros : instants)
+    {
+        const TimeStamp time{std::chrono::microseconds{micros}};
+        const std::string expected = Reference(berlin, time, "%F %T %Z %z", FractionPrecision::Milliseconds);
+        const std::string actual = Fast(formatter, time);
+        if (actual != expected)
+        {
+            FAIL("micros " << micros << ": expected '" << expected << "', got '" << actual << "'");
+        }
+    }
+}
+
 TEST_CASE("The timestamp formatter appends to the text it is given", "[timestamp_formatter]")
 {
     TimestampFormatter formatter(TimeZoneContext::Utc(), "%FT%T", FractionPrecision::Microseconds);

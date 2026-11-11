@@ -188,16 +188,25 @@ bool TimestampFormatter::AppendWithSteps(std::string &out, TimeStamp timeStamp)
 
     std::int64_t offsetSeconds = 0;
     std::string_view abbreviation = "UTC";
-    std::optional<ZoneSpan> span;
     if (!mZone.IsUtc())
     {
-        span = mZone.ZoneSpanAt(utc);
-        if (!span || span->offsetSeconds <= -MAX_OFFSET_SECONDS || span->offsetSeconds >= MAX_OFFSET_SECONDS)
+        // Most times fall in the span of the previous one, which costs two comparisons instead of a zone lookup.
+        if (!mHasSpan || utc < mSpan.beginUtc || utc >= mSpan.endUtc)
+        {
+            std::optional<ZoneSpan> span = mZone.ZoneSpanAt(utc);
+            if (!span)
+            {
+                return false;
+            }
+            mSpan = std::move(*span);
+            mHasSpan = true;
+        }
+        if (mSpan.offsetSeconds <= -MAX_OFFSET_SECONDS || mSpan.offsetSeconds >= MAX_OFFSET_SECONDS)
         {
             return false;
         }
-        offsetSeconds = span->offsetSeconds;
-        abbreviation = span->abbreviation;
+        offsetSeconds = mSpan.offsetSeconds;
+        abbreviation = mSpan.abbreviation;
     }
 
     const std::int64_t local = utc + offsetSeconds * MICROS_PER_SECOND;

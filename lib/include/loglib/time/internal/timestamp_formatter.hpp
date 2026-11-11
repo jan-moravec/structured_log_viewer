@@ -7,8 +7,8 @@
  * text between them. Any other format, a year outside 0000 to 9999 and a time the zone cannot answer for go to the
  * general formatter, so the text is always the same as TimeZoneContext::Format with the same precision gives.
  *
- * This is part of the time module. A formatter keeps the last day it wrote, so use one for each thread or export and do
- * not share it.
+ * This is part of the time module. A formatter keeps the last day and the last zone span it used, so use one for each
+ * thread or export and do not share it.
  */
 #pragma once
 
@@ -80,6 +80,10 @@ private:
     std::size_t mFixedLength = 0;
     /** @brief How many times the steps write the zone abbreviation. */
     std::size_t mAbbreviationCount = 0;
+
+    /** @brief The zone span of the last time that was written, valid when mHasSpan is set. */
+    ZoneSpan mSpan;
+    bool mHasSpan = false;
 
     /** @brief The day that mDayText holds, in days since the epoch, or no day yet. */
     std::int64_t mDay = 0;
