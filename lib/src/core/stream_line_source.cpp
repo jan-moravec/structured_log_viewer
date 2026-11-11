@@ -46,7 +46,7 @@ std::string_view StreamLineSource::ResolveMmapBytes(
     uint64_t /*offset*/, uint32_t /*length*/, size_t /*lineId*/
 ) const noexcept
 {
-    // Stream sources never produce `MmapSlice` payloads.
+    // Stream sources never produce MmapSlice cells.
     return {};
 }
 
@@ -62,9 +62,8 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
     {
         return {};
     }
-    // Deque entries are reference-stable until evicted, so the view
-    // outlives the lock release. Callers must not retain it past the
-    // next `EvictBefore` for this line id.
+    // Deque entries keep their address until they are evicted, so the view outlives the lock. Callers must not keep it
+    // past the next EvictBefore for this line.
     return {arena.data() + offset, length};
 }
 
@@ -102,8 +101,7 @@ void StreamLineSource::EvictBefore(size_t firstSurvivingLineId)
     {
         return;
     }
-    // Cap at `mNextLineId`: an over-shot caller drops everything held
-    // and `AppendLine` resumes at `mNextLineId`.
+    // A target past the next line id drops everything held, and AppendLine continues at the next line id.
     const size_t target = std::min(firstSurvivingLineId, mNextLineId);
     const size_t drop = target - mFirstAvailableLineId;
     for (size_t i = 0; i < drop; ++i)
@@ -166,15 +164,9 @@ size_t StreamLineSource::Size() const noexcept
 size_t StreamLineSource::OwnedMemoryBytes() const noexcept
 {
     const std::scoped_lock guard(mLock);
-    // STRICT LOWER BOUND: this counts the per-string control block
-    // (`sizeof(std::string)` per element) plus each string's heap
-    // `capacity()`. It does NOT count `std::deque`'s per-block
-    // bookkeeping (deque has no public `capacity()`), nor any small-
-    // string-optimisation slack inside the control block, nor the
-    // mutex / member overhead of `*this`. For "is this stream growing
-    // unboundedly?" diagnostics the lower bound is more useful than a
-    // pessimistic estimate that conflates allocator block-rounding
-    // with logical growth, so callers should treat it as such.
+    // A lower bound: the string objects and the capacity of each string. The deque's own blocks, the slack of short
+    // strings and the members of this object are not counted. To see whether a stream keeps growing, a lower bound is
+    // more useful than an estimate that mixes allocator rounding with real growth.
     size_t total = (mLines.size() + mLineOwnedBytes.size()) * sizeof(std::string);
     for (const auto &line : mLines)
     {
