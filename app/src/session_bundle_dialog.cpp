@@ -38,7 +38,7 @@ constexpr auto SETTINGS_LEVEL = "session_bundle/compression_level";
 constexpr auto SETTINGS_WORKERS = "session_bundle/workers";
 constexpr auto SETTINGS_LAST_DIR = "session_bundle/last_dir";
 
-/// Use up to `WORKER_THREAD_CAP` workers; zero leaves the number to the library.
+/** Uses up to WORKER_THREAD_CAP workers, and one thread on a computer with a single core. */
 int DefaultWorkerThreads() noexcept
 {
     const int ideal = QThread::idealThreadCount();
@@ -155,7 +155,7 @@ SessionBundleDialog::SessionBundleDialog(
     );
     mWorkersSpin->setToolTip(
         tr("zstd worker threads for the single bundle frame. "
-           "0 uses zstd's single-threaded path; positive values enable zstd multi-threading.")
+           "Single-threaded compresses on one thread; positive values enable zstd multi-threading.")
     );
     advancedForm->addRow(tr("Worker threads:"), mWorkersSpin);
 
@@ -190,7 +190,8 @@ SessionBundleDialog::Config SessionBundleDialog::Configuration() const
     Config cfg;
     cfg.destination = AppendBundleExtensionIfMissing(mDestinationEdit->text().trimmed());
     cfg.compressionLevel = mCompressionLevelSpin->value();
-    cfg.totalWorkers = mWorkersSpin->value();
+    // The spin box shows zero as single-threaded, which the bundle writer asks for with a negative number.
+    cfg.totalWorkers = mWorkersSpin->value() == 0 ? -1 : mWorkersSpin->value();
     return cfg;
 }
 

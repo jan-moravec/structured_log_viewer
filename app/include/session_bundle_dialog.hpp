@@ -26,7 +26,8 @@ public:
         QString destination;
         /// zstd compression level, 1..22.
         int compressionLevel = 3;
-        /// zstd worker threads (0 = zstd's single-threaded path).
+        /** The zstd worker threads, passed to the bundle writer as they are. A negative number compresses on one
+         * thread. */
         int totalWorkers = 0;
     };
 
