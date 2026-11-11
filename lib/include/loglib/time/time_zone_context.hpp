@@ -147,6 +147,13 @@ public:
     [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format) const;
 
     /**
+     * @brief Appends the text that Format gives to out. The text is written by a formatter that each thread keeps for
+     * its last zone and format, so a loop over the cells of one column allocates nothing. Throws std::runtime_error if
+     * the format cannot be applied, and then out is unchanged.
+     */
+    void AppendFormatted(std::string &out, TimeStamp timeStamp, std::string_view format) const;
+
+    /**
      * @brief Formats a time in this zone with a strftime-style format, with the given number of fraction digits.
      *
      * Milliseconds round the time to the nearest millisecond first. This always uses the general formatter, so it is

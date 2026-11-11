@@ -208,6 +208,13 @@ TimeStamp TimeZoneContext::LocalMillisecondsToUtc(std::int64_t milliseconds) con
 
 std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format) const
 {
+    std::string text;
+    AppendFormatted(text, timeStamp, format);
+    return text;
+}
+
+void TimeZoneContext::AppendFormatted(std::string &out, TimeStamp timeStamp, std::string_view format) const
+{
     // Each thread keeps the formatter of its last zone and format, because callers format one column's cells in a row.
     struct Cached
     {
@@ -222,7 +229,7 @@ std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format
         cached.impl = mImpl;
         cached.format = format;
     }
-    return cached.formatter->Format(timeStamp);
+    cached.formatter->Append(out, timeStamp);
 }
 
 std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format, FractionPrecision precision) const

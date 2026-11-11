@@ -11,13 +11,18 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
+#include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <exception>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -28,6 +33,43 @@ namespace loglib
 
 namespace
 {
+
+/** The number of digits after the point when a print format is a fixed-precision one such as {:.2f}. */
+std::optional<int> FixedPrecisionOf(const std::string &format) noexcept
+{
+    // Only {:.Nf} and {:.NNf} are read; anything else goes to the general formatter.
+    const std::size_t size = format.size();
+    if (size < 6 || size > 7 || format[0] != '{' || format[1] != ':' || format[2] != '.' || format[size - 1] != '}' ||
+        format[size - 2] != 'f')
+    {
+        return std::nullopt;
+    }
+    int precision = 0;
+    for (std::size_t i = 3; i < size - 2; ++i)
+    {
+        if (format[i] < '0' || format[i] > '9')
+        {
+            return std::nullopt;
+        }
+        precision = precision * 10 + (format[i] - '0');
+    }
+    return precision;
+}
+
+/** Appends a value with a runtime print format. A format that the value does not accept gives its plain text. */
+template <typename Value>
+void AppendWithFmt(std::string &out, std::size_t start, const std::string &format, const Value &value)
+{
+    try
+    {
+        fmt::vformat_to(std::back_inserter(out), format, fmt::make_format_args(value));
+    }
+    catch (const fmt::format_error &)
+    {
+        out.resize(start);
+        fmt::format_to(std::back_inserter(out), "{}", value);
+    }
+}
 
 /** Whether a time format prints, by the same rule that FormatLogValue applies to a Time cell. */
 bool TimeFormatPrints(const std::string &format)
@@ -530,7 +572,27 @@ std::string_view LogTable::GetValueOrFormatted(size_t row, size_t column, std::s
         {
             continue;
         }
-        LogValue value = line.GetValue(id);
+        const CompactLogValue *slot = line.FindCompact(id);
+        if (slot == nullptr || slot->tag == CompactTag::Monostate)
+        {
+            continue;
+        }
+        if (slot->tag == CompactTag::MmapSlice || slot->tag == CompactTag::OwnedString)
+        {
+            const std::optional<std::string_view> bytes = line.PeekStringView(*slot);
+            if (!bytes.has_value())
+            {
+                continue;
+            }
+            if (slot->tag == CompactTag::MmapSlice)
+            {
+                return *bytes;
+            }
+            // Stream bytes can be evicted later, so the caller gets a copy in its own buffer.
+            buffer.assign(*bytes);
+            return buffer;
+        }
+        const LogValue value = slot->Materialise(line.Source(), line.LineId(), id);
         if (std::holds_alternative<std::monostate>(value))
         {
             continue;
@@ -539,12 +601,8 @@ std::string_view LogTable::GetValueOrFormatted(size_t row, size_t column, std::s
         {
             return *sv;
         }
-        if (const auto *s = std::get_if<std::string>(&value); s != nullptr)
-        {
-            buffer.assign(*s);
-            return buffer;
-        }
-        buffer = FormatLogValue(columns[column].printFormat, value);
+        buffer.clear();
+        AppendFormattedValue(buffer, columns[column].printFormat, value);
         return buffer;
     }
     return {};
@@ -1039,45 +1097,66 @@ const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const 
 
 std::string LogTable::FormatLogValue(const std::string &format, const LogValue &value) const
 {
-    return std::visit(
-        [&](const auto &arg) -> std::string {
+    std::string text;
+    AppendFormattedValue(text, format, value);
+    return text;
+}
+
+void LogTable::AppendFormattedValue(std::string &out, const std::string &format, const LogValue &value) const
+{
+    const std::size_t start = out.size();
+    std::visit(
+        [&](const auto &arg) {
             using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, std::string>)
+            if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view>)
             {
-                return arg;
+                out.append(arg);
             }
-            else if constexpr (std::is_same_v<T, std::string_view>)
+            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)
             {
-                return std::string(arg);
+                if (format == "{}")
+                {
+                    std::array<char, 24> digits{};
+                    const auto result = std::to_chars(digits.data(), digits.data() + digits.size(), arg);
+                    out.append(digits.data(), result.ptr);
+                    return;
+                }
+                AppendWithFmt(out, start, format, arg);
             }
-            else if constexpr (
-                std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t> || std::is_same_v<T, double> ||
-                std::is_same_v<T, bool>
-            )
+            else if constexpr (std::is_same_v<T, double>)
             {
-                try
+                if (const std::optional<int> precision = FixedPrecisionOf(format);
+                    precision.has_value() && std::isfinite(arg))
                 {
-                    return fmt::vformat(format, fmt::make_format_args(arg));
+                    std::array<char, 400> digits{};
+                    const auto result = std::to_chars(
+                        digits.data(), digits.data() + digits.size(), arg, std::chars_format::fixed, *precision
+                    );
+                    if (result.ec == std::errc{})
+                    {
+                        out.append(digits.data(), result.ptr);
+                        return;
+                    }
                 }
-                catch (const fmt::format_error &)
-                {
-                    return fmt::format("{}", arg);
-                }
+                AppendWithFmt(out, start, format, arg);
+            }
+            else if constexpr (std::is_same_v<T, bool>)
+            {
+                AppendWithFmt(out, start, format, arg);
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
                 try
                 {
-                    return mDisplayTimeZone.Format(arg, format);
+                    mDisplayTimeZone.AppendFormatted(out, arg, format);
                 }
                 catch (const std::exception &)
                 {
-                    return mDisplayTimeZone.FormatTimeStamp(arg);
+                    mDisplayTimeZone.AppendFormatted(out, arg, "%F %T");
                 }
             }
             else if constexpr (std::is_same_v<T, std::monostate>)
             {
-                return {};
             }
             else
             {
