@@ -15,6 +15,7 @@
 #include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <span>
 #include <sstream>
@@ -626,6 +628,122 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
     REQUIRE(outLines[1].contains("\"value\":1.0"));
     REQUIRE(outLines[2].contains("\"value\":-3.0"));
     REQUIRE(outLines[3].contains("\"value\":2.5"));
+}
+
+TEST_CASE("exports: JSON Lines escapes strings and writes numbers as JSON requires", "[exports][row_exporter]")
+{
+    const std::vector<std::string> texts = {
+        "plain",
+        "",
+        "say \"hi\"",
+        "back\\slash",
+        "tab\tnew\nline\r\b\f",
+        std::string("\x01\x1f control", 10),
+        "mix \"a\\b\"\x02 end",
+        "\xc5\xbelu\xc5\xa5ou\xc4\x8dk\xc3\xbd",
+        "\"",
+        "\\",
+        "a\"",
+        "\"a",
+    };
+    const auto expectedEscape = [](const std::string &text) {
+        std::string out;
+        for (const char c : text)
+        {
+            const auto ch = static_cast<unsigned char>(c);
+            switch (c)
+            {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (ch < 0x20)
+                {
+                    out += fmt::format("\\u{:04x}", static_cast<unsigned>(ch));
+                }
+                else
+                {
+                    out.push_back(c);
+                }
+            }
+        }
+        return out;
+    };
+
+    auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.jsonl"), nullptr);
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        stream->AppendLine("raw", {});
+    }
+    auto *sourcePtr = stream.get();
+
+    loglib::KeyIndex keys;
+    std::vector<loglib::LogLine> lines;
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        loglib::LogMap map;
+        map["a_text"] = texts[i];
+        map["b_signed"] = (i % 2 == 0) ? std::numeric_limits<std::int64_t>::min() : std::int64_t{-7};
+        map["c_unsigned"] = std::numeric_limits<std::uint64_t>::max();
+        map["d_flag"] = i % 2 == 0;
+        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+    }
+    loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
+
+    loglib::LogConfiguration config;
+    for (const char *key : {"a_text", "b_signed", "c_unsigned", "d_flag"})
+    {
+        config.columns.push_back({.header = key, .keys = {key}, .printFormat = "{}", .type = loglib::ColumnType::Any});
+    }
+    loglib::LogConfigurationManager manager;
+    manager.SetConfiguration(std::move(config));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
+
+    std::vector<std::size_t> rows(texts.size());
+    std::iota(rows.begin(), rows.end(), std::size_t{0});
+    std::vector<std::size_t> cols;
+    const RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = true,
+        .includeHeaderRow = false,
+    };
+
+    MemorySink sink;
+    auto exporter = loglib::exports::MakeExporter(ExportFormat::JsonLines);
+    REQUIRE(exporter != nullptr);
+    exporter->Run(src, sink, loglib::StopToken{});
+
+    const auto outLines = SplitNonEmptyLines(sink.Bytes());
+    REQUIRE(outLines.size() == texts.size());
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        const std::string expected =
+            "{\"a_text\":\"" + expectedEscape(texts[i]) +
+            "\",\"b_signed\":" + (i % 2 == 0 ? "-9223372036854775808" : "-7") +
+            ",\"c_unsigned\":18446744073709551615,\"d_flag\":" + (i % 2 == 0 ? "true" : "false") + "}";
+        INFO("row " << i);
+        CHECK(outLines[i] == expected);
+    }
 }
 
 TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][row_exporter]")

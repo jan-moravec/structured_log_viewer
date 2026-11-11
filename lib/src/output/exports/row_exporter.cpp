@@ -148,17 +148,15 @@ void AppendCsvField(std::string &out, std::string_view cell)
         // The leading apostrophe forces literal spreadsheet text.
         out.push_back('\'');
     }
-    for (const char c : cell)
+    // Text between quotes goes out in one call per run.
+    std::string_view rest = cell;
+    for (std::size_t quote = rest.find('"'); quote != std::string_view::npos; quote = rest.find('"'))
     {
-        if (c == '"')
-        {
-            out.append("\"\"");
-        }
-        else
-        {
-            out.push_back(c);
-        }
+        out.append(rest.substr(0, quote + 1));
+        out.push_back('"');
+        rest.remove_prefix(quote + 1);
     }
+    out.append(rest);
     out.push_back('"');
 }
 
@@ -284,26 +282,31 @@ private:
 
 void MarkdownExporter::AppendMarkdownCell(std::string &out, std::string_view cell)
 {
-    for (const char c : cell)
+    // Text without a special character goes out in one call per run.
+    std::size_t runStart = 0;
+    for (std::size_t i = 0; i < cell.size(); ++i)
     {
-        switch (c)
+        const char c = cell[i];
+        if (c != '|' && c != '\\' && c != '\n' && c != '\r' && c != '\t')
         {
-        case '|':
+            continue;
+        }
+        out.append(cell.data() + runStart, i - runStart);
+        runStart = i + 1;
+        if (c == '|')
+        {
             out.append("\\|");
-            break;
-        case '\\':
+        }
+        else if (c == '\\')
+        {
             out.append("\\\\");
-            break;
-        case '\n':
-        case '\r':
-        case '\t':
+        }
+        else
+        {
             out.push_back(' ');
-            break;
-        default:
-            out.push_back(c);
-            break;
         }
     }
+    out.append(cell.data() + runStart, cell.size() - runStart);
 }
 
 void MarkdownExporter::Run(

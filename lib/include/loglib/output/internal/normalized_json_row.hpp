@@ -49,6 +49,9 @@ private:
         const CompactLogValue *slot;
     };
 
+    /** @brief Appends the JSON text of a field's value. Returns false, adding nothing, if the value cannot be read. */
+    [[nodiscard]] bool AppendSlotValue(std::string &out, const LogLine &line, const RowField &field);
+
     /** @brief The text that starts a field: the escaped key in quotes and a colon. */
     [[nodiscard]] const std::string &KeyPrefix(KeyId id);
 
