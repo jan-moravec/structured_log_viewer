@@ -5,8 +5,8 @@
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/log_value.hpp"
 #include "loglib/table/log_table.hpp"
+#include "loglib/time/internal/timestamp_formatter.hpp"
 
-#include <date/date.h>
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -28,7 +28,7 @@ constexpr std::size_t ROW_RESERVE_BYTES = 512;
 
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
-    // Reserve for the worst `\u00xx` expansion when escaping is needed.
+    // Reserve for the worst case, six bytes for every byte, when escaping is needed.
     constexpr std::size_t ESCAPE_WORST_CASE_MULTIPLIER = 6U;
     bool hasEscape = false;
     for (const char c : input)
@@ -82,15 +82,14 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
     }
 }
 
-/// Append an ISO-8601 UTC JSON string, or `null` if formatting fails.
-void AppendTimestampJson(std::string &out, TimeStamp timestamp)
+/** Appends the time as an ISO 8601 UTC string in quotes, or null if it cannot be formatted. */
+void AppendTimestampJson(std::string &out, TimestampFormatter &formatter, TimeStamp timestamp)
 {
     const std::size_t savedSize = out.size();
     try
     {
-        const date::sys_time<std::chrono::microseconds> time{timestamp.time_since_epoch()};
         out.push_back('"');
-        out.append(date::format("%FT%T", time));
+        formatter.Append(out, timestamp);
         out.push_back('Z');
         out.push_back('"');
     }
@@ -101,10 +100,10 @@ void AppendTimestampJson(std::string &out, TimeStamp timestamp)
     }
 }
 
-void AppendValue(std::string &out, const LogValue &value)
+void AppendValue(std::string &out, TimestampFormatter &formatter, const LogValue &value)
 {
     std::visit(
-        [&out]<typename T>(const T &arg) {
+        [&out, &formatter]<typename T>(const T &arg) {
             if constexpr (std::is_same_v<T, std::monostate>)
             {
                 out.append("null");
@@ -140,7 +139,7 @@ void AppendValue(std::string &out, const LogValue &value)
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                AppendTimestampJson(out, arg);
+                AppendTimestampJson(out, formatter, arg);
             }
         },
         value
@@ -155,7 +154,10 @@ constexpr std::uint32_t UNRANKED = UINT32_MAX;
 } // namespace
 
 NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table)
-    : mKeys(&table.Data().Keys()), mRankByKey(mKeys->Size(), UNRANKED), mKeyPrefix(mKeys->Size())
+    : mKeys(&table.Data().Keys()),
+      mRankByKey(mKeys->Size(), UNRANKED),
+      mKeyPrefix(mKeys->Size()),
+      mTimestampFormatter(TimeZoneContext::Utc(), "%FT%T", FractionPrecision::Microseconds)
 {
     std::uint32_t next = 0;
     for (const Column &column : table.Configuration().Configuration().columns)
@@ -244,7 +246,7 @@ void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
         }
         first = false;
         out.append(KeyPrefix(field.id));
-        AppendValue(out, value);
+        AppendValue(out, mTimestampFormatter, value);
     }
     out.push_back('}');
 }

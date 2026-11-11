@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -39,6 +40,29 @@ struct LocalOffsetWindow
     {
         return beginLocal <= localMicroseconds && localMicroseconds < endLocal;
     }
+};
+
+/** @brief How many digits of the second a formatted time shows: three for milliseconds, six for microseconds. */
+enum class FractionPrecision : std::uint8_t
+{
+    Milliseconds,
+    Microseconds,
+};
+
+/**
+ * @brief A range of UTC instants over which a zone keeps the same offset and abbreviation, for example one half of a
+ * year between two daylight saving changes.
+ */
+struct ZoneSpan
+{
+    /** @brief The first UTC microsecond in the span. */
+    std::int64_t beginUtc = 0;
+    /** @brief One past the last UTC microsecond in the span. */
+    std::int64_t endUtc = 0;
+    /** @brief The seconds to add to a UTC time to get the local time. */
+    std::int64_t offsetSeconds = 0;
+    /** @brief The short zone name, such as CET. */
+    std::string abbreviation;
 };
 
 /**
@@ -119,8 +143,27 @@ public:
      */
     [[nodiscard]] TimeStamp LocalMillisecondsToUtc(std::int64_t milliseconds) const;
 
-    /** @brief Formats a time in this zone with a strftime-style format. */
+    /** @brief Formats a time in this zone with a strftime-style format, rounded to milliseconds. */
     [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format) const;
+
+    /**
+     * @brief Formats a time in this zone with a strftime-style format, with the given number of fraction digits.
+     *
+     * Milliseconds round the time to the nearest millisecond first. This always uses the general formatter, so it is
+     * the reference for faster ways of writing the same text. Throws std::runtime_error if the format cannot be
+     * applied.
+     */
+    [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format, FractionPrecision precision) const;
+
+    /** @brief True for a context that has no zone data, which is UTC. */
+    [[nodiscard]] bool IsUtc() const noexcept;
+
+    /**
+     * @brief Returns the span of UTC instants around a time that share its offset and abbreviation.
+     *
+     * The result is empty if the zone data cannot answer for that time. A UTC context returns one span for all time.
+     */
+    [[nodiscard]] std::optional<ZoneSpan> ZoneSpanAt(std::int64_t utcMicroseconds) const;
 
     /** @brief Formats UTC microseconds as local time in this zone, as year-month-day hours:minutes:seconds. */
     [[nodiscard]] std::string FormatUtcMicroseconds(std::int64_t microseconds) const;

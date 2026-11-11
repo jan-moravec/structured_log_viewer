@@ -10,6 +10,7 @@
 #pragma once
 
 #include "loglib/core/key_index.hpp"
+#include "loglib/time/internal/timestamp_formatter.hpp"
 
 #include <cstdint>
 #include <string>
@@ -61,6 +62,8 @@ private:
     std::vector<KeyId> mPreviousIds;
     /** @brief Positions in mRow, in the order the fields are written. */
     std::vector<std::uint32_t> mOrder;
+    /** @brief Writes timestamps as UTC with six fraction digits. */
+    TimestampFormatter mTimestampFormatter;
 };
 
 } // namespace loglib::internal
