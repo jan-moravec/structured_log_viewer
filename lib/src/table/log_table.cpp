@@ -580,13 +580,18 @@ std::string_view LogTable::GetValueOrFormatted(size_t row, size_t column, std::s
         if (slot->tag == CompactTag::MmapSlice || slot->tag == CompactTag::OwnedString)
         {
             const std::optional<std::string_view> bytes = line.PeekStringView(*slot);
-            if (!bytes.has_value())
-            {
-                continue;
-            }
             if (slot->tag == CompactTag::MmapSlice)
             {
+                if (!bytes.has_value())
+                {
+                    continue;
+                }
                 return *bytes;
+            }
+            // An owned string without a source reads as an empty cell, as GetValue gives it.
+            if (!bytes.has_value())
+            {
+                return {};
             }
             // Stream bytes can be evicted later, so the caller gets a copy in its own buffer.
             buffer.assign(*bytes);
