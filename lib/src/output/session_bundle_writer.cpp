@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -54,6 +55,9 @@ namespace
 constexpr std::size_t MAX_RECORD_BYTES = 256U * 1024U * 1024U;
 constexpr std::size_t MAX_METADATA_BYTES = 64U * 1024U * 1024U;
 constexpr std::size_t PROGRESS_INTERVAL_ROWS = 4096;
+
+/** The most compression threads that the writer starts when the caller leaves the number to the library. */
+constexpr unsigned DEFAULT_WORKERS = 4;
 
 void PollStop(const StopToken &token)
 {
@@ -317,9 +321,15 @@ public:
         }
         SetParameter(ZSTD_c_compressionLevel, options.compressionLevel);
         SetParameter(ZSTD_c_checksumFlag, 1);
-        if (options.totalWorkers > 0)
+        // Asking for no workers lets the library choose, so that a bundle is compressed on several threads by default.
+        // A negative number keeps the compression on the calling thread.
+        const int workers =
+            options.totalWorkers != 0
+                ? options.totalWorkers
+                : static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 1U, DEFAULT_WORKERS));
+        if (workers > 0)
         {
-            const std::size_t result = ZSTD_CCtx_setParameter(mContext, ZSTD_c_nbWorkers, options.totalWorkers);
+            const std::size_t result = ZSTD_CCtx_setParameter(mContext, ZSTD_c_nbWorkers, workers);
             if (ZSTD_isError(result))
             {
                 throw IoError(

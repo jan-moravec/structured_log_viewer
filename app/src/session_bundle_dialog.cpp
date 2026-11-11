@@ -38,7 +38,7 @@ constexpr auto SETTINGS_LEVEL = "session_bundle/compression_level";
 constexpr auto SETTINGS_WORKERS = "session_bundle/workers";
 constexpr auto SETTINGS_LAST_DIR = "session_bundle/last_dir";
 
-/// Use up to `WORKER_THREAD_CAP` workers; zero means single-threaded.
+/// Use up to `WORKER_THREAD_CAP` workers; zero leaves the number to the library.
 int DefaultWorkerThreads() noexcept
 {
     const int ideal = QThread::idealThreadCount();

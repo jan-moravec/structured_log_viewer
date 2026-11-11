@@ -204,7 +204,7 @@ void RegisterBundleWrite(const Tier &tier, const SharedExportTable &table)
             const ExportTable &fixture = input.table->Get();
             SessionBundleWriteOptions options;
             options.compressionLevel = ZSTD_minCLevel();
-            options.totalWorkers = 0;
+            options.totalWorkers = -1;
             std::uintmax_t bytes = 0;
             const auto writeOnce = [&] {
                 const TempFile destination;

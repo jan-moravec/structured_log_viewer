@@ -705,7 +705,7 @@ void AddBundle(CLI::App &root, CommandParser &command)
     app.add_option(
         "--bundle-threads",
         bundle.bundleThreads,
-        std::format("zstd worker threads. 0 uses one thread. The default is {}.", bundle.bundleThreads)
+        std::format("zstd worker threads. 0 uses up to four. The default is {}.", bundle.bundleThreads)
     );
     command.finish = [](CommandParser &self) {
         auto &options = std::get<BundleOptions>(self.options);
