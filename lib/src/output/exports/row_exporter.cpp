@@ -27,8 +27,7 @@ namespace
 /** The rows that one thread writes as a unit. Cancellation is checked and progress is reported once for each. */
 constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 
-/// Throw `OperationCancelled` when the user hit Cancel. Called
-/// between row batches.
+/** Throws OperationCancelled when a stop was requested. Called between chunks of rows. */
 void PollStop(const loglib::StopToken &token)
 {
     if (token.StopRequested())
@@ -141,7 +140,7 @@ public:
     ) override;
 };
 
-/// True iff @p cell starts with a spreadsheet formula / DDE prefix (`=` or `@`).
+/** True if the cell starts with a character that a spreadsheet reads as a formula or a data exchange command. */
 [[nodiscard]] bool IsFormulaTrigger(std::string_view cell) noexcept
 {
     return !cell.empty() && (cell.front() == '=' || cell.front() == '@');
@@ -302,8 +301,7 @@ public:
     ) override;
 
 private:
-    /// Escape pipes/backslashes and collapse whitespace for a
-    /// single-line Markdown table cell.
+    /** Escapes pipes and backslashes and turns line breaks and tabs into spaces, for a one-line table cell. */
     static void AppendMarkdownCell(std::string &out, std::string_view cell);
 };
 
