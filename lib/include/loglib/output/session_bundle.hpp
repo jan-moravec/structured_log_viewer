@@ -43,7 +43,7 @@ struct SessionBundleWriteOptions
     /** @brief Cancels the write. The writer deletes its temporary file and then throws OperationCancelled. */
     StopToken stopToken;
 
-    /** @brief Reports progress in rows of the table. It is called on the writing thread. */
+    /** @brief Reports progress in rows of the table. It is called by one thread at a time, in order. */
     RowProgressCallback progress;
 
     /**

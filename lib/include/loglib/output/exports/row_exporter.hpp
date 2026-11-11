@@ -78,9 +78,11 @@ struct RowSource
 /**
  * @brief Writes rows in one format. Make one for each export run.
  *
- * Run goes through the rows of the RowSource in order and writes the bytes to the sink. It checks the stop token every
- * few rows and throws OperationCancelled when a stop is requested. Run does not call Finish. The caller does that after
- * a successful run, so that an exception during the run lets ~FileSink delete the temporary file.
+ * Run goes through the rows of the RowSource and writes the bytes to the sink in row order. Several threads turn the
+ * rows into text, so the cells are read from more than one thread, but the sink and the progress callback are called by
+ * one thread at a time. Run checks the stop token every few rows and throws OperationCancelled when a stop is
+ * requested. Run does not call Finish. The caller does that after a successful run, so that an exception during the run
+ * lets ~FileSink delete the temporary file.
  */
 class RowExporter
 {
