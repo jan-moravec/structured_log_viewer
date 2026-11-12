@@ -13,6 +13,7 @@
 #include <oneapi/tbb/parallel_sort.h>
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -432,6 +433,285 @@ int CompareRows(
 namespace
 {
 
+/// How a cell takes part in a key sort. Cells that fit the column's type come first, then NaN in a floating column,
+/// then every other cell. Descending order reverses the three groups.
+enum class KeyClass : uint8_t
+{
+    Ordinary,
+    NotANumber,
+    Missing,
+};
+
+/// A cell reduced to a sort key. The key only means something for an ordinary cell.
+struct SortKey
+{
+    KeyClass keyClass = KeyClass::Missing;
+    uint64_t key = 0;
+};
+
+/// A row position with its key. Sorting these moves 16 bytes per row and never touches the table.
+struct KeyedRow
+{
+    uint64_t key;
+    size_t position;
+};
+
+constexpr uint64_t SIGN_BIT = uint64_t{1} << 63;
+
+/// Maps a signed integer to an unsigned key with the same order.
+uint64_t OrderedKey(int64_t value) noexcept
+{
+    return static_cast<uint64_t>(value) ^ SIGN_BIT;
+}
+
+/// Maps a double that is not NaN to an unsigned key with the same order. Zero and negative zero are equal for
+/// ThreeWayDouble, so both map to one key.
+uint64_t OrderedKey(double value) noexcept
+{
+    if (value == 0.0)
+    {
+        value = 0.0;
+    }
+    const auto bits = std::bit_cast<uint64_t>(value);
+    return (bits & SIGN_BIT) != 0 ? ~bits : (bits | SIGN_BIT);
+}
+
+SortKey MakeKey(uint64_t key) noexcept
+{
+    return {.keyClass = KeyClass::Ordinary, .key = key};
+}
+
+/// Clamps an unsigned value above INT64_MAX, as CompareInteger and CompareTime do.
+int64_t ClampToInt64(uint64_t value) noexcept
+{
+    constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    return value > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(value);
+}
+
+SortKey BoolKey(const LogValue &value) noexcept
+{
+    if (const auto *b = std::get_if<bool>(&value); b != nullptr)
+    {
+        return MakeKey(*b ? 1U : 0U);
+    }
+    return {};
+}
+
+SortKey IntegerKey(const LogValue &value) noexcept
+{
+    if (const auto *i = std::get_if<int64_t>(&value); i != nullptr)
+    {
+        return MakeKey(OrderedKey(*i));
+    }
+    if (const auto *u = std::get_if<uint64_t>(&value); u != nullptr)
+    {
+        return MakeKey(OrderedKey(ClampToInt64(*u)));
+    }
+    if (const auto *d = std::get_if<double>(&value); d != nullptr)
+    {
+        if (std::isnan(*d))
+        {
+            return {};
+        }
+        if (*d >= static_cast<double>(std::numeric_limits<int64_t>::max()))
+        {
+            return MakeKey(OrderedKey(std::numeric_limits<int64_t>::max()));
+        }
+        if (*d <= static_cast<double>(std::numeric_limits<int64_t>::min()))
+        {
+            return MakeKey(OrderedKey(std::numeric_limits<int64_t>::min()));
+        }
+        return MakeKey(OrderedKey(static_cast<int64_t>(*d)));
+    }
+    return {};
+}
+
+SortKey FloatingKey(const LogValue &value) noexcept
+{
+    double number = 0.0;
+    if (const auto *d = std::get_if<double>(&value); d != nullptr)
+    {
+        number = *d;
+    }
+    else if (const auto *i = std::get_if<int64_t>(&value); i != nullptr)
+    {
+        number = static_cast<double>(*i);
+    }
+    else if (const auto *u = std::get_if<uint64_t>(&value); u != nullptr)
+    {
+        number = static_cast<double>(*u);
+    }
+    else
+    {
+        return {};
+    }
+    if (std::isnan(number))
+    {
+        return {.keyClass = KeyClass::NotANumber, .key = 0};
+    }
+    return MakeKey(OrderedKey(number));
+}
+
+SortKey TimeKey(const LogValue &value) noexcept
+{
+    if (const auto *t = std::get_if<TimeStamp>(&value); t != nullptr)
+    {
+        return MakeKey(OrderedKey(static_cast<int64_t>(t->time_since_epoch().count())));
+    }
+    if (const auto *i = std::get_if<int64_t>(&value); i != nullptr)
+    {
+        return MakeKey(OrderedKey(*i));
+    }
+    if (const auto *u = std::get_if<uint64_t>(&value); u != nullptr)
+    {
+        return MakeKey(OrderedKey(ClampToInt64(*u)));
+    }
+    return {};
+}
+
+/// The rows split by key class. Every list is in row order.
+struct KeyedRows
+{
+    std::vector<KeyedRow> ordinary;
+    std::vector<size_t> notANumber;
+    std::vector<size_t> missing;
+};
+
+KeyedRows SplitByClass(const std::vector<KeyClass> &classes, const std::vector<uint64_t> &keys)
+{
+    KeyedRows split;
+    size_t ordinaryCount = 0;
+    for (const KeyClass keyClass : classes)
+    {
+        ordinaryCount += keyClass == KeyClass::Ordinary ? 1U : 0U;
+    }
+    split.ordinary.reserve(ordinaryCount);
+    for (size_t i = 0; i < classes.size(); ++i)
+    {
+        switch (classes[i])
+        {
+        case KeyClass::Ordinary:
+            split.ordinary.push_back({.key = keys[i], .position = i});
+            break;
+        case KeyClass::NotANumber:
+            split.notANumber.push_back(i);
+            break;
+        case KeyClass::Missing:
+            split.missing.push_back(i);
+            break;
+        }
+    }
+    return split;
+}
+
+/// Sorts the keyed rows by key, then by position, in one direction. Two rows with equal keys go to @p tie, which
+/// returns their order by the rest of the cell, or zero when the key is the whole cell.
+template <bool Ascending, typename Tie> void SortKeyedRows(std::vector<KeyedRow> &rows, const Tie &tie)
+{
+    tbb::parallel_sort(rows.begin(), rows.end(), [&tie](const KeyedRow &a, const KeyedRow &b) {
+        if (a.key != b.key)
+        {
+            return Ascending ? a.key < b.key : a.key > b.key;
+        }
+        const int cmp = tie(a.position, b.position);
+        if (cmp != 0)
+        {
+            return Ascending ? cmp < 0 : cmp > 0;
+        }
+        return a.position < b.position;
+    });
+}
+
+/// Puts the keyed rows in the requested order. They arrive in row order, so rows with equal keys are in position order.
+/// With @p detectOrder, a key sequence that is already in order is left alone and one that is exactly reversed, with no
+/// equal keys, is reversed. Neither needs a sort.
+template <typename Tie> void OrderKeyedRows(std::vector<KeyedRow> &rows, bool ascending, bool detectOrder, const Tie &tie)
+{
+    if (detectOrder && !rows.empty())
+    {
+        bool nonDecreasing = true;
+        bool nonIncreasing = true;
+        bool strictlyIncreasing = true;
+        bool strictlyDecreasing = true;
+        for (size_t i = 1; i < rows.size(); ++i)
+        {
+            const uint64_t before = rows[i - 1].key;
+            const uint64_t after = rows[i].key;
+            nonDecreasing = nonDecreasing && before <= after;
+            nonIncreasing = nonIncreasing && before >= after;
+            strictlyIncreasing = strictlyIncreasing && before < after;
+            strictlyDecreasing = strictlyDecreasing && before > after;
+        }
+        if (ascending ? nonDecreasing : nonIncreasing)
+        {
+            return;
+        }
+        if (ascending ? strictlyDecreasing : strictlyIncreasing)
+        {
+            std::ranges::reverse(rows);
+            return;
+        }
+    }
+    if (ascending)
+    {
+        SortKeyedRows<true>(rows, tie);
+    }
+    else
+    {
+        SortKeyedRows<false>(rows, tie);
+    }
+}
+
+/// Writes the permutation: ordinary rows, then NaN rows, then the rest. Descending reverses the three groups, and the
+/// rows inside the two small groups stay in row order.
+std::vector<size_t> AssemblePermutation(const KeyedRows &split, size_t rowCount, bool ascending)
+{
+    std::vector<size_t> permutation;
+    permutation.reserve(rowCount);
+    const auto appendOrdinary = [&] {
+        for (const KeyedRow &row : split.ordinary)
+        {
+            permutation.push_back(row.position);
+        }
+    };
+    if (ascending)
+    {
+        appendOrdinary();
+        permutation.insert(permutation.end(), split.notANumber.begin(), split.notANumber.end());
+        permutation.insert(permutation.end(), split.missing.begin(), split.missing.end());
+    }
+    else
+    {
+        permutation.insert(permutation.end(), split.missing.begin(), split.missing.end());
+        permutation.insert(permutation.end(), split.notANumber.begin(), split.notANumber.end());
+        appendOrdinary();
+    }
+    return permutation;
+}
+
+/// Sorts by a column whose cells reduce to a 64-bit key. One parallel pass reads each cell once, and the sort then
+/// compares integers without touching the table.
+template <typename KeyOf>
+std::vector<size_t> SortByNumericKeys(
+    const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending, KeyOf keyOf
+)
+{
+    const size_t n = logRows.size();
+    std::vector<KeyClass> classes(n);
+    std::vector<uint64_t> keys(n);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, n), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i != range.end(); ++i)
+        {
+            const SortKey key = keyOf(LoadValue(table, logRows[i], columnIndex));
+            classes[i] = key.keyClass;
+            keys[i] = key.key;
+        }
+    });
+    KeyedRows split = SplitByClass(classes, keys);
+    OrderKeyedRows(split.ordinary, ascending, true, [](size_t, size_t) { return 0; });
+    return AssemblePermutation(split, n, ascending);
+}
+
 /// Sorts @p permutation by the three-way @p compare, breaking ties by input index so the order is total. The
 /// direction is a template parameter so each instantiation compiles to a plain comparison.
 template <bool Ascending, typename ThreeWay>
@@ -571,6 +851,25 @@ std::vector<size_t> SortPermutationByColumn(
         }
         SortByRanks(permutation, rankForRow, ascending);
         return permutation;
+    }
+
+    // Number, boolean and time columns: reduce each cell to a 64-bit key once, then sort the keys.
+    if (columnInRange)
+    {
+        switch (columns[columnIndex].type)
+        {
+        case ColumnType::Boolean:
+            return SortByNumericKeys(table, logRows, columnIndex, ascending, BoolKey);
+        case ColumnType::Integer:
+            return SortByNumericKeys(table, logRows, columnIndex, ascending, IntegerKey);
+        case ColumnType::Floating:
+        case ColumnType::Number:
+            return SortByNumericKeys(table, logRows, columnIndex, ascending, FloatingKey);
+        case ColumnType::Time:
+            return SortByNumericKeys(table, logRows, columnIndex, ascending, TimeKey);
+        default:
+            break;
+        }
     }
 
     // Generic path: dispatch through `CompareRows` per comparison.
