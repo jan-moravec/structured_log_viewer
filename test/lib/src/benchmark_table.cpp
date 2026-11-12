@@ -371,7 +371,7 @@ void RegisterRegexFilter(const Tier &tier, const SharedMixed &table, const char 
 // with plain reads, outside the timed part.
 template <typename Expected>
 void RegisterLeafFilter(
-    const Tier &tier, const SharedMixed &table, const std::string &label, const LeafRule &rule, Expected expected
+    const Tier &tier, const SharedMixed &table, const std::string &label, const LeafRule &rule, const Expected &expected
 )
 {
     RegisterSmall(

@@ -158,13 +158,10 @@ TEST_CASE(
         "timeout  after",
         " timeout after ",
         "a\xC2\xA0 b",
-        "a\xC2\xA0"
-        "b",
-        "a\xE2\x80\xA8"
-        "b",
+        "a\xC2\xA0\x62",
+        "a\xE2\x80\xA8\x62",
         "a\xE2\x80\xA8 b",
-        "bad\xFF"
-        "x",
+        "bad\xFF\x78",
         "na\xC3\xAFve",
         "na\xC3\xAFve user",
         "\xE2\x82",
@@ -178,8 +175,7 @@ TEST_CASE(
         "food",
         "\tfoo ",
         "a b",
-        "a\x01"
-        "b",
+        "a\x01\x62",
         "a  b",
         "a\tb",
         "\x7F"

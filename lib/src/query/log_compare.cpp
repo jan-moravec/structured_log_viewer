@@ -228,7 +228,8 @@ struct SortKey
     uint64_t key = 0;
 };
 
-constexpr uint64_t SIGN_BIT = uint64_t{1} << 63;
+constexpr uint64_t SIGN_BIT = 0x8000000000000000U;
+constexpr unsigned BITS_PER_BYTE = 8;
 
 /**
  * Maps a signed integer to an unsigned key with the same order.
@@ -751,7 +752,7 @@ uint64_t PrefixKey(std::string_view text) noexcept
     uint64_t key = 0;
     for (size_t i = 0; i < sizeof(uint64_t); ++i)
     {
-        key = (key << 8U) | (i < text.size() ? static_cast<uint8_t>(text[i]) : uint64_t{0});
+        key = (key << BITS_PER_BYTE) | (i < text.size() ? static_cast<uint8_t>(text[i]) : uint64_t{0});
     }
     return key;
 }

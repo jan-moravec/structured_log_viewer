@@ -216,7 +216,7 @@ bool NumericRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) con
     {
         return false;
     }
-    return !(mMax.has_value() && numeric > *mMax);
+    return !mMax.has_value() || numeric <= *mMax;
 }
 
 BoolRowPredicate::BoolRowPredicate(size_t columnIndex, bool includeTrue, bool includeFalse)

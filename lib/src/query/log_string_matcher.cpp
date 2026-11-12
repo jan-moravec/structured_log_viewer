@@ -294,8 +294,8 @@ bool RunMatch(const CompiledRegex &compiled, std::string_view subject)
     {
         return false;
     }
-    thread_local const ThreadMatchData threadData;
-    pcre2_match_data *matchData = threadData.Get();
+    thread_local const ThreadMatchData THREAD_DATA;
+    pcre2_match_data *matchData = THREAD_DATA.Get();
     if (matchData == nullptr)
     {
         return false;

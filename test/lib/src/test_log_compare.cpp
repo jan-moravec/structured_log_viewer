@@ -973,7 +973,11 @@ int CompareReferenceKeys(const ReferenceKey &lhs, const ReferenceKey &rhs)
         return lhs.floating < rhs.floating ? -1 : 1;
     }
     const int cmp = lhs.text.compare(rhs.text);
-    return cmp < 0 ? -1 : (cmp > 0 ? 1 : 0);
+    if (cmp == 0)
+    {
+        return 0;
+    }
+    return cmp < 0 ? -1 : 1;
 }
 
 /**
