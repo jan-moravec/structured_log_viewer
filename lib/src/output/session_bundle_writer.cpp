@@ -7,6 +7,7 @@
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/output/internal/normalized_json_row.hpp"
+#include "loglib/output/internal/ordered_chunks.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/table/log_table.hpp"
 
@@ -28,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -53,6 +55,9 @@ namespace
 constexpr std::size_t MAX_RECORD_BYTES = 256U * 1024U * 1024U;
 constexpr std::size_t MAX_METADATA_BYTES = 64U * 1024U * 1024U;
 constexpr std::size_t PROGRESS_INTERVAL_ROWS = 4096;
+
+/** The most compression threads that the writer starts when the caller leaves the number to the library. */
+constexpr unsigned DEFAULT_WORKERS = 4;
 
 void PollStop(const StopToken &token)
 {
@@ -316,9 +321,15 @@ public:
         }
         SetParameter(ZSTD_c_compressionLevel, options.compressionLevel);
         SetParameter(ZSTD_c_checksumFlag, 1);
-        if (options.totalWorkers > 0)
+        // Asking for no workers lets the library choose, so that a bundle is compressed on several threads by default.
+        // A negative number keeps the compression on the calling thread.
+        const int workers =
+            options.totalWorkers != 0
+                ? options.totalWorkers
+                : static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 1U, DEFAULT_WORKERS));
+        if (workers > 0)
         {
-            const std::size_t result = ZSTD_CCtx_setParameter(mContext, ZSTD_c_nbWorkers, options.totalWorkers);
+            const std::size_t result = ZSTD_CCtx_setParameter(mContext, ZSTD_c_nbWorkers, workers);
             if (ZSTD_isError(result))
             {
                 throw IoError(
@@ -708,28 +719,36 @@ void WriteBundle(
         ZstdWriter writer(file, options);
         writer.Write(metadata);
 
-        // Reuse row storage across the hot loop.
-        internal::NormalizedJsonRowWriter rowWriter(table);
-        std::string rowBuffer;
-        for (std::size_t row = 0; row < lines.Size(); ++row)
-        {
-            if ((row % PROGRESS_INTERVAL_ROWS) == 0)
-            {
-                PollStop(options.stopToken);
+        // Threads write the rows of a chunk as text, and the compressor gets the chunks in row order.
+        const std::size_t rowCount = lines.Size();
+        internal::WriteInOrderedChunks<internal::NormalizedJsonRowWriter>(
+            rowCount,
+            PROGRESS_INTERVAL_ROWS,
+            [&table] { return internal::NormalizedJsonRowWriter(table); },
+            [&options] { PollStop(options.stopToken); },
+            [&lines](
+                internal::NormalizedJsonRowWriter &rowWriter, std::size_t first, std::size_t count, std::string &text
+            ) {
+                for (std::size_t row = first; row < first + count; ++row)
+                {
+                    const std::size_t rowStart = text.size();
+                    rowWriter.Append(lines[row], text);
+                    if (text.size() - rowStart > MAX_RECORD_BYTES)
+                    {
+                        throw LimitError("Session bundle row exceeds the 256 MiB limit");
+                    }
+                    text.push_back('\n');
+                }
+            },
+            [&writer, &options, rowCount](std::size_t first, std::size_t count, const std::string &text) {
+                writer.Write(text);
+                const std::size_t done = first + count;
+                if (options.progress && (done % PROGRESS_INTERVAL_ROWS) == 0)
+                {
+                    options.progress(done, rowCount);
+                }
             }
-            rowBuffer.clear();
-            rowWriter.Append(lines[row], rowBuffer);
-            if (rowBuffer.size() > MAX_RECORD_BYTES)
-            {
-                throw LimitError("Session bundle row exceeds the 256 MiB limit");
-            }
-            rowBuffer.push_back('\n');
-            writer.Write(rowBuffer);
-            if (options.progress && ((row + 1) % PROGRESS_INTERVAL_ROWS) == 0)
-            {
-                options.progress(row + 1, lines.Size());
-            }
-        }
+        );
 
         PollStop(options.stopToken);
         writer.Finish();

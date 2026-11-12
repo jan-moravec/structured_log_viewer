@@ -179,7 +179,9 @@ ExitCode RunQuery(
 
     if (session->sort)
     {
+        const auto sortStarted = std::chrono::steady_clock::now();
         SortRows(table, *session->sort, rows);
+        console.Stage("sort", rows.size(), sortStarted);
     }
     PageRows(options, rows);
     console.ParseErrors(loaded->parseErrors);
@@ -213,10 +215,13 @@ ExitCode RunQuery(
         plan.includeAllFieldsForJson = !options.jsonVisibleOnly;
         plan.includeHeaderRow = !options.noHeader;
         plan.table = &table;
+        const auto exportStarted = std::chrono::steady_clock::now();
+        const std::size_t exportRows = plan.sourceRows.size();
         if (auto failure = WriteRows(options, console, runtime, plan))
         {
             return console.Report(*failure);
         }
+        console.Stage("export", exportRows, exportStarted);
     }
 
     if (options.strict && !loaded->parseErrors.empty())

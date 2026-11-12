@@ -60,6 +60,8 @@ public:
     [[nodiscard]] const std::filesystem::path &Path() const noexcept override;
     [[nodiscard]] std::string RawLine(size_t lineId) const override;
 
+    void AppendRawLine(size_t lineId, std::string &out) const override;
+
     [[nodiscard]] std::string_view ResolveMmapBytes(
         uint64_t offset, uint32_t length, size_t lineId
     ) const noexcept override;

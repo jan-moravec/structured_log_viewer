@@ -58,6 +58,7 @@ add_library(
     src/query/leaf_rule_compile.cpp
     src/query/log_string_matcher.cpp
     src/time/time_zone_context.cpp
+    src/time/timestamp_formatter.cpp
     src/table/timestamp_backfill.cpp
     src/time/timestamp_parsing.cpp
     src/time/user_timestamp.cpp

@@ -460,6 +460,9 @@ private:
      */
     [[nodiscard]] std::string FormatLogValue(const std::string &format, const LogValue &value) const;
 
+    /** @brief Appends the text that FormatLogValue returns to out. Out keeps its text before the call. */
+    void AppendFormattedValue(std::string &out, const std::string &format, const LogValue &value) const;
+
     void RefreshColumnKeyIds();
     void RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys);
 

@@ -167,11 +167,12 @@ struct BundleInput
     std::size_t compressedBytes = 0;
 };
 
-SessionBundleWriteOptions WriteOptions()
+// Level 3 with the given number of zstd workers. A negative number compresses on the calling thread.
+SessionBundleWriteOptions WriteOptions(int workers = -1)
 {
     SessionBundleWriteOptions opts;
     opts.compressionLevel = 3;
-    opts.totalWorkers = 0;
+    opts.totalWorkers = workers;
     return opts;
 }
 
@@ -210,33 +211,39 @@ void RegisterSessionBundleBenchmarks()
 {
     const SharedTable table = MakeLazy<TableFixture>(BuildLargeJsonTable);
 
-    // Bundle-write throughput. Level 3 is the writer's default.
-    RegisterLarge<TableOnly>(
-        "WriteSessionBundle 250'000 JSON entries (level=3, single-threaded)",
-        [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
-        [](TableOnly &input, benchmark::State &state, bool first) {
-            const TableFixture &fixture = input.table->Get();
-            const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
-            std::size_t compressed = 0;
-            const auto writeOnce = [&] {
-                const TempBundlePath dest;
-                WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions());
-                compressed = std::filesystem::file_size(dest.Path());
-            };
-            if (first)
-            {
-                writeOnce();
+    // Bundle-write throughput. Level 3 is the writer's default. The default number of workers is left to the writer.
+    for (const auto &[name, workers] : {
+             std::pair<const char *, int>{"WriteSessionBundle 250'000 JSON entries (level=3, single-threaded)", -1},
+             std::pair<const char *, int>{"WriteSessionBundle 250'000 JSON entries (level=3, default workers)", 0},
+         })
+    {
+        RegisterLarge<TableOnly>(
+            name,
+            [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
+            [workers](TableOnly &input, benchmark::State &state, bool first) {
+                const TableFixture &fixture = input.table->Get();
+                const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
+                std::size_t compressed = 0;
+                const auto writeOnce = [&] {
+                    const TempBundlePath dest;
+                    WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions(workers));
+                    compressed = std::filesystem::file_size(dest.Path());
+                };
+                if (first)
+                {
+                    writeOnce();
+                }
+                for (const auto _ : state)
+                {
+                    writeOnce();
+                }
+                SetBundleCounters(state, fixture);
+                state.counters["bundle_MiB"] = static_cast<double>(compressed) / (1024.0 * 1024.0);
+                state.counters["compression_ratio"] =
+                    static_cast<double>(fixture.bytes) / static_cast<double>(compressed == 0 ? 1 : compressed);
             }
-            for (const auto _ : state)
-            {
-                writeOnce();
-            }
-            SetBundleCounters(state, fixture);
-            state.counters["bundle_MiB"] = static_cast<double>(compressed) / (1024.0 * 1024.0);
-            state.counters["compression_ratio"] =
-                static_cast<double>(fixture.bytes) / static_cast<double>(compressed == 0 ? 1 : compressed);
-        }
-    );
+        );
+    }
 
     // Bundle-read throughput.
     RegisterLarge<BundleInput>(

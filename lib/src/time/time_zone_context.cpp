@@ -1,14 +1,17 @@
 #include "loglib/time/time_zone_context.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
+#include "loglib/time/internal/timestamp_formatter.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -206,14 +209,98 @@ TimeStamp TimeZoneContext::LocalMillisecondsToUtc(std::int64_t milliseconds) con
 
 std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format) const
 {
+    std::string text;
+    AppendFormatted(text, timeStamp, format);
+    return text;
+}
+
+void TimeZoneContext::AppendFormatted(std::string &out, TimeStamp timeStamp, std::string_view format) const
+{
+    // Each thread keeps the formatter of its last zone and format, because callers format one column's cells in a row.
+    struct Cached
+    {
+        std::shared_ptr<const Impl> impl;
+        std::string format;
+        std::optional<internal::TimestampFormatter> formatter;
+    };
+    thread_local Cached cached;
+    if (!cached.formatter || cached.impl != mImpl || cached.format != format)
+    {
+        cached.formatter.emplace(*this, format, FractionPrecision::Milliseconds);
+        cached.impl = mImpl;
+        cached.format = format;
+    }
+    cached.formatter->Append(out, timeStamp);
+}
+
+std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format, FractionPrecision precision) const
+{
+    // Times within a few days of the ends of the range move inward, because rounding them, finding their day and
+    // adding a zone offset would overflow. Such times lie hundreds of thousands of years away from any log.
+    constexpr std::chrono::days RANGE_MARGIN{3};
+    const TimeStamp inRange = std::clamp(timeStamp, TimeStamp::min() + RANGE_MARGIN, TimeStamp::max() - RANGE_MARGIN);
     const std::string formatString{format};
-    const auto rounded = std::chrono::round<std::chrono::milliseconds>(timeStamp);
+    const auto formatWith = [&]<typename Duration>(Duration) {
+        const auto rounded = std::chrono::round<Duration>(inRange);
+        if (mImpl->zone == nullptr)
+        {
+            return date::format(formatString, rounded);
+        }
+        const date::zoned_time localTime{mImpl->zone, rounded};
+        return date::format(formatString, localTime);
+    };
+    if (precision == FractionPrecision::Milliseconds)
+    {
+        return formatWith(std::chrono::milliseconds{});
+    }
+    return formatWith(std::chrono::microseconds{});
+}
+
+bool TimeZoneContext::IsUtc() const noexcept
+{
+    return mImpl->zone == nullptr;
+}
+
+std::optional<ZoneSpan> TimeZoneContext::ZoneSpanAt(std::int64_t utcMicroseconds) const
+{
     if (mImpl->zone == nullptr)
     {
-        return date::format(formatString, rounded);
+        return ZoneSpan{
+            .beginUtc = std::numeric_limits<std::int64_t>::min(),
+            .endUtc = std::numeric_limits<std::int64_t>::max(),
+            .offsetSeconds = 0,
+            .abbreviation = "UTC",
+        };
     }
-    const date::zoned_time localTime{mImpl->zone, rounded};
-    return date::format(formatString, localTime);
+    // Instants that the zone reports as unbounded saturate instead of overflowing.
+    constexpr std::int64_t MICROS_PER_SECOND = 1'000'000;
+    constexpr std::int64_t SECONDS_LIMIT = std::numeric_limits<std::int64_t>::max() / MICROS_PER_SECOND;
+    const auto toMicroseconds = [](std::chrono::seconds seconds) {
+        if (seconds.count() >= SECONDS_LIMIT)
+        {
+            return std::numeric_limits<std::int64_t>::max();
+        }
+        if (seconds.count() <= -SECONDS_LIMIT)
+        {
+            return std::numeric_limits<std::int64_t>::min();
+        }
+        return seconds.count() * MICROS_PER_SECOND;
+    };
+    try
+    {
+        const date::sys_time<std::chrono::microseconds> instant{std::chrono::microseconds{utcMicroseconds}};
+        const date::sys_info info = mImpl->zone->get_info(instant);
+        return ZoneSpan{
+            .beginUtc = toMicroseconds(info.begin.time_since_epoch()),
+            .endUtc = toMicroseconds(info.end.time_since_epoch()),
+            .offsetSeconds = info.offset.count(),
+            .abbreviation = info.abbrev,
+        };
+    }
+    catch (const std::exception &)
+    {
+        return std::nullopt;
+    }
 }
 
 std::string TimeZoneContext::FormatUtcMicroseconds(std::int64_t microseconds) const

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -93,11 +94,13 @@ ExitCode RunBundle(
     const BundleOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
 )
 {
+    const auto parseStarted = std::chrono::steady_clock::now();
     auto loaded = LoadTable(global, options.input, console, runtime);
     if (!loaded)
     {
         return console.Report(loaded.error());
     }
+    console.Stage("parse", loaded->table.RowCount(), parseStarted);
 
     auto session = ApplySessionConfiguration(options.filter, options.view, loaded->table, runtime, BundleOptions::NAME);
     if (!session)
@@ -115,10 +118,12 @@ ExitCode RunBundle(
     std::optional<std::vector<std::size_t>> filteredRows;
     if (options.filteredRows)
     {
+        const auto filterStarted = std::chrono::steady_clock::now();
         const auto compiled = loglib::CompileExpression(
             session->expression, loaded->table.Configuration().Configuration().columns, &loaded->table
         );
         filteredRows = loglib::FilterAcceptedRows(loaded->table, compiled);
+        console.Stage("filter", filteredRows->size(), filterStarted);
         configuration.expression = loglib::FilterExpression{};
     }
 
@@ -136,6 +141,7 @@ ExitCode RunBundle(
         progress.Update(written, total);
     };
 
+    const auto writeStarted = std::chrono::steady_clock::now();
     try
     {
         if (filteredRows)
@@ -160,6 +166,7 @@ ExitCode RunBundle(
         ));
     }
     progress.Finish();
+    console.Stage("write", filteredRows ? filteredRows->size() : loaded->table.RowCount(), writeStarted);
     return ExitCode::Success;
 }
 

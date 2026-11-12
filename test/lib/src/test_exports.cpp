@@ -15,6 +15,8 @@
 #include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
+#include <fmt/format.h>
+#include <oneapi/tbb/task_arena.h>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +24,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <span>
 #include <sstream>
@@ -628,6 +631,122 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
     REQUIRE(outLines[3].contains("\"value\":2.5"));
 }
 
+TEST_CASE("exports: JSON Lines escapes strings and writes numbers as JSON requires", "[exports][row_exporter]")
+{
+    const std::vector<std::string> texts = {
+        "plain",
+        "",
+        "say \"hi\"",
+        "back\\slash",
+        "tab\tnew\nline\r\b\f",
+        std::string("\x01\x1f control", 10),
+        "mix \"a\\b\"\x02 end",
+        "\xc5\xbelu\xc5\xa5ou\xc4\x8dk\xc3\xbd",
+        "\"",
+        "\\",
+        "a\"",
+        "\"a",
+    };
+    const auto expectedEscape = [](const std::string &text) {
+        std::string out;
+        for (const char c : text)
+        {
+            const auto ch = static_cast<unsigned char>(c);
+            switch (c)
+            {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (ch < 0x20)
+                {
+                    out += fmt::format("\\u{:04x}", static_cast<unsigned>(ch));
+                }
+                else
+                {
+                    out.push_back(c);
+                }
+            }
+        }
+        return out;
+    };
+
+    auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.jsonl"), nullptr);
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        stream->AppendLine("raw", {});
+    }
+    auto *sourcePtr = stream.get();
+
+    loglib::KeyIndex keys;
+    std::vector<loglib::LogLine> lines;
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        loglib::LogMap map;
+        map["a_text"] = texts[i];
+        map["b_signed"] = (i % 2 == 0) ? std::numeric_limits<std::int64_t>::min() : std::int64_t{-7};
+        map["c_unsigned"] = std::numeric_limits<std::uint64_t>::max();
+        map["d_flag"] = i % 2 == 0;
+        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+    }
+    loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
+
+    loglib::LogConfiguration config;
+    for (const char *key : {"a_text", "b_signed", "c_unsigned", "d_flag"})
+    {
+        config.columns.push_back({.header = key, .keys = {key}, .printFormat = "{}", .type = loglib::ColumnType::Any});
+    }
+    loglib::LogConfigurationManager manager;
+    manager.SetConfiguration(std::move(config));
+    const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
+
+    std::vector<std::size_t> rows(texts.size());
+    std::iota(rows.begin(), rows.end(), std::size_t{0});
+    std::vector<std::size_t> cols;
+    const RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = true,
+        .includeHeaderRow = false,
+    };
+
+    MemorySink sink;
+    auto exporter = loglib::exports::MakeExporter(ExportFormat::JsonLines);
+    REQUIRE(exporter != nullptr);
+    exporter->Run(src, sink, loglib::StopToken{});
+
+    const auto outLines = SplitNonEmptyLines(sink.Bytes());
+    REQUIRE(outLines.size() == texts.size());
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        const std::string expected = R"({"a_text":")" + expectedEscape(texts[i]) + R"(","b_signed":)" +
+                                     (i % 2 == 0 ? "-9223372036854775808" : "-7") +
+                                     R"(,"c_unsigned":18446744073709551615,"d_flag":)" +
+                                     (i % 2 == 0 ? "true" : "false") + "}";
+        INFO("row " << i);
+        CHECK(outLines[i] == expected);
+    }
+}
+
 TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][row_exporter]")
 {
     const std::vector<std::string> raws = {"raw1"};
@@ -747,7 +866,8 @@ TEST_CASE("exports: sink write failures propagate from every format", "[exports]
     };
     for (const ExportFormat format : formats)
     {
-        ThrowOnNthWriteSink sink(/*failOnWrite=*/1);
+        // Rows are written in blocks, so a small export reaches the sink in a single call.
+        ThrowOnNthWriteSink sink(/*failOnWrite=*/0);
         auto exporter = loglib::exports::MakeExporter(format);
         REQUIRE(exporter != nullptr);
         bool threw = false;
@@ -764,7 +884,7 @@ TEST_CASE("exports: sink write failures propagate from every format", "[exports]
             threw = true;
         }
         REQUIRE(threw);
-        REQUIRE(sink.WriteCount() == std::size_t(2));
+        REQUIRE(sink.WriteCount() == std::size_t(1));
     }
 }
 
@@ -813,6 +933,123 @@ TEST_CASE("exports: cancel mid-export leaves no partial file", "[exports][row_ex
     }
     REQUIRE_FALSE(std::filesystem::exists(destination));
     REQUIRE_FALSE(std::filesystem::exists(tempPath));
+}
+
+TEST_CASE(
+    "exports: a long export gives the same bytes as the same rows exported in short pieces", "[exports][row_exporter]"
+)
+{
+    constexpr std::size_t ROW_COUNT = 30000;
+    constexpr std::size_t PIECE_ROWS = 1000;
+    std::vector<std::string> raws(ROW_COUNT, "raw");
+    const auto table = BuildFixtureTable(std::move(raws), ROW_COUNT);
+
+    // Rows in reverse order, with a row that does not exist now and then, which the export skips.
+    std::vector<std::size_t> rows;
+    for (std::size_t i = 0; i < ROW_COUNT; ++i)
+    {
+        rows.push_back(ROW_COUNT - 1 - i);
+        if (i % 997 == 0)
+        {
+            rows.push_back(ROW_COUNT + 7);
+        }
+    }
+    const std::vector<std::size_t> cols = {0, 1, 2, 3, 4, 5};
+
+    const auto exportRows = [&](ExportFormat format, std::span<const std::size_t> sourceRows) {
+        const RowSource src{
+            .table = &table,
+            .sourceRows = sourceRows,
+            .visibleColumns = cols,
+            .includeAllFieldsForJson = true,
+            .includeHeaderRow = false,
+        };
+        MemorySink sink;
+        loglib::exports::MakeExporter(format)->Run(src, sink, loglib::StopToken{});
+        return sink.Bytes();
+    };
+
+    for (const ExportFormat format : {ExportFormat::JsonLines, ExportFormat::Csv, ExportFormat::Markdown})
+    {
+        INFO("format " << loglib::exports::LabelFor(format));
+        std::string expected;
+        for (std::size_t start = 0; start < rows.size(); start += PIECE_ROWS)
+        {
+            const std::size_t count = std::min(PIECE_ROWS, rows.size() - start);
+            expected += exportRows(format, std::span<const std::size_t>(rows).subspan(start, count));
+        }
+        REQUIRE_FALSE(expected.empty());
+
+        // The long export is cut into chunks that several threads write.
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> reports;
+        const RowSource src{
+            .table = &table,
+            .sourceRows = rows,
+            .visibleColumns = cols,
+            .includeAllFieldsForJson = true,
+            .includeHeaderRow = false,
+        };
+        MemorySink sink;
+        loglib::exports::MakeExporter(format)->Run(
+            src, sink, loglib::StopToken{}, [&](std::uint64_t done, std::uint64_t total) {
+                reports.emplace_back(done, total);
+            }
+        );
+        CHECK(sink.Bytes() == expected);
+
+        REQUIRE_FALSE(reports.empty());
+        CHECK(reports.back() == std::make_pair<std::uint64_t, std::uint64_t>(rows.size(), rows.size()));
+        for (std::size_t i = 1; i < reports.size(); ++i)
+        {
+            CHECK(reports[i].first >= reports[i - 1].first);
+            CHECK(reports[i].second == rows.size());
+        }
+    }
+}
+
+TEST_CASE(
+    "exports: a stop in the middle of a long export keeps the rows written so far in order", "[exports][row_exporter]"
+)
+{
+    constexpr std::size_t ROW_COUNT = 60000;
+    std::vector<std::string> raws(ROW_COUNT, "raw");
+    const auto table = BuildFixtureTable(std::move(raws), ROW_COUNT);
+    std::vector<std::size_t> rows(ROW_COUNT);
+    std::iota(rows.begin(), rows.end(), std::size_t{0});
+    const std::vector<std::size_t> cols = {1, 3};
+    const RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = false,
+        .includeHeaderRow = false,
+    };
+
+    MemorySink full;
+    loglib::exports::MakeExporter(ExportFormat::Csv)->Run(src, full, loglib::StopToken{});
+
+    // Two threads allow only a few chunks under way at once, so most chunks are still to be cut when the stop comes.
+    loglib::StopSource stopSource;
+    MemorySink partial;
+    bool cancelled = false;
+    oneapi::tbb::task_arena arena(2);
+    arena.execute([&] {
+        try
+        {
+            loglib::exports::MakeExporter(ExportFormat::Csv)
+                ->Run(src, partial, stopSource.GetToken(), [&](std::uint64_t, std::uint64_t) {
+                    stopSource.RequestStop();
+                });
+        }
+        catch (const loglib::OperationCancelled &)
+        {
+            cancelled = true;
+        }
+    });
+    REQUIRE(cancelled);
+    CHECK_FALSE(partial.Bytes().empty());
+    CHECK(partial.Bytes().size() < full.Bytes().size());
+    CHECK(full.Bytes().starts_with(partial.Bytes()));
 }
 
 TEST_CASE("exports: FileSink atomically renames the temp file on Finish", "[exports][row_exporter]")
