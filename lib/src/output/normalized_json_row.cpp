@@ -5,16 +5,22 @@
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/log_value.hpp"
 #include "loglib/table/log_table.hpp"
+#include "loglib/time/internal/timestamp_formatter.hpp"
 
-#include <date/date.h>
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <numeric>
+#include <optional>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -28,23 +34,17 @@ constexpr std::size_t ROW_RESERVE_BYTES = 512;
 
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
-    // Reserve for the worst `\u00xx` expansion when escaping is needed.
-    constexpr std::size_t ESCAPE_WORST_CASE_MULTIPLIER = 6U;
-    bool hasEscape = false;
-    for (const char c : input)
+    // Most text has nothing to escape, so each clean run goes out in one call.
+    std::size_t runStart = 0;
+    for (std::size_t i = 0; i < input.size(); ++i)
     {
-        const auto ch = static_cast<unsigned char>(c);
-        if (ch < JSON_CONTROL_CHAR_LIMIT || ch == '"' || ch == '\\')
+        const auto ch = static_cast<unsigned char>(input[i]);
+        if (ch >= JSON_CONTROL_CHAR_LIMIT && ch != '"' && ch != '\\')
         {
-            hasEscape = true;
-            break;
+            continue;
         }
-    }
-    const std::size_t worstCase = hasEscape ? input.size() * ESCAPE_WORST_CASE_MULTIPLIER : input.size();
-    out.reserve(out.size() + worstCase + 2);
-    for (const char c : input)
-    {
-        const auto ch = static_cast<unsigned char>(c);
+        out.append(input.data() + runStart, i - runStart);
+        runStart = i + 1;
         switch (ch)
         {
         case '"':
@@ -69,28 +69,29 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
             out.append("\\t");
             break;
         default:
-            if (ch < JSON_CONTROL_CHAR_LIMIT)
-            {
-                fmt::format_to(std::back_inserter(out), "\\u{:04x}", static_cast<unsigned>(ch));
-            }
-            else
-            {
-                out.push_back(c);
-            }
+            fmt::format_to(std::back_inserter(out), "\\u{:04x}", static_cast<unsigned>(ch));
             break;
         }
     }
+    out.append(input.data() + runStart, input.size() - runStart);
 }
 
-/// Append an ISO-8601 UTC JSON string, or `null` if formatting fails.
-void AppendTimestampJson(std::string &out, TimeStamp timestamp)
+/** Appends the text in quotes with the characters that JSON requires escaped. */
+void AppendJsonString(std::string &out, std::string_view text)
+{
+    out.push_back('"');
+    AppendJsonEscaped(out, text);
+    out.push_back('"');
+}
+
+/** Appends the time as an ISO 8601 UTC string in quotes, or null if it cannot be formatted. */
+void AppendTimestampJson(std::string &out, TimestampFormatter &formatter, TimeStamp timestamp)
 {
     const std::size_t savedSize = out.size();
     try
     {
-        const date::sys_time<std::chrono::microseconds> time{timestamp.time_since_epoch()};
         out.push_back('"');
-        out.append(date::format("%FT%T", time));
+        formatter.Append(out, timestamp);
         out.push_back('Z');
         out.push_back('"');
     }
@@ -101,50 +102,32 @@ void AppendTimestampJson(std::string &out, TimeStamp timestamp)
     }
 }
 
-void AppendValue(std::string &out, const LogValue &value)
+/** Room for any 64-bit integer in decimal, with its sign. */
+constexpr std::size_t INTEGER_TEXT_CAPACITY = 24;
+
+/** Appends a whole number in decimal. */
+template <typename Integer> void AppendInteger(std::string &out, Integer value)
 {
-    std::visit(
-        [&out]<typename T>(const T &arg) {
-            if constexpr (std::is_same_v<T, std::monostate>)
-            {
-                out.append("null");
-            }
-            else if constexpr (std::is_same_v<T, bool>)
-            {
-                out.append(arg ? "true" : "false");
-            }
-            else if constexpr (std::is_same_v<T, std::int64_t> || std::is_same_v<T, std::uint64_t>)
-            {
-                fmt::format_to(std::back_inserter(out), "{}", arg);
-            }
-            else if constexpr (std::is_same_v<T, double>)
-            {
-                if (!std::isfinite(arg))
-                {
-                    out.append("null");
-                    return;
-                }
-                const std::size_t start = out.size();
-                fmt::format_to(std::back_inserter(out), "{}", arg);
-                const std::string_view emitted(out.data() + start, out.size() - start);
-                if (emitted.find_first_of(".eE") == std::string_view::npos)
-                {
-                    out.append(".0");
-                }
-            }
-            else if constexpr (std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>)
-            {
-                out.push_back('"');
-                AppendJsonEscaped(out, std::string_view(arg));
-                out.push_back('"');
-            }
-            else if constexpr (std::is_same_v<T, TimeStamp>)
-            {
-                AppendTimestampJson(out, arg);
-            }
-        },
-        value
-    );
+    std::array<char, INTEGER_TEXT_CAPACITY> digits{};
+    const auto result = std::to_chars(digits.data(), digits.data() + digits.size(), value);
+    out.append(digits.data(), result.ptr);
+}
+
+/** Appends a floating point number as JSON: null if it is not finite, and a ".0" if it would read as an integer. */
+void AppendDouble(std::string &out, double value)
+{
+    if (!std::isfinite(value))
+    {
+        out.append("null");
+        return;
+    }
+    const std::size_t start = out.size();
+    fmt::format_to(std::back_inserter(out), "{}", value);
+    const std::string_view emitted(out.data() + start, out.size() - start);
+    if (emitted.find_first_of(".eE") == std::string_view::npos)
+    {
+        out.append(".0");
+    }
 }
 
 } // namespace
@@ -155,7 +138,10 @@ constexpr std::uint32_t UNRANKED = UINT32_MAX;
 } // namespace
 
 NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table)
-    : mKeys(&table.Data().Keys()), mRankByKey(mKeys->Size(), UNRANKED), mKeyPrefix(mKeys->Size())
+    : mKeys(&table.Data().Keys()),
+      mRankByKey(mKeys->Size(), UNRANKED),
+      mKeyPrefix(mKeys->Size()),
+      mTimestampFormatter(TimeZoneContext::Utc(), "%FT%T", FractionPrecision::Microseconds)
 {
     std::uint32_t next = 0;
     for (const Column &column : table.Configuration().Configuration().columns)
@@ -185,6 +171,58 @@ const std::string &NormalizedJsonRowWriter::KeyPrefix(KeyId id)
         prefix.append("\":");
     }
     return prefix;
+}
+
+bool NormalizedJsonRowWriter::AppendSlotValue(std::string &out, const LogLine &line, const RowField &field)
+{
+    const CompactLogValue &slot = *field.slot;
+    switch (slot.tag)
+    {
+    case CompactTag::Monostate:
+        return false;
+    case CompactTag::MmapSlice:
+    {
+        const std::optional<std::string_view> bytes = line.PeekStringView(slot);
+        if (!bytes.has_value())
+        {
+            return false;
+        }
+        AppendJsonString(out, *bytes);
+        return true;
+    }
+    case CompactTag::OwnedString:
+        AppendJsonString(out, line.PeekStringView(slot).value_or(std::string_view{}));
+        return true;
+    case CompactTag::DictRef:
+    {
+        const LogValue value = slot.Materialise(line.Source(), line.LineId(), field.id);
+        const auto *text = std::get_if<std::string_view>(&value);
+        if (text == nullptr)
+        {
+            return false;
+        }
+        AppendJsonString(out, *text);
+        return true;
+    }
+    case CompactTag::Int64:
+        AppendInteger(out, static_cast<std::int64_t>(slot.payload));
+        return true;
+    case CompactTag::Uint64:
+        AppendInteger(out, slot.payload);
+        return true;
+    case CompactTag::Double:
+        AppendDouble(out, std::bit_cast<double>(slot.payload));
+        return true;
+    case CompactTag::Bool:
+        out.append(slot.payload != 0 ? "true" : "false");
+        return true;
+    case CompactTag::Timestamp:
+        AppendTimestampJson(
+            out, mTimestampFormatter, TimeStamp{std::chrono::microseconds{static_cast<std::int64_t>(slot.payload)}}
+        );
+        return true;
+    }
+    return false;
 }
 
 void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
@@ -233,18 +271,19 @@ void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
     for (const std::uint32_t position : mOrder)
     {
         const RowField &field = mRow[position];
-        const LogValue value = field.slot->Materialise(line.Source(), line.LineId(), field.id);
-        if (std::holds_alternative<std::monostate>(value))
-        {
-            continue;
-        }
+        const std::size_t before = out.size();
         if (!first)
         {
             out.push_back(',');
         }
-        first = false;
         out.append(KeyPrefix(field.id));
-        AppendValue(out, value);
+        if (!AppendSlotValue(out, line, field))
+        {
+            // A value that cannot be read, such as an unresolved string, leaves the field out.
+            out.resize(before);
+            continue;
+        }
+        first = false;
     }
     out.push_back('}');
 }

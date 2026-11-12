@@ -597,12 +597,37 @@ struct TimeHistogram
     return ExitCode::Success;
 }
 
+/** @brief Writes a stage line when the scope ends, so every return path of a command reports its last stage. */
+class StageOnExit
+{
+public:
+    StageOnExit(const Console &console, std::string_view stage, std::uint64_t rows)
+        : mConsole(console), mStage(stage), mRows(rows), mStarted(std::chrono::steady_clock::now())
+    {
+    }
+    ~StageOnExit()
+    {
+        mConsole.Stage(mStage, mRows, mStarted);
+    }
+    StageOnExit(const StageOnExit &) = delete;
+    StageOnExit &operator=(const StageOnExit &) = delete;
+    StageOnExit(StageOnExit &&) = delete;
+    StageOnExit &operator=(StageOnExit &&) = delete;
+
+private:
+    const Console &mConsole;
+    std::string_view mStage;
+    std::uint64_t mRows;
+    std::chrono::steady_clock::time_point mStarted;
+};
+
 } // namespace
 
 ExitCode RunStats(
     const StatsOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
 )
 {
+    const auto parseStarted = std::chrono::steady_clock::now();
     auto loaded = LoadTable(global, options.input, console, runtime);
     if (!loaded)
     {
@@ -610,6 +635,7 @@ ExitCode RunStats(
     }
 
     loglib::LogTable &table = loaded->table;
+    console.Stage("parse", table.RowCount(), parseStarted);
     auto session = ApplySessionConfiguration(options.filter, ViewOptions{}, table, runtime, StatsOptions::NAME);
     if (!session)
     {
@@ -620,9 +646,12 @@ ExitCode RunStats(
         return console.Report(*failure);
     }
 
+    const auto filterStarted = std::chrono::steady_clock::now();
     const auto compiled =
         loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
     const std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
+    console.Stage("filter", rows.size(), filterStarted);
+    const StageOnExit reportStage(console, "report", rows.size());
 
     if (const ExitCode exitCode = StatsExitCode(options, table.RowCount(), rows.size()); exitCode != ExitCode::Success)
     {

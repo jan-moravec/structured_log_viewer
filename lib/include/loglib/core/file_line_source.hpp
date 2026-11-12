@@ -88,6 +88,8 @@ public:
      */
     [[nodiscard]] std::string RawLine(size_t lineId) const override;
 
+    void AppendRawLine(size_t lineId, std::string &out) const override;
+
     [[nodiscard]] std::string_view ResolveMmapBytes(
         uint64_t offset, uint32_t length, size_t lineId
     ) const noexcept override;
@@ -163,6 +165,9 @@ private:
 
     /** @brief Builds a source over memory. Used by FromBytes. The tag keeps it apart from the two-path constructor. */
     FileLineSource(InMemoryTag, std::filesystem::path displayName, std::string bytes);
+
+    /** @brief The bytes that RawLine returns, as a view into the file. */
+    [[nodiscard]] std::string_view RawLineBytes(size_t lineId) const;
 
     /** @brief Registers the first line offset, which every source starts with. */
     void InitializeOffsets();

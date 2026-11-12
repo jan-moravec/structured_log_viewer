@@ -1,7 +1,8 @@
-// Export benchmarks: JSON Lines and CSV export of every row, and the session bundle write without compression. The
-// exports go to a sink that only counts, so the figures measure the serialization and not the disk. The bundle write
-// goes to a temporary file, so its figure includes writing and flushing that file. All of them report bytes per second
-// of the output. See CONTRIBUTING.md ## Benchmarking.
+// Export benchmarks: JSON Lines, CSV, Markdown and snapshot export of every row, JSON Lines export of rows in a
+// shuffled order, and the session bundle write without compression. The exports go to a sink that only counts, so the
+// figures measure the serialization and not the disk. The bundle write goes to a temporary file, so its figure includes
+// writing and flushing that file. All of them report bytes per second of the output. See CONTRIBUTING.md ##
+// Benchmarking.
 
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <memory>
 #include <numeric>
+#include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -71,6 +73,7 @@ struct ExportTable
 {
     GeneratedJsonTable generated;
     std::vector<std::size_t> rows;
+    std::vector<std::size_t> shuffledRows;
     std::vector<std::size_t> columns;
 
     [[nodiscard]] const LogTable &Table() const
@@ -89,6 +92,11 @@ SharedExportTable MakeSharedExportTable(const Tier &tier)
         const LogTable &table = input->Table();
         input->rows.resize(table.RowCount());
         std::iota(input->rows.begin(), input->rows.end(), std::size_t{0});
+        input->shuffledRows = input->rows;
+        // A fixed seed keeps the run repeatable.
+        // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+        std::mt19937_64 generator(42);
+        std::ranges::shuffle(input->shuffledRows, generator);
         input->columns.resize(table.ColumnCount());
         std::iota(input->columns.begin(), input->columns.end(), std::size_t{0});
         return input;
@@ -100,18 +108,29 @@ struct ExportInput
     SharedExportTable table;
 };
 
-// One export of every row. The header row of a CSV adds one line.
-void RegisterExport(const Tier &tier, const SharedExportTable &table, const char *label, ExportFormat format)
+// One export of every row, in table order or in a fixed random order. The header of a CSV adds one line and the header
+// and separator of a Markdown table add two.
+void RegisterExport(
+    const Tier &tier, const SharedExportTable &table, const char *label, ExportFormat format, bool shuffled = false
+)
 {
-    const std::size_t headerLines = format == ExportFormat::Csv ? 1 : 0;
+    std::size_t headerLines = 0;
+    if (format == ExportFormat::Csv)
+    {
+        headerLines = 1;
+    }
+    else if (format == ExportFormat::Markdown)
+    {
+        headerLines = 2;
+    }
     RegisterLarge<ExportInput>(
         TierName(std::string(label) + " export of " + CountText(tier.rows) + " rows", tier),
         [table] { return std::make_unique<ExportInput>(ExportInput{.table = table}); },
-        [format, headerLines, rows = tier.rows](ExportInput &input, benchmark::State &state, bool first) {
+        [format, headerLines, shuffled, rows = tier.rows](ExportInput &input, benchmark::State &state, bool first) {
             const ExportTable &fixture = input.table->Get();
             const RowSource source{
                 .table = &fixture.Table(),
-                .sourceRows = fixture.rows,
+                .sourceRows = shuffled ? fixture.shuffledRows : fixture.rows,
                 .visibleColumns = fixture.columns,
                 .includeAllFieldsForJson = true,
                 .includeHeaderRow = true,
@@ -187,7 +206,7 @@ void RegisterBundleWrite(const Tier &tier, const SharedExportTable &table)
             const ExportTable &fixture = input.table->Get();
             SessionBundleWriteOptions options;
             options.compressionLevel = ZSTD_minCLevel();
-            options.totalWorkers = 0;
+            options.totalWorkers = -1;
             std::uintmax_t bytes = 0;
             const auto writeOnce = [&] {
                 const TempFile destination;
@@ -223,11 +242,14 @@ void RegisterBundleWrite(const Tier &tier, const SharedExportTable &table)
 void RegisterExportBenchmarks()
 {
     // An export takes about 5 microseconds a row, so the full tier uses a quarter of the rows of the other tables to
-    // stay within the time of one benchmark. It has all three; the smoke tier has the JSON Lines export.
+    // stay within the time of one benchmark. The smoke tier has the JSON Lines export.
     constexpr Tier EXPORT_TIER{.rows = 250'000};
     const SharedExportTable full = MakeSharedExportTable(EXPORT_TIER);
     RegisterExport(EXPORT_TIER, full, "JSON Lines", ExportFormat::JsonLines);
     RegisterExport(EXPORT_TIER, full, "CSV", ExportFormat::Csv);
+    RegisterExport(EXPORT_TIER, full, "Markdown", ExportFormat::Markdown);
+    RegisterExport(EXPORT_TIER, full, "Snapshot", ExportFormat::Snapshot);
+    RegisterExport(EXPORT_TIER, full, "JSON Lines (shuffled rows)", ExportFormat::JsonLines, true);
     RegisterBundleWrite(EXPORT_TIER, full);
 
     const SharedExportTable smoke = MakeSharedExportTable(SMOKE_TIER);

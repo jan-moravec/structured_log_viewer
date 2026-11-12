@@ -66,6 +66,16 @@ public:
      */
     [[nodiscard]] virtual std::string RawLine(size_t lineId) const = 0;
 
+    /**
+     * @brief Appends the text that RawLine returns to out, without making a string of its own first.
+     *
+     * It fails in the same way as RawLine, and then out is unchanged.
+     */
+    virtual void AppendRawLine(size_t lineId, std::string &out) const
+    {
+        out.append(RawLine(lineId));
+    }
+
     /** @brief Returns the bytes of a MmapSlice cell. Empty for a source whose bytes are not stable. */
     [[nodiscard]] virtual std::string_view ResolveMmapBytes(
         uint64_t offset, uint32_t length, size_t lineId

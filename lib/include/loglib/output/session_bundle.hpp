@@ -37,13 +37,16 @@ struct SessionBundleWriteOptions
     /** @brief The zstd compression level. 3 is a balance between speed and size. */
     int compressionLevel = 3;
 
-    /** @brief The number of zstd worker threads. Zero compresses on the calling thread. */
+    /**
+     * @brief The number of zstd worker threads. Zero lets the writer use up to four, depending on the computer. A
+     * negative number compresses on the calling thread.
+     */
     int totalWorkers = 0;
 
     /** @brief Cancels the write. The writer deletes its temporary file and then throws OperationCancelled. */
     StopToken stopToken;
 
-    /** @brief Reports progress in rows of the table. It is called on the writing thread. */
+    /** @brief Reports progress in rows of the table. It is called by one thread at a time, in order. */
     RowProgressCallback progress;
 
     /**

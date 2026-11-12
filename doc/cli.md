@@ -139,7 +139,7 @@ Writes a `.slvbundle`. By default the bundle is **non-destructive**: every row i
 | `--columns A,B,C`           | visible set | Column set stored in the bundle.                                                  |
 | `--config PATH`             | none        | Session JSON that seeds the embedded configuration (anchors, highlight rules, …). |
 | `--compression-level N`     | 3           | zstd level.                                                                       |
-| `--bundle-threads N`        | 0           | zstd workers. `0` is single-threaded.                                             |
+| `--bundle-threads N`        | 0           | zstd workers. `0` uses up to four.                                                |
 
 The destination is replaced atomically; a failed or cancelled run leaves no partial file. On a terminal, progress shows as one rewritten stderr line unless `--quiet`.
 

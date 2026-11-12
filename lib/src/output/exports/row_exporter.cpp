@@ -6,6 +6,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/output/internal/normalized_json_row.hpp>
+#include <loglib/output/internal/ordered_chunks.hpp>
 
 #include <fmt/format.h>
 
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace loglib::exports
@@ -22,14 +24,10 @@ namespace loglib::exports
 namespace
 {
 
-/// Poll cancellation every 256 rows.
+/** The rows that one thread writes as a unit. Cancellation is checked and progress is reported once for each. */
 constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 
-/// Initial per-row output capacity.
-constexpr size_t ROW_SCRATCH_RESERVE = 512;
-
-/// Throw `OperationCancelled` when the user hit Cancel. Called
-/// between row batches.
+/** Throws OperationCancelled when a stop was requested. Called between chunks of rows. */
 void PollStop(const loglib::StopToken &token)
 {
     if (token.StopRequested())
@@ -38,34 +36,51 @@ void PollStop(const loglib::StopToken &token)
     }
 }
 
-/// Calls @p writeRow for every source row that still exists, polling cancellation between batches and reporting
-/// progress. Rows past the end of the table, for example after a live-tail eviction, are skipped.
-template <typename WriteRow>
-void ForEachSourceRow(
+/**
+ * Writes the text of every source row that still exists to the sink, in row order. The rows are cut into chunks, and
+ * each thread turns a chunk into text with its own Worker, made by makeWorker. writeRow(worker, sourceRow, text)
+ * appends one row to text. Rows past the end of the table, for example after a live-tail eviction, are skipped.
+ * Cancellation is checked before each chunk and progress is reported after each one, in order and one call at a time.
+ */
+template <typename Worker, typename MakeWorker, typename WriteRow>
+void ExportRows(
     const RowSource &source,
     size_t lineCount,
+    ExportSink &sink,
     const loglib::StopToken &stopToken,
     const RowProgressCallback &progress,
+    MakeWorker makeWorker,
     WriteRow writeRow
 )
 {
     const size_t total = source.sourceRows.size();
-    for (size_t slot = 0; slot < total; ++slot)
-    {
-        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            PollStop(stopToken);
+    loglib::internal::WriteInOrderedChunks<Worker>(
+        total,
+        STOP_POLL_INTERVAL_ROWS,
+        makeWorker,
+        [&] { PollStop(stopToken); },
+        [&](Worker &worker, size_t first, size_t count, std::string &text) {
+            for (size_t slot = first; slot < first + count; ++slot)
+            {
+                const size_t sourceRow = source.sourceRows[slot];
+                if (sourceRow < lineCount)
+                {
+                    writeRow(worker, sourceRow, text);
+                }
+            }
+        },
+        [&](size_t first, size_t count, const std::string &text) {
+            if (!text.empty())
+            {
+                sink.Write(text);
+            }
+            const size_t done = first + count;
+            if (progress && (done % STOP_POLL_INTERVAL_ROWS) == 0)
+            {
+                progress(done, total);
+            }
         }
-        const std::size_t sourceRow = source.sourceRows[slot];
-        if (sourceRow < lineCount)
-        {
-            writeRow(sourceRow);
-        }
-        if (progress && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
-        {
-            progress(slot + 1, total);
-        }
-    }
+    );
     if (progress)
     {
         progress(total, total);
@@ -95,18 +110,19 @@ void JsonLinesExporter::Run(
     const auto &table = *source.table;
     const auto &data = table.Data();
     const auto &lines = data.Lines();
-    loglib::internal::NormalizedJsonRowWriter writer(table);
 
-    std::string scratch;
-    scratch.reserve(ROW_SCRATCH_RESERVE);
-
-    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
-        const auto &line = lines[sourceRow];
-        scratch.clear();
-        writer.Append(line, scratch);
-        scratch.push_back('\n');
-        sink.Write(scratch);
-    });
+    ExportRows<loglib::internal::NormalizedJsonRowWriter>(
+        source,
+        lines.size(),
+        sink,
+        stopToken,
+        progress,
+        [&] { return loglib::internal::NormalizedJsonRowWriter(table); },
+        [&](loglib::internal::NormalizedJsonRowWriter &writer, size_t sourceRow, std::string &text) {
+            writer.Append(lines[sourceRow], text);
+            text.push_back('\n');
+        }
+    );
 }
 
 // -----------------------------------------------------------------
@@ -124,7 +140,7 @@ public:
     ) override;
 };
 
-/// True iff @p cell starts with a spreadsheet formula / DDE prefix (`=` or `@`).
+/** True if the cell starts with a character that a spreadsheet reads as a formula or a data exchange command. */
 [[nodiscard]] bool IsFormulaTrigger(std::string_view cell) noexcept
 {
     return !cell.empty() && (cell.front() == '=' || cell.front() == '@');
@@ -148,17 +164,15 @@ void AppendCsvField(std::string &out, std::string_view cell)
         // The leading apostrophe forces literal spreadsheet text.
         out.push_back('\'');
     }
-    for (const char c : cell)
+    // Text between quotes goes out in one call per run.
+    std::string_view rest = cell;
+    for (std::size_t quote = rest.find('"'); quote != std::string_view::npos; quote = rest.find('"'))
     {
-        if (c == '"')
-        {
-            out.append("\"\"");
-        }
-        else
-        {
-            out.push_back(c);
-        }
+        out.append(rest.substr(0, quote + 1));
+        out.push_back('"');
+        rest.remove_prefix(quote + 1);
     }
+    out.append(rest);
     out.push_back('"');
 }
 
@@ -174,11 +188,9 @@ void CsvExporter::Run(
     const auto &config = table.Configuration().Configuration();
     const auto &lines = table.Data().Lines();
 
-    std::string scratch;
-    scratch.reserve(ROW_SCRATCH_RESERVE);
-
     if (source.includeHeaderRow)
     {
+        std::string scratch;
         bool first = true;
         for (const size_t col : source.visibleColumns)
         {
@@ -195,27 +207,31 @@ void CsvExporter::Run(
         // Use LF consistently across export formats.
         scratch.push_back('\n');
         sink.Write(scratch);
-        scratch.clear();
     }
 
-    std::string cellBuffer;
-    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
-        scratch.clear();
-        bool first = true;
-        for (const size_t col : source.visibleColumns)
-        {
-            if (!first)
+    ExportRows<std::string>(
+        source,
+        lines.size(),
+        sink,
+        stopToken,
+        progress,
+        [] { return std::string{}; },
+        [&](std::string &cellBuffer, size_t sourceRow, std::string &text) {
+            bool first = true;
+            for (const size_t col : source.visibleColumns)
             {
-                scratch.push_back(',');
+                if (!first)
+                {
+                    text.push_back(',');
+                }
+                first = false;
+                cellBuffer.clear();
+                const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
+                AppendCsvField(text, formatted);
             }
-            first = false;
-            cellBuffer.clear();
-            const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
-            AppendCsvField(scratch, formatted);
+            text.push_back('\n');
         }
-        scratch.push_back('\n');
-        sink.Write(scratch);
-    });
+    );
 }
 
 // -----------------------------------------------------------------
@@ -240,26 +256,34 @@ void SnapshotExporter::Run(
     assert(source.table != nullptr);
     const auto &lines = source.table->Data().Lines();
 
-    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
-        const auto &line = lines[sourceRow];
-        const auto *lineSource = line.Source();
-        if (lineSource == nullptr)
-        {
-            return;
+    ExportRows<std::monostate>(
+        source,
+        lines.size(),
+        sink,
+        stopToken,
+        progress,
+        [] { return std::monostate{}; },
+        [&](std::monostate &, size_t sourceRow, std::string &text) {
+            const auto &line = lines[sourceRow];
+            const auto *lineSource = line.Source();
+            if (lineSource == nullptr)
+            {
+                return;
+            }
+            // Skip unavailable source rows, but let sink failures abort.
+            const size_t rowStart = text.size();
+            try
+            {
+                lineSource->AppendRawLine(line.LineId(), text);
+            }
+            catch (const std::exception &)
+            {
+                text.resize(rowStart);
+                return;
+            }
+            text.push_back('\n');
         }
-        // Skip unavailable source rows, but let sink failures abort.
-        std::string raw;
-        try
-        {
-            raw = lineSource->RawLine(line.LineId());
-        }
-        catch (const std::exception &)
-        {
-            return;
-        }
-        sink.Write(raw);
-        sink.WriteChar('\n');
-    });
+    );
 }
 
 // -----------------------------------------------------------------
@@ -277,33 +301,37 @@ public:
     ) override;
 
 private:
-    /// Escape pipes/backslashes and collapse whitespace for a
-    /// single-line Markdown table cell.
+    /** Escapes pipes and backslashes and turns line breaks and tabs into spaces, for a one-line table cell. */
     static void AppendMarkdownCell(std::string &out, std::string_view cell);
 };
 
 void MarkdownExporter::AppendMarkdownCell(std::string &out, std::string_view cell)
 {
-    for (const char c : cell)
+    // Text without a special character goes out in one call per run.
+    std::size_t runStart = 0;
+    for (std::size_t i = 0; i < cell.size(); ++i)
     {
-        switch (c)
+        const char c = cell[i];
+        if (c != '|' && c != '\\' && c != '\n' && c != '\r' && c != '\t')
         {
-        case '|':
+            continue;
+        }
+        out.append(cell.data() + runStart, i - runStart);
+        runStart = i + 1;
+        if (c == '|')
+        {
             out.append("\\|");
-            break;
-        case '\\':
+        }
+        else if (c == '\\')
+        {
             out.append("\\\\");
-            break;
-        case '\n':
-        case '\r':
-        case '\t':
+        }
+        else
+        {
             out.push_back(' ');
-            break;
-        default:
-            out.push_back(c);
-            break;
         }
     }
+    out.append(cell.data() + runStart, cell.size() - runStart);
 }
 
 void MarkdownExporter::Run(
@@ -315,11 +343,9 @@ void MarkdownExporter::Run(
     const auto &config = table.Configuration().Configuration();
     const auto &lines = table.Data().Lines();
 
-    std::string scratch;
-    scratch.reserve(ROW_SCRATCH_RESERVE);
-
     if (source.includeHeaderRow && !source.visibleColumns.empty())
     {
+        std::string scratch;
         // Header row.
         scratch.push_back('|');
         for (const size_t col : source.visibleColumns)
@@ -340,24 +366,28 @@ void MarkdownExporter::Run(
         }
         scratch.push_back('\n');
         sink.Write(scratch);
-        scratch.clear();
     }
 
-    std::string cellBuffer;
-    ForEachSourceRow(source, lines.size(), stopToken, progress, [&](size_t sourceRow) {
-        scratch.clear();
-        scratch.push_back('|');
-        for (const size_t col : source.visibleColumns)
-        {
-            scratch.push_back(' ');
-            cellBuffer.clear();
-            const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
-            AppendMarkdownCell(scratch, formatted);
-            scratch.append(" |");
+    ExportRows<std::string>(
+        source,
+        lines.size(),
+        sink,
+        stopToken,
+        progress,
+        [] { return std::string{}; },
+        [&](std::string &cellBuffer, size_t sourceRow, std::string &text) {
+            text.push_back('|');
+            for (const size_t col : source.visibleColumns)
+            {
+                text.push_back(' ');
+                cellBuffer.clear();
+                const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
+                AppendMarkdownCell(text, formatted);
+                text.append(" |");
+            }
+            text.push_back('\n');
         }
-        scratch.push_back('\n');
-        sink.Write(scratch);
-    });
+    );
 }
 
 } // namespace
