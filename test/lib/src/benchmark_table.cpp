@@ -54,6 +54,9 @@ constexpr std::size_t MESSAGE_COLUMN = 1;
 constexpr std::size_t COUNT_COLUMN = 2;
 constexpr std::size_t RATIO_COLUMN = 3;
 constexpr std::size_t REGION_COLUMN = 4;
+// Only in the table that is built with text columns.
+constexpr std::size_t PATH_COLUMN = 5;
+constexpr std::size_t SPACED_COLUMN = 6;
 
 constexpr std::size_t BATCH_ROWS = 50'000;
 
@@ -81,8 +84,9 @@ Column MakeColumn(const std::string &name, ColumnType type, const std::string &p
 }
 
 // A table of rows rows with a Time, a String, an Integer, a Floating and an Enumeration column. The Time column holds
-// shuffled values, so sorting it has work to do.
-std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileName)
+// shuffled values, so sorting it has work to do. With textColumns it also has a path column, whose cells share a long
+// prefix, and a spaced column, which holds the message with every space doubled in half of the rows.
+std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileName, bool textColumns = false)
 {
     InitializeTimezoneData();
     auto result = std::make_unique<MixedTable>();
@@ -98,6 +102,11 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
     configuration.columns.push_back(MakeColumn("count", ColumnType::Integer, "{}"));
     configuration.columns.push_back(MakeColumn("ratio", ColumnType::Floating, "{:.3f}"));
     configuration.columns.push_back(MakeColumn("region", ColumnType::Enumeration, "{}"));
+    if (textColumns)
+    {
+        configuration.columns.push_back(MakeColumn("path", ColumnType::String, "{}"));
+        configuration.columns.push_back(MakeColumn("spaced", ColumnType::String, "{}"));
+    }
 
     // A configuration that went through the manager is the one the application has, with its columns normalized.
     const TestLogConfiguration configurationFile("benchmark_table_configuration.json");
@@ -113,7 +122,12 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    const std::vector<std::string> names = {"time", "message", "count", "ratio", "region"};
+    std::vector<std::string> names = {"time", "message", "count", "ratio", "region"};
+    if (textColumns)
+    {
+        names.emplace_back("path");
+        names.emplace_back("spaced");
+    }
     std::vector<KeyId> ids;
     ids.reserve(names.size());
     for (const std::string &name : names)
@@ -154,6 +168,20 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
             {
                 message = otherMessages[(pick / 10) % otherMessages.size()] + " id=" + std::to_string(rng() % 100'000);
             }
+            std::string spaced;
+            if (textColumns)
+            {
+                // The doubled spaces come from the row's draw, so the random sequence stays the one of the table
+                // without text columns.
+                for (const char ch : message)
+                {
+                    spaced.push_back(ch);
+                    if (ch == ' ' && (pick & 1U) != 0U)
+                    {
+                        spaced.push_back(' ');
+                    }
+                }
+            }
             std::vector<std::pair<KeyId, LogValue>> values;
             values.reserve(names.size());
             values.emplace_back(ids[TIME_COLUMN], base + std::chrono::microseconds{timeOffset(rng)});
@@ -161,6 +189,14 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
             values.emplace_back(ids[COUNT_COLUMN], static_cast<std::int64_t>(rng() % 1'000'000));
             values.emplace_back(ids[RATIO_COLUMN], static_cast<double>(rng() % 1'000'000) / 1000.0);
             values.emplace_back(ids[REGION_COLUMN], regions[rng() % regions.size()]);
+            if (textColumns)
+            {
+                values.emplace_back(
+                    ids[PATH_COLUMN],
+                    "/var/log/application/services/ingest/workers/shard-" + std::to_string(pick % 100'000)
+                );
+                values.emplace_back(ids[SPACED_COLUMN], std::move(spaced));
+            }
             // A row keeps its values sorted by key id, which the key index does not promise to hand out in order.
             std::ranges::sort(values, [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
             batch.lines.emplace_back(std::move(values), sourceRef, 0);
@@ -188,6 +224,12 @@ SharedMixed MakeSharedMixed(const Tier &tier)
     return MakeLazy<MixedTable>([rows = tier.rows, smoke = tier.smoke] {
         return BuildMixedTable(rows, smoke ? "benchmark_table_smoke.json" : "benchmark_table.json");
     });
+}
+
+// The table with the path and spaced columns, for the sorts and filters that need them.
+SharedMixed MakeSharedTextMixed(const Tier &tier)
+{
+    return MakeLazy<MixedTable>([rows = tier.rows] { return BuildMixedTable(rows, "benchmark_table_text.json", true); });
 }
 
 struct MixedInput
@@ -323,6 +365,93 @@ void RegisterRegexFilter(const Tier &tier, const SharedMixed &table, const char 
     );
 }
 
+// A filter with one leaf, compiled and run over the whole table. The accepted rows must be as many as expected counts
+// with plain reads, outside the timed part.
+template <typename Expected>
+void RegisterLeafFilter(
+    const Tier &tier, const SharedMixed &table, const std::string &label, const LeafRule &rule, Expected expected
+)
+{
+    RegisterSmall(
+        TierName(label + " over " + CountText(tier.rows) + " rows", tier),
+        [table, rule, expected](benchmark::State &state) {
+            const MixedTable &fixture = table->Get();
+            const LogTable &logTable = *fixture.table;
+            FilterExpression expression;
+            expression.node = FilterExpression::Leaf{rule};
+            const CompiledFilterExpression compiled =
+                CompileExpression(expression, logTable.Configuration().Configuration().columns, &logTable);
+            std::size_t accepted = 0;
+            for (const auto _ : state)
+            {
+                std::vector<std::size_t> rows = FilterAcceptedRows(logTable, compiled);
+                accepted = rows.size();
+                benchmark::DoNotOptimize(rows);
+            }
+            const std::size_t wanted = expected(fixture);
+            if (accepted != wanted || accepted == 0 || accepted >= fixture.rows)
+            {
+                Fail(
+                    state,
+                    "the filter accepted " + std::to_string(accepted) + " rows, expected " + std::to_string(wanted)
+                );
+                return;
+            }
+            state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * fixture.rows));
+            state.counters["accepted"] = static_cast<double>(accepted);
+        },
+        benchmark::kMillisecond,
+        tier
+    );
+}
+
+// The first count rows of a sort by one column, which is what a query with a limit needs. The rows must be in order
+// and the first one must be the row a plain scan finds.
+void RegisterTopRows(
+    const Tier &tier, const SharedMixed &table, const char *label, std::size_t column, std::size_t count
+)
+{
+    RegisterSmall(
+        TierName(
+            "Sorted top " + CountText(count) + " rows by " + label + " over " + CountText(tier.rows) + " rows", tier
+        ),
+        [table, column, count](benchmark::State &state) {
+            const MixedTable &fixture = table->Get();
+            const LogTable &logTable = *fixture.table;
+            std::vector<std::size_t> logRows(fixture.rows);
+            std::iota(logRows.begin(), logRows.end(), std::size_t{0});
+            std::vector<std::size_t> top;
+            for (const auto _ : state)
+            {
+                top = SortPermutationByColumn(logTable, std::span<const std::size_t>{logRows}, column, true);
+                top.resize(count);
+                benchmark::DoNotOptimize(top);
+            }
+            std::size_t smallest = 0;
+            for (std::size_t row = 1; row < fixture.rows; ++row)
+            {
+                if (CompareRows(logTable, row, smallest, column) < 0)
+                {
+                    smallest = row;
+                }
+            }
+            bool ordered = top.size() == count && top.front() == smallest;
+            for (std::size_t i = 1; ordered && i < top.size(); ++i)
+            {
+                ordered = CompareRows(logTable, top[i - 1], top[i], column) <= 0;
+            }
+            if (!ordered)
+            {
+                Fail(state, "the top rows are not the smallest rows in order");
+                return;
+            }
+            state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * fixture.rows));
+        },
+        benchmark::kMillisecond,
+        tier
+    );
+}
+
 // A batch of count rows with one Integer cell, backed by lines appended to the stream source. The cell holds the line
 // number, so the surviving rows can be told after eviction.
 RowBatch MakeStreamBatch(
@@ -426,8 +555,81 @@ void RegisterTableBenchmarks()
     RegisterSort(FULL_TIER, full, "string column", MESSAGE_COLUMN, true, STRING_SORT_ROWS);
     RegisterSort(FULL_TIER, full, "string column", MESSAGE_COLUMN, false, STRING_SORT_ROWS);
 
+    RegisterSort(FULL_TIER, full, "integer column", COUNT_COLUMN, true, FULL_TIER.rows);
+    RegisterSort(FULL_TIER, full, "integer column", COUNT_COLUMN, false, FULL_TIER.rows);
+    RegisterSort(FULL_TIER, full, "double column", RATIO_COLUMN, true, FULL_TIER.rows);
+    RegisterTopRows(FULL_TIER, full, "Time column", TIME_COLUMN, 100);
+
+    // The text table has a path column whose cells share a long prefix and a column with doubled spaces.
+    const SharedMixed text = MakeSharedTextMixed(FULL_TIER);
+    RegisterSort(FULL_TIER, text, "string column with long common prefixes", PATH_COLUMN, true, FULL_TIER.rows);
+
     RegisterRegexFilter(FULL_TIER, full, "case-sensitive", CASE_SENSITIVE_PATTERN);
     RegisterRegexFilter(FULL_TIER, full, "case-insensitive", CASE_INSENSITIVE_PATTERN);
+
+    // Contains on the column with doubled spaces: the filter must still find the timeout rows. Half of the cells need
+    // their whitespace collapsed first.
+    LeafRule contains;
+    contains.type = LeafRule::Type::String;
+    contains.columnKeys = {"spaced"};
+    contains.matchType = LeafRule::Match::Contains;
+    contains.filterString = "timeout after";
+    RegisterLeafFilter(
+        FULL_TIER,
+        text,
+        "Contains filter on cells with doubled spaces",
+        contains,
+        [](const MixedTable &fixture) { return fixture.timeoutRows; }
+    );
+
+    // The Time range covers the middle quarter of the day the times are spread over. The counts come from plain reads.
+    constexpr std::int64_t DAY_START_MICROS = std::int64_t{1767225600} * 1'000'000;
+    constexpr std::int64_t HOUR_MICROS = std::int64_t{3600} * 1'000'000;
+    LeafRule timeRange;
+    timeRange.type = LeafRule::Type::Time;
+    timeRange.columnKeys = {"time"};
+    timeRange.filterBegin = DAY_START_MICROS + (6 * HOUR_MICROS);
+    timeRange.filterEnd = DAY_START_MICROS + (12 * HOUR_MICROS);
+    RegisterLeafFilter(FULL_TIER, full, "Time range filter", timeRange, [timeRange](const MixedTable &fixture) {
+        std::size_t count = 0;
+        for (std::size_t row = 0; row < fixture.rows; ++row)
+        {
+            const auto &value = std::get<TimeStamp>(fixture.table->GetValue(row, TIME_COLUMN));
+            const std::int64_t micros = value.time_since_epoch().count();
+            count += micros >= *timeRange.filterBegin && micros <= *timeRange.filterEnd ? 1U : 0U;
+        }
+        return count;
+    });
+
+    LeafRule integerRange;
+    integerRange.type = LeafRule::Type::Number;
+    integerRange.columnKeys = {"count"};
+    integerRange.filterMinValue = 250'000.0;
+    integerRange.filterMaxValue = 500'000.0;
+    RegisterLeafFilter(FULL_TIER, full, "Integer range filter", integerRange, [](const MixedTable &fixture) {
+        std::size_t count = 0;
+        for (std::size_t row = 0; row < fixture.rows; ++row)
+        {
+            const auto value = std::get<std::int64_t>(fixture.table->GetValue(row, COUNT_COLUMN));
+            count += value >= 250'000 && value <= 500'000 ? 1U : 0U;
+        }
+        return count;
+    });
+
+    LeafRule doubleRange;
+    doubleRange.type = LeafRule::Type::Number;
+    doubleRange.columnKeys = {"ratio"};
+    doubleRange.filterMinValue = 100.0;
+    doubleRange.filterMaxValue = 400.0;
+    RegisterLeafFilter(FULL_TIER, full, "Double range filter", doubleRange, [](const MixedTable &fixture) {
+        std::size_t count = 0;
+        for (std::size_t row = 0; row < fixture.rows; ++row)
+        {
+            const double value = std::get<double>(fixture.table->GetValue(row, RATIO_COLUMN));
+            count += value >= 100.0 && value <= 400.0 ? 1U : 0U;
+        }
+        return count;
+    });
 
     RegisterRetention(FULL_TIER);
 
