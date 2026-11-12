@@ -423,8 +423,7 @@ void RegisterTopRows(
             std::vector<std::size_t> top;
             for (const auto _ : state)
             {
-                top = SortPermutationByColumn(logTable, std::span<const std::size_t>{logRows}, column, true);
-                top.resize(count);
+                top = SortPermutationWindowByColumn(logTable, std::span<const std::size_t>{logRows}, column, true, 0, count);
                 benchmark::DoNotOptimize(top);
             }
             std::size_t smallest = 0;

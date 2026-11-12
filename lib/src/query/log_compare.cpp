@@ -528,11 +528,11 @@ KeyedRows SplitByClass(const std::vector<KeyClass> &classes, const std::vector<u
     return split;
 }
 
-/// Sorts the keyed rows by key, then by position, in one direction. Two rows with equal keys go to @p tie, which
-/// returns their order by the rest of the cell, or zero when the key is the whole cell.
-template <bool Ascending, typename Tie> void SortKeyedRows(std::vector<KeyedRow> &rows, const Tie &tie)
+/// The strict order of keyed rows: by key, then by @p tie for equal keys, which returns their order by the rest of the
+/// cell or zero when the key is the whole cell, then by position.
+template <bool Ascending, typename Tie> auto KeyedRowLess(const Tie &tie)
 {
-    tbb::parallel_sort(rows.begin(), rows.end(), [&tie](const KeyedRow &a, const KeyedRow &b) {
+    return [&tie](const KeyedRow &a, const KeyedRow &b) {
         if (a.key != b.key)
         {
             return Ascending ? a.key < b.key : a.key > b.key;
@@ -543,14 +543,44 @@ template <bool Ascending, typename Tie> void SortKeyedRows(std::vector<KeyedRow>
             return Ascending ? cmp < 0 : cmp > 0;
         }
         return a.position < b.position;
-    });
+    };
 }
 
-/// Puts the keyed rows in the requested order. They arrive in row order, so rows with equal keys are in position order.
-/// With @p detectOrder, a key sequence that is already in order is left alone and one that is exactly reversed, with no
-/// equal keys, is reversed. Neither needs a sort.
-template <typename Tie> void OrderKeyedRows(std::vector<KeyedRow> &rows, bool ascending, bool detectOrder, const Tie &tie)
+/// Puts the part [begin, end) of the sorted order of the keyed rows in place, and leaves the rest in no order. The
+/// whole range is sorted in parallel. A smaller part is selected with nth_element and only that part is sorted.
+template <bool Ascending, typename Tie>
+void SortKeyedRows(std::vector<KeyedRow> &rows, const Tie &tie, size_t begin, size_t end)
 {
+    const auto less = KeyedRowLess<Ascending>(tie);
+    if (begin == 0 && end == rows.size())
+    {
+        tbb::parallel_sort(rows.begin(), rows.end(), less);
+        return;
+    }
+    const auto first = rows.begin();
+    if (end < rows.size())
+    {
+        std::nth_element(first, first + static_cast<std::ptrdiff_t>(end), rows.end(), less);
+    }
+    if (begin > 0)
+    {
+        std::nth_element(first, first + static_cast<std::ptrdiff_t>(begin), first + static_cast<std::ptrdiff_t>(end), less);
+    }
+    std::sort(first + static_cast<std::ptrdiff_t>(begin), first + static_cast<std::ptrdiff_t>(end), less);
+}
+
+/// Puts the part [begin, end) of the sorted order of the keyed rows in place. They arrive in row order, so rows with
+/// equal keys are in position order. With @p detectOrder, a key sequence that is already in order is left alone and one
+/// that is exactly reversed, with no equal keys, is reversed. Neither needs a sort.
+template <typename Tie>
+void OrderKeyedRows(
+    std::vector<KeyedRow> &rows, bool ascending, bool detectOrder, const Tie &tie, size_t begin, size_t end
+)
+{
+    if (begin >= end)
+    {
+        return;
+    }
     if (detectOrder && !rows.empty())
     {
         bool nonDecreasing = true;
@@ -578,37 +608,65 @@ template <typename Tie> void OrderKeyedRows(std::vector<KeyedRow> &rows, bool as
     }
     if (ascending)
     {
-        SortKeyedRows<true>(rows, tie);
+        SortKeyedRows<true>(rows, tie, begin, end);
     }
     else
     {
-        SortKeyedRows<false>(rows, tie);
+        SortKeyedRows<false>(rows, tie, begin, end);
     }
 }
 
-/// Writes the permutation: ordinary rows, then NaN rows, then the rest. Descending reverses the three groups, and the
-/// rows inside the two small groups stay in row order.
-std::vector<size_t> AssemblePermutation(const KeyedRows &split, size_t rowCount, bool ascending)
+/// A part [begin, end) of the permutation, as positions in the order of the groups: ordinary rows, then NaN rows, then
+/// the rest. Descending reverses the three groups, and the rows inside the two small groups stay in row order.
+struct PermutationWindow
+{
+    size_t begin = 0;
+    size_t end = 0;
+};
+
+/// The part of the ordinary rows that the window of the permutation covers.
+PermutationWindow OrdinaryWindow(const KeyedRows &split, bool ascending, PermutationWindow window)
+{
+    const size_t first = ascending ? 0 : split.missing.size() + split.notANumber.size();
+    const size_t count = split.ordinary.size();
+    const auto clamp = [&](size_t position) { return position <= first ? size_t{0} : std::min(position - first, count); };
+    return {.begin = clamp(window.begin), .end = clamp(window.end)};
+}
+
+/// Writes the part of the permutation in @p window. The ordinary rows must be ordered inside the part that
+/// OrdinaryWindow gives.
+std::vector<size_t> AssemblePermutation(const KeyedRows &split, bool ascending, PermutationWindow window)
 {
     std::vector<size_t> permutation;
-    permutation.reserve(rowCount);
-    const auto appendOrdinary = [&] {
-        for (const KeyedRow &row : split.ordinary)
+    permutation.reserve(window.end - window.begin);
+    size_t groupStart = 0;
+    const auto appendSlice = [&](size_t groupSize, auto element) {
+        const size_t from = window.begin > groupStart ? window.begin - groupStart : 0;
+        const size_t to = window.end > groupStart ? std::min(window.end - groupStart, groupSize) : 0;
+        for (size_t i = from; i < to; ++i)
         {
-            permutation.push_back(row.position);
+            permutation.push_back(element(i));
         }
+        groupStart += groupSize;
     };
+    const auto ordinary = [&] {
+        appendSlice(split.ordinary.size(), [&](size_t i) { return split.ordinary[i].position; });
+    };
+    const auto notANumber = [&] {
+        appendSlice(split.notANumber.size(), [&](size_t i) { return split.notANumber[i]; });
+    };
+    const auto missing = [&] { appendSlice(split.missing.size(), [&](size_t i) { return split.missing[i]; }); };
     if (ascending)
     {
-        appendOrdinary();
-        permutation.insert(permutation.end(), split.notANumber.begin(), split.notANumber.end());
-        permutation.insert(permutation.end(), split.missing.begin(), split.missing.end());
+        ordinary();
+        notANumber();
+        missing();
     }
     else
     {
-        permutation.insert(permutation.end(), split.missing.begin(), split.missing.end());
-        permutation.insert(permutation.end(), split.notANumber.begin(), split.notANumber.end());
-        appendOrdinary();
+        missing();
+        notANumber();
+        ordinary();
     }
     return permutation;
 }
@@ -617,7 +675,12 @@ std::vector<size_t> AssemblePermutation(const KeyedRows &split, size_t rowCount,
 /// compares integers without touching the table.
 template <typename KeyOf>
 std::vector<size_t> SortByNumericKeys(
-    const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending, KeyOf keyOf
+    const LogTable &table,
+    std::span<const size_t> logRows,
+    size_t columnIndex,
+    bool ascending,
+    PermutationWindow window,
+    KeyOf keyOf
 )
 {
     const size_t n = logRows.size();
@@ -632,8 +695,9 @@ std::vector<size_t> SortByNumericKeys(
         }
     });
     KeyedRows split = SplitByClass(classes, keys);
-    OrderKeyedRows(split.ordinary, ascending, true, [](size_t, size_t) { return 0; });
-    return AssemblePermutation(split, n, ascending);
+    const PermutationWindow ordinary = OrdinaryWindow(split, ascending, window);
+    OrderKeyedRows(split.ordinary, ascending, true, [](size_t, size_t) { return 0; }, ordinary.begin, ordinary.end);
+    return AssemblePermutation(split, ascending, window);
 }
 
 /// The first eight bytes of the text as a big-endian integer, padded with zero bytes. Comparing two prefixes as integers
@@ -653,7 +717,7 @@ uint64_t PrefixKey(std::string_view text) noexcept
 /// only for rows with equal keys. A cell that is not a
 /// string is compared by its formatted text, and an empty cell sorts to the tail.
 std::vector<size_t> SortByStringKeys(
-    const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending
+    const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending, PermutationWindow window
 )
 {
     const size_t n = logRows.size();
@@ -731,10 +795,16 @@ std::vector<size_t> SortByStringKeys(
         }
     });
     KeyedRows split = SplitByClass(classes, keys);
-    OrderKeyedRows(split.ordinary, ascending, false, [&texts](size_t a, size_t b) {
-        return texts[a].compare(texts[b]);
-    });
-    return AssemblePermutation(split, n, ascending);
+    const PermutationWindow ordinary = OrdinaryWindow(split, ascending, window);
+    OrderKeyedRows(
+        split.ordinary,
+        ascending,
+        false,
+        [&texts](size_t a, size_t b) { return texts[a].compare(texts[b]); },
+        ordinary.begin,
+        ordinary.end
+    );
+    return AssemblePermutation(split, ascending, window);
 }
 
 /// Sorts @p permutation by the three-way @p compare, breaking ties by input index so the order is total. The
@@ -780,6 +850,40 @@ void SortByRanks(std::vector<size_t> &permutation, const std::vector<Rank> &rank
     for (size_t row = 0; row < ranks.size(); ++row)
     {
         permutation[next[ranks[row]]++] = row;
+    }
+}
+
+/// Sorts the part @p window of the order by prepared keys, for the column types that have them. Returns nothing for the
+/// other types.
+std::optional<std::vector<size_t>> SortByKeys(
+    const LogTable &table,
+    std::span<const size_t> logRows,
+    size_t columnIndex,
+    bool ascending,
+    PermutationWindow window
+)
+{
+    const auto &columns = table.Configuration().Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return std::nullopt;
+    }
+    switch (columns[columnIndex].type)
+    {
+    case ColumnType::Boolean:
+        return SortByNumericKeys(table, logRows, columnIndex, ascending, window, BoolKey);
+    case ColumnType::Integer:
+        return SortByNumericKeys(table, logRows, columnIndex, ascending, window, IntegerKey);
+    case ColumnType::Floating:
+    case ColumnType::Number:
+        return SortByNumericKeys(table, logRows, columnIndex, ascending, window, FloatingKey);
+    case ColumnType::Time:
+        return SortByNumericKeys(table, logRows, columnIndex, ascending, window, TimeKey);
+    case ColumnType::String:
+    case ColumnType::Any:
+        return SortByStringKeys(table, logRows, columnIndex, ascending, window);
+    default:
+        return std::nullopt;
     }
 }
 
@@ -882,26 +986,10 @@ std::vector<size_t> SortPermutationByColumn(
         return permutation;
     }
 
-    // Number, boolean and time columns: reduce each cell to a 64-bit key once, then sort the keys.
-    if (columnInRange)
+    // Number, boolean, time and string columns: reduce each cell to a key once, then sort the keys.
+    if (auto sorted = SortByKeys(table, logRows, columnIndex, ascending, {.begin = 0, .end = n}); sorted.has_value())
     {
-        switch (columns[columnIndex].type)
-        {
-        case ColumnType::Boolean:
-            return SortByNumericKeys(table, logRows, columnIndex, ascending, BoolKey);
-        case ColumnType::Integer:
-            return SortByNumericKeys(table, logRows, columnIndex, ascending, IntegerKey);
-        case ColumnType::Floating:
-        case ColumnType::Number:
-            return SortByNumericKeys(table, logRows, columnIndex, ascending, FloatingKey);
-        case ColumnType::Time:
-            return SortByNumericKeys(table, logRows, columnIndex, ascending, TimeKey);
-        case ColumnType::String:
-        case ColumnType::Any:
-            return SortByStringKeys(table, logRows, columnIndex, ascending);
-        default:
-            break;
-        }
+        return std::move(*sorted);
     }
 
     // Generic path: dispatch through `CompareRows` per comparison.
@@ -921,6 +1009,36 @@ std::vector<size_t> SortPermutationByColumn(
         SortWithTieBreak<false>(permutation, compare);
     }
     return permutation;
+}
+
+std::vector<size_t> SortPermutationWindowByColumn(
+    const LogTable &table,
+    std::span<const size_t> logRows,
+    size_t columnIndex,
+    bool ascending,
+    size_t begin,
+    size_t end,
+    const EnumDictRank *rankForEnumColumn
+)
+{
+    const size_t n = logRows.size();
+    end = std::min(end, n);
+    begin = std::min(begin, end);
+    if (begin == 0 && end == n)
+    {
+        return SortPermutationByColumn(table, logRows, columnIndex, ascending, rankForEnumColumn);
+    }
+    if (n > 1)
+    {
+        if (auto sorted = SortByKeys(table, logRows, columnIndex, ascending, {.begin = begin, .end = end});
+            sorted.has_value())
+        {
+            return std::move(*sorted);
+        }
+    }
+    // The other column types sort in linear time or compare rows one by one, so the whole order is built and cut.
+    const std::vector<size_t> full = SortPermutationByColumn(table, logRows, columnIndex, ascending, rankForEnumColumn);
+    return {full.begin() + static_cast<std::ptrdiff_t>(begin), full.begin() + static_cast<std::ptrdiff_t>(end)};
 }
 
 } // namespace loglib
