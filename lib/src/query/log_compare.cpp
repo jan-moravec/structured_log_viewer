@@ -3,6 +3,7 @@
 // is fine.
 #include "loglib/query/log_compare.hpp"
 
+#include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/log_value.hpp"
 #include "loglib/schema/log_configuration.hpp"
@@ -204,126 +205,161 @@ std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rh
     return std::nullopt;
 }
 
-/// Shared "extract to T, three-way on extracted, unextracted joins
-/// the tail bucket" shape. Routing monostate through `extract`
-/// (rather than a parallel short-circuit) makes monostate, NaN-in-Int,
-/// stray-string-in-Floating, etc. all compare equal pairwise -- the
-/// tail-bucket invariant the header promises.
-template <class Extract, class Compare>
-int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Compare cmp)
+/// How a cell takes part in a key sort. Cells that fit the column's type come first, then NaN in a floating column,
+/// then every other cell. Descending order reverses the three groups.
+enum class KeyClass : uint8_t
 {
-    const bool lhsMono = std::holds_alternative<std::monostate>(lhs);
-    const bool rhsMono = std::holds_alternative<std::monostate>(rhs);
-    const auto lhsX = lhsMono ? std::nullopt : extract(lhs);
-    const auto rhsX = rhsMono ? std::nullopt : extract(rhs);
-    if (lhsX.has_value() && rhsX.has_value())
+    Ordinary,
+    NotANumber,
+    Missing,
+};
+
+/// A cell reduced to a sort key. The key only means something for an ordinary cell.
+struct SortKey
+{
+    KeyClass keyClass = KeyClass::Missing;
+    uint64_t key = 0;
+};
+
+constexpr uint64_t SIGN_BIT = uint64_t{1} << 63;
+
+/// Maps a signed integer to an unsigned key with the same order.
+uint64_t OrderedKey(int64_t value) noexcept
+{
+    return static_cast<uint64_t>(value) ^ SIGN_BIT;
+}
+
+/// Maps a double that is not NaN to an unsigned key with the same order. Zero and negative zero are equal for
+/// ThreeWayDouble, so both map to one key.
+uint64_t OrderedKey(double value) noexcept
+{
+    if (value == 0.0)
     {
-        return cmp(*lhsX, *rhsX);
+        value = 0.0;
     }
-    if (lhsX.has_value())
+    const auto bits = std::bit_cast<uint64_t>(value);
+    return (bits & SIGN_BIT) != 0 ? ~bits : (bits | SIGN_BIT);
+}
+
+SortKey MakeKey(uint64_t key) noexcept
+{
+    return {.keyClass = KeyClass::Ordinary, .key = key};
+}
+
+/// Clamps an unsigned value above INT64_MAX, as the integer and time order do.
+int64_t ClampToInt64(uint64_t value) noexcept
+{
+    constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    return value > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(value);
+}
+
+/// A boolean column holds booleans, and any other cell is missing.
+SortKey BoolKey(const CompactLogValue *cell) noexcept
+{
+    if (cell != nullptr && cell->tag == CompactTag::Bool)
     {
-        return -1;
+        return MakeKey(cell->payload != 0 ? 1U : 0U);
     }
-    if (rhsX.has_value())
+    return {};
+}
+
+/// An integer column holds integers. A double is truncated and clamped to the int64 range, and NaN is missing.
+SortKey IntegerKey(const CompactLogValue *cell) noexcept
+{
+    if (cell == nullptr)
     {
-        return 1;
+        return {};
     }
-    return 0;
+    switch (cell->tag)
+    {
+    case CompactTag::Int64:
+        return MakeKey(OrderedKey(static_cast<int64_t>(cell->payload)));
+    case CompactTag::Uint64:
+        return MakeKey(OrderedKey(ClampToInt64(cell->payload)));
+    case CompactTag::Double:
+    {
+        const auto number = std::bit_cast<double>(cell->payload);
+        if (std::isnan(number))
+        {
+            return {};
+        }
+        if (number >= static_cast<double>(std::numeric_limits<int64_t>::max()))
+        {
+            return MakeKey(OrderedKey(std::numeric_limits<int64_t>::max()));
+        }
+        if (number <= static_cast<double>(std::numeric_limits<int64_t>::min()))
+        {
+            return MakeKey(OrderedKey(std::numeric_limits<int64_t>::min()));
+        }
+        return MakeKey(OrderedKey(static_cast<int64_t>(number)));
+    }
+    default:
+        return {};
+    }
 }
 
-int CompareBool(const LogValue &lhs, const LogValue &rhs)
+/// A floating column holds doubles and integers, compared as doubles. NaN sorts after every number.
+SortKey FloatingKey(const CompactLogValue *cell) noexcept
 {
-    auto toBool = [](const LogValue &v) -> std::optional<bool> {
-        if (const auto *b = std::get_if<bool>(&v); b != nullptr)
-        {
-            return *b;
-        }
-        return std::nullopt;
-    };
-    // `false < true` follows `int(false) < int(true)`; non-bool slots
-    // join the tail bucket via `CompareTyped`.
-    return CompareTyped(lhs, rhs, toBool, [](bool a, bool b) { return ThreeWay(a, b); });
+    if (cell == nullptr)
+    {
+        return {};
+    }
+    double number = 0.0;
+    switch (cell->tag)
+    {
+    case CompactTag::Double:
+        number = std::bit_cast<double>(cell->payload);
+        break;
+    case CompactTag::Int64:
+        number = static_cast<double>(static_cast<int64_t>(cell->payload));
+        break;
+    case CompactTag::Uint64:
+        number = static_cast<double>(cell->payload);
+        break;
+    default:
+        return {};
+    }
+    if (std::isnan(number))
+    {
+        return {.keyClass = KeyClass::NotANumber, .key = 0};
+    }
+    return MakeKey(OrderedKey(number));
 }
 
-int CompareInteger(const LogValue &lhs, const LogValue &rhs)
+/// A time column holds timestamps and integers, as microseconds since the epoch.
+SortKey TimeKey(const CompactLogValue *cell) noexcept
 {
-    auto toInt = [](const LogValue &v) -> std::optional<int64_t> {
-        if (const auto *i = std::get_if<int64_t>(&v); i != nullptr)
-        {
-            return *i;
-        }
-        if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
-        {
-            // Order-preserving clamp: oversized uints sort at INT64_MAX.
-            constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-            return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
-        }
-        if (const auto *d = std::get_if<double>(&v); d != nullptr)
-        {
-            // NaN -> tail. `static_cast<int64_t>(NaN)` is UB; clamp
-            // finite extremes to INT64 limits instead of casting them.
-            if (std::isnan(*d))
-            {
-                return std::nullopt;
-            }
-            if (*d >= static_cast<double>(std::numeric_limits<int64_t>::max()))
-            {
-                return std::numeric_limits<int64_t>::max();
-            }
-            if (*d <= static_cast<double>(std::numeric_limits<int64_t>::min()))
-            {
-                return std::numeric_limits<int64_t>::min();
-            }
-            return static_cast<int64_t>(*d);
-        }
-        return std::nullopt;
-    };
-
-    return CompareTyped(lhs, rhs, toInt, [](int64_t a, int64_t b) { return ThreeWay(a, b); });
+    if (cell == nullptr)
+    {
+        return {};
+    }
+    switch (cell->tag)
+    {
+    case CompactTag::Timestamp:
+    case CompactTag::Int64:
+        return MakeKey(OrderedKey(static_cast<int64_t>(cell->payload)));
+    case CompactTag::Uint64:
+        return MakeKey(OrderedKey(ClampToInt64(cell->payload)));
+    default:
+        return {};
+    }
 }
 
-int CompareFloating(const LogValue &lhs, const LogValue &rhs)
+/// Orders two keys: by class, then by key within the ordinary class. Cells of the other two classes are equal.
+int CompareKeys(const SortKey &lhs, const SortKey &rhs) noexcept
 {
-    auto toDouble = [](const LogValue &v) -> std::optional<double> {
-        if (const auto *d = std::get_if<double>(&v); d != nullptr)
-        {
-            return *d;
-        }
-        if (const auto *i = std::get_if<int64_t>(&v); i != nullptr)
-        {
-            return static_cast<double>(*i);
-        }
-        if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
-        {
-            return static_cast<double>(*u);
-        }
-        return std::nullopt;
-    };
-
-    return CompareTyped(lhs, rhs, toDouble, [](double a, double b) { return ThreeWayDouble(a, b); });
+    if (lhs.keyClass != rhs.keyClass)
+    {
+        return lhs.keyClass < rhs.keyClass ? -1 : 1;
+    }
+    return lhs.keyClass == KeyClass::Ordinary ? ThreeWay(lhs.key, rhs.key) : 0;
 }
 
-int CompareTime(const LogValue &lhs, const LogValue &rhs)
+template <SortKey (*KeyOf)(const CompactLogValue *)>
+int CompareByKey(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
-    auto toMicros = [](const LogValue &v) -> std::optional<int64_t> {
-        if (const auto *t = std::get_if<TimeStamp>(&v); t != nullptr)
-        {
-            return t->time_since_epoch().count();
-        }
-        if (const auto *i = std::get_if<int64_t>(&v); i != nullptr)
-        {
-            return *i;
-        }
-        if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
-        {
-            // Match `CompareInteger` / `TimeRangeRowPredicate`:
-            // order-preserving clamp, not wraparound.
-            constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-            return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
-        }
-        return std::nullopt;
-    };
-    return CompareTyped(lhs, rhs, toMicros, [](int64_t a, int64_t b) { return ThreeWay(a, b); });
+    return CompareKeys(KeyOf(table.FindCell(lhsRow, column)), KeyOf(table.FindCell(rhsRow, column)));
 }
 
 int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column, const EnumDictRank *rank)
@@ -376,8 +412,23 @@ int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t co
 /// string, missing cache) join the tail bucket, matching `CompareEnum`.
 int CompareLevel(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
-    const auto lhsLevel = table.GetLevelForRow(lhsRow, column);
-    const auto rhsLevel = table.GetLevelForRow(rhsRow, column);
+    // One lookup of the rank cache serves both rows. The lookup hashes the column's key, so it is the costly part.
+    const std::vector<LogLevel> *ranks = table.LevelRankCache(column);
+    const auto levelOf = [&](size_t row) -> std::optional<LogLevel> {
+        if (ranks == nullptr)
+        {
+            return std::nullopt;
+        }
+        const auto id = table.GetEnumValueId(row, column);
+        if (!id.has_value() || static_cast<size_t>(*id) >= ranks->size())
+        {
+            return std::nullopt;
+        }
+        const LogLevel level = (*ranks)[static_cast<size_t>(*id)];
+        return level == LogLevel::Unknown ? std::nullopt : std::optional<LogLevel>{level};
+    };
+    const auto lhsLevel = levelOf(lhsRow);
+    const auto rhsLevel = levelOf(rhsRow);
     if (lhsLevel.has_value() && rhsLevel.has_value())
     {
         return ThreeWay(static_cast<uint8_t>(*lhsLevel), static_cast<uint8_t>(*rhsLevel));
@@ -413,14 +464,14 @@ int CompareRows(
     switch (type)
     {
     case ColumnType::Boolean:
-        return CompareBool(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
+        return CompareByKey<BoolKey>(table, lhsRow, rhsRow, columnIndex);
     case ColumnType::Integer:
-        return CompareInteger(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
+        return CompareByKey<IntegerKey>(table, lhsRow, rhsRow, columnIndex);
     case ColumnType::Floating:
     case ColumnType::Number:
-        return CompareFloating(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
+        return CompareByKey<FloatingKey>(table, lhsRow, rhsRow, columnIndex);
     case ColumnType::Time:
-        return CompareTime(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
+        return CompareByKey<TimeKey>(table, lhsRow, rhsRow, columnIndex);
     case ColumnType::Enumeration:
         return CompareEnum(table, lhsRow, rhsRow, columnIndex, rankForEnumColumn);
     case ColumnType::Level:
@@ -435,141 +486,12 @@ int CompareRows(
 namespace
 {
 
-/// How a cell takes part in a key sort. Cells that fit the column's type come first, then NaN in a floating column,
-/// then every other cell. Descending order reverses the three groups.
-enum class KeyClass : uint8_t
-{
-    Ordinary,
-    NotANumber,
-    Missing,
-};
-
-/// A cell reduced to a sort key. The key only means something for an ordinary cell.
-struct SortKey
-{
-    KeyClass keyClass = KeyClass::Missing;
-    uint64_t key = 0;
-};
-
 /// A row position with its key. Sorting these moves 16 bytes per row and never touches the table.
 struct KeyedRow
 {
     uint64_t key;
     size_t position;
 };
-
-constexpr uint64_t SIGN_BIT = uint64_t{1} << 63;
-
-/// Maps a signed integer to an unsigned key with the same order.
-uint64_t OrderedKey(int64_t value) noexcept
-{
-    return static_cast<uint64_t>(value) ^ SIGN_BIT;
-}
-
-/// Maps a double that is not NaN to an unsigned key with the same order. Zero and negative zero are equal for
-/// ThreeWayDouble, so both map to one key.
-uint64_t OrderedKey(double value) noexcept
-{
-    if (value == 0.0)
-    {
-        value = 0.0;
-    }
-    const auto bits = std::bit_cast<uint64_t>(value);
-    return (bits & SIGN_BIT) != 0 ? ~bits : (bits | SIGN_BIT);
-}
-
-SortKey MakeKey(uint64_t key) noexcept
-{
-    return {.keyClass = KeyClass::Ordinary, .key = key};
-}
-
-/// Clamps an unsigned value above INT64_MAX, as CompareInteger and CompareTime do.
-int64_t ClampToInt64(uint64_t value) noexcept
-{
-    constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-    return value > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(value);
-}
-
-SortKey BoolKey(const LogValue &value) noexcept
-{
-    if (const auto *b = std::get_if<bool>(&value); b != nullptr)
-    {
-        return MakeKey(*b ? 1U : 0U);
-    }
-    return {};
-}
-
-SortKey IntegerKey(const LogValue &value) noexcept
-{
-    if (const auto *i = std::get_if<int64_t>(&value); i != nullptr)
-    {
-        return MakeKey(OrderedKey(*i));
-    }
-    if (const auto *u = std::get_if<uint64_t>(&value); u != nullptr)
-    {
-        return MakeKey(OrderedKey(ClampToInt64(*u)));
-    }
-    if (const auto *d = std::get_if<double>(&value); d != nullptr)
-    {
-        if (std::isnan(*d))
-        {
-            return {};
-        }
-        if (*d >= static_cast<double>(std::numeric_limits<int64_t>::max()))
-        {
-            return MakeKey(OrderedKey(std::numeric_limits<int64_t>::max()));
-        }
-        if (*d <= static_cast<double>(std::numeric_limits<int64_t>::min()))
-        {
-            return MakeKey(OrderedKey(std::numeric_limits<int64_t>::min()));
-        }
-        return MakeKey(OrderedKey(static_cast<int64_t>(*d)));
-    }
-    return {};
-}
-
-SortKey FloatingKey(const LogValue &value) noexcept
-{
-    double number = 0.0;
-    if (const auto *d = std::get_if<double>(&value); d != nullptr)
-    {
-        number = *d;
-    }
-    else if (const auto *i = std::get_if<int64_t>(&value); i != nullptr)
-    {
-        number = static_cast<double>(*i);
-    }
-    else if (const auto *u = std::get_if<uint64_t>(&value); u != nullptr)
-    {
-        number = static_cast<double>(*u);
-    }
-    else
-    {
-        return {};
-    }
-    if (std::isnan(number))
-    {
-        return {.keyClass = KeyClass::NotANumber, .key = 0};
-    }
-    return MakeKey(OrderedKey(number));
-}
-
-SortKey TimeKey(const LogValue &value) noexcept
-{
-    if (const auto *t = std::get_if<TimeStamp>(&value); t != nullptr)
-    {
-        return MakeKey(OrderedKey(static_cast<int64_t>(t->time_since_epoch().count())));
-    }
-    if (const auto *i = std::get_if<int64_t>(&value); i != nullptr)
-    {
-        return MakeKey(OrderedKey(*i));
-    }
-    if (const auto *u = std::get_if<uint64_t>(&value); u != nullptr)
-    {
-        return MakeKey(OrderedKey(ClampToInt64(*u)));
-    }
-    return {};
-}
 
 /// The rows split by key class. Every list is in row order.
 struct KeyedRows
@@ -704,7 +626,7 @@ std::vector<size_t> SortByNumericKeys(
     tbb::parallel_for(tbb::blocked_range<size_t>(0, n), [&](const tbb::blocked_range<size_t> &range) {
         for (size_t i = range.begin(); i != range.end(); ++i)
         {
-            const SortKey key = keyOf(LoadValue(table, logRows[i], columnIndex));
+            const SortKey key = keyOf(table.FindCell(logRows[i], columnIndex));
             classes[i] = key.keyClass;
             keys[i] = key.key;
         }

@@ -548,6 +548,28 @@ LogValue LogTable::GetValue(size_t row, size_t column) const
     return std::monostate{};
 }
 
+const CompactLogValue *LogTable::FindCell(size_t row, size_t column) const noexcept
+{
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
+    {
+        return nullptr;
+    }
+    const auto &line = mData.Lines()[row];
+    for (const KeyId id : mColumnKeyIds[column])
+    {
+        if (id == INVALID_KEY_ID)
+        {
+            continue;
+        }
+        const CompactLogValue *slot = line.FindCompact(id);
+        if (slot != nullptr && slot->tag != CompactTag::Monostate)
+        {
+            return slot;
+        }
+    }
+    return nullptr;
+}
+
 std::string LogTable::GetFormattedValue(size_t row, size_t column) const
 {
     if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())

@@ -2,6 +2,7 @@
 // ordering that `app/` needs doesn't apply here.
 #include "loglib/query/log_filter.hpp"
 
+#include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/log_value.hpp"
 #include "loglib/table/log_table.hpp"
 
@@ -147,44 +148,36 @@ TimeRangeRowPredicate::TimeRangeRowPredicate(size_t columnIndex, int64_t begin, 
 
 bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
-    const LogValue value = table.GetValue(row, mColumnIndex);
-    // Slot acceptance set must stay in lockstep with
-    // `loglib::AsEpochMicroseconds`: `TimeStamp`, `int64_t`,
-    // in-range `uint64_t`.
-    return std::visit(
-        [this](const auto &alt) -> bool {
-            using T = std::decay_t<decltype(alt)>;
-            if constexpr (std::is_same_v<T, TimeStamp>)
-            {
-                const int64_t ts = alt.time_since_epoch().count();
-                return ts >= mBegin && ts <= mEnd;
-            }
-            else if constexpr (std::is_same_v<T, int64_t>)
-            {
-                return alt >= mBegin && alt <= mEnd;
-            }
-            else if constexpr (std::is_same_v<T, uint64_t>)
-            {
-                // Reject (rather than wrap) `uint64_t` past
-                // `int64_t::max` so this stays in sync with
-                // `AsEpochMicroseconds`.
-                if (alt > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-                {
-                    return false;
-                }
-                // Clamp a negative begin to 0 so e.g. `[-1, 100]`
-                // still matches positive values. The end is never negative.
-                const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
-                const auto hi = static_cast<uint64_t>(mEnd);
-                return alt >= lo && alt <= hi;
-            }
-            else
-            {
-                return false;
-            }
-        },
-        value
-    );
+    const CompactLogValue *cell = table.FindCell(row, mColumnIndex);
+    if (cell == nullptr)
+    {
+        return false;
+    }
+    // The accepted cells must stay in step with loglib::AsEpochMicroseconds: a timestamp, an int64 and an in-range
+    // uint64.
+    switch (cell->tag)
+    {
+    case CompactTag::Timestamp:
+    case CompactTag::Int64:
+    {
+        const auto micros = static_cast<int64_t>(cell->payload);
+        return micros >= mBegin && micros <= mEnd;
+    }
+    case CompactTag::Uint64:
+    {
+        // Reject, rather than wrap, a uint64 past int64 max, as AsEpochMicroseconds does.
+        if (cell->payload > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        {
+            return false;
+        }
+        // A negative begin counts as 0 so that [-1, 100] still matches positive values. The end is never negative.
+        const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
+        const auto hi = static_cast<uint64_t>(mEnd);
+        return cell->payload >= lo && cell->payload <= hi;
+    }
+    default:
+        return false;
+    }
 }
 
 NumericRangeRowPredicate::NumericRangeRowPredicate(
@@ -207,43 +200,36 @@ NumericRangeRowPredicate::NumericRangeRowPredicate(
 
 bool NumericRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
-    const LogValue value = table.GetValue(row, mColumnIndex);
-    return std::visit(
-        [this](const auto &alt) -> bool {
-            using T = std::decay_t<decltype(alt)>;
-            // Single exit after the `if constexpr` chain to avoid
-            // MSVC C4702 (a branch returning early would make the
-            // common tail unreachable for that instantiation).
-            std::optional<double> asDouble;
-            if constexpr (std::is_same_v<T, double>)
-            {
-                if (!std::isnan(alt))
-                {
-                    asDouble = alt;
-                }
-            }
-            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)
-            {
-                // Cast loses precision past 2^53 (see header).
-                asDouble = static_cast<double>(alt);
-            }
-            if (!asDouble.has_value())
-            {
-                return false;
-            }
-            const double numeric = *asDouble;
-            if (mMin.has_value() && numeric < *mMin)
-            {
-                return false;
-            }
-            if (mMax.has_value() && numeric > *mMax)
-            {
-                return false;
-            }
-            return true;
-        },
-        value
-    );
+    const CompactLogValue *cell = table.FindCell(row, mColumnIndex);
+    if (cell == nullptr)
+    {
+        return false;
+    }
+    double numeric = 0.0;
+    switch (cell->tag)
+    {
+    case CompactTag::Double:
+        numeric = std::bit_cast<double>(cell->payload);
+        if (std::isnan(numeric))
+        {
+            return false;
+        }
+        break;
+    case CompactTag::Int64:
+        // The cast loses precision past 2^53 (see header).
+        numeric = static_cast<double>(static_cast<int64_t>(cell->payload));
+        break;
+    case CompactTag::Uint64:
+        numeric = static_cast<double>(cell->payload);
+        break;
+    default:
+        return false;
+    }
+    if (mMin.has_value() && numeric < *mMin)
+    {
+        return false;
+    }
+    return !(mMax.has_value() && numeric > *mMax);
 }
 
 BoolRowPredicate::BoolRowPredicate(size_t columnIndex, bool includeTrue, bool includeFalse)
@@ -257,12 +243,12 @@ bool BoolRowPredicate::MatchesRow(const LogTable &table, size_t row) const
     {
         return false;
     }
-    const LogValue value = table.GetValue(row, mColumnIndex);
-    if (const auto *b = std::get_if<bool>(&value); b != nullptr)
+    const CompactLogValue *cell = table.FindCell(row, mColumnIndex);
+    if (cell == nullptr || cell->tag != CompactTag::Bool)
     {
-        return *b ? mIncludeTrue : mIncludeFalse;
+        return false;
     }
-    return false;
+    return cell->payload != 0 ? mIncludeTrue : mIncludeFalse;
 }
 
 CallbackStringRowPredicate::CallbackStringRowPredicate(size_t columnIndex, MatchFn match)
