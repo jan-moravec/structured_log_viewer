@@ -91,8 +91,10 @@ private:
     std::int32_t mYear = 0;
     std::uint32_t mMonth = 0;
     std::uint32_t mDayOfMonth = 0;
+    /** @brief The length of a date written as year-month-day. */
+    static constexpr std::size_t DAY_TEXT_LENGTH = 10;
     /** @brief The text of mDay as year-month-day. */
-    std::array<char, 10> mDayText{};
+    std::array<char, DAY_TEXT_LENGTH> mDayText{};
 };
 
 } // namespace loglib::internal

@@ -34,24 +34,37 @@ namespace loglib
 namespace
 {
 
+/** Room for any 64-bit integer in decimal, with its sign. */
+constexpr std::size_t INTEGER_TEXT_CAPACITY = 24;
+
+/** Room for a double in fixed notation with up to 99 digits after the point. Longer text uses the general formatter. */
+constexpr std::size_t FIXED_DOUBLE_TEXT_CAPACITY = 400;
+
 /** The number of digits after the point when a print format is a fixed-precision one such as {:.2f}. */
-std::optional<int> FixedPrecisionOf(const std::string &format) noexcept
+std::optional<int> FixedPrecisionOf(std::string_view format) noexcept
 {
-    // Only {:.Nf} and {:.NNf} are read; anything else goes to the general formatter.
-    const std::size_t size = format.size();
-    if (size < 6 || size > 7 || format[0] != '{' || format[1] != ':' || format[2] != '.' || format[size - 1] != '}' ||
-        format[size - 2] != 'f')
+    // Only {:.N} and {:.NN} followed by f are read; anything else goes to the general formatter.
+    constexpr std::string_view PREFIX = "{:.";
+    constexpr std::string_view SUFFIX = "f}";
+    constexpr std::size_t MAX_PRECISION_DIGITS = 2;
+    constexpr int DECIMAL_BASE = 10;
+    if (format.size() <= PREFIX.size() + SUFFIX.size() || !format.starts_with(PREFIX) || !format.ends_with(SUFFIX))
+    {
+        return std::nullopt;
+    }
+    const std::string_view digits = format.substr(PREFIX.size(), format.size() - PREFIX.size() - SUFFIX.size());
+    if (digits.size() > MAX_PRECISION_DIGITS)
     {
         return std::nullopt;
     }
     int precision = 0;
-    for (std::size_t i = 3; i < size - 2; ++i)
+    for (const char digit : digits)
     {
-        if (format[i] < '0' || format[i] > '9')
+        if (digit < '0' || digit > '9')
         {
             return std::nullopt;
         }
-        precision = precision * 10 + (format[i] - '0');
+        precision = (precision * DECIMAL_BASE) + (digit - '0');
     }
     return precision;
 }
@@ -1121,7 +1134,7 @@ void LogTable::AppendFormattedValue(std::string &out, const std::string &format,
             {
                 if (format == "{}")
                 {
-                    std::array<char, 24> digits{};
+                    std::array<char, INTEGER_TEXT_CAPACITY> digits{};
                     const auto result = std::to_chars(digits.data(), digits.data() + digits.size(), arg);
                     out.append(digits.data(), result.ptr);
                     return;
@@ -1133,7 +1146,7 @@ void LogTable::AppendFormattedValue(std::string &out, const std::string &format,
                 if (const std::optional<int> precision = FixedPrecisionOf(format);
                     precision.has_value() && std::isfinite(arg))
                 {
-                    std::array<char, 400> digits{};
+                    std::array<char, FIXED_DOUBLE_TEXT_CAPACITY> digits{};
                     const auto result = std::to_chars(
                         digits.data(), digits.data() + digits.size(), arg, std::chars_format::fixed, *precision
                     );

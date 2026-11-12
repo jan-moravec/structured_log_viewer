@@ -59,17 +59,18 @@ std::vector<std::int64_t> EdgeInstants()
     // the epoch, and the day before 0000.
     for (const std::int64_t day : {-719'528, -719'162, -1, 11'016, 19'782, 47'541, 47'542, 2'932'896, -719'529})
     {
-        for (const std::int64_t offset :
-             {-2 * MICROS_PER_DAY,
-              -MICROS_PER_SECOND,
-              std::int64_t{-1},
-              std::int64_t{0},
-              std::int64_t{1},
-              MICROS_PER_SECOND - 1,
-              MICROS_PER_DAY - 1,
-              MICROS_PER_DAY})
+        for (const std::int64_t offset : {
+                 -2 * MICROS_PER_DAY,
+                 -MICROS_PER_SECOND,
+                 std::int64_t{-1},
+                 std::int64_t{0},
+                 std::int64_t{1},
+                 MICROS_PER_SECOND - 1,
+                 MICROS_PER_DAY - 1,
+                 MICROS_PER_DAY,
+             })
         {
-            instants.push_back(day * MICROS_PER_DAY + offset);
+            instants.push_back((day * MICROS_PER_DAY) + offset);
         }
     }
     instants.push_back(std::numeric_limits<std::int64_t>::min());
@@ -91,13 +92,14 @@ std::vector<std::int64_t> TransitionInstants(const TimeZoneContext &zone)
         {
             break;
         }
-        for (const std::int64_t delta :
-             {-3'600 * MICROS_PER_SECOND,
-              -MICROS_PER_SECOND,
-              std::int64_t{-1},
-              std::int64_t{0},
-              std::int64_t{1},
-              MICROS_PER_SECOND})
+        for (const std::int64_t delta : {
+                 -3'600 * MICROS_PER_SECOND,
+                 -MICROS_PER_SECOND,
+                 std::int64_t{-1},
+                 std::int64_t{0},
+                 std::int64_t{1},
+                 MICROS_PER_SECOND,
+             })
         {
             instants.push_back(span->endUtc + delta);
         }
@@ -138,6 +140,8 @@ TEST_CASE("The timestamp formatter writes the same text as the general formatter
         "%",
     };
 
+    // A fixed seed keeps the run repeatable.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937_64 generator(7);
     std::vector<std::int64_t> instants = EdgeInstants();
     for (int i = 0; i < 600; ++i)
@@ -192,6 +196,8 @@ TEST_CASE("The timestamp formatter is right when times arrive out of order", "[t
     InitializeTimezoneData();
     const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
     std::vector<std::int64_t> instants = TransitionInstants(berlin);
+    // A fixed seed keeps the run repeatable.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937_64 generator(3);
     for (int i = 0; i < 300; ++i)
     {
@@ -228,6 +234,8 @@ TEST_CASE("Time zone context formatting uses the same text as the general format
     InitializeTimezoneData();
     const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
     const TimeZoneContext utc = TimeZoneContext::Utc();
+    // A fixed seed keeps the run repeatable.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937_64 generator(11);
     for (int i = 0; i < 2000; ++i)
     {

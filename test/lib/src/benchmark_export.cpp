@@ -93,6 +93,8 @@ SharedExportTable MakeSharedExportTable(const Tier &tier)
         input->rows.resize(table.RowCount());
         std::iota(input->rows.begin(), input->rows.end(), std::size_t{0});
         input->shuffledRows = input->rows;
+        // A fixed seed keeps the run repeatable.
+        // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
         std::mt19937_64 generator(42);
         std::ranges::shuffle(input->shuffledRows, generator);
         input->columns.resize(table.ColumnCount());

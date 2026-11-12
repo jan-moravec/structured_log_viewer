@@ -15,34 +15,48 @@ namespace loglib::internal
 namespace
 {
 
+constexpr std::int64_t SECONDS_PER_MINUTE = 60;
+constexpr std::int64_t MINUTES_PER_HOUR = 60;
+constexpr std::int64_t HOURS_PER_DAY = 24;
+constexpr std::int64_t MICROS_PER_MILLI = 1'000;
 constexpr std::int64_t MICROS_PER_SECOND = 1'000'000;
-constexpr std::int64_t MICROS_PER_MINUTE = 60 * MICROS_PER_SECOND;
-constexpr std::int64_t MICROS_PER_HOUR = 60 * MICROS_PER_MINUTE;
-constexpr std::int64_t MICROS_PER_DAY = 24 * MICROS_PER_HOUR;
+constexpr std::int64_t MICROS_PER_MINUTE = SECONDS_PER_MINUTE * MICROS_PER_SECOND;
+constexpr std::int64_t MICROS_PER_HOUR = MINUTES_PER_HOUR * MICROS_PER_MINUTE;
+constexpr std::int64_t MICROS_PER_DAY = HOURS_PER_DAY * MICROS_PER_HOUR;
 
-// The times from the start of year 0000 to the end of year 9999, kept a day and a half clear of both ends so that no
-// zone offset moves a time out of the years the steps write.
-constexpr std::int64_t FIRST_YEAR_MICROS = -62'167'219'200 * MICROS_PER_SECOND + 2 * MICROS_PER_DAY;
-constexpr std::int64_t LAST_YEAR_MICROS = 253'402'300'800 * MICROS_PER_SECOND - 2 * MICROS_PER_DAY;
+// The times from the start of year 0000 to the end of year 9999, kept two days clear of both ends so that no zone
+// offset moves a time out of the years the steps write.
+constexpr std::int64_t FIRST_YEAR_SECONDS = -62'167'219'200;
+constexpr std::int64_t AFTER_LAST_YEAR_SECONDS = 253'402'300'800;
+constexpr std::int64_t YEAR_MARGIN_MICROS = 2 * MICROS_PER_DAY;
+constexpr std::int64_t FIRST_YEAR_MICROS = (FIRST_YEAR_SECONDS * MICROS_PER_SECOND) + YEAR_MARGIN_MICROS;
+constexpr std::int64_t LAST_YEAR_MICROS = (AFTER_LAST_YEAR_SECONDS * MICROS_PER_SECOND) - YEAR_MARGIN_MICROS;
+constexpr std::int64_t LAST_YEAR = 9999;
 
 // A zone offset has at most two digits of hours.
-constexpr std::int64_t MAX_OFFSET_SECONDS = 99 * 3600;
+constexpr std::int64_t MAX_OFFSET_HOURS = 99;
+constexpr std::int64_t MAX_OFFSET_SECONDS = MAX_OFFSET_HOURS * MINUTES_PER_HOUR * SECONDS_PER_MINUTE;
 
 constexpr std::size_t DATE_LENGTH = 10;
 constexpr std::size_t TIME_OF_DAY_LENGTH = 8;
+constexpr std::size_t OFFSET_LENGTH = 5;
+constexpr std::size_t OFFSET_WITH_COLON_LENGTH = 6;
+
+constexpr unsigned DECIMAL_BASE = 10;
+constexpr unsigned TWO_DIGIT_LIMIT = 100;
+constexpr unsigned FOUR_DIGIT_LIMIT = 10'000;
 
 /** @brief The two-digit text of every number from 0 to 99. */
 struct DigitPairs
 {
-    char text[200];
+    std::array<char, 2 * TWO_DIGIT_LIMIT> text{};
 
     constexpr DigitPairs()
-        : text()
     {
-        for (int i = 0; i < 100; ++i)
+        for (unsigned i = 0; i < TWO_DIGIT_LIMIT; ++i)
         {
-            text[2 * i] = static_cast<char>('0' + i / 10);
-            text[2 * i + 1] = static_cast<char>('0' + i % 10);
+            text[2 * i] = static_cast<char>('0' + (i / DECIMAL_BASE));
+            text[(2 * i) + 1] = static_cast<char>('0' + (i % DECIMAL_BASE));
         }
     }
 };
@@ -51,14 +65,14 @@ constexpr DigitPairs DIGIT_PAIRS;
 void PutTwo(char *&at, unsigned value) noexcept
 {
     at[0] = DIGIT_PAIRS.text[2 * value];
-    at[1] = DIGIT_PAIRS.text[2 * value + 1];
+    at[1] = DIGIT_PAIRS.text[(2 * value) + 1];
     at += 2;
 }
 
 void PutFour(char *&at, unsigned value) noexcept
 {
-    PutTwo(at, value / 100);
-    PutTwo(at, value % 100);
+    PutTwo(at, value / TWO_DIGIT_LIMIT);
+    PutTwo(at, value % TWO_DIGIT_LIMIT);
 }
 
 /** @brief Writes the fraction of a second: a dot and then three or six digits. */
@@ -67,15 +81,15 @@ void PutFraction(char *&at, std::int64_t microsecondsInSecond, FractionPrecision
     *at++ = '.';
     if (precision == FractionPrecision::Milliseconds)
     {
-        const auto milliseconds = static_cast<unsigned>(microsecondsInSecond / 1000);
-        *at++ = static_cast<char>('0' + milliseconds / 100);
-        PutTwo(at, milliseconds % 100);
+        const auto milliseconds = static_cast<unsigned>(microsecondsInSecond / MICROS_PER_MILLI);
+        *at++ = static_cast<char>('0' + (milliseconds / TWO_DIGIT_LIMIT));
+        PutTwo(at, milliseconds % TWO_DIGIT_LIMIT);
         return;
     }
     const auto value = static_cast<unsigned>(microsecondsInSecond);
-    PutTwo(at, value / 10000);
-    PutTwo(at, value / 100 % 100);
-    PutTwo(at, value % 100);
+    PutTwo(at, value / FOUR_DIGIT_LIMIT);
+    PutTwo(at, (value / TWO_DIGIT_LIMIT) % TWO_DIGIT_LIMIT);
+    PutTwo(at, value % TWO_DIGIT_LIMIT);
 }
 
 /** @brief The largest whole number that is not above the quotient. */
@@ -83,6 +97,36 @@ void PutFraction(char *&at, std::int64_t microsecondsInSecond, FractionPrecision
 {
     const std::int64_t quotient = value / divisor;
     return (value % divisor != 0 && (value < 0) != (divisor < 0)) ? quotient - 1 : quotient;
+}
+
+/** @brief A year, month and day of the proleptic Gregorian calendar. */
+struct CivilDate
+{
+    std::int64_t year = 0;
+    std::uint32_t month = 0;
+    std::uint32_t day = 0;
+};
+
+/** @brief The date of a day counted from 1970-01-01. */
+[[nodiscard]] CivilDate CivilFromDays(std::int64_t days) noexcept
+{
+    // The shifted-era algorithm, with March as the first month of the year. Its constants are lengths of the calendar:
+    // 146097 days in 400 years, 36524 in 100 years, 1460 in 4 years, and 153 days in five months from March.
+    // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+    const std::int64_t shifted = days + 719'468;
+    const std::int64_t era = FloorDivide(shifted, 146'097);
+    const std::int64_t dayOfEra = shifted - (era * 146'097);
+    const std::int64_t yearOfEra = (dayOfEra - (dayOfEra / 1460) + (dayOfEra / 36'524) - (dayOfEra / 146'096)) / 365;
+    const std::int64_t dayOfYear = dayOfEra - ((365 * yearOfEra) + (yearOfEra / 4) - (yearOfEra / 100));
+    const std::int64_t monthIndex = ((5 * dayOfYear) + 2) / 153;
+    const auto dayOfMonth = static_cast<std::uint32_t>(dayOfYear - (((153 * monthIndex) + 2) / 5) + 1);
+    const auto month = static_cast<std::uint32_t>(monthIndex < 10 ? monthIndex + 3 : monthIndex - 9);
+    return CivilDate{
+        .year = yearOfEra + (era * 400) + (month <= 2 ? 1 : 0),
+        .month = month,
+        .day = dayOfMonth,
+    };
+    // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 }
 
 } // namespace
@@ -150,7 +194,7 @@ void TimestampFormatter::Compile()
             addStep(StepKind::Second, 2 + fractionLength);
             break;
         case 'z':
-            addStep(StepKind::Offset, 5);
+            addStep(StepKind::Offset, OFFSET_LENGTH);
             break;
         case 'Z':
             addStep(StepKind::Abbreviation, 0);
@@ -163,7 +207,7 @@ void TimestampFormatter::Compile()
                 return;
             }
             ++i;
-            addStep(StepKind::OffsetWithColon, 6);
+            addStep(StepKind::OffsetWithColon, OFFSET_WITH_COLON_LENGTH);
             break;
         default:
             mSteps.clear();
@@ -183,7 +227,7 @@ bool TimestampFormatter::AppendWithSteps(std::string &out, TimeStamp timeStamp)
     }
     if (mPrecision == FractionPrecision::Milliseconds)
     {
-        utc = std::chrono::round<std::chrono::milliseconds>(timeStamp).time_since_epoch().count() * 1000;
+        utc = std::chrono::round<std::chrono::milliseconds>(timeStamp).time_since_epoch().count() * MICROS_PER_MILLI;
     }
 
     std::int64_t offsetSeconds = 0;
@@ -209,29 +253,20 @@ bool TimestampFormatter::AppendWithSteps(std::string &out, TimeStamp timeStamp)
         abbreviation = mSpan.abbreviation;
     }
 
-    const std::int64_t local = utc + offsetSeconds * MICROS_PER_SECOND;
+    const std::int64_t local = utc + (offsetSeconds * MICROS_PER_SECOND);
     const std::int64_t day = FloorDivide(local, MICROS_PER_DAY);
-    const std::int64_t timeOfDay = local - day * MICROS_PER_DAY;
+    const std::int64_t timeOfDay = local - (day * MICROS_PER_DAY);
 
     if (!mHasDay || day != mDay)
     {
-        // Civil date from a day count: the shifted-era algorithm, with March as the first month of the year.
-        const std::int64_t shifted = day + 719'468;
-        const std::int64_t era = FloorDivide(shifted, 146'097);
-        const std::int64_t dayOfEra = shifted - era * 146'097;
-        const std::int64_t yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36'524 - dayOfEra / 146'096) / 365;
-        const std::int64_t dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100);
-        const std::int64_t monthIndex = (5 * dayOfYear + 2) / 153;
-        const auto dayOfMonth = static_cast<std::uint32_t>(dayOfYear - (153 * monthIndex + 2) / 5 + 1);
-        const auto month = static_cast<std::uint32_t>(monthIndex < 10 ? monthIndex + 3 : monthIndex - 9);
-        const std::int64_t year = yearOfEra + era * 400 + (month <= 2 ? 1 : 0);
-        if (year < 0 || year > 9999)
+        const CivilDate date = CivilFromDays(day);
+        if (date.year < 0 || date.year > LAST_YEAR)
         {
             return false;
         }
-        mYear = static_cast<std::int32_t>(year);
-        mMonth = month;
-        mDayOfMonth = dayOfMonth;
+        mYear = static_cast<std::int32_t>(date.year);
+        mMonth = date.month;
+        mDayOfMonth = date.day;
         char *at = mDayText.data();
         PutFour(at, static_cast<unsigned>(mYear));
         *at++ = '-';
@@ -243,13 +278,13 @@ bool TimestampFormatter::AppendWithSteps(std::string &out, TimeStamp timeStamp)
     }
 
     const auto hour = static_cast<unsigned>(timeOfDay / MICROS_PER_HOUR);
-    const auto minute = static_cast<unsigned>(timeOfDay / MICROS_PER_MINUTE % 60);
-    const auto second = static_cast<unsigned>(timeOfDay / MICROS_PER_SECOND % 60);
+    const auto minute = static_cast<unsigned>((timeOfDay / MICROS_PER_MINUTE) % MINUTES_PER_HOUR);
+    const auto second = static_cast<unsigned>((timeOfDay / MICROS_PER_SECOND) % SECONDS_PER_MINUTE);
     const std::int64_t microsecondsInSecond = timeOfDay % MICROS_PER_SECOND;
 
     const std::size_t start = out.size();
     out.resize_and_overwrite(
-        start + mFixedLength + mAbbreviationCount * abbreviation.size(), [&](char *buffer, std::size_t) {
+        start + mFixedLength + (mAbbreviationCount * abbreviation.size()), [&](char *buffer, std::size_t) {
             char *at = buffer + start;
             for (const Step &step : mSteps)
             {
@@ -292,18 +327,18 @@ bool TimestampFormatter::AppendWithSteps(std::string &out, TimeStamp timeStamp)
                 case StepKind::OffsetWithColon:
                 {
                     // Whole minutes, truncated toward zero, as the general formatter writes them.
-                    std::int64_t offsetMinutes = offsetSeconds / 60;
+                    std::int64_t offsetMinutes = offsetSeconds / SECONDS_PER_MINUTE;
                     *at++ = offsetMinutes < 0 ? '-' : '+';
                     if (offsetMinutes < 0)
                     {
                         offsetMinutes = -offsetMinutes;
                     }
-                    PutTwo(at, static_cast<unsigned>(offsetMinutes / 60));
+                    PutTwo(at, static_cast<unsigned>(offsetMinutes / MINUTES_PER_HOUR));
                     if (step.kind == StepKind::OffsetWithColon)
                     {
                         *at++ = ':';
                     }
-                    PutTwo(at, static_cast<unsigned>(offsetMinutes % 60));
+                    PutTwo(at, static_cast<unsigned>(offsetMinutes % MINUTES_PER_HOUR));
                     break;
                 }
                 case StepKind::Abbreviation:

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <utility>
 #include <variant>
@@ -38,6 +39,7 @@ LogTable TableOfValues(const std::vector<LogValue> &values, const std::string &p
 
     KeyIndex keys;
     std::vector<LogLine> lines;
+    lines.reserve(values.size());
     for (std::size_t i = 0; i < values.size(); ++i)
     {
         lines.emplace_back(LogMap{{"v", values[i]}}, keys, *source, i + 1);
@@ -63,6 +65,7 @@ LogTable TableOfValues(const std::vector<LogValue> &values, const std::string &p
 template <typename Number> void CheckAgainstFmt(const std::vector<Number> &numbers, const std::string &printFormat)
 {
     std::vector<LogValue> values;
+    values.reserve(numbers.size());
     for (const Number number : numbers)
     {
         values.emplace_back(number);
@@ -71,7 +74,9 @@ template <typename Number> void CheckAgainstFmt(const std::vector<Number> &numbe
     std::string buffer;
     for (std::size_t row = 0; row < numbers.size(); ++row)
     {
-        const std::string expected = fmt::format(fmt::runtime(printFormat), numbers[row]);
+        // A copy, because an element of a vector of bool is a proxy that fmt cannot format.
+        const Number number = numbers[row];
+        const std::string expected = fmt::format(fmt::runtime(printFormat), number);
         INFO("format " << printFormat << " row " << row);
         buffer = "left over";
         CHECK(std::string(table.GetValueOrFormatted(row, 0, buffer)) == expected);
@@ -111,8 +116,8 @@ TEST_CASE("Floating cells read as the print format writes them", "[cell_formatti
         2.675,
         0.125,
         0.375,
-        3.14159265358979,
-        -2.718281828,
+        std::numbers::pi,
+        -std::numbers::e,
         1e-7,
         123456789.987654321,
         1e15,

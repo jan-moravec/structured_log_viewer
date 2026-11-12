@@ -738,10 +738,10 @@ TEST_CASE("exports: JSON Lines escapes strings and writes numbers as JSON requir
     REQUIRE(outLines.size() == texts.size());
     for (std::size_t i = 0; i < texts.size(); ++i)
     {
-        const std::string expected =
-            "{\"a_text\":\"" + expectedEscape(texts[i]) +
-            "\",\"b_signed\":" + (i % 2 == 0 ? "-9223372036854775808" : "-7") +
-            ",\"c_unsigned\":18446744073709551615,\"d_flag\":" + (i % 2 == 0 ? "true" : "false") + "}";
+        const std::string expected = R"({"a_text":")" + expectedEscape(texts[i]) + R"(","b_signed":)" +
+                                     (i % 2 == 0 ? "-9223372036854775808" : "-7") +
+                                     R"(,"c_unsigned":18446744073709551615,"d_flag":)" +
+                                     (i % 2 == 0 ? "true" : "false") + "}";
         INFO("row " << i);
         CHECK(outLines[i] == expected);
     }

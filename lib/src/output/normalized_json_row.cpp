@@ -15,6 +15,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <numeric>
@@ -101,10 +102,13 @@ void AppendTimestampJson(std::string &out, TimestampFormatter &formatter, TimeSt
     }
 }
 
+/** Room for any 64-bit integer in decimal, with its sign. */
+constexpr std::size_t INTEGER_TEXT_CAPACITY = 24;
+
 /** Appends a whole number in decimal. */
 template <typename Integer> void AppendInteger(std::string &out, Integer value)
 {
-    std::array<char, 24> digits{};
+    std::array<char, INTEGER_TEXT_CAPACITY> digits{};
     const auto result = std::to_chars(digits.data(), digits.data() + digits.size(), value);
     out.append(digits.data(), result.ptr);
 }

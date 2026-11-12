@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <memory>
 #include <string>
-#include <utility>
 
 namespace loglib::internal
 {
@@ -37,10 +36,10 @@ template <typename Worker, typename MakeWorker, typename BeforeChunk, typename B
 void WriteInOrderedChunks(
     std::size_t total,
     std::size_t chunkSize,
-    MakeWorker &&makeWorker,
-    BeforeChunk &&beforeChunk,
-    Build &&build,
-    Consume &&consume
+    const MakeWorker &makeWorker,
+    const BeforeChunk &beforeChunk,
+    const Build &build,
+    const Consume &consume
 )
 {
     if (total == 0)
