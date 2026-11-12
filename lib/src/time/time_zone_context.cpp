@@ -6,6 +6,7 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <memory>
@@ -234,9 +235,13 @@ void TimeZoneContext::AppendFormatted(std::string &out, TimeStamp timeStamp, std
 
 std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format, FractionPrecision precision) const
 {
+    // Times within a few days of the ends of the range move inward, because rounding them, finding their day and
+    // adding a zone offset would overflow. Such times lie hundreds of thousands of years away from any log.
+    constexpr std::chrono::days RANGE_MARGIN{3};
+    const TimeStamp inRange = std::clamp(timeStamp, TimeStamp::min() + RANGE_MARGIN, TimeStamp::max() - RANGE_MARGIN);
     const std::string formatString{format};
     const auto formatWith = [&]<typename Duration>(Duration) {
-        const auto rounded = std::chrono::round<Duration>(timeStamp);
+        const auto rounded = std::chrono::round<Duration>(inRange);
         if (mImpl->zone == nullptr)
         {
             return date::format(formatString, rounded);
@@ -268,7 +273,8 @@ std::optional<ZoneSpan> TimeZoneContext::ZoneSpanAt(std::int64_t utcMicroseconds
         };
     }
     // Instants that the zone reports as unbounded saturate instead of overflowing.
-    constexpr std::int64_t SECONDS_LIMIT = std::numeric_limits<std::int64_t>::max() / 1'000'000;
+    constexpr std::int64_t MICROS_PER_SECOND = 1'000'000;
+    constexpr std::int64_t SECONDS_LIMIT = std::numeric_limits<std::int64_t>::max() / MICROS_PER_SECOND;
     const auto toMicroseconds = [](std::chrono::seconds seconds) {
         if (seconds.count() >= SECONDS_LIMIT)
         {
@@ -278,7 +284,7 @@ std::optional<ZoneSpan> TimeZoneContext::ZoneSpanAt(std::int64_t utcMicroseconds
         {
             return std::numeric_limits<std::int64_t>::min();
         }
-        return seconds.count() * 1'000'000;
+        return seconds.count() * MICROS_PER_SECOND;
     };
     try
     {

@@ -156,9 +156,10 @@ public:
     /**
      * @brief Formats a time in this zone with a strftime-style format, with the given number of fraction digits.
      *
-     * Milliseconds round the time to the nearest millisecond first. This always uses the general formatter, so it is
-     * the reference for faster ways of writing the same text. Throws std::runtime_error if the format cannot be
-     * applied.
+     * Milliseconds round the time to the nearest millisecond first. A time within three days of either end of the
+     * TimeStamp range is moved inward to that limit, so the arithmetic cannot overflow. This always uses the general
+     * formatter, so it is the reference for faster ways of writing the same text. Throws std::runtime_error if the
+     * format cannot be applied.
      */
     [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format, FractionPrecision precision) const;
 
