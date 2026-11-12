@@ -9,6 +9,7 @@
 #include "loglib/table/log_table.hpp"
 
 #include <oneapi/tbb/blocked_range.h>
+#include <oneapi/tbb/enumerable_thread_specific.h>
 #include <oneapi/tbb/parallel_for.h>
 #include <oneapi/tbb/parallel_sort.h>
 
@@ -19,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -712,6 +714,107 @@ std::vector<size_t> SortByNumericKeys(
     return AssemblePermutation(split, n, ascending);
 }
 
+/// The first eight bytes of the text as a big-endian integer, padded with zero bytes. Comparing two prefixes as integers
+/// orders texts like an unsigned byte comparison, as far as the prefixes differ.
+uint64_t PrefixKey(std::string_view text) noexcept
+{
+    uint64_t key = 0;
+    for (size_t i = 0; i < sizeof(uint64_t); ++i)
+    {
+        key = (key << 8U) | (i < text.size() ? static_cast<uint8_t>(text[i]) : uint64_t{0});
+    }
+    return key;
+}
+
+/// Sorts by a string column. One parallel pass resolves each cell to text, and a second computes an eight-byte key from
+/// the text after the start that all texts share. The sort compares the keys as integers and reads the rest of the text
+/// only for rows with equal keys. A cell that is not a
+/// string is compared by its formatted text, and an empty cell sorts to the tail.
+std::vector<size_t> SortByStringKeys(
+    const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending
+)
+{
+    const size_t n = logRows.size();
+    std::vector<KeyClass> classes(n);
+    std::vector<uint64_t> keys(n);
+    std::vector<std::string_view> texts(n);
+    // Text that is not a view into the table lives here, one deque per worker so the views stay valid.
+    tbb::enumerable_thread_specific<std::deque<std::string>> owned;
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, n), [&](const tbb::blocked_range<size_t> &range) {
+        std::deque<std::string> &store = owned.local();
+        for (size_t i = range.begin(); i != range.end(); ++i)
+        {
+            LogValue value = LoadValue(table, logRows[i], columnIndex);
+            std::string_view text;
+            if (std::holds_alternative<std::monostate>(value))
+            {
+                classes[i] = KeyClass::Missing;
+                continue;
+            }
+            if (const auto *view = std::get_if<std::string_view>(&value); view != nullptr)
+            {
+                text = *view;
+            }
+            else if (auto *str = std::get_if<std::string>(&value); str != nullptr)
+            {
+                text = store.emplace_back(std::move(*str));
+            }
+            else
+            {
+                text = store.emplace_back(table.GetFormattedValue(logRows[i], columnIndex));
+            }
+            classes[i] = KeyClass::Ordinary;
+            texts[i] = text;
+        }
+    });
+
+    // Bytes that every text starts with tell the rows apart not at all, so the keys start after them. Log paths and
+    // messages often share a long start.
+    size_t shared = std::numeric_limits<size_t>::max();
+    std::string_view first;
+    bool haveFirst = false;
+    for (size_t i = 0; i < n && shared > 0; ++i)
+    {
+        if (classes[i] != KeyClass::Ordinary)
+        {
+            continue;
+        }
+        if (!haveFirst)
+        {
+            first = texts[i];
+            shared = first.size();
+            haveFirst = true;
+            continue;
+        }
+        const std::string_view text = texts[i];
+        const size_t limit = std::min(shared, text.size());
+        size_t same = 0;
+        while (same < limit && first[same] == text[same])
+        {
+            ++same;
+        }
+        shared = same;
+    }
+    if (!haveFirst)
+    {
+        shared = 0;
+    }
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, n), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i != range.end(); ++i)
+        {
+            if (classes[i] == KeyClass::Ordinary)
+            {
+                keys[i] = PrefixKey(texts[i].substr(shared));
+            }
+        }
+    });
+    KeyedRows split = SplitByClass(classes, keys);
+    OrderKeyedRows(split.ordinary, ascending, false, [&texts](size_t a, size_t b) {
+        return texts[a].compare(texts[b]);
+    });
+    return AssemblePermutation(split, n, ascending);
+}
+
 /// Sorts @p permutation by the three-way @p compare, breaking ties by input index so the order is total. The
 /// direction is a template parameter so each instantiation compiles to a plain comparison.
 template <bool Ascending, typename ThreeWay>
@@ -867,6 +970,9 @@ std::vector<size_t> SortPermutationByColumn(
             return SortByNumericKeys(table, logRows, columnIndex, ascending, FloatingKey);
         case ColumnType::Time:
             return SortByNumericKeys(table, logRows, columnIndex, ascending, TimeKey);
+        case ColumnType::String:
+        case ColumnType::Any:
+            return SortByStringKeys(table, logRows, columnIndex, ascending);
         default:
             break;
         }
