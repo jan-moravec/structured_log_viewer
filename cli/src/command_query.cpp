@@ -112,7 +112,7 @@ void SortRows(
     rows = std::move(sorted);
 }
 
-/** @brief Exports @p plan to `--output` or stdout. A failed write is an output failure. */
+/** @brief Exports @p plan to the output option's file or to stdout. A failed write is an output failure. */
 [[nodiscard]] std::optional<Failure> WriteRows(
     const QueryOptions &options,
     const Console &console,
@@ -141,7 +141,7 @@ void SortRows(
     {
         if (toStdout)
         {
-            // A closed pipe surfaces as `BrokenPipe`, which `main` treats as success.
+            // A closed pipe gives BrokenPipe, which main treats as success.
             loglib::exports::StreamSink sink(console.Out());
             exporter->Run(plan.View(), sink, runtime.stop);
             sink.Finish();

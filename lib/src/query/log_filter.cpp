@@ -1,5 +1,3 @@
-// `loglib` has no Qt in its include chain, so the TBB-before-Qt
-// ordering that `app/` needs doesn't apply here.
 #include "loglib/query/log_filter.hpp"
 
 #include "loglib/core/compact_log_value.hpp"
@@ -42,9 +40,8 @@ EnumRowPredicate::EnumRowPredicate(
         return;
     }
 
-    // Dedupe so `mAllResolved` is keyed on distinct values regardless
-    // of caller-side dedup, and so the bitset / string-set work stays
-    // bounded.
+    // Work on distinct values, so that the all-resolved flag counts each value once and the bitset and string set stay
+    // small whatever the caller passes.
     const std::unordered_set<std::string_view, loglib::TransparentStringHash, loglib::TransparentStringEqual> distinct(
         selectedValues.begin(), selectedValues.end()
     );
@@ -59,8 +56,7 @@ EnumRowPredicate::EnumRowPredicate(
         return;
     }
 
-    // Indexed by id; ids past `Size()` later go through the
-    // past-bitset branch in `MatchesRow`.
+    // Indexed by id. An id past the dictionary's current size takes the past-the-bitset branch of MatchesRow.
     mSelectedIds.assign(static_cast<size_t>(dictionary->Size()), false);
     size_t resolvedCount = 0;
     for (const std::string_view value : distinct)
@@ -68,17 +64,14 @@ EnumRowPredicate::EnumRowPredicate(
         const EnumValueId id = dictionary->Find(value);
         if (id == INVALID_ENUM_VALUE_ID)
         {
-            // Unresolved -> string-set fallback so the post-rebuild
-            // path still matches.
+            // A value the dictionary does not know yet goes to the string set, so it still matches after a rebuild.
             mSelectedStrings.emplace(value);
             continue;
         }
         const auto idx = static_cast<size_t>(id);
         if (idx >= mSelectedIds.size())
         {
-            // Defensive: id past the snapshot we sized against
-            // (concurrent dict growth between `Size()` and `Find`).
-            // Treat as unresolved.
+            // The dictionary grew between the size read and the lookup, so treat the value as unresolved.
             mSelectedStrings.emplace(value);
             continue;
         }
@@ -107,20 +100,14 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             }
             if (mAllResolved)
             {
-                // Past the bitset, fully resolved -> provably unselected.
-                // An id past the bitset can only exist because the
-                // dictionary grew after we sized against it. Growth
-                // mints ids only for new values, and `mAllResolved`
-                // says every selected string already resolved at
-                // construction, so the new value cannot be selected.
+                // An id past the bitset belongs to a value added after construction. Every selected value was
+                // resolved then, so the new value is not selected.
                 return false;
             }
-            // Past the bitset with a stale predicate: fall through
-            // to the string set. Some selected values were unresolved
-            // at construction, so this id may still correspond to one
-            // of them once the bytes are compared.
+            // Some selected values were unresolved at construction, so this new id may be one of them. The string
+            // set decides.
         }
-        // Slot isn't a `DictRef`; fall through to the string set.
+        // The cell is not a dictionary reference, so the string set decides.
     }
 
     if (mSelectedStrings.empty())
@@ -262,37 +249,23 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     {
         return false;
     }
-    // One-walk path: `GetValueOrFormatted` resolves the slot once and
-    // either returns its bytes directly (mmap-aliased / dict-resolved
-    // string slots) or formats numeric/time slots into the
-    // `thread_local` buffer. The old two-call shape walked the line
-    // twice (`GetValue` + `GetFormattedValue`) for every non-string
-    // column hit.
-    //
-    // `thread_local` is safe under `tbb::parallel_for`: each TBB
-    // worker has its own buffer. Re-entrancy within a thread is fine
-    // because `mMatch` doesn't call back into `MatchesRow`.
+    // GetValueOrFormatted finds the cell once. It returns the bytes of a string cell directly and formats any other
+    // cell into the buffer. Each worker thread has its own buffer, and the matcher never calls back into MatchesRow,
+    // so the buffer is not reused while it is read.
     thread_local std::string buffer;
     const std::string_view bytes = table.GetValueOrFormatted(row, mColumnIndex, buffer);
     return mMatch(bytes);
 }
 
-// Relative weight for the regex / UTF-8 string branch.  Kept as a
-// named constant so cppcoreguidelines-avoid-magic-numbers doesn't
-// flag the visit lambda below.
+// The relative cost of a string leaf, which is the most expensive kind.
 constexpr int STRING_LEAF_COST = 10;
 
-// The `noexcept` on this function is a design guarantee: the
-// variant is always populated by construction (predicate
-// factories never leave it valueless_by_exception), so
-// `std::visit` cannot actually throw `bad_variant_access`.
-// clang-tidy's bugprone-exception-escape check can't see that
-// invariant; the NOLINT records the argument explicitly.
+// The predicate variant always holds a value, so the visit cannot throw.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int EstimatedLeafCost(const RowPredicate &predicate) noexcept
 {
-    // Relative weights (see header). Bool first (cheapest reject
-    // fires first in `And`); string / regex last (most expensive).
+    // Relative weights, described in the header. A boolean leaf is cheapest, so it runs first in an And, and a string
+    // leaf runs last.
     return std::visit(
         [](const auto &concrete) noexcept -> int {
             using T = std::decay_t<decltype(concrete)>;
@@ -333,11 +306,7 @@ CompiledFilterExpression::Not::Not(CompiledFilterExpression c)
 {
 }
 
-// Same reasoning as `EstimatedLeafCost`: the node variant is always
-// populated, so `std::visit` never throws in practice.  The
-// arms Leaf/And/Or/Not all return the same `n.estimatedCost` field,
-// which trips readability-branch-clone -- collapsed into a single
-// generic path to remove the duplication.
+// The node variant always holds a value, so the visit cannot throw. Every node kind keeps its cost in the same field.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int CompiledFilterExpression::EstimatedCost() const noexcept
 {
@@ -350,9 +319,7 @@ bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept
     return asAnd != nullptr && asAnd->children.empty();
 }
 
-// Recursive AST walker; misc-no-recursion is suppressed on both the
-// entry point and the visitor lambda so the boolean short-circuit
-// structure stays legible.
+// Walks the tree recursively, with the short-circuit of And and Or.
 // NOLINTNEXTLINE(misc-no-recursion)
 bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row)
 {
@@ -366,9 +333,7 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
             {
-                // Empty `And` is the identity element -- match all
-                // (`std::ranges::all_of` returns true for an empty
-                // range, which matches the semantics).
+                // An empty And accepts every row, as all_of does for an empty range.
                 // NOLINTNEXTLINE(misc-no-recursion)
                 return std::ranges::all_of(node.children, [&table, row](const auto &child) {
                     return EvaluateExpression(child, table, row);
@@ -376,9 +341,7 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
             {
-                // Empty `Or` is the identity element -- match none
-                // (`std::ranges::any_of` returns false for an empty
-                // range, which matches the semantics).
+                // An empty Or accepts no row, as any_of does for an empty range.
                 // NOLINTNEXTLINE(misc-no-recursion)
                 return std::ranges::any_of(node.children, [&table, row](const auto &child) {
                     return EvaluateExpression(child, table, row);
@@ -389,10 +352,8 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
                 // Not.
                 if (node.child == nullptr)
                 {
-                    // Degenerate: `MakeNot`/`CompileExpression` keep
-                    // `child` non-null; only a hand-edited config
-                    // could land here. Accept every row so the view
-                    // stays visible instead of going blank.
+                    // The compiler never builds a Not without a child, so only a hand-edited configuration gets
+                    // here. Accept every row, so the view does not go blank.
                     return true;
                 }
                 return !EvaluateExpression(*node.child, table, row);
