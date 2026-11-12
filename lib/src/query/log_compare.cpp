@@ -830,30 +830,34 @@ void SortWithTieBreak(std::vector<size_t> &permutation, const ThreeWay &compare)
     });
 }
 
-/// Sorts @p permutation by the precomputed per-row @p ranks, breaking ties by input index. The rank comparison stays a
-/// direct integer compare, because this is the fast path for enumeration and level columns.
-template <bool Ascending, typename Rank>
-void SortByRanksImpl(std::vector<size_t> &permutation, const std::vector<Rank> &ranks)
-{
-    tbb::parallel_sort(permutation.begin(), permutation.end(), [&ranks](size_t a, size_t b) {
-        if (ranks[a] != ranks[b])
-        {
-            return Ascending ? ranks[a] < ranks[b] : ranks[a] > ranks[b];
-        }
-        return a < b;
-    });
-}
-
+/// Orders @p permutation by the precomputed per-row @p ranks with a counting sort: one pass to count each rank, one to
+/// place each row. Rows with equal ranks stay in input order in both directions, so the order is the same as a
+/// comparison sort with an input-index tie-break.
 template <typename Rank>
 void SortByRanks(std::vector<size_t> &permutation, const std::vector<Rank> &ranks, bool ascending)
 {
-    if (ascending)
+    if (ranks.empty())
     {
-        SortByRanksImpl<true>(permutation, ranks);
+        return;
     }
-    else
+    const size_t bucketCount = static_cast<size_t>(*std::ranges::max_element(ranks)) + 1;
+    std::vector<size_t> next(bucketCount, 0);
+    for (const Rank rank : ranks)
     {
-        SortByRanksImpl<false>(permutation, ranks);
+        ++next[rank];
+    }
+    // Turn the counts into the first output position of each rank. Descending hands out the highest rank first.
+    size_t position = 0;
+    for (size_t i = 0; i < bucketCount; ++i)
+    {
+        const size_t bucket = ascending ? i : bucketCount - 1 - i;
+        const size_t count = next[bucket];
+        next[bucket] = position;
+        position += count;
+    }
+    for (size_t row = 0; row < ranks.size(); ++row)
+    {
+        permutation[next[ranks[row]]++] = row;
     }
 }
 
