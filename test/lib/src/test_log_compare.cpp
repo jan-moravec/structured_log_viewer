@@ -16,11 +16,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <span>
 #include <string>
@@ -718,8 +720,10 @@ TEST_CASE(
 namespace
 {
 
-/// A random cell for a column of @p type. Many duplicates, empty cells and cells of other types, so every tail group
-/// has rows.
+/**
+ * A random cell for a column of @p type. Many duplicates, empty cells and cells of other types, so every tail group has
+ * rows.
+ */
 LogValue RandomCell(std::mt19937 &rng, ColumnType type)
 {
     const auto pick = [&rng](uint32_t bound) { return static_cast<uint32_t>(rng() % bound); };
@@ -788,6 +792,21 @@ LogValue RandomCell(std::mt19937 &rng, ColumnType type)
             return TimeStamp{std::chrono::microseconds{static_cast<int64_t>(pick(100)) - 20}};
         }
     }
+    case ColumnType::Any:
+    {
+        // Strings next to numbers and booleans, which compare by their formatted text.
+        switch (pick(6))
+        {
+        case 0:
+            return static_cast<int64_t>(pick(30)) - 10;
+        case 1:
+            return static_cast<double>(pick(40)) / 4.0;
+        case 2:
+            return pick(2) == 0;
+        default:
+            return std::string(pick(2) == 0 ? "[" : "") + std::to_string(pick(25));
+        }
+    }
     default:
     {
         std::string text;
@@ -803,15 +822,178 @@ LogValue RandomCell(std::mt19937 &rng, ColumnType type)
     }
 }
 
-/// The order a comparison sort on CompareRows gives, with ties in input order.
+/**
+ * A cell reduced to what the sort order of a column type looks at: a group (0 for a cell that fits the type, 1 for NaN,
+ * 2 for every other cell) and, in group 0, a number or a text.
+ */
+struct ReferenceKey
+{
+    int group = 2;
+    int64_t integer = 0;
+    double floating = 0.0;
+    std::string text;
+};
+
+/**
+ * The key of a cell, written from the documented order of each column type and not from the library's comparison, so
+ * the sort is checked against an independent rule.
+ */
+ReferenceKey ReferenceKeyOf(const LogTable &table, size_t row, size_t column, ColumnType type)
+{
+    const LogValue value = table.GetValue(row, column);
+    ReferenceKey key;
+    if (std::holds_alternative<std::monostate>(value))
+    {
+        return key;
+    }
+    constexpr auto INT_MAX_VALUE = std::numeric_limits<int64_t>::max();
+    const auto clampUnsigned = [](uint64_t u) {
+        return u > static_cast<uint64_t>(INT_MAX_VALUE) ? INT_MAX_VALUE : static_cast<int64_t>(u);
+    };
+    const auto ordinary = [&key](int64_t integer, double floating = 0.0) {
+        key.group = 0;
+        key.integer = integer;
+        key.floating = floating;
+    };
+    switch (type)
+    {
+    case ColumnType::Boolean:
+        if (const auto *b = std::get_if<bool>(&value))
+        {
+            ordinary(*b ? 1 : 0);
+        }
+        break;
+    case ColumnType::Integer:
+        if (const auto *i = std::get_if<int64_t>(&value))
+        {
+            ordinary(*i);
+        }
+        else if (const auto *u = std::get_if<uint64_t>(&value))
+        {
+            ordinary(clampUnsigned(*u));
+        }
+        else if (const auto *d = std::get_if<double>(&value); d != nullptr && !std::isnan(*d))
+        {
+            // Clamped to the int64 range, and truncated toward zero inside it.
+            constexpr auto INT_MIN_VALUE = std::numeric_limits<int64_t>::min();
+            if (*d >= static_cast<double>(INT_MAX_VALUE))
+            {
+                ordinary(INT_MAX_VALUE);
+            }
+            else if (*d <= static_cast<double>(INT_MIN_VALUE))
+            {
+                ordinary(INT_MIN_VALUE);
+            }
+            else
+            {
+                ordinary(static_cast<int64_t>(*d));
+            }
+        }
+        break;
+    case ColumnType::Floating:
+    case ColumnType::Number:
+    {
+        std::optional<double> number;
+        if (const auto *d = std::get_if<double>(&value))
+        {
+            number = *d;
+        }
+        else if (const auto *i = std::get_if<int64_t>(&value))
+        {
+            number = static_cast<double>(*i);
+        }
+        else if (const auto *u = std::get_if<uint64_t>(&value))
+        {
+            number = static_cast<double>(*u);
+        }
+        if (number.has_value())
+        {
+            if (std::isnan(*number))
+            {
+                key.group = 1;
+            }
+            else
+            {
+                ordinary(0, *number);
+            }
+        }
+        break;
+    }
+    case ColumnType::Time:
+        if (const auto *t = std::get_if<TimeStamp>(&value))
+        {
+            ordinary(t->time_since_epoch().count());
+        }
+        else if (const auto *i = std::get_if<int64_t>(&value))
+        {
+            ordinary(*i);
+        }
+        else if (const auto *u = std::get_if<uint64_t>(&value))
+        {
+            ordinary(clampUnsigned(*u));
+        }
+        break;
+    default:
+        // A string by its bytes, any other cell by its formatted text.
+        key.group = 0;
+        if (const auto *view = std::get_if<std::string_view>(&value))
+        {
+            key.text = std::string(*view);
+        }
+        else if (const auto *str = std::get_if<std::string>(&value))
+        {
+            key.text = *str;
+        }
+        else
+        {
+            key.text = table.GetFormattedValue(row, column);
+        }
+        break;
+    }
+    return key;
+}
+
+int CompareReferenceKeys(const ReferenceKey &lhs, const ReferenceKey &rhs)
+{
+    if (lhs.group != rhs.group)
+    {
+        return lhs.group < rhs.group ? -1 : 1;
+    }
+    if (lhs.group != 0)
+    {
+        return 0;
+    }
+    if (lhs.integer != rhs.integer)
+    {
+        return lhs.integer < rhs.integer ? -1 : 1;
+    }
+    // Zero and negative zero are equal here, as in the floating order.
+    if (lhs.floating != rhs.floating)
+    {
+        return lhs.floating < rhs.floating ? -1 : 1;
+    }
+    const int cmp = lhs.text.compare(rhs.text);
+    return cmp < 0 ? -1 : (cmp > 0 ? 1 : 0);
+}
+
+/**
+ * The order of a stable sort on the reference keys, so rows with equal cells keep their input order. A descending sort
+ * reverses the order of the keys only.
+ */
 std::vector<size_t> ReferencePermutation(
-    const LogTable &table, const std::vector<size_t> &logRows, size_t column, bool ascending
+    const LogTable &table, const std::vector<size_t> &logRows, size_t column, ColumnType type, bool ascending
 )
 {
+    std::vector<ReferenceKey> keys;
+    keys.reserve(logRows.size());
+    for (const size_t row : logRows)
+    {
+        keys.push_back(ReferenceKeyOf(table, row, column, type));
+    }
     std::vector<size_t> permutation(logRows.size());
     std::iota(permutation.begin(), permutation.end(), size_t{0});
     std::ranges::stable_sort(permutation, [&](size_t a, size_t b) {
-        const int cmp = CompareRows(table, logRows[a], logRows[b], column);
+        const int cmp = CompareReferenceKeys(keys[a], keys[b]);
         return ascending ? cmp < 0 : cmp > 0;
     });
     return permutation;
@@ -825,13 +1007,14 @@ TEST_CASE(
 )
 {
     constexpr size_t ROWS = 10'000;
-    const std::array<ColumnType, 6> types = {
+    const std::array<ColumnType, 7> types = {
         ColumnType::Boolean,
         ColumnType::Integer,
         ColumnType::Floating,
         ColumnType::Number,
         ColumnType::Time,
         ColumnType::String,
+        ColumnType::Any,
     };
     for (const ColumnType type : types)
     {
@@ -847,7 +1030,10 @@ TEST_CASE(
             }
             const MemoryLogFile fixture("log_compare_sort_keys.json");
             fixture.Write("");
-            const LogTable table = BuildSingleColumnTable(fixture, "v", type, cells);
+            // In a text column, a print format that changes strings too, so a string must compare by its bytes and
+            // every other cell by its formatted text.
+            const bool textColumn = type == ColumnType::String || type == ColumnType::Any;
+            const LogTable table = BuildSingleColumnTable(fixture, "v", type, cells, textColumn ? "[{}]" : "{}");
             REQUIRE(table.RowCount() == ROWS);
 
             std::vector<size_t> all(ROWS);
@@ -859,11 +1045,23 @@ TEST_CASE(
             std::vector<size_t> withRepeats = shuffledSubset;
             withRepeats.insert(withRepeats.end(), shuffledSubset.begin(), shuffledSubset.begin() + 500);
 
+            // The comparison of two rows, which inserts rows into a sorted view one by one, follows the same order.
+            for (size_t i = 0; i < 2'000; ++i)
+            {
+                const size_t lhs = rng() % ROWS;
+                const size_t rhs = rng() % ROWS;
+                INFO("rows " << lhs << " and " << rhs);
+                CHECK(
+                    SignOf(CompareRows(table, lhs, rhs, 0)) ==
+                    CompareReferenceKeys(ReferenceKeyOf(table, lhs, 0, type), ReferenceKeyOf(table, rhs, 0, type))
+                );
+            }
+
             for (const bool ascending : {true, false})
             {
                 for (const auto *rows : {&all, &shuffledSubset, &withRepeats})
                 {
-                    const std::vector<size_t> expected = ReferencePermutation(table, *rows, 0, ascending);
+                    const std::vector<size_t> expected = ReferencePermutation(table, *rows, 0, type, ascending);
                     const std::vector<size_t> actual =
                         SortPermutationByColumn(table, std::span<const size_t>{*rows}, 0, ascending);
                     CHECK(actual == expected);
@@ -935,7 +1133,10 @@ TEST_CASE(
                         value = 7;
                         break;
                     }
-                    cells.emplace_back(type == ColumnType::Time ? LogValue{value} : LogValue{value});
+                    cells.emplace_back(
+                        type == ColumnType::Time ? LogValue{TimeStamp{std::chrono::microseconds{value}}}
+                                                 : LogValue{value}
+                    );
                 }
                 cells[ROWS / 2] = std::monostate{};
                 const MemoryLogFile fixture("log_compare_sort_keys_shape.json");
@@ -947,7 +1148,7 @@ TEST_CASE(
                 {
                     CHECK(
                         SortPermutationByColumn(table, std::span<const size_t>{all}, 0, ascending) ==
-                        ReferencePermutation(table, all, 0, ascending)
+                        ReferencePermutation(table, all, 0, type, ascending)
                     );
                 }
             }

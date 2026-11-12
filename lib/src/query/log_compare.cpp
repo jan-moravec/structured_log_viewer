@@ -1,6 +1,3 @@
-// `loglib` has no Qt in its include chain, so the TBB / Qt `emit`
-// collision that bites `app/` doesn't apply -- normal include order
-// is fine.
 #include "loglib/query/log_compare.hpp"
 
 #include "loglib/core/compact_log_value.hpp"
@@ -39,9 +36,8 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
     const auto &values = dictionary.Values();
     const size_t size = values.size();
     mIdToRank.resize(size);
-    // Sort indices by value bytes, then invert: `rank[order[k]] = k`.
-    // `std::iota`, not `std::ranges::iota` (C++23, missing on
-    // AppleClang 17 libc++).
+    // Sort the ids by their bytes, then invert the order so that each id maps to its place. The plain iota is used
+    // because the ranges version is missing from the libc++ of AppleClang 17.
     std::vector<uint16_t> order(size);
     std::iota(order.begin(), order.end(), uint16_t{0});
     std::ranges::sort(order, [&values](uint16_t a, uint16_t b) {
@@ -117,11 +113,12 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
 }
 
 /**
- * Compares two cells byte by byte. Two strings compare directly, and any other pair compares by the formatted text of
- * both cells, which gives a fixed order without ranking numbers against strings. The caller handles empty cells.
+ * Compares two cells byte by byte. A string compares by its own bytes, and any other cell by its formatted text, which
+ * gives a fixed order without ranking numbers against strings. The caller handles empty cells.
  *
- * The typed comparisons handle the cells of number, boolean, time, enumeration and level columns, so the formatted
- * comparison is reached only by columns that hold mixed cells.
+ * The typed comparisons handle the cells of number, boolean, time, enumeration and level columns, so the formatted text
+ * is needed only by columns that hold mixed cells. The string sort keys use the same text for each cell, so a bulk sort
+ * and a row by row comparison agree.
  */
 int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
@@ -147,12 +144,10 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
         return ThreeWay(*lhsSv, *rhsSv);
     }
 
-    // Format both sides through the column's `printFormat`. Buffers
-    // are `thread_local` so steady-state allocation is zero. Not
-    // re-entrant -- the debug guard below catches accidental nesting.
+    // The formatted text goes to buffers of the thread, so a steady state allocates nothing. That makes the function
+    // not re-entrant, which the guard checks in debug builds.
 #ifndef NDEBUG
-    // MSVC rejects `static` inside local classes, so the counter
-    // lives at function scope and the RAII guard takes it by reference.
+    // MSVC rejects a static member in a local class, so the counter lives at function scope.
     thread_local int sDepth = 0;
     class ReentryGuard
     {
@@ -179,9 +174,15 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
 #endif
     thread_local std::string lhsFormatted;
     thread_local std::string rhsFormatted;
-    lhsFormatted = table.GetFormattedValue(lhsRow, column);
-    rhsFormatted = table.GetFormattedValue(rhsRow, column);
-    return ThreeWay(std::string_view(lhsFormatted), std::string_view(rhsFormatted));
+    const auto textOf = [&table, column](const std::optional<std::string_view> &raw, size_t row, std::string &buffer) {
+        if (raw.has_value())
+        {
+            return *raw;
+        }
+        buffer = table.GetFormattedValue(row, column);
+        return std::string_view(buffer);
+    };
+    return ThreeWay(textOf(lhsSv, lhsRow, lhsFormatted), textOf(rhsSv, rhsRow, rhsFormatted));
 }
 
 /**
@@ -395,18 +396,14 @@ int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t colu
     }
     if (lhsId.has_value() && rhsId.has_value() && rank == nullptr)
     {
-        // No rank table: byte-wise fallback. Hit only in the
-        // promote -> first-rebuild transition.
+        // Without a rank table, compare the bytes. This happens only between a column's promotion to an enumeration
+        // and the first rebuild of its ranks.
         return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
     }
 
-    // One or both sides are non-`DictRef` (monostate, unpromoted
-    // string, wrong-type, over-cap-length). Tail-bucket invariant:
-    // every non-`DictRef` slot sorts strictly after every
-    // `DictRef`-resolved slot and equal to every other non-`DictRef`
-    // slot. Mirrors `SortPermutationByColumn`'s sentinel collapse so
-    // the streaming-insert comparator and the bulk re-sort agree on
-    // placement. Pinned by `TestCompareEnumNonDictRefSlotsAllTailEqual`.
+    // A cell that is not a dictionary reference (empty, a string not yet promoted, another type, or too long) sorts
+    // after every reference and equal to every other such cell. The bulk sort gives those cells the same last rank,
+    // so inserting rows one by one and sorting them all at once agree.
     if (!lhsId.has_value() && !rhsId.has_value())
     {
         return 0;
@@ -950,8 +947,6 @@ std::vector<size_t> SortPermutationByColumn(
 {
     const size_t n = logRows.size();
     std::vector<size_t> permutation(n);
-    // `std::iota`, not `std::ranges::iota` (C++23, missing on
-    // AppleClang 17 libc++).
     std::iota(permutation.begin(), permutation.end(), size_t{0});
     if (n <= 1)
     {
@@ -963,16 +958,10 @@ std::vector<size_t> SortPermutationByColumn(
     const bool isEnum = columnInRange && columns[columnIndex].type == ColumnType::Enumeration;
     const bool isLevel = columnInRange && columns[columnIndex].type == ColumnType::Level;
 
-    // Fast path: enum column with a precomputed rank table. Pre-
-    // materialise a `uint16_t` rank per row in parallel; the sort
-    // comparator is then a branch-free integer compare with input-
-    // index tie-break. Eliminates the per-compare `GetEnumValueId`
-    // walk that dominates `CompareRows` on the enum path.
+    // An enumeration column with a rank table: read each row's rank once, in parallel, and sort the ranks.
     if (isEnum && rankForEnumColumn != nullptr)
     {
-        // Sentinel: a slot that doesn't resolve to a `DictRef` (or an
-        // id past the rank table) sorts after every ranked id. Matches
-        // the tail-bucket invariant on `CompareRows`.
+        // A cell that is not a dictionary reference gets the rank after every known id, as in CompareEnum.
         const uint16_t sentinel = rankForEnumColumn->DictSize();
         std::vector<uint16_t> rankForRow(n);
         tbb::parallel_for(
@@ -988,18 +977,13 @@ std::vector<size_t> SortPermutationByColumn(
             }
         );
 
-        // The input-index tie-break gives a strict total order, so the
-        // unstable parallel sort behaves like a stable sort for callers
-        // that rely on insertion-order ties. Descending inverts only the
-        // primary order; ties still resolve to source-row ascending.
+        // Rows of equal rank keep their input order in both directions.
         SortByRanks(permutation, rankForRow, ascending);
         return permutation;
     }
 
-    // Level fast path: pre-materialise canonical `LogLevel` ordinals
-    // per row in parallel. Unresolved slots get a sentinel rank so
-    // they sort to the tail, matching `CompareLevel`. The rank cache
-    // is hoisted once so the loop body is a plain `ranks[id]` lookup.
+    // A level column: read each row's severity once, in parallel, and sort the severities. A cell without a level gets
+    // a last rank, as in CompareLevel.
     if (isLevel)
     {
         constexpr auto SENTINEL = static_cast<uint8_t>(std::numeric_limits<uint8_t>::max());
@@ -1007,9 +991,8 @@ std::vector<size_t> SortPermutationByColumn(
         const std::vector<LogLevel> *ranks = table.LevelRankCache(columnIndex);
         if (ranks == nullptr)
         {
-            // `Type::Level` column with no observations yet (e.g. saved
-            // config loaded before any batches). Sort every row to the
-            // tail bucket, matching `CompareLevel`.
+            // The column has seen no level yet, for example a saved configuration before the first batch. Every row
+            // goes to the tail, as in CompareLevel.
             std::fill(rankForRow.begin(), rankForRow.end(), SENTINEL);
         }
         else
@@ -1027,7 +1010,7 @@ std::vector<size_t> SortPermutationByColumn(
                             continue;
                         }
                         const LogLevel lvl = ranksRef[static_cast<size_t>(*id)];
-                        // `Unknown` marks "raw bytes did not map"; treat as missing.
+                        // Unknown marks text that maps to no level, which counts as a missing level.
                         rankForRow[i] = (lvl == LogLevel::Unknown) ? SENTINEL : static_cast<uint8_t>(lvl);
                     }
                 }
@@ -1043,11 +1026,8 @@ std::vector<size_t> SortPermutationByColumn(
         return std::move(*sorted);
     }
 
-    // Generic path: dispatch through `CompareRows` per comparison.
-    // Pays the slot-resolution cost on every call but is correct for
-    // the non-enum types (`Time`, `Integer`, `Floating`, string),
-    // where no cheap pre-materialisation is available. Still benefits
-    // from parallel sort.
+    // An enumeration column without a rank table, or a column that does not exist, compares rows one by one through
+    // CompareRows.
     const auto compare = [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
         return CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
     };
