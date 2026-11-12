@@ -229,7 +229,9 @@ SharedMixed MakeSharedMixed(const Tier &tier)
 // The table with the path and spaced columns, for the sorts and filters that need them.
 SharedMixed MakeSharedTextMixed(const Tier &tier)
 {
-    return MakeLazy<MixedTable>([rows = tier.rows] { return BuildMixedTable(rows, "benchmark_table_text.json", true); });
+    return MakeLazy<MixedTable>([rows = tier.rows] {
+        return BuildMixedTable(rows, "benchmark_table_text.json", true);
+    });
 }
 
 struct MixedInput
@@ -423,7 +425,9 @@ void RegisterTopRows(
             std::vector<std::size_t> top;
             for (const auto _ : state)
             {
-                top = SortPermutationWindowByColumn(logTable, std::span<const std::size_t>{logRows}, column, true, 0, count);
+                top = SortPermutationWindowByColumn(
+                    logTable, std::span<const std::size_t>{logRows}, column, true, 0, count
+                );
                 benchmark::DoNotOptimize(top);
             }
             std::size_t smallest = 0;
@@ -574,11 +578,9 @@ void RegisterTableBenchmarks()
     contains.matchType = LeafRule::Match::Contains;
     contains.filterString = "timeout after";
     RegisterLeafFilter(
-        FULL_TIER,
-        text,
-        "Contains filter on cells with doubled spaces",
-        contains,
-        [](const MixedTable &fixture) { return fixture.timeoutRows; }
+        FULL_TIER, text, "Contains filter on cells with doubled spaces", contains, [](const MixedTable &fixture) {
+            return fixture.timeoutRows;
+        }
     );
 
     // The Time range covers the middle quarter of the day the times are spread over. The counts come from plain reads.

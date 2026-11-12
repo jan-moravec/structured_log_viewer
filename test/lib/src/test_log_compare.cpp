@@ -871,8 +871,15 @@ TEST_CASE(
                     // A part of the order, selected without sorting the rest, is the same part of the full order.
                     const size_t count = rows->size();
                     const std::vector<std::pair<size_t, size_t>> windows = {
-                        {0, 100}, {count - 100, count}, {500, 1'500}, {0, 0}, {count, count}, {count - 5, count + 10},
-                        {3, 4},   {0, count},           {2'000, 1'000},
+                        {0, 100},
+                        {count - 100, count},
+                        {500, 1'500},
+                        {0, 0},
+                        {count, count},
+                        {count - 5, count + 10},
+                        {3, 4},
+                        {0, count},
+                        {2'000, 1'000},
                     };
                     for (const auto &[begin, end] : windows)
                     {
@@ -884,8 +891,9 @@ TEST_CASE(
                             expected.begin() + static_cast<std::ptrdiff_t>(to)
                         );
                         CHECK(
-                            SortPermutationWindowByColumn(table, std::span<const size_t>{*rows}, 0, ascending, begin, end) ==
-                            part
+                            SortPermutationWindowByColumn(
+                                table, std::span<const size_t>{*rows}, 0, ascending, begin, end
+                            ) == part
                         );
                     }
                 }
@@ -895,7 +903,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "SortPermutationByColumn handles keys that are already in order or exactly reversed", "[log_compare][sort_permutation][keys]"
+    "SortPermutationByColumn handles keys that are already in order or exactly reversed",
+    "[log_compare][sort_permutation][keys]"
 )
 {
     constexpr size_t ROWS = 2'000;

@@ -73,7 +73,9 @@ uint16_t EnumDictRank::DictSize() const noexcept
 namespace
 {
 
-/// Three-way compare on a totally-ordered primitive.
+/**
+ * Three-way compare on a totally-ordered primitive.
+ */
 template <class T> int ThreeWay(T lhs, T rhs) noexcept
 {
     if (lhs < rhs)
@@ -87,7 +89,9 @@ template <class T> int ThreeWay(T lhs, T rhs) noexcept
     return 0;
 }
 
-/// Three-way `double` compare; NaN sinks to the tail (NaN==NaN).
+/**
+ * Three-way compare of doubles. NaN sorts after every number, and two NaN are equal.
+ */
 int ThreeWayDouble(double lhs, double rhs) noexcept
 {
     const bool lhsNan = std::isnan(lhs);
@@ -112,17 +116,13 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
     return table.GetValue(row, column);
 }
 
-/// Byte-wise compare. Two string slots compare directly; mixed types
-/// fall back to formatted bytes (deterministic order without taking a
-/// position on `numeric < string`). Caller handles monostate.
-///
-/// The mixed-type fallback is dead code on the production hot path:
-/// `ColumnType` pins which slot variants a column holds,
-/// and the typed `Compare*` helpers consume them before we get here.
-/// It exists so unit / corruption tests still see deterministic
-/// output, and so a future type whose `CompareRows` dispatch falls
-/// through to `CompareString` keeps working without a per-call
-/// special case.
+/**
+ * Compares two cells byte by byte. Two strings compare directly, and any other pair compares by the formatted text of
+ * both cells, which gives a fixed order without ranking numbers against strings. The caller handles empty cells.
+ *
+ * The typed comparisons handle the cells of number, boolean, time, enumeration and level columns, so the formatted
+ * comparison is reached only by columns that hold mixed cells.
+ */
 int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);
@@ -184,8 +184,10 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     return ThreeWay(std::string_view(lhsFormatted), std::string_view(rhsFormatted));
 }
 
-/// monostate vs monostate -> 0; monostate vs other -> +1 (monostate
-/// sorts to the tail). `nullopt` when neither side is monostate.
+/**
+ * Orders empty cells: two empty cells are equal, and an empty cell sorts after any other. Gives nothing when neither
+ * cell is empty.
+ */
 std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rhs)
 {
     const bool lhsEmpty = std::holds_alternative<std::monostate>(lhs);
@@ -205,8 +207,10 @@ std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rh
     return std::nullopt;
 }
 
-/// How a cell takes part in a key sort. Cells that fit the column's type come first, then NaN in a floating column,
-/// then every other cell. Descending order reverses the three groups.
+/**
+ * How a cell takes part in a key sort. Cells that fit the column's type come first, then NaN in a floating column, then
+ * every other cell. Descending order reverses the three groups.
+ */
 enum class KeyClass : uint8_t
 {
     Ordinary,
@@ -214,7 +218,9 @@ enum class KeyClass : uint8_t
     Missing,
 };
 
-/// A cell reduced to a sort key. The key only means something for an ordinary cell.
+/**
+ * A cell reduced to a sort key. The key only means something for an ordinary cell.
+ */
 struct SortKey
 {
     KeyClass keyClass = KeyClass::Missing;
@@ -223,14 +229,18 @@ struct SortKey
 
 constexpr uint64_t SIGN_BIT = uint64_t{1} << 63;
 
-/// Maps a signed integer to an unsigned key with the same order.
+/**
+ * Maps a signed integer to an unsigned key with the same order.
+ */
 uint64_t OrderedKey(int64_t value) noexcept
 {
     return static_cast<uint64_t>(value) ^ SIGN_BIT;
 }
 
-/// Maps a double that is not NaN to an unsigned key with the same order. Zero and negative zero are equal for
-/// ThreeWayDouble, so both map to one key.
+/**
+ * Maps a double that is not NaN to an unsigned key with the same order. Zero and negative zero are equal for
+ * ThreeWayDouble, so both map to one key.
+ */
 uint64_t OrderedKey(double value) noexcept
 {
     if (value == 0.0)
@@ -246,14 +256,18 @@ SortKey MakeKey(uint64_t key) noexcept
     return {.keyClass = KeyClass::Ordinary, .key = key};
 }
 
-/// Clamps an unsigned value above INT64_MAX, as the integer and time order do.
+/**
+ * Clamps an unsigned value above INT64_MAX, as the integer and time order do.
+ */
 int64_t ClampToInt64(uint64_t value) noexcept
 {
     constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
     return value > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(value);
 }
 
-/// A boolean column holds booleans, and any other cell is missing.
+/**
+ * A boolean column holds booleans, and any other cell is missing.
+ */
 SortKey BoolKey(const CompactLogValue *cell) noexcept
 {
     if (cell != nullptr && cell->tag == CompactTag::Bool)
@@ -263,7 +277,9 @@ SortKey BoolKey(const CompactLogValue *cell) noexcept
     return {};
 }
 
-/// An integer column holds integers. A double is truncated and clamped to the int64 range, and NaN is missing.
+/**
+ * An integer column holds integers. A double is truncated and clamped to the int64 range, and NaN is missing.
+ */
 SortKey IntegerKey(const CompactLogValue *cell) noexcept
 {
     if (cell == nullptr)
@@ -298,7 +314,9 @@ SortKey IntegerKey(const CompactLogValue *cell) noexcept
     }
 }
 
-/// A floating column holds doubles and integers, compared as doubles. NaN sorts after every number.
+/**
+ * A floating column holds doubles and integers, compared as doubles. NaN sorts after every number.
+ */
 SortKey FloatingKey(const CompactLogValue *cell) noexcept
 {
     if (cell == nullptr)
@@ -327,7 +345,9 @@ SortKey FloatingKey(const CompactLogValue *cell) noexcept
     return MakeKey(OrderedKey(number));
 }
 
-/// A time column holds timestamps and integers, as microseconds since the epoch.
+/**
+ * A time column holds timestamps and integers, as microseconds since the epoch.
+ */
 SortKey TimeKey(const CompactLogValue *cell) noexcept
 {
     if (cell == nullptr)
@@ -346,7 +366,9 @@ SortKey TimeKey(const CompactLogValue *cell) noexcept
     }
 }
 
-/// Orders two keys: by class, then by key within the ordinary class. Cells of the other two classes are equal.
+/**
+ * Orders two keys: by class, then by key within the ordinary class. Cells of the other two classes are equal.
+ */
 int CompareKeys(const SortKey &lhs, const SortKey &rhs) noexcept
 {
     if (lhs.keyClass != rhs.keyClass)
@@ -407,9 +429,10 @@ int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t co
     return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
 }
 
-/// Compare `Type::Level` rows by canonical `LogLevel` ordinal (Trace
-/// < Debug < ... < Fatal). Unresolved slots (monostate, unmapped
-/// string, missing cache) join the tail bucket, matching `CompareEnum`.
+/**
+ * Compares level cells by severity, from Trace up to Fatal. Cells that do not resolve to a level, which are empty
+ * cells, unmapped strings and cells without a rank cache, sort after all levels and are equal to each other.
+ */
 int CompareLevel(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     // One lookup of the rank cache serves both rows. The lookup hashes the column's key, so it is the costly part.
@@ -486,14 +509,18 @@ int CompareRows(
 namespace
 {
 
-/// A row position with its key. Sorting these moves 16 bytes per row and never touches the table.
+/**
+ * A row position with its key. Sorting these moves 16 bytes per row and never touches the table.
+ */
 struct KeyedRow
 {
     uint64_t key;
     size_t position;
 };
 
-/// The rows split by key class. Every list is in row order.
+/**
+ * The rows split by key class. Every list is in row order.
+ */
 struct KeyedRows
 {
     std::vector<KeyedRow> ordinary;
@@ -528,8 +555,10 @@ KeyedRows SplitByClass(const std::vector<KeyClass> &classes, const std::vector<u
     return split;
 }
 
-/// The strict order of keyed rows: by key, then by @p tie for equal keys, which returns their order by the rest of the
-/// cell or zero when the key is the whole cell, then by position.
+/**
+ * The strict order of keyed rows: by key, then by @p tie for equal keys, which returns their order by the rest of the
+ * cell or zero when the key is the whole cell, then by position.
+ */
 template <bool Ascending, typename Tie> auto KeyedRowLess(const Tie &tie)
 {
     return [&tie](const KeyedRow &a, const KeyedRow &b) {
@@ -546,8 +575,10 @@ template <bool Ascending, typename Tie> auto KeyedRowLess(const Tie &tie)
     };
 }
 
-/// Puts the part [begin, end) of the sorted order of the keyed rows in place, and leaves the rest in no order. The
-/// whole range is sorted in parallel. A smaller part is selected with nth_element and only that part is sorted.
+/**
+ * Puts the part [begin, end) of the sorted order of the keyed rows in place, and leaves the rest in no order. The whole
+ * range is sorted in parallel. A smaller part is selected with nth_element and only that part is sorted.
+ */
 template <bool Ascending, typename Tie>
 void SortKeyedRows(std::vector<KeyedRow> &rows, const Tie &tie, size_t begin, size_t end)
 {
@@ -564,14 +595,18 @@ void SortKeyedRows(std::vector<KeyedRow> &rows, const Tie &tie, size_t begin, si
     }
     if (begin > 0)
     {
-        std::nth_element(first, first + static_cast<std::ptrdiff_t>(begin), first + static_cast<std::ptrdiff_t>(end), less);
+        std::nth_element(
+            first, first + static_cast<std::ptrdiff_t>(begin), first + static_cast<std::ptrdiff_t>(end), less
+        );
     }
     std::sort(first + static_cast<std::ptrdiff_t>(begin), first + static_cast<std::ptrdiff_t>(end), less);
 }
 
-/// Puts the part [begin, end) of the sorted order of the keyed rows in place. They arrive in row order, so rows with
-/// equal keys are in position order. With @p detectOrder, a key sequence that is already in order is left alone and one
-/// that is exactly reversed, with no equal keys, is reversed. Neither needs a sort.
+/**
+ * Puts the part [begin, end) of the sorted order of the keyed rows in place. They arrive in row order, so rows with
+ * equal keys are in position order. With @p detectOrder, a key sequence that is already in order is left alone and one
+ * that is exactly reversed, with no equal keys, is reversed. Neither needs a sort.
+ */
 template <typename Tie>
 void OrderKeyedRows(
     std::vector<KeyedRow> &rows, bool ascending, bool detectOrder, const Tie &tie, size_t begin, size_t end
@@ -616,25 +651,33 @@ void OrderKeyedRows(
     }
 }
 
-/// A part [begin, end) of the permutation, as positions in the order of the groups: ordinary rows, then NaN rows, then
-/// the rest. Descending reverses the three groups, and the rows inside the two small groups stay in row order.
+/**
+ * A part [begin, end) of the permutation, as positions in the order of the groups: ordinary rows, then NaN rows, then
+ * the rest. Descending reverses the three groups, and the rows inside the two small groups stay in row order.
+ */
 struct PermutationWindow
 {
     size_t begin = 0;
     size_t end = 0;
 };
 
-/// The part of the ordinary rows that the window of the permutation covers.
+/**
+ * The part of the ordinary rows that the window of the permutation covers.
+ */
 PermutationWindow OrdinaryWindow(const KeyedRows &split, bool ascending, PermutationWindow window)
 {
     const size_t first = ascending ? 0 : split.missing.size() + split.notANumber.size();
     const size_t count = split.ordinary.size();
-    const auto clamp = [&](size_t position) { return position <= first ? size_t{0} : std::min(position - first, count); };
+    const auto clamp = [&](size_t position) {
+        return position <= first ? size_t{0} : std::min(position - first, count);
+    };
     return {.begin = clamp(window.begin), .end = clamp(window.end)};
 }
 
-/// Writes the part of the permutation in @p window. The ordinary rows must be ordered inside the part that
-/// OrdinaryWindow gives.
+/**
+ * Writes the part of the permutation in @p window. The ordinary rows must be ordered inside the part that
+ * OrdinaryWindow gives.
+ */
 std::vector<size_t> AssemblePermutation(const KeyedRows &split, bool ascending, PermutationWindow window)
 {
     std::vector<size_t> permutation;
@@ -671,8 +714,10 @@ std::vector<size_t> AssemblePermutation(const KeyedRows &split, bool ascending, 
     return permutation;
 }
 
-/// Sorts by a column whose cells reduce to a 64-bit key. One parallel pass reads each cell once, and the sort then
-/// compares integers without touching the table.
+/**
+ * Sorts by a column whose cells reduce to a 64-bit key. One parallel pass reads each cell once, and the sort then
+ * compares integers without touching the table.
+ */
 template <typename KeyOf>
 std::vector<size_t> SortByNumericKeys(
     const LogTable &table,
@@ -700,8 +745,10 @@ std::vector<size_t> SortByNumericKeys(
     return AssemblePermutation(split, ascending, window);
 }
 
-/// The first eight bytes of the text as a big-endian integer, padded with zero bytes. Comparing two prefixes as integers
-/// orders texts like an unsigned byte comparison, as far as the prefixes differ.
+/**
+ * The first eight bytes of the text as a big-endian integer, padded with zero bytes. Comparing two prefixes as integers
+ * orders texts like an unsigned byte comparison, as far as the prefixes differ.
+ */
 uint64_t PrefixKey(std::string_view text) noexcept
 {
     uint64_t key = 0;
@@ -712,10 +759,12 @@ uint64_t PrefixKey(std::string_view text) noexcept
     return key;
 }
 
-/// Sorts by a string column. One parallel pass resolves each cell to text, and a second computes an eight-byte key from
-/// the text after the start that all texts share. The sort compares the keys as integers and reads the rest of the text
-/// only for rows with equal keys. A cell that is not a
-/// string is compared by its formatted text, and an empty cell sorts to the tail.
+/**
+ * Sorts by a string column. One parallel pass resolves each cell to text, and a second computes an eight-byte key from
+ * the text after the start that all texts share. The sort compares the keys as integers and reads the rest of the text
+ * only for rows with equal keys. A cell that is not a string is compared by its formatted text, and an empty cell sorts
+ * to the tail.
+ */
 std::vector<size_t> SortByStringKeys(
     const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending, PermutationWindow window
 )
@@ -807,8 +856,10 @@ std::vector<size_t> SortByStringKeys(
     return AssemblePermutation(split, ascending, window);
 }
 
-/// Sorts @p permutation by the three-way @p compare, breaking ties by input index so the order is total. The
-/// direction is a template parameter so each instantiation compiles to a plain comparison.
+/**
+ * Sorts @p permutation by the three-way @p compare, breaking ties by input index so the order is total. The direction
+ * is a template parameter so each instantiation compiles to a plain comparison.
+ */
 template <bool Ascending, typename ThreeWay>
 void SortWithTieBreak(std::vector<size_t> &permutation, const ThreeWay &compare)
 {
@@ -822,9 +873,11 @@ void SortWithTieBreak(std::vector<size_t> &permutation, const ThreeWay &compare)
     });
 }
 
-/// Orders @p permutation by the precomputed per-row @p ranks with a counting sort: one pass to count each rank, one to
-/// place each row. Rows with equal ranks stay in input order in both directions, so the order is the same as a
-/// comparison sort with an input-index tie-break.
+/**
+ * Orders @p permutation by the precomputed per-row @p ranks with a counting sort: one pass to count each rank, one to
+ * place each row. Rows with equal ranks stay in input order in both directions, so the order is the same as a
+ * comparison sort with an input-index tie-break.
+ */
 template <typename Rank>
 void SortByRanks(std::vector<size_t> &permutation, const std::vector<Rank> &ranks, bool ascending)
 {
@@ -853,14 +906,12 @@ void SortByRanks(std::vector<size_t> &permutation, const std::vector<Rank> &rank
     }
 }
 
-/// Sorts the part @p window of the order by prepared keys, for the column types that have them. Returns nothing for the
-/// other types.
+/**
+ * Sorts the part @p window of the order by prepared keys, for the column types that have them. Returns nothing for the
+ * other types.
+ */
 std::optional<std::vector<size_t>> SortByKeys(
-    const LogTable &table,
-    std::span<const size_t> logRows,
-    size_t columnIndex,
-    bool ascending,
-    PermutationWindow window
+    const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending, PermutationWindow window
 )
 {
     const auto &columns = table.Configuration().Configuration().columns;

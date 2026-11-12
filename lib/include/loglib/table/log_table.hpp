@@ -246,9 +246,9 @@ public:
     /**
      * @brief The stored cell of a row in a column, or null if the cell is empty or the row or column does not exist.
      *
-     * It reads the same cell as GetValue, without building a LogValue, so a filter or a sort can look at the tag and the
-     * payload of a number, a time or an enumeration id directly. The cell of a string is a slice of bytes that only the
-     * row's source can resolve, so use GetValue for text. The pointer stays valid until the table changes.
+     * It reads the same cell as GetValue, without building a LogValue, so a filter or a sort can look at the tag and
+     * the payload of a number, a time or an enumeration id directly. The cell of a string is a slice of bytes that only
+     * the row's source can resolve, so use GetValue for text. The pointer stays valid until the table changes.
      */
     [[nodiscard]] const CompactLogValue *FindCell(size_t row, size_t column) const noexcept;
     [[nodiscard]] std::string GetFormattedValue(size_t row, size_t column) const;

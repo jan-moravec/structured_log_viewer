@@ -466,7 +466,9 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
             }
             if (local.rows.size() != offset)
             {
-                local.ranges.push_back({.firstRow = range.begin(), .offset = offset, .count = local.rows.size() - offset});
+                local.ranges.push_back(
+                    {.firstRow = range.begin(), .offset = offset, .count = local.rows.size() - offset}
+                );
             }
         }
     );
@@ -483,7 +485,9 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
     {
         for (const Range &range : worker.ranges)
         {
-            pieces.push_back({.firstRow = range.firstRow, .begin = worker.rows.data() + range.offset, .count = range.count});
+            pieces.push_back(
+                {.firstRow = range.firstRow, .begin = worker.rows.data() + range.offset, .count = range.count}
+            );
             total += range.count;
         }
     }

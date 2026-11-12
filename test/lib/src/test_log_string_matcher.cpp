@@ -158,32 +158,56 @@ TEST_CASE(
         "timeout  after",
         " timeout after ",
         "a\xC2\xA0 b",
-        "a\xC2\xA0" "b",
-        "a\xE2\x80\xA8" "b",
+        "a\xC2\xA0"
+        "b",
+        "a\xE2\x80\xA8"
+        "b",
         "a\xE2\x80\xA8 b",
-        "bad\xFF" "x",
-        "caf\xC3\xA9",
-        "caf\xC3\xA9 au lait",
+        "bad\xFF"
+        "x",
+        "na\xC3\xAFve",
+        "na\xC3\xAFve user",
         "\xE2\x82",
         "line\nbreak",
         "x \r\n y",
         "foo bar",
-        "foo\xA0" "bar",
+        "foo\xA0"
+        "bar",
         " foo ",
         "foo",
         "food",
         "\tfoo ",
         "a b",
-        "a\x01" "b",
+        "a\x01"
+        "b",
         "a  b",
         "a\tb",
-        "\x7F" "x",
+        "\x7F"
+        "x",
     };
     // Needles that are already in simplified form, in every class the fast paths tell apart: a plain word, text with
     // single inner spaces, an edge space, non-ASCII text, a control byte and the empty needle.
     const std::vector<std::string> needles = {
-        "user-id", "id=42", "timeout after", "a b", "x", "", " foo ", "foo", "foo ", " foo", "caf\xC3\xA9", "\xC3\xA9",
-        "handled for user", "after", "b", "a\x01" "b", "caf\xC3\xA9 au", "foo bar", "abc",
+        "user-id",
+        "id=42",
+        "timeout after",
+        "a b",
+        "x",
+        "",
+        " foo ",
+        "foo",
+        "foo ",
+        " foo",
+        "na\xC3\xAFve",
+        "\xC3\xA9",
+        "handled for user",
+        "after",
+        "b",
+        "a\x01"
+        "b",
+        "na\xC3\xAFve user",
+        "foo bar",
+        "abc",
     };
     for (const std::string &needle : needles)
     {

@@ -28,7 +28,9 @@ constexpr char32_t ASCII_CR = 0x0D;
 constexpr char32_t NEXT_LINE = 0x85;
 constexpr std::size_t WILDCARD_ANCHOR_BYTES = 8;
 
-/// True when @p bytes already equal their normalised form and are 7-bit ASCII.
+/**
+ * True when @p bytes already equal their normalised form and are 7-bit ASCII.
+ */
 bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 {
     if (bytes.empty())
@@ -71,8 +73,9 @@ bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept
     return true;
 }
 
-/// Qt `QChar::isSpace`: tab through carriage return, NEL, and every
-/// Unicode separator (space, line, and paragraph).
+/**
+ * Qt QChar::isSpace: tab through carriage return, NEL, and every Unicode separator (space, line, and paragraph).
+ */
 bool IsMatchWhitespace(char32_t codePoint) noexcept
 {
     if ((codePoint >= ASCII_TAB && codePoint <= ASCII_CR) || codePoint == NEXT_LINE)
@@ -102,8 +105,9 @@ struct DecodedCodePoint
     bool valid = false;
 };
 
-/// One UTF-8 sequence, or one byte replaced by U+FFFD. Overlongs,
-/// surrogates, and values past U+10FFFF are invalid.
+/**
+ * One UTF-8 sequence, or one byte replaced by U+FFFD. Overlongs, surrogates, and values past U+10FFFF are invalid.
+ */
 DecodedCodePoint DecodeOne(std::string_view bytes) noexcept
 {
     if (!bytes.empty() && static_cast<unsigned char>(bytes.front()) < HIGH_BIT)
@@ -130,7 +134,9 @@ void AppendUtf8(std::string &out, char32_t codePoint)
     out.append(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(size));
 }
 
-/// UTF-8 decode with U+FFFD substitution. Does not trim or collapse.
+/**
+ * UTF-8 decode with U+FFFD substitution. Does not trim or collapse.
+ */
 std::string DecodeUtf8(std::string_view bytes)
 {
     std::string out;
@@ -152,8 +158,10 @@ std::string DecodeUtf8(std::string_view bytes)
     return out;
 }
 
-/// `fromUtf8` plus `simplified()`: trim both ends, collapse whitespace to one space, and write the result to @p out.
-/// With @p keepEdges, whitespace at an end becomes one space instead of being trimmed.
+/**
+ * fromUtf8 plus simplified(): trim both ends, collapse whitespace to one space, and write the result to @p out. With @p
+ * keepEdges, whitespace at an end becomes one space instead of being trimmed.
+ */
 void SimplifyInto(std::string &out, std::string_view bytes, bool keepEdges = false)
 {
     out.clear();
@@ -201,8 +209,10 @@ std::string Simplify(std::string_view bytes, bool keepEdges = false)
     return out;
 }
 
-/// The text of @p bytes after Simplify, in a buffer of the calling thread. The view is valid until the thread's next
-/// call. A matcher runs on many threads and many rows, so reusing the buffer avoids an allocation per row.
+/**
+ * The text of @p bytes after Simplify, in a buffer of the calling thread. The view is valid until the thread's next
+ * call. A matcher runs on many threads and many rows, so reusing the buffer avoids an allocation per row.
+ */
 std::string_view SimplifiedView(std::string_view bytes)
 {
     thread_local std::string scratch;
@@ -249,8 +259,10 @@ CompiledRegex CompilePattern(std::string_view pattern)
     return compiled;
 }
 
-/// The match data of one thread. A match needs only the start and end of the whole match, so one block of one pair
-/// serves every pattern, and a thread creates it once instead of once per cell.
+/**
+ * The match data of one thread. A match needs only the start and end of the whole match, so one block of one pair
+ * serves every pattern, and a thread creates it once instead of once per cell.
+ */
 class ThreadMatchData
 {
 public:
@@ -333,9 +345,11 @@ bool IsRegexMeta(unsigned char byte) noexcept
     }
 }
 
-/// `*` → `.*`, `?` → `.`, classes copied, everything else escaped.
-/// Anchored so the wildcard covers the whole haystack. `*` and `?`
-/// match `/` and `\`.
+/**
+ * Translates a wildcard pattern to a regular expression. A star becomes any text, a question mark becomes any one
+ * character, bracket classes are copied and every other character is escaped. The expression is anchored so it covers
+ * the whole cell. Star and question mark also match slash and backslash.
+ */
 std::string WildcardToPcre(std::string_view pattern)
 {
     std::string out;
@@ -441,8 +455,10 @@ CallbackStringRowPredicate::MatchFn MakeExactly(std::string_view pattern)
     return [expected = std::move(expected)](std::string_view haystack) { return SimplifiedView(haystack) == expected; };
 }
 
-/// True for ASCII text without a space or a control byte. Simplifying a cell never creates or removes an occurrence of
-/// such text: whitespace only collapses between other characters, and a replacement for a bad byte is not ASCII.
+/**
+ * True for ASCII text without a space or a control byte. Simplifying a cell never creates or removes an occurrence of
+ * such text: whitespace only collapses between other characters, and a replacement for a bad byte is not ASCII.
+ */
 bool IsPlainWord(std::string_view bytes) noexcept
 {
     return std::ranges::all_of(bytes, [](char ch) {
@@ -451,8 +467,10 @@ bool IsPlainWord(std::string_view bytes) noexcept
     });
 }
 
-/// Matches the cells whose simplified text contains @p needle, which is already simplified. An edge space of the needle
-/// stays.
+/**
+ * Matches the cells whose simplified text contains @p needle, which is already simplified. An edge space of the needle
+ * stays.
+ */
 CallbackStringRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle)
 {
     if (IsPlainWord(needle))
@@ -472,9 +490,8 @@ CallbackStringRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle)
             return !IsSingleLineAsciiTrim(haystack) && SimplifiedView(haystack).contains(needle);
         };
     }
-    return [needle = std::move(needle)](std::string_view haystack) {
-        return SimplifiedView(haystack).contains(needle);
-    };
+    return
+        [needle = std::move(needle)](std::string_view haystack) { return SimplifiedView(haystack).contains(needle); };
 }
 
 CallbackStringRowPredicate::MatchFn MakeContains(std::string_view pattern)
@@ -487,7 +504,9 @@ CallbackStringRowPredicate::MatchFn MakeContains(std::string_view pattern)
     return MakeContainsOfSimplified(Simplify(pattern, true));
 }
 
-/// The compile error for @p pattern, or `nullopt` when it compiles.
+/**
+ * The compile error for @p pattern, or nullopt when it compiles.
+ */
 std::optional<std::string> CompileProblem(std::string_view pattern)
 {
     int errcode = 0;
