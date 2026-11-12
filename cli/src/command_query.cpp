@@ -56,7 +56,7 @@ struct RowWindow
     std::size_t end = 0;
 };
 
-/** @brief The part of @p rowCount rows that `--last`, or `--offset` and `--limit`, select. */
+/** @brief The part of @p rowCount rows that the last option, or the offset and limit options, select. */
 [[nodiscard]] RowWindow PageWindow(const QueryOptions &options, std::size_t rowCount)
 {
     if (options.last)
@@ -102,7 +102,7 @@ void SortRows(
         }
     }
     const loglib::RowOrdering ordering(sort.columnIndex, sort.direction, rank);
-    // The permutation holds positions within `rows`, not row indices. It is turned into the rows in place.
+    // The permutation holds positions within rows, not row indices. It is turned into the rows in place.
     std::vector<std::size_t> sorted =
         ordering.PermuteWindow(table, std::span<const std::size_t>{rows}, window.begin, window.end);
     for (std::size_t &position : sorted)
