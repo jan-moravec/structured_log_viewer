@@ -49,8 +49,45 @@ namespace
     return loglib::exports::ExportFormat::JsonLines;
 }
 
-/** @brief Reorders @p rows by the session sort. */
-void SortRows(const loglib::LogTable &table, const SortChoice &sort, std::vector<std::size_t> &rows)
+/** @brief The part of the rows that a query shows, as positions from begin up to end. */
+struct RowWindow
+{
+    std::size_t begin = 0;
+    std::size_t end = 0;
+};
+
+/** @brief The part of @p rowCount rows that the last option, or the offset and limit options, select. */
+[[nodiscard]] RowWindow PageWindow(const QueryOptions &options, std::size_t rowCount)
+{
+    if (options.last)
+    {
+        const auto keep = static_cast<std::size_t>(std::min<std::uint64_t>(*options.last, rowCount));
+        return {.begin = rowCount - keep, .end = rowCount};
+    }
+    std::size_t begin = 0;
+    if (options.offset)
+    {
+        begin = static_cast<std::size_t>(std::min<std::uint64_t>(*options.offset, rowCount));
+    }
+    std::size_t end = rowCount;
+    if (options.limit)
+    {
+        end = begin + static_cast<std::size_t>(std::min<std::uint64_t>(*options.limit, rowCount - begin));
+    }
+    return {.begin = begin, .end = end};
+}
+
+/** @brief Keeps only the rows of @p window, in their order. */
+void ApplyWindow(const RowWindow &window, std::vector<std::size_t> &rows)
+{
+    rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(window.end), rows.end());
+    rows.erase(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(window.begin));
+}
+
+/** @brief Replaces @p rows by the rows of @p window in the session sort order. The rest is not sorted. */
+void SortRows(
+    const loglib::LogTable &table, const SortChoice &sort, const RowWindow &window, std::vector<std::size_t> &rows
+)
 {
     const auto &columns = table.Configuration().Configuration().columns;
     std::optional<loglib::EnumDictRank> rankStorage;
@@ -65,40 +102,17 @@ void SortRows(const loglib::LogTable &table, const SortChoice &sort, std::vector
         }
     }
     const loglib::RowOrdering ordering(sort.columnIndex, sort.direction, rank);
-    // `Permute` returns positions within `rows`, not row indices.
-    const std::vector<std::size_t> permutation = ordering.Permute(table, std::span<const std::size_t>{rows});
-    std::vector<std::size_t> sorted;
-    sorted.reserve(permutation.size());
-    for (const std::size_t position : permutation)
+    // The permutation holds positions within rows, not row indices. It is turned into the rows in place.
+    std::vector<std::size_t> sorted =
+        ordering.PermuteWindow(table, std::span<const std::size_t>{rows}, window.begin, window.end);
+    for (std::size_t &position : sorted)
     {
-        sorted.push_back(rows[position]);
+        position = rows[position];
     }
     rows = std::move(sorted);
 }
 
-/** @brief Applies `--last`, or `--offset` and `--limit`, to @p rows. */
-void PageRows(const QueryOptions &options, std::vector<std::size_t> &rows)
-{
-    if (options.last)
-    {
-        if (rows.size() > *options.last)
-        {
-            rows.erase(rows.begin(), rows.end() - static_cast<std::ptrdiff_t>(*options.last));
-        }
-        return;
-    }
-    if (options.offset)
-    {
-        const auto start = static_cast<std::size_t>(std::min<std::uint64_t>(*options.offset, rows.size()));
-        rows.erase(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(start));
-    }
-    if (options.limit && rows.size() > *options.limit)
-    {
-        rows.resize(static_cast<std::size_t>(*options.limit));
-    }
-}
-
-/** @brief Exports @p plan to `--output` or stdout. A failed write is an output failure. */
+/** @brief Exports @p plan to the output option's file or to stdout. A failed write is an output failure. */
 [[nodiscard]] std::optional<Failure> WriteRows(
     const QueryOptions &options,
     const Console &console,
@@ -127,7 +141,7 @@ void PageRows(const QueryOptions &options, std::vector<std::size_t> &rows)
     {
         if (toStdout)
         {
-            // A closed pipe surfaces as `BrokenPipe`, which `main` treats as success.
+            // A closed pipe gives BrokenPipe, which main treats as success.
             loglib::exports::StreamSink sink(console.Out());
             exporter->Run(plan.View(), sink, runtime.stop);
             sink.Finish();
@@ -177,13 +191,19 @@ ExitCode RunQuery(
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     console.Stage("filter", rows.size(), filterStarted);
 
+    // A sorted query that shows only some rows sorts only those.
+    const RowWindow window = PageWindow(options, rows.size());
     if (session->sort)
     {
         const auto sortStarted = std::chrono::steady_clock::now();
-        SortRows(table, *session->sort, rows);
-        console.Stage("sort", rows.size(), sortStarted);
+        const std::size_t sortedRows = rows.size();
+        SortRows(table, *session->sort, window, rows);
+        console.Stage("sort", sortedRows, sortStarted);
     }
-    PageRows(options, rows);
+    else
+    {
+        ApplyWindow(window, rows);
+    }
     console.ParseErrors(loaded->parseErrors);
 
     // Saved configuration is the effective one; it does not depend on paging or output.

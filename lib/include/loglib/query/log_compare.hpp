@@ -110,4 +110,23 @@ private:
     const EnumDictRank *rankForEnumColumn = nullptr
 );
 
+/**
+ * @brief Returns the part from position begin to position end of the order that SortPermutationByColumn gives, without
+ * sorting the rest.
+ *
+ * The result has end minus begin entries, and entry k is the same as entry begin plus k of SortPermutationByColumn. A
+ * query that shows the first rows of a large table, or the last ones, needs only that part. Both positions are limited
+ * to the number of rows, and begin to end. Number, boolean, time and string columns select the part without sorting
+ * everything. The other column types build the whole order and cut it.
+ */
+[[nodiscard]] std::vector<size_t> SortPermutationWindowByColumn(
+    const LogTable &table,
+    std::span<const size_t> logRows,
+    size_t columnIndex,
+    bool ascending,
+    size_t begin,
+    size_t end,
+    const EnumDictRank *rankForEnumColumn = nullptr
+);
+
 } // namespace loglib

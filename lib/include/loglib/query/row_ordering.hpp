@@ -113,6 +113,15 @@ public:
      */
     [[nodiscard]] std::vector<std::size_t> Permute(const LogTable &table, std::span<const std::size_t> logRows) const;
 
+    /**
+     * @brief Returns the part from position @p begin to position @p end of Permute, without sorting the rest.
+     *
+     * Delegates to SortPermutationWindowByColumn.
+     */
+    [[nodiscard]] std::vector<std::size_t> PermuteWindow(
+        const LogTable &table, std::span<const std::size_t> logRows, std::size_t begin, std::size_t end
+    ) const;
+
 private:
     std::size_t mColumnIndex = 0;
     SortDirection mDirection = SortDirection::Ascending;

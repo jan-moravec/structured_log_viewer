@@ -34,4 +34,11 @@ std::vector<std::size_t> RowOrdering::Permute(const LogTable &table, std::span<c
     return SortPermutationByColumn(table, logRows, mColumnIndex, Ascending(), mRankForEnumColumn);
 }
 
+std::vector<std::size_t> RowOrdering::PermuteWindow(
+    const LogTable &table, std::span<const std::size_t> logRows, std::size_t begin, std::size_t end
+) const
+{
+    return SortPermutationWindowByColumn(table, logRows, mColumnIndex, Ascending(), begin, end, mRankForEnumColumn);
+}
+
 } // namespace loglib

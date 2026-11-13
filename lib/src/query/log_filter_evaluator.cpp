@@ -283,11 +283,11 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
 
 /**
  * @brief Evaluates a tree from the bitsets of its leaves. leafBitsets holds them in the order CollectLeafsInVisitOrder
- * visits the leaves, and leafCursor walks through them.
+ * visits the leaves, and leafCursor walks through them. The bitsets are moved out, so the vector is spent afterwards.
  */
 // NOLINTNEXTLINE(misc-no-recursion)
 RowBitset EvaluateExpressionBitset(
-    const CompiledFilterExpression &expr, const std::vector<RowBitset> &leafBitsets, size_t &leafCursor, size_t rowCount
+    const CompiledFilterExpression &expr, std::vector<RowBitset> &leafBitsets, size_t &leafCursor, size_t rowCount
 )
 {
     return std::visit(
@@ -296,7 +296,8 @@ RowBitset EvaluateExpressionBitset(
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
             {
-                return leafBitsets[leafCursor++];
+                // Each leaf bitset is read once, so the result takes it over.
+                return std::move(leafBitsets[leafCursor++]);
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
             {
@@ -436,34 +437,66 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
         return accepted;
     }
 
-    // Row by row: rows are split across workers, and each row walks the tree.
-    tbb::enumerable_thread_specific<std::vector<size_t>> buckets;
+    // Row by row: rows are split across workers, and each row walks the tree. A worker appends the rows it accepts to
+    // its own list and records where each range of rows starts in it, so the ranges can be joined in row order after
+    // the loop and the accepted rows never need sorting.
+    struct Range
+    {
+        size_t firstRow = 0;
+        size_t offset = 0;
+        size_t count = 0;
+    };
+    struct WorkerRows
+    {
+        std::vector<size_t> rows;
+        std::vector<Range> ranges;
+    };
+    tbb::enumerable_thread_specific<WorkerRows> workers;
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, rowCount),
-        [&table, &expression, &buckets](const tbb::blocked_range<size_t> &range) {
-            auto &local = buckets.local();
-            local.reserve(local.size() + range.size());
+        [&table, &expression, &workers](const tbb::blocked_range<size_t> &range) {
+            WorkerRows &local = workers.local();
+            const size_t offset = local.rows.size();
             for (size_t row = range.begin(); row != range.end(); ++row)
             {
                 if (EvaluateExpression(expression, table, row))
                 {
-                    local.push_back(row);
+                    local.rows.push_back(row);
                 }
+            }
+            if (local.rows.size() != offset)
+            {
+                local.ranges.push_back(
+                    {.firstRow = range.begin(), .offset = offset, .count = local.rows.size() - offset}
+                );
             }
         }
     );
 
+    struct Piece
+    {
+        size_t firstRow;
+        const size_t *begin;
+        size_t count;
+    };
+    std::vector<Piece> pieces;
     size_t total = 0;
-    for (const auto &bucket : buckets)
+    for (const WorkerRows &worker : workers)
     {
-        total += bucket.size();
+        for (const Range &range : worker.ranges)
+        {
+            pieces.push_back(
+                {.firstRow = range.firstRow, .begin = worker.rows.data() + range.offset, .count = range.count}
+            );
+            total += range.count;
+        }
     }
+    std::ranges::sort(pieces, {}, &Piece::firstRow);
     accepted.reserve(total);
-    for (const auto &bucket : buckets)
+    for (const Piece &piece : pieces)
     {
-        accepted.insert(accepted.end(), bucket.begin(), bucket.end());
+        accepted.insert(accepted.end(), piece.begin, piece.begin + piece.count);
     }
-    std::ranges::sort(accepted);
     return accepted;
 }
 
