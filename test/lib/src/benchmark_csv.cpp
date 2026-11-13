@@ -76,6 +76,26 @@ void RegisterCsvBenchmarks()
         );
     }
 
+    RegisterStreaming(
+        "Stream 1'000'000 CSV log entries to LogTable (declared configuration)",
+        [] {
+            const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
+            const test_common::RecordSchema schema = SampleStreamingSchema(LARGE_FIXTURE_SEED, timestamps);
+            return StreamingFixture{
+                .logFile = std::make_unique<TestStructuredLogFile>(
+                    StreamedRecords{.count = FULL_TIER.rows, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
+                    test_common::Csv(schema),
+                    schema
+                ),
+                .parser = CsvStream,
+            };
+        },
+        /*parseLoopOnly=*/false,
+        MEDIUM_LARGE_ITERATIONS,
+        LARGE_REPETITIONS,
+        /*declaredConfiguration=*/true
+    );
+
     // Wide-row streaming benchmark. Field count matches the JSON one but per-field work differs (nested values land
     // as quoted compact-JSON cells), so cross-format lines/s is broadly -- not exactly -- comparable.
     RegisterStreaming(

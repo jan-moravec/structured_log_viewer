@@ -56,6 +56,26 @@ void JsonStream(FileLineSource &source, LogParseSink &sink, const ParserOptions 
 }
 
 constexpr std::size_t SMALL_FILE_RECORDS = 10'000;
+
+// JSON Lines with one broken line after every hundredth record. The record count stays the same, and each broken
+// line must give one error and leave the lines around it intact.
+test_common::LogFormat JsonLinesWithBrokenLines()
+{
+    auto base = test_common::JsonLines();
+    auto counter = std::make_shared<std::size_t>(0);
+    return test_common::LogFormat{
+        .suggestedExtension = base.suggestedExtension,
+        .writeHeader = base.writeHeader,
+        .writeLine = [base = std::move(base), counter](const test_common::LogRecord &record) {
+            std::string out = base.writeLine(record);
+            if (++*counter % 100 == 0)
+            {
+                out += "\n{\"timestamp\": \"broken";
+            }
+            return out;
+        },
+    };
+}
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 const std::array<std::string, 5> LOOKUP_KEYS = {"timestamp", "level", "message", "thread_id", "component"};
 
@@ -596,6 +616,25 @@ void RegisterJsonBenchmarks()
         },
         /*parseLoopOnly=*/false,
         FAST_LARGE_ITERATIONS
+    );
+
+    RegisterStreaming(
+        "Stream 1'000'000 JSON log entries with a broken line every 100 lines to LogTable",
+        [] {
+            return StreamingFixture{
+                .logFile = std::make_unique<TestStructuredLogFile>(
+                    StreamedRecords{
+                        .count = FULL_TIER.rows,
+                        .seed = LARGE_FIXTURE_SEED,
+                        .timestamps = DeterministicBenchmarkTimestamps(),
+                    },
+                    JsonLinesWithBrokenLines()
+                ),
+                .parser = JsonStream,
+            };
+        },
+        /*parseLoopOnly=*/false,
+        MEDIUM_LARGE_ITERATIONS
     );
 
     RegisterLookupBenchmarks();

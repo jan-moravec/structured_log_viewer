@@ -64,6 +64,28 @@ void RegisterLogfmtBenchmarks()
         );
     }
 
+    // The same rows through LoadFile with no configuration, as the application and slp load them, and through the
+    // stream flow with every column declared up front.
+    const auto makeFullFile = [] {
+        return std::make_unique<TestStructuredLogFile>(
+            StreamedRecords{
+                .count = FULL_TIER.rows,
+                .seed = LARGE_FIXTURE_SEED,
+                .timestamps = DeterministicBenchmarkTimestamps(),
+            },
+            test_common::Logfmt()
+        );
+    };
+    RegisterLoadFile("LoadFile on 1'000'000 logfmt log entries", makeFullFile);
+    RegisterStreaming(
+        "Stream 1'000'000 logfmt log entries to LogTable (declared configuration)",
+        [makeFullFile] { return StreamingFixture{.logFile = makeFullFile(), .parser = LogfmtStream}; },
+        /*parseLoopOnly=*/false,
+        MEDIUM_LARGE_ITERATIONS,
+        LARGE_REPETITIONS,
+        /*declaredConfiguration=*/true
+    );
+
     // Wide-row streaming benchmark, mirror of the JSON one. Stresses the per-field hot loop in LogfmtLineDecoder.
     // Nested array/object fields land as quoted JSON strings in logfmt (see Logfmt()), so the field count matches
     // the JSON benchmark but per-field work differs -- treat cross-format lines/s as broadly comparable, not exactly.
