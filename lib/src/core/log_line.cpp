@@ -165,23 +165,28 @@ LogLine::LogLine(
     LineSource &source,
     size_t lineId
 )
-    : mValues(static_cast<uint32_t>(sortedValues.size())), mSource(&source), mLineId(lineId)
+    : mSource(&source)
 {
 #ifndef NDEBUG
     assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
 #endif
-    for (auto &entry : sortedValues)
+    assert(lineId <= CompactLineFields::MAX_SPARE);
+    mValues.SetSpare(lineId);
+    auto *fields = mValues.AllocateOwned(static_cast<uint32_t>(sortedValues.size()));
+    for (size_t i = 0; i < sortedValues.size(); ++i)
     {
-        mValues.EmplaceBack(MakeCompactFromVariant(source, lineId, entry.second).WithKey(entry.first));
+        fields[i] = MakeCompactFromVariant(source, lineId, sortedValues[i].second).WithKey(sortedValues[i].first);
     }
 }
 
 LogLine::LogLine(std::vector<loglib::CompactLogValue> sortedValues, LineSource &source, size_t lineId)
-    : mSource(&source), mLineId(lineId)
+    : mSource(&source)
 {
 #ifndef NDEBUG
     assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.Key() < b.Key(); }));
 #endif
+    assert(lineId <= CompactLineFields::MAX_SPARE);
+    mValues.SetSpare(lineId);
     // Exact-fit copy keeps each LogLine at `size * 16` bytes.
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
 }
@@ -189,20 +194,24 @@ LogLine::LogLine(std::vector<loglib::CompactLogValue> sortedValues, LineSource &
 LogLine::LogLine(
     std::span<const loglib::CompactLogValue> sortedValues, FieldArena &arena, LineSource &source, size_t lineId
 )
-    : mSource(&source), mLineId(lineId)
+    : mSource(&source)
 {
 #ifndef NDEBUG
     assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.Key() < b.Key(); }));
 #endif
+    assert(lineId <= CompactLineFields::MAX_SPARE);
+    mValues.SetSpare(lineId);
     const auto count = static_cast<uint32_t>(sortedValues.size());
     auto *slots = arena.Allocate(count);
     std::uninitialized_copy_n(sortedValues.data(), count, slots);
-    mValues = loglib::CompactLineFields::Borrow(slots, count);
+    mValues.Borrow(slots, count);
 }
 
 LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId)
-    : mValues(static_cast<uint32_t>(values.size())), mSource(&source), mLineId(lineId)
+    : mSource(&source)
 {
+    assert(lineId <= CompactLineFields::MAX_SPARE);
+    mValues.SetSpare(lineId);
     std::vector<loglib::CompactLogValue> staging;
     staging.reserve(values.size());
     for (const auto &[key, value] : values)
@@ -256,7 +265,7 @@ std::optional<std::string_view> LogLine::PeekStringView(const loglib::CompactLog
     }
     if (slot.tag == loglib::CompactTag::MmapSlice)
     {
-        const std::string_view bytes = mSource->ResolveMmapBytes(slot.payload, slot.aux, mLineId);
+        const std::string_view bytes = mSource->ResolveMmapBytes(slot.payload, slot.aux, LineId());
         if (bytes.empty() && slot.aux != 0)
         {
             return std::nullopt;
@@ -265,7 +274,7 @@ std::optional<std::string_view> LogLine::PeekStringView(const loglib::CompactLog
     }
     if (slot.tag == loglib::CompactTag::OwnedString)
     {
-        return mSource->ResolveOwnedBytes(slot.payload, slot.aux, mLineId);
+        return mSource->ResolveOwnedBytes(slot.payload, slot.aux, LineId());
     }
     return std::nullopt;
 }
@@ -277,7 +286,7 @@ LogValue LogLine::GetValue(KeyId id) const
     {
         return LogValue{std::monostate{}};
     }
-    return compact->Materialise(mSource, mLineId, id);
+    return compact->Materialise(mSource, LineId(), id);
 }
 
 LogValue LogLine::GetValue(const KeyIndex &keys, std::string_view key) const
@@ -326,7 +335,7 @@ LogMap LogLine::Values(const KeyIndex &keys) const
     {
         const auto &entry = mValues.Data()[i];
         assert(entry.Key() < keys.Size() && "Values: the key id is not in this index");
-        snapshot.emplace(std::string(keys.KeyOf(entry.Key())), entry.Materialise(mSource, mLineId, entry.Key()));
+        snapshot.emplace(std::string(keys.KeyOf(entry.Key())), entry.Materialise(mSource, LineId(), entry.Key()));
     }
     return snapshot;
 }
@@ -343,7 +352,7 @@ void LogLine::SetValue(KeyId id, const LogValue &value)
 void LogLine::SetValue(KeyId id, const LogValue &value, LogValueTrustView /*trust*/)
 {
     assert(mSource != nullptr);
-    SetCompact(id, MakeCompactFromVariant(*mSource, mLineId, value));
+    SetCompact(id, MakeCompactFromVariant(*mSource, LineId(), value));
 }
 
 void LogLine::SetCompact(KeyId id, loglib::CompactLogValue compact)
@@ -380,7 +389,7 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        result.emplace_back(entry.Key(), entry.Materialise(mSource, mLineId, entry.Key()));
+        result.emplace_back(entry.Key(), entry.Materialise(mSource, LineId(), entry.Key()));
     }
     return result;
 }
@@ -397,17 +406,17 @@ LineSource *LogLine::Source() const noexcept
 
 size_t LogLine::LineId() const noexcept
 {
-    return mLineId;
+    return static_cast<size_t>(mValues.Spare());
 }
 
 void LogLine::ReleaseFields() noexcept
 {
-    mValues = loglib::CompactLineFields{};
+    mValues.Clear();
 }
 
 void LogLine::ShiftLineId(size_t delta) noexcept
 {
-    mLineId += delta;
+    mValues.SetSpare(mValues.Spare() + delta);
 }
 
 size_t LogLine::OwnedMemoryBytes() const

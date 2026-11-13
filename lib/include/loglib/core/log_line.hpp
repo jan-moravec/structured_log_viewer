@@ -132,7 +132,7 @@ public:
     /** @brief The source that holds this row's bytes. Never null. */
     [[nodiscard]] LineSource *Source() const noexcept;
 
-    /** @brief The row's line id in its source. */
+    /** @brief The row's line id in its source. It is below 2^39. */
     [[nodiscard]] size_t LineId() const noexcept;
 
     /** @brief Frees the fields of the row, which then has none. For rows that were evicted but not yet destroyed. */
@@ -170,15 +170,15 @@ private:
     /** @brief Replaces the cell for id, or inserts it. May allocate. */
     void SetCompact(KeyId id, loglib::CompactLogValue compact);
 
+    /** @brief The fields. The line id is kept in the spare number of the fields, which saves a word per row. */
     loglib::CompactLineFields mValues;
     LineSource *mSource = nullptr;
-    size_t mLineId = 0;
 };
 
-// A log holds millions of rows, and every filter, sort and export scans them in order. A row is 32 bytes: its fields
-// (16 bytes), the source pointer (8 bytes) and the line id (8 bytes). Two rows then fit in one cache line of 64 bytes.
-// A new member would add its size to every row of every log.
-inline constexpr size_t LOG_LINE_EXPECTED_BYTES = 32;
-static_assert(sizeof(LogLine) == LOG_LINE_EXPECTED_BYTES, "LogLine must stay 32 bytes");
+// A log holds millions of rows, and every filter, sort and export scans them in order. A row is 24 bytes: its fields
+// (16 bytes, which also hold the line id) and the source pointer (8 bytes). A new member would add its size to every
+// row of every log.
+inline constexpr size_t LOG_LINE_EXPECTED_BYTES = 24;
+static_assert(sizeof(LogLine) == LOG_LINE_EXPECTED_BYTES, "LogLine must stay 24 bytes");
 
 } // namespace loglib

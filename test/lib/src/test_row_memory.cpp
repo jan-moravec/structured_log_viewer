@@ -9,13 +9,13 @@ namespace
 
 constexpr std::size_t ROW_COUNT = 100'000;
 
-// The most bytes per row a loaded table may hold: the 138.55 measured for these 100'000 rows, plus 2 %. A change in the
+// The most bytes per row a loaded table may hold: the 130.55 measured for these 100'000 rows, plus 2 %. A change in the
 // layout of a row must change this number on purpose, so that nobody makes rows larger by accident.
 //
 // The line offsets are counted by capacity, and the capacity of a vector depends on the standard library, so the total
 // differs a little between platforms. The value was measured with MSVC. If another platform exceeds it only because of
 // the vector capacity, give that platform its own limit measured there.
-constexpr double MAX_BYTES_PER_ROW = 141.32;
+constexpr double MAX_BYTES_PER_ROW = 133.17;
 
 } // namespace
 

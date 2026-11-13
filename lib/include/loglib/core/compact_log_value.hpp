@@ -115,27 +115,25 @@ static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "Comp
 void RebaseOwnedStringOffsets(CompactLogValue *values, size_t valueCount, uint64_t delta) noexcept;
 
 /**
- * @brief The fields of one line as an array sorted by key.
+ * @brief The fields of one line as an array sorted by key, plus a number the owner keeps beside them.
  *
- * The array is exactly as large as needed. The pointer, the size and the capacity take 16 bytes, which avoids the extra
- * reserve of a std::vector on short rows. A line can also borrow its array from a FieldArena. A borrowed array has a
- * capacity of zero, is never freed by the line, and moves to a heap array of its own the first time it has to grow.
+ * The array is exactly as large as needed. A line can also borrow its array from a FieldArena. A borrowed array is
+ * never freed by the line, and the first field added to it moves the array to the heap. The size, the flag that says
+ * whether the array is owned, and a 39-bit number the owner may keep, such as a line id, share one 8-byte word. The
+ * pointer and that word take 16 bytes, so a LogLine that adds only its source pointer is 24 bytes.
  */
 class CompactLineFields
 {
 public:
     using value_type = CompactLogValue;
 
+    /** @brief The largest number of fields in one line. */
+    static constexpr uint32_t MAX_FIELDS = 0x7FFFFFU;
+
+    /** @brief The largest value of the number the owner keeps. */
+    static constexpr uint64_t MAX_SPARE = (uint64_t{1} << 39U) - 1U;
+
     CompactLineFields() = default;
-
-    /** @brief Allocates room for initialCapacity fields without constructing them. */
-    explicit CompactLineFields(uint32_t initialCapacity);
-
-    /**
-     * @brief Uses count constructed fields at data without owning them. The memory must outlive the fields, which is
-     * what a FieldArena held by the source of the line guarantees.
-     */
-    [[nodiscard]] static CompactLineFields Borrow(value_type *data, uint32_t count) noexcept;
 
     CompactLineFields(const CompactLineFields &) = delete;
     CompactLineFields &operator=(const CompactLineFields &) = delete;
@@ -144,31 +142,37 @@ public:
     CompactLineFields &operator=(CompactLineFields &&other) noexcept;
     ~CompactLineFields();
 
-    /** @brief Returns the number of occupied slots. */
+    /** @brief Returns the number of fields. */
     [[nodiscard]] uint32_t Size() const noexcept
     {
-        return mSize;
+        return static_cast<uint32_t>(mMeta & SIZE_MASK);
     }
 
-    /** @brief Returns the allocated slot count. */
-    [[nodiscard]] uint32_t Capacity() const noexcept
-    {
-        return mCapacity;
-    }
-
-    /** @brief Returns whether the array has no occupied slots. */
+    /** @brief Returns whether the array has no fields. */
     [[nodiscard]] bool Empty() const noexcept
     {
-        return mSize == 0;
+        return Size() == 0;
     }
 
-    /** @brief Returns a pointer to the first slot. */
+    /** @brief The number the owner keeps beside the fields. */
+    [[nodiscard]] uint64_t Spare() const noexcept
+    {
+        return mMeta >> SPARE_SHIFT;
+    }
+
+    /** @brief Sets the number the owner keeps. It must not be above MAX_SPARE. */
+    void SetSpare(uint64_t value) noexcept
+    {
+        mMeta = (mMeta & ~(~uint64_t{0} << SPARE_SHIFT)) | (value << SPARE_SHIFT);
+    }
+
+    /** @brief Returns a pointer to the first field. */
     [[nodiscard]] value_type *Data() noexcept
     {
         return mData;
     }
 
-    /** @brief Returns a pointer to the first slot. */
+    /** @brief Returns a pointer to the first field. */
     [[nodiscard]] const value_type *Data() const noexcept
     {
         return mData;
@@ -181,7 +185,7 @@ public:
 
     [[nodiscard]] value_type *end() noexcept
     {
-        return mData + mSize;
+        return mData + Size();
     }
 
     [[nodiscard]] const value_type *begin() const noexcept
@@ -191,23 +195,26 @@ public:
 
     [[nodiscard]] const value_type *end() const noexcept
     {
-        return mData + mSize;
+        return mData + Size();
     }
 
-    /** @brief Makes room for at least capacity fields. Does nothing if there is room already. */
-    void Reserve(uint32_t capacity);
-
     /**
-     * @brief Replaces the content with count fields that are sorted by key. The buffer is reused if it is large enough,
-     * and otherwise replaced by one that fits exactly.
+     * @brief Replaces the content with count fields that are sorted by key, in a heap array that fits exactly. The
+     * spare number stays.
      */
     void AssignSorted(const value_type *values, uint32_t count);
-    void AssignSorted(std::vector<value_type> &&values);
 
-    /** @brief Adds a field, which carries its key, at the end. The caller keeps the array sorted by key. */
-    void EmplaceBack(CompactLogValue field);
+    /** @brief Allocates room for count fields on the heap, sets the size, and returns the fields for the caller to
+     * fill. */
+    [[nodiscard]] value_type *AllocateOwned(uint32_t count);
 
-    /** @brief Inserts a field at position, and the fields after it move up by one. */
+    /** @brief Uses count constructed fields at data without owning them. The memory must outlive the fields. */
+    void Borrow(value_type *data, uint32_t count) noexcept;
+
+    /** @brief Drops the fields and frees them if they are owned. The spare number stays. */
+    void Clear() noexcept;
+
+    /** @brief Inserts a field at position, and the fields after it move up by one. The array moves to the heap. */
     void Insert(uint32_t position, CompactLogValue field);
 
     /** @brief Replaces the field at position. The new field carries the key. */
@@ -217,10 +224,13 @@ public:
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
 private:
+    static constexpr uint64_t SIZE_MASK = 0x7FFFFFU;
+    static constexpr uint64_t OWNED_BIT = uint64_t{1} << 23U;
+    static constexpr uint32_t SPARE_SHIFT = 24U;
+
     value_type *mData = nullptr;
-    uint32_t mSize = 0;
-    /** @brief The allocated slot count. Zero for a borrowed array, which the destructor must not free. */
-    uint32_t mCapacity = 0;
+    /** @brief The size in bits 0 to 22, the owned flag in bit 23, and the spare number above. */
+    uint64_t mMeta = 0;
 };
 
 /**
