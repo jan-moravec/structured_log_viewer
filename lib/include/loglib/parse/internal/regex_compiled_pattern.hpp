@@ -90,6 +90,11 @@ public:
         const int jitRc = pcre2_jit_compile(mCode.get(), PCRE2_JIT_COMPLETE);
         mJitCompiled = (jitRc == 0);
 
+        // A pattern can switch on UTF mode itself, with a leading (*UTF).
+        uint32_t allOptions = 0;
+        mUtf =
+            pcre2_pattern_info(mCode.get(), PCRE2_INFO_ALLOPTIONS, &allOptions) == 0 && (allOptions & PCRE2_UTF) != 0;
+
         // Match context shared read-only across workers; carries
         // the match/depth limits so a malicious pattern can't burn
         // CPU for seconds on a single line.
@@ -151,6 +156,17 @@ public:
     [[nodiscard]] bool JitCompiled() const noexcept
     {
         return mJitCompiled;
+    }
+
+    /**
+     * @brief True when the pattern runs in UTF mode, which it can turn on itself with a leading (*UTF).
+     *
+     * A UTF pattern must only see valid UTF-8, so its subjects go through the checked pcre2_match. Other patterns can
+     * skip the check.
+     */
+    [[nodiscard]] bool Utf() const noexcept
+    {
+        return mUtf;
     }
 
     /**
@@ -235,6 +251,7 @@ private:
     PatternSchema mSchema;
     std::string mPatternString;
     bool mJitCompiled = false;
+    bool mUtf = false;
 };
 
 } // namespace loglib::internal
