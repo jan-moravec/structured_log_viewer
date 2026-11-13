@@ -81,11 +81,11 @@ using reports::ValidateReport;
     ValidateReport report;
     report.format = loaded.format ? std::string(FormatName(loaded.format->format)) : "unknown";
     report.rowsProduced = loaded.table.RowCount();
-    report.parseErrorCount = loaded.parseErrors.size();
+    report.parseErrorCount = loaded.parseErrorCount;
     report.linesConsumed = loaded.linesConsumed;
     report.errorRatePercent = ErrorRatePercent(report.parseErrorCount, report.linesConsumed);
 
-    const auto listed = static_cast<std::size_t>(std::min<std::uint64_t>(report.parseErrorCount, maxErrors));
+    const auto listed = static_cast<std::size_t>(std::min<std::uint64_t>(loaded.parseErrors.size(), maxErrors));
     for (std::size_t index = 0; index < listed; ++index)
     {
         const loglib::ParseError &parseError = loaded.parseErrors[index];

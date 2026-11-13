@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -413,6 +414,37 @@ TEST_CASE("A time column the table detects is converted by the parser in the lat
     }
 }
 
+TEST_CASE(
+    "A detected time column without a year uses the table's reference time in every batch", "[table_loader][time]"
+)
+{
+    // The table converts the first batch itself and the parser the later ones. Both must read the year from the same
+    // reference time.
+    std::string bytes;
+    for (int i = 0; i < 20'000; ++i)
+    {
+        bytes += R"({"ts":"Mar  1 10:00:00","n":)" + std::to_string(i) + "}\n";
+    }
+    const TestLogFile file("table_loader_detected_syslog_time.jsonl");
+    LogTable table;
+    table.SetReferenceTime(std::chrono::sys_days{std::chrono::year{2020} / 6 / 15});
+    ParserOptions options = ParserOptionsFor(table);
+    options.batchSizeBytes = 16 * 1024;
+    const ParseOutcome outcome = ParseIntoTable(table, JsonParser{}, FileSourceOf(file, bytes), options);
+    FinishLoading(table);
+
+    REQUIRE(outcome.errors.empty());
+    REQUIRE(table.RowCount() == 20'000);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    const TimeStamp expected{std::chrono::sys_days{std::chrono::year{2020} / 3 / 1} + std::chrono::hours{10}};
+    for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
+    {
+        const LogValue value = table.GetValue(row, 0);
+        REQUIRE(std::holds_alternative<TimeStamp>(value));
+        CHECK(std::get<TimeStamp>(value) == expected);
+    }
+}
+
 TEST_CASE("A large batch of enumeration values is encoded the same as a small one", "[table_loader][enum]")
 {
     // One parsed batch holds all rows, so the encoding runs over a range that is long enough to use several threads.
@@ -480,6 +512,7 @@ TEST_CASE("A sink keeps the first parse errors and counts the rest", "[table_loa
     CHECK(table.RowCount() == 20);
     REQUIRE(outcome.errors.size() == MAX_STORED_PARSE_ERRORS + 1);
     CHECK(outcome.errors.back().message == "1500 more parse errors were not recorded.");
+    CHECK(outcome.errorCount == 2500);
     CHECK(outcome.linesConsumed == 2520);
 }
 

@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <format>
+#include <string>
+#include <type_traits>
 #include <utility>
 
 namespace loglib
@@ -30,10 +32,21 @@ ParseOutcome RunParse(LogTable &table, const LogParser &parser, std::unique_ptr<
 {
     Source &sourceRef = *source;
     AttachSource(table, std::move(source));
+    if constexpr (std::is_same_v<Source, FileLineSource>)
+    {
+        // A file parse converts with one reference time. Taking the table's, which attaching the source fixed, makes
+        // the rows the parser converts agree with the rows the table converts itself, such as those of a time column
+        // it detects while the parse runs.
+        if (!options.referenceTime.has_value())
+        {
+            options.referenceTime = table.ReferenceTime();
+        }
+    }
     TableSink sink(table);
     parser.ParseStreaming(sourceRef, sink, std::move(options));
     return ParseOutcome{
         .errors = sink.TakeErrors(),
+        .errorCount = sink.ErrorCount(),
         .linesConsumed = sink.LinesConsumed(),
         .cancelled = sink.Cancelled(),
     };
@@ -60,6 +73,7 @@ void TableSink::OnBatch(RowBatch batch)
     mLinesConsumed = std::max(mLinesConsumed, static_cast<std::uint64_t>(batch.lastLineNumber));
     LogTable::AppendBatchResult result = mTable->AppendBatch(std::move(batch));
     mTable->ApplyPlacements(result.placements);
+    mErrorCount += result.errors.size();
     for (ParseError &error : result.errors)
     {
         if (mErrors.size() < MAX_STORED_PARSE_ERRORS)
@@ -99,11 +113,19 @@ std::vector<ParseError> TableSink::TakeErrors()
     if (mDroppedErrors != 0)
     {
         mErrors.push_back(
-            ParseError{.message = std::format("{} more parse errors were not recorded.", mDroppedErrors)}
+            ParseError{
+                .message = mDroppedErrors == 1 ? std::string("1 more parse error was not recorded.")
+                                               : std::format("{} more parse errors were not recorded.", mDroppedErrors)
+            }
         );
         mDroppedErrors = 0;
     }
     return std::exchange(mErrors, {});
+}
+
+std::uint64_t TableSink::ErrorCount() const noexcept
+{
+    return mErrorCount;
 }
 
 std::uint64_t TableSink::LinesConsumed() const noexcept

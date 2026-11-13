@@ -72,6 +72,9 @@ public:
      */
     [[nodiscard]] std::vector<ParseError> TakeErrors();
 
+    /** @brief How many parse errors the batches held, the ones that were not stored included. */
+    [[nodiscard]] std::uint64_t ErrorCount() const noexcept;
+
     /**
      * @brief The number of physical lines this parse read, which is the highest last line number of its batches.
      *
@@ -87,6 +90,7 @@ private:
     LogTable *mTable;
     std::vector<ParseError> mErrors;
     std::uint64_t mDroppedErrors = 0;
+    std::uint64_t mErrorCount = 0;
     std::uint64_t mLinesConsumed = 0;
     bool mCancelled = false;
     std::vector<std::string> mReportedTimeColumns;
@@ -95,7 +99,11 @@ private:
 /** @brief What one ParseIntoTable call found. */
 struct ParseOutcome
 {
+    /** @brief The stored errors. See TableSink::TakeErrors. */
     std::vector<ParseError> errors;
+
+    /** @brief How many parse errors the parse found, the ones that errors does not hold included. */
+    std::uint64_t errorCount = 0;
 
     /** @brief The physical lines the parse read. See TableSink::LinesConsumed. */
     std::uint64_t linesConsumed = 0;

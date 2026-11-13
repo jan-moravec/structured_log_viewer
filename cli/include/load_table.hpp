@@ -34,6 +34,8 @@ struct LoadedTable
 {
     loglib::LogTable table;
     std::vector<loglib::ParseError> parseErrors;
+    /** @brief How many parse errors all sources had. A source stores only its first ones in parseErrors. */
+    std::uint64_t parseErrorCount = 0;
     std::optional<loglib::DetectedFormat> format;
     std::uint64_t linesConsumed = 0;
 };
