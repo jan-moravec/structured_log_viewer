@@ -3,6 +3,7 @@
 #include "loglib/schema/log_configuration.hpp"
 
 #include <algorithm>
+#include <format>
 #include <utility>
 
 namespace loglib
@@ -61,7 +62,14 @@ void TableSink::OnBatch(RowBatch batch)
     mTable->ApplyPlacements(result.placements);
     for (ParseError &error : result.errors)
     {
-        mErrors.push_back(std::move(error));
+        if (mErrors.size() < MAX_STORED_PARSE_ERRORS)
+        {
+            mErrors.push_back(std::move(error));
+        }
+        else
+        {
+            ++mDroppedErrors;
+        }
     }
 }
 
@@ -88,6 +96,13 @@ std::vector<Column> TableSink::TimeColumnsAdded()
 
 std::vector<ParseError> TableSink::TakeErrors()
 {
+    if (mDroppedErrors != 0)
+    {
+        mErrors.push_back(
+            ParseError{.message = std::format("{} more parse errors were not recorded.", mDroppedErrors)}
+        );
+        mDroppedErrors = 0;
+    }
     return std::exchange(mErrors, {});
 }
 

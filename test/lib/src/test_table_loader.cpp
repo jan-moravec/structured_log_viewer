@@ -464,6 +464,25 @@ TEST_CASE("A large batch of enumeration values is encoded the same as a small on
     }
 }
 
+TEST_CASE("A sink keeps the first parse errors and counts the rest", "[table_loader][errors]")
+{
+    const TestLogFile file("table_loader_many_errors.jsonl");
+    std::string bytes = JsonRows(10);
+    for (int i = 0; i < 2500; ++i)
+    {
+        bytes += "not json " + std::to_string(i) + "\n";
+    }
+    bytes += JsonRows(10, 10);
+    LogTable table;
+    const ParseOutcome outcome =
+        ParseIntoTable(table, JsonParser{}, FileSourceOf(file, bytes), ParserOptionsFor(table));
+
+    CHECK(table.RowCount() == 20);
+    REQUIRE(outcome.errors.size() == MAX_STORED_PARSE_ERRORS + 1);
+    CHECK(outcome.errors.back().message == "1500 more parse errors were not recorded.");
+    CHECK(outcome.linesConsumed == 2520);
+}
+
 TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_loader][options]")
 {
     LogTable table;
