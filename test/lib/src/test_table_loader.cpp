@@ -413,6 +413,57 @@ TEST_CASE("A time column the table detects is converted by the parser in the lat
     }
 }
 
+TEST_CASE("A large batch of enumeration values is encoded the same as a small one", "[table_loader][enum]")
+{
+    // One parsed batch holds all rows, so the encoding runs over a range that is long enough to use several threads.
+    // New values appear late, among rows whose values the dictionary already knows.
+    const std::vector<std::string> pool = {"info", "warn", "error", "debug", "trace"};
+    std::string bytes;
+    std::vector<std::string> expected;
+    for (int i = 0; i < 20'000; ++i)
+    {
+        size_t known = 2;
+        if (i >= 12'000)
+        {
+            known = 5;
+        }
+        else if (i >= 9'000)
+        {
+            known = 4;
+        }
+        else if (i >= 7'000)
+        {
+            known = 3;
+        }
+        const std::string &level = pool[static_cast<size_t>(i) % known];
+        expected.push_back(level);
+        bytes += R"({"level":")" + level + R"(","n":)" + std::to_string(i) + "}\n";
+    }
+    const TestLogFile file("table_loader_enum_large.jsonl");
+    LogTable table;
+    const ParseOutcome outcome =
+        ParseIntoTable(table, JsonParser{}, FileSourceOf(file, bytes), ParserOptionsFor(table));
+    FinishLoading(table);
+
+    REQUIRE(outcome.errors.empty());
+    REQUIRE(table.RowCount() == expected.size());
+    size_t levelColumn = table.ColumnCount();
+    for (size_t column = 0; column < table.ColumnCount(); ++column)
+    {
+        if (table.GetHeader(column) == "level")
+        {
+            levelColumn = column;
+        }
+    }
+    REQUIRE(levelColumn < table.ColumnCount());
+    const ColumnType levelType = table.Configuration().Configuration().columns[levelColumn].type;
+    CHECK((levelType == ColumnType::Enumeration || levelType == ColumnType::Level));
+    for (size_t row = 0; row < expected.size(); ++row)
+    {
+        REQUIRE(table.GetFormattedValue(row, levelColumn) == expected[row]);
+    }
+}
+
 TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_loader][options]")
 {
     LogTable table;

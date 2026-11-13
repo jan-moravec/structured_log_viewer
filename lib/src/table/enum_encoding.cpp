@@ -6,6 +6,8 @@
 #include "loglib/core/log_line.hpp"
 #include "loglib/schema/log_configuration.hpp"
 
+#include <oneapi/tbb/parallel_for.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -18,6 +20,26 @@
 
 namespace loglib
 {
+
+namespace
+{
+
+/** Ranges shorter than this are encoded on the calling thread, where a parallel loop would cost more than it saves. */
+constexpr size_t ENCODE_PARALLEL_MIN_ROWS = 4096;
+
+/** Rows each task of the parallel lookup handles. */
+constexpr size_t ENCODE_CHUNK_ROWS = 1024;
+
+/** What one chunk of the parallel lookup found: the health counts, and the rows that need a new dictionary value. */
+struct EncodeChunk
+{
+    size_t totalSlots = 0;
+    size_t longValueSlots = 0;
+    size_t wrongTypeSlots = 0;
+    std::vector<size_t> pendingRows;
+};
+
+} // namespace
 
 bool EnumInference::EncodeColumnRange(
     LogData &data, std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
@@ -33,9 +55,12 @@ bool EnumInference::EncodeColumnRange(
         dict = &ref;
     }
     auto &lines = data.Lines();
+    rowEnd = std::min(rowEnd, lines.size());
+    const size_t valueMaxLen = mValueMaxLen;
     bool overflowed = false;
-    for (size_t row = rowBegin; row < rowEnd && row < lines.size(); ++row)
-    {
+
+    // Encodes one row, adding its value to the dictionary when it is new.
+    const auto encodeRow = [&](size_t row) {
         LogLine &line = lines[row];
         bool encoded = false;
         bool sawLong = false;
@@ -59,7 +84,7 @@ bool EnumInference::EncodeColumnRange(
                 sawWrongType = true;
                 continue;
             }
-            if (mValueMaxLen != 0 && bytes->size() > mValueMaxLen)
+            if (valueMaxLen != 0 && bytes->size() > valueMaxLen)
             {
                 sawLong = true;
                 continue;
@@ -77,7 +102,7 @@ bool EnumInference::EncodeColumnRange(
         }
         if (alreadyEncoded)
         {
-            continue;
+            return;
         }
         if (encoded)
         {
@@ -92,6 +117,108 @@ bool EnumInference::EncodeColumnRange(
         {
             ++health.totalSlots;
             ++health.wrongTypeSlots;
+        }
+    };
+
+    if (rowEnd <= rowBegin || rowEnd - rowBegin < ENCODE_PARALLEL_MIN_ROWS)
+    {
+        for (size_t row = rowBegin; row < rowEnd; ++row)
+        {
+            encodeRow(row);
+        }
+        return !overflowed;
+    }
+
+    // Rows whose value the dictionary knows are encoded in parallel, since reading the dictionary is safe while nobody
+    // writes it. A row that brings a new value is left untouched and encoded afterwards in row order, so the value ids
+    // are the same as when every row is encoded in order.
+    const EnumDictionary &knownValues = *dict;
+    const size_t chunkCount = (rowEnd - rowBegin + ENCODE_CHUNK_ROWS - 1) / ENCODE_CHUNK_ROWS;
+    std::vector<EncodeChunk> chunks(chunkCount);
+    oneapi::tbb::parallel_for(size_t{0}, chunkCount, [&](size_t chunkIndex) {
+        EncodeChunk &chunk = chunks[chunkIndex];
+        const size_t chunkBegin = rowBegin + (chunkIndex * ENCODE_CHUNK_ROWS);
+        const size_t chunkEnd = std::min(chunkBegin + ENCODE_CHUNK_ROWS, rowEnd);
+        // Runs of equal values are common, so the last answer is tried before the dictionary.
+        std::string_view lastBytes;
+        EnumValueId lastId = INVALID_ENUM_VALUE_ID;
+
+        // Returns false when the row needs a new dictionary value and was left untouched.
+        const auto encodeKnown = [&](LogLine &line) {
+            bool encoded = false;
+            bool sawLong = false;
+            bool sawWrongType = false;
+            for (const KeyId id : aliasKeys)
+            {
+                CompactLogValue *slot = line.FindCompactMutable(id);
+                if (slot == nullptr)
+                {
+                    continue;
+                }
+                if (slot->tag == CompactTag::DictRef)
+                {
+                    return true;
+                }
+                const auto bytes = line.PeekStringView(*slot);
+                if (!bytes.has_value())
+                {
+                    sawWrongType = true;
+                    continue;
+                }
+                if (valueMaxLen != 0 && bytes->size() > valueMaxLen)
+                {
+                    sawLong = true;
+                    continue;
+                }
+                EnumValueId valueId = lastId;
+                if (valueId == INVALID_ENUM_VALUE_ID || *bytes != lastBytes)
+                {
+                    valueId = knownValues.Find(*bytes);
+                    if (valueId == INVALID_ENUM_VALUE_ID)
+                    {
+                        return false;
+                    }
+                    lastBytes = *bytes;
+                    lastId = valueId;
+                }
+                *slot = CompactLogValue::MakeDictRef(valueId);
+                encoded = true;
+                break;
+            }
+            if (encoded)
+            {
+                ++chunk.totalSlots;
+            }
+            else if (sawLong)
+            {
+                ++chunk.totalSlots;
+                ++chunk.longValueSlots;
+            }
+            else if (sawWrongType)
+            {
+                ++chunk.totalSlots;
+                ++chunk.wrongTypeSlots;
+            }
+            return true;
+        };
+
+        for (size_t row = chunkBegin; row < chunkEnd; ++row)
+        {
+            if (!encodeKnown(lines[row]))
+            {
+                chunk.pendingRows.push_back(row);
+            }
+        }
+    });
+
+    for (const EncodeChunk &chunk : chunks)
+    {
+        health.totalSlots += chunk.totalSlots;
+        health.longValueSlots += chunk.longValueSlots;
+        health.wrongTypeSlots += chunk.wrongTypeSlots;
+        for (const size_t row : chunk.pendingRows)
+        {
+            encodeRow(row);
         }
     }
     return !overflowed;
