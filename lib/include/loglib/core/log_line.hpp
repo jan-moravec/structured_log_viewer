@@ -56,6 +56,18 @@ public:
     LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues, LineSource &source, size_t lineId);
 
     /**
+     * @brief Builds a row from compact values that are sorted by key, and keeps its fields in memory from arena. The
+     * caller must hand the arena to the source, which has to keep it as long as the row lives. The row moves its fields
+     * to the heap if one is added later.
+     */
+    LogLine(
+        std::span<const std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
+        FieldArena &arena,
+        LineSource &source,
+        size_t lineId
+    );
+
+    /**
      * @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests.
      *
      * The row does not keep keys. Pass the same index to the name-keyed accessors later.

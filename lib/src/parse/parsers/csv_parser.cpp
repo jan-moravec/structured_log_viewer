@@ -332,7 +332,7 @@ void DecodeCsvBatch(
             // LogLine ctor asserts ascending KeyIds; header order may not be.
             std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
-            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
+            LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));

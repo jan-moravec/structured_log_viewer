@@ -124,6 +124,7 @@ void RegisterMemoryOf(
             }
             state.counters["line_objects_bytes"] = static_cast<double>(memory.lineObjects);
             state.counters["owned_by_rows_bytes"] = static_cast<double>(memory.ownedByRows);
+            state.counters["field_arenas_bytes"] = static_cast<double>(memory.fieldArenas);
             state.counters["line_offsets_bytes"] = static_cast<double>(memory.lineOffsets);
             state.counters["arena_bytes"] = static_cast<double>(memory.arena);
             state.counters["key_index_bytes"] = static_cast<double>(memory.keyIndex);

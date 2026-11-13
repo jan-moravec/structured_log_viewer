@@ -219,7 +219,8 @@ void EnsureCacheCapacity(ParseCache &cache, KeyId id)
     growTo(cache.hasNumberType, false);
 }
 
-std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
+void ParseJsonLine(
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &result,
     simdjson::ondemand::object &object,
     KeyIndex &keys,
     ParseCache &cache,
@@ -231,7 +232,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
     simdjson::error_code &outError
 )
 {
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> result;
+    result.clear();
     result.reserve(INITIAL_OBJECT_FIELD_CAPACITY);
     outError = simdjson::SUCCESS;
 
@@ -240,13 +241,13 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
         if (field.error())
         {
             outError = field.error();
-            return result;
+            return;
         }
         const FastFieldKey fk = ExtractFieldKey(field);
         if (!fk.isView && fk.owned.empty())
         {
             outError = simdjson::STRING_ERROR;
-            return result;
+            return;
         }
 
         const KeyId keyId = internal::InternKeyVia(fk.isView ? fk.view : std::string_view(fk.owned), keys, keyCache);
@@ -342,7 +343,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                     // Reading a malformed container has already moved the iterator past its start, so the value
                     // cannot be asked for its type again. The line is an error, as it is on the uncached path.
                     outError = simdjson::TAPE_ERROR;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, rawValue);
                 continue;
@@ -363,7 +364,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
         if (typeResult.error())
         {
             outError = typeResult.error();
-            return result;
+            return;
         }
 
         const auto type = typeResult.value();
@@ -378,7 +379,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (const auto error = value.get(b); error)
             {
                 outError = error;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, loglib::CompactLogValue::MakeBool(b));
             break;
@@ -389,7 +390,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (numberType.error())
             {
                 outError = numberType.error();
-                return result;
+                return;
             }
             cache.numberTypes[keyId] = numberType.value();
             cache.hasNumberType[keyId] = true;
@@ -401,7 +402,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (const auto error = value.get(i); error)
                 {
                     outError = error;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, loglib::CompactLogValue::MakeInt64(i));
                 break;
@@ -412,7 +413,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (const auto error = value.get(u); error)
                 {
                     outError = error;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, loglib::CompactLogValue::MakeUint64(u));
                 break;
@@ -423,7 +424,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (const auto error = value.get(d); error)
                 {
                     outError = error;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, loglib::CompactLogValue::MakeDouble(d));
                 break;
@@ -436,7 +437,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (rawValue.tag == loglib::CompactTag::Monostate)
                 {
                     outError = simdjson::NUMBER_ERROR;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, rawValue);
                 break;
@@ -451,7 +452,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (stringValue.tag == loglib::CompactTag::Monostate)
             {
                 outError = simdjson::STRING_ERROR;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, stringValue);
             break;
@@ -464,7 +465,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (rawValue.tag == loglib::CompactTag::Monostate)
             {
                 outError = simdjson::TAPE_ERROR;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, rawValue);
             break;
@@ -476,15 +477,13 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (const auto error = value.is_null().get(isNull); error || !isNull)
             {
                 outError = error ? error : simdjson::N_ATOM_ERROR;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, loglib::CompactLogValue::MakeMonostate());
             break;
         }
         }
     }
-
-    return result;
 }
 
 /// JSON-specific per-worker scratch.
@@ -519,6 +518,8 @@ void DecodeJsonBatch(
     parsed.localLineOffsets.reserve(estimatedLines);
 
     size_t relativeLineNumber = 1;
+    // One scratch for the whole batch; each row copies it into the batch's field arena.
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
 
     while (cursor < end)
     {
@@ -590,7 +591,8 @@ void DecodeJsonBatch(
             auto objectValue = object.value();
             const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
             simdjson::error_code parseError = simdjson::SUCCESS;
-            auto values = ParseJsonLine(
+            ParseJsonLine(
+                values,
                 objectValue,
                 keys,
                 worker.user.cache,
@@ -617,7 +619,7 @@ void DecodeJsonBatch(
             // running cursor so `FileLineSource::RawLine(LineId())` indexes
             // `mLineOffsets` correctly. `relativeLineNumber` stays
             // 1-based for human-facing error messages.
-            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
+            LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 
@@ -728,7 +730,8 @@ public:
             // `MakeStringCompact` from mistaking a padded-buffer view
             // for an mmap slice.
             simdjson::error_code parseError = simdjson::SUCCESS;
-            out = ParseJsonLine(
+            ParseJsonLine(
+                out,
                 objectValue,
                 keys,
                 mCache,

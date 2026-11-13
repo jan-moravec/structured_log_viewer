@@ -553,7 +553,7 @@ void DecodeLogfmtBatch(
                 );
             }
 
-            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
+            LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             // Inline promotion: same shape as the JSON parser.

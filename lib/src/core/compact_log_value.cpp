@@ -218,6 +218,14 @@ CompactLineFields::CompactLineFields(uint32_t initialCapacity)
 {
 }
 
+CompactLineFields CompactLineFields::Borrow(value_type *data, uint32_t count) noexcept
+{
+    CompactLineFields fields;
+    fields.mData = count == 0 ? nullptr : data;
+    fields.mSize = count;
+    return fields;
+}
+
 CompactLineFields::CompactLineFields(CompactLineFields &&other) noexcept
     : mData(other.mData), mSize(other.mSize), mCapacity(other.mCapacity)
 {
@@ -230,7 +238,10 @@ CompactLineFields &CompactLineFields::operator=(CompactLineFields &&other) noexc
 {
     if (this != &other)
     {
-        DeallocatePairs(mData);
+        if (mCapacity != 0)
+        {
+            DeallocatePairs(mData);
+        }
         mData = other.mData;
         mSize = other.mSize;
         mCapacity = other.mCapacity;
@@ -243,7 +254,10 @@ CompactLineFields &CompactLineFields::operator=(CompactLineFields &&other) noexc
 
 CompactLineFields::~CompactLineFields()
 {
-    DeallocatePairs(mData);
+    if (mCapacity != 0)
+    {
+        DeallocatePairs(mData);
+    }
 }
 
 void CompactLineFields::Reserve(uint32_t capacity)
@@ -257,7 +271,10 @@ void CompactLineFields::Reserve(uint32_t capacity)
     {
         std::uninitialized_copy_n(mData, mSize, fresh);
     }
-    DeallocatePairs(mData);
+    if (mCapacity != 0)
+    {
+        DeallocatePairs(mData);
+    }
     mData = fresh;
     mCapacity = capacity;
 }
@@ -267,7 +284,10 @@ void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
     const bool reused = (count <= mCapacity);
     if (!reused)
     {
-        DeallocatePairs(mData);
+        if (mCapacity != 0)
+        {
+            DeallocatePairs(mData);
+        }
         mData = AllocatePairs(count);
         mCapacity = count;
     }
@@ -294,7 +314,8 @@ void CompactLineFields::AssignSorted(std::vector<value_type> &&values)
 
 void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
 {
-    if (mSize == mCapacity)
+    // A borrowed array has a capacity of zero and takes its first growth here.
+    if (mSize >= mCapacity)
     {
         Reserve(GrowCapacity(mCapacity, mSize + 1U));
     }
@@ -305,7 +326,8 @@ void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
 
 void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue value)
 {
-    if (mSize == mCapacity)
+    // A borrowed array has a capacity of zero and takes its first growth here.
+    if (mSize >= mCapacity)
     {
         Reserve(GrowCapacity(mCapacity, mSize + 1U));
     }
@@ -338,6 +360,59 @@ void CompactLineFields::Set(uint32_t position, CompactLogValue value) noexcept
 size_t CompactLineFields::OwnedMemoryBytes() const noexcept
 {
     return static_cast<size_t>(mCapacity) * PAIR_BYTES;
+}
+
+namespace
+{
+
+/**
+ * A chunk holds this many pairs, which is 14 KB. It stays under the 16 KB limit of the Windows low-fragmentation heap,
+ * whose allocations do not take a global lock; larger chunks made wide rows load slower. The unused tail of the last
+ * chunk of a batch is a small part of the batch.
+ */
+constexpr uint32_t FIELD_ARENA_CHUNK_PAIRS = 600;
+
+} // namespace
+
+FieldArena::~FieldArena()
+{
+    Release();
+}
+
+void FieldArena::Release() noexcept
+{
+    for (const Chunk &chunk : mChunks)
+    {
+        DeallocatePairs(chunk.data);
+    }
+    mChunks.clear();
+}
+
+FieldArena::value_type *FieldArena::Allocate(uint32_t count)
+{
+    if (count == 0)
+    {
+        return nullptr;
+    }
+    if (mChunks.empty() || mChunks.back().capacity - mChunks.back().used < count)
+    {
+        const uint32_t capacity = std::max(count, FIELD_ARENA_CHUNK_PAIRS);
+        mChunks.push_back(Chunk{.data = AllocatePairs(capacity), .used = 0, .capacity = capacity});
+    }
+    Chunk &chunk = mChunks.back();
+    value_type *slots = chunk.data + chunk.used;
+    chunk.used += count;
+    return slots;
+}
+
+size_t FieldArena::MemoryBytes() const noexcept
+{
+    size_t total = 0;
+    for (const Chunk &chunk : mChunks)
+    {
+        total += static_cast<size_t>(chunk.capacity) * PAIR_BYTES;
+    }
+    return total;
 }
 
 } // namespace loglib

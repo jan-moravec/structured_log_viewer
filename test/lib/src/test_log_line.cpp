@@ -384,3 +384,66 @@ TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / Owned
     CHECK(line.FindCompact(enumKey)->tag == CompactTag::DictRef);
     CHECK(line.FindCompact(stringKey)->tag == CompactTag::OwnedString);
 }
+
+TEST_CASE("Rows that borrow their fields from an arena behave like other rows", "[log_line][field_arena]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write("abcd\nefgh\n");
+    auto source = testLogFile.CreateFileLineSource();
+
+    KeyIndex keys;
+    const KeyId first = keys.GetOrInsert(std::string_view("a"));
+    const KeyId second = keys.GetOrInsert(std::string_view("b"));
+    const KeyId third = keys.GetOrInsert(std::string_view("c"));
+
+    FieldArena arena;
+    std::vector<LogLine> lines;
+    // Enough rows to span several chunks.
+    constexpr int ROWS = 2000;
+    for (int i = 0; i < ROWS; ++i)
+    {
+        std::vector<std::pair<KeyId, CompactLogValue>> fields{
+            {first, CompactLogValue::MakeInt64(i)}, {third, CompactLogValue::MakeInt64(-i)}
+        };
+        lines.emplace_back(fields, arena, *source, 0);
+    }
+
+    SECTION("Reads see the stored values")
+    {
+        for (int i = 0; i < ROWS; ++i)
+        {
+            REQUIRE(lines[static_cast<size_t>(i)].ValueCount() == 2);
+            CHECK(std::get<int64_t>(lines[static_cast<size_t>(i)].GetValue(first)) == i);
+            CHECK(std::get<int64_t>(lines[static_cast<size_t>(i)].GetValue(third)) == -i);
+            CHECK(lines[static_cast<size_t>(i)].OwnedMemoryBytes() == 0);
+        }
+        CHECK(arena.MemoryBytes() > 0);
+    }
+
+    SECTION("Adding a field moves one row to the heap and leaves its neighbours alone")
+    {
+        lines[10].SetValue(second, LogValue{int64_t{99}});
+        REQUIRE(lines[10].ValueCount() == 3);
+        CHECK(std::get<int64_t>(lines[10].GetValue(second)) == 99);
+        CHECK(std::get<int64_t>(lines[10].GetValue(first)) == 10);
+        CHECK(std::get<int64_t>(lines[10].GetValue(third)) == -10);
+        CHECK(lines[10].OwnedMemoryBytes() > 0);
+        CHECK(lines[11].ValueCount() == 2);
+        CHECK(std::get<int64_t>(lines[11].GetValue(first)) == 11);
+        CHECK(std::get<int64_t>(lines[9].GetValue(third)) == -9);
+
+        // Updating a field in place keeps the row in the arena.
+        lines[20].SetValue(first, LogValue{int64_t{7}});
+        CHECK(lines[20].OwnedMemoryBytes() == 0);
+        CHECK(std::get<int64_t>(lines[20].GetValue(first)) == 7);
+    }
+
+    SECTION("A moved row keeps pointing at its fields")
+    {
+        LogLine moved = std::move(lines[5]);
+        CHECK(std::get<int64_t>(moved.GetValue(first)) == 5);
+        LogLine assigned(std::vector<std::pair<KeyId, CompactLogValue>>{}, *source, 0);
+        assigned = std::move(moved);
+        CHECK(std::get<int64_t>(assigned.GetValue(third)) == -5);
+    }
+}

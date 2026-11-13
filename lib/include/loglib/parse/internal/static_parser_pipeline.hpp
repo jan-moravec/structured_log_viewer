@@ -81,6 +81,9 @@ struct ParsedPipelineBatch
     /** @brief The time columns this batch was parsed with. */
     std::shared_ptr<const TimeColumnSnapshot> timeColumns;
     std::vector<LogLine> lines;
+    /** @brief The memory the fields of lines are taken from. Stage C gives it to the source before it passes lines on.
+     */
+    FieldArena fields;
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
     /** @brief The keys this batch met first, in the order the decoder met them. Stage C announces them in batch order.
@@ -398,6 +401,8 @@ void RunStaticParserPipelineBody(
     };
 
     auto stageC = [&](ParsedPipelineBatch parsed) {
+        // The rows of this batch borrow their fields from this arena, so the source takes it before any row moves on.
+        source.AdoptFieldArena(std::move(parsed.fields));
         const size_t lineNumberDelta = nextLineNumber - 1;
         if (lineNumberDelta != 0)
         {

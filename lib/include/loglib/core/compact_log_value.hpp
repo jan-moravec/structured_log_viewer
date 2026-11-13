@@ -93,7 +93,8 @@ void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t 
  * @brief The fields of one line as an array of key and value pairs sorted by key.
  *
  * The array is exactly as large as needed. The pointer, the size and the capacity take 16 bytes, which avoids the extra
- * reserve of a std::vector on short rows.
+ * reserve of a std::vector on short rows. A line can also borrow its array from a FieldArena. A borrowed array has a
+ * capacity of zero, is never freed by the line, and moves to a heap array of its own the first time it has to grow.
  */
 class CompactLineFields
 {
@@ -104,6 +105,12 @@ public:
 
     /** @brief Allocates room for initialCapacity pairs without constructing them. */
     explicit CompactLineFields(uint32_t initialCapacity);
+
+    /**
+     * @brief Uses count constructed pairs at data without owning them. The memory must outlive the fields, which is
+     * what a FieldArena held by the source of the line guarantees.
+     */
+    [[nodiscard]] static CompactLineFields Borrow(value_type *data, uint32_t count) noexcept;
 
     CompactLineFields(const CompactLineFields &) = delete;
     CompactLineFields &operator=(const CompactLineFields &) = delete;
@@ -181,13 +188,59 @@ public:
     /** @brief Replaces the value at position. */
     void Set(uint32_t position, CompactLogValue value) noexcept;
 
-    /** @brief Returns heap bytes owned by this array. */
+    /** @brief Returns heap bytes owned by this array. A borrowed array owns none. */
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
 private:
     value_type *mData = nullptr;
     uint32_t mSize = 0;
+    /** @brief The allocated slot count. Zero for a borrowed array, which the destructor must not free. */
     uint32_t mCapacity = 0;
+};
+
+/**
+ * @brief Memory for the fields of many rows, handed out in one piece per chunk.
+ *
+ * A parser worker takes the fields of each row of a batch from one arena, which replaces a heap allocation per row by
+ * a pointer bump. The arena goes to the FileLineSource that the rows belong to, which keeps it until the source is
+ * destroyed. A chunk never moves, so a pointer from Allocate stays valid for the life of the arena.
+ */
+class FieldArena
+{
+public:
+    using value_type = CompactLineFields::value_type;
+
+    FieldArena() = default;
+    FieldArena(const FieldArena &) = delete;
+    FieldArena &operator=(const FieldArena &) = delete;
+    FieldArena(FieldArena &&other) noexcept = default;
+    FieldArena &operator=(FieldArena &&other) noexcept = default;
+    ~FieldArena();
+
+    /** @brief Returns room for count pairs that the caller constructs, or null for zero. */
+    [[nodiscard]] value_type *Allocate(uint32_t count);
+
+    /** @brief Returns whether nothing was allocated yet. */
+    [[nodiscard]] bool Empty() const noexcept
+    {
+        return mChunks.empty();
+    }
+
+    /** @brief Returns the heap bytes of all chunks. */
+    [[nodiscard]] size_t MemoryBytes() const noexcept;
+
+private:
+    struct Chunk
+    {
+        value_type *data = nullptr;
+        uint32_t used = 0;
+        uint32_t capacity = 0;
+    };
+
+    /** @brief Frees every chunk. */
+    void Release() noexcept;
+
+    std::vector<Chunk> mChunks;
 };
 
 /** @brief Required size of CompactLineFields. */

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -183,6 +184,23 @@ LogLine::LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedVa
 #endif
     // Exact-fit copy keeps each LogLine at `size * 16` bytes.
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
+}
+
+LogLine::LogLine(
+    std::span<const std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
+    FieldArena &arena,
+    LineSource &source,
+    size_t lineId
+)
+    : mSource(&source), mLineId(lineId)
+{
+#ifndef NDEBUG
+    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
+#endif
+    const auto count = static_cast<uint32_t>(sortedValues.size());
+    auto *slots = arena.Allocate(count);
+    std::uninitialized_copy_n(sortedValues.data(), count, slots);
+    mValues = loglib::CompactLineFields::Borrow(slots, count);
 }
 
 LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId)

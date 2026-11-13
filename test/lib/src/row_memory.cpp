@@ -28,6 +28,7 @@ RowMemory MeasureRowMemory(const loglib::LogTable &table)
     }
     if (const loglib::FileLineSource *file = data.FrontFileSource(); file != nullptr)
     {
+        memory.fieldArenas = file->FieldArenasMemoryBytes();
         memory.lineOffsets = file->LineOffsetsMemoryBytes();
         memory.arena = file->OwnedStringsMemoryBytes();
     }

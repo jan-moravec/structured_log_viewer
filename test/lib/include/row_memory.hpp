@@ -30,6 +30,9 @@ struct RowMemory
     /** @brief Heap bytes the rows own, such as the storage of their cells. */
     std::size_t ownedByRows = 0;
 
+    /** @brief The memory that rows of a file source take their fields from, instead of owning them. */
+    std::size_t fieldArenas = 0;
+
     /** @brief The line offsets of the file source. */
     std::size_t lineOffsets = 0;
 
@@ -44,7 +47,7 @@ struct RowMemory
 
     [[nodiscard]] std::size_t Total() const noexcept
     {
-        return lineObjects + ownedByRows + lineOffsets + arena + keyIndex + enumDictionaries;
+        return lineObjects + ownedByRows + fieldArenas + lineOffsets + arena + keyIndex + enumDictionaries;
     }
 
     [[nodiscard]] double BytesPerRow() const noexcept
