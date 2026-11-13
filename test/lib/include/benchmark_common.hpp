@@ -540,9 +540,8 @@ inline void RegisterStreaming(
             input->bytes = std::filesystem::file_size(input->fixture.logFile->GetFilePath());
             input->rows = input->fixture.logFile->RecordCount();
             InitializeTimezoneData();
-            input->configuration = declaredConfiguration
-                                       ? DetectedConfiguration(input->fixture.logFile->GetFilePath())
-                                       : MakeTimestampConfiguration();
+            input->configuration = declaredConfiguration ? DetectedConfiguration(input->fixture.logFile->GetFilePath())
+                                                         : MakeTimestampConfiguration();
             input->configFile.Write(*input->configuration);
             return input;
         },
