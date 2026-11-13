@@ -54,7 +54,7 @@ bool EnumInference::EncodeColumnRange(
         EnumDictionary &ref = mDictionaries.GetOrInsert(aliasKeys.front(), mValueCap);
         dict = &ref;
     }
-    auto &lines = data.Lines();
+    const auto lines = data.Lines();
     rowEnd = std::min(rowEnd, lines.size());
     const size_t valueMaxLen = mValueMaxLen;
     bool overflowed = false;
@@ -339,7 +339,7 @@ void EnumInference::DemoteColumnFromEnum(
         mLastBatchDemotedKeys.push_back(keyIds.front());
     }
 
-    auto &lines = data.Lines();
+    const auto lines = data.Lines();
 
     if (!keyIds.empty())
     {

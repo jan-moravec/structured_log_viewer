@@ -400,6 +400,11 @@ size_t LogLine::LineId() const noexcept
     return mLineId;
 }
 
+void LogLine::ReleaseFields() noexcept
+{
+    mValues = loglib::CompactLineFields{};
+}
+
 void LogLine::ShiftLineId(size_t delta) noexcept
 {
     mLineId += delta;

@@ -1228,7 +1228,7 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexc
         return std::nullopt;
     }
     const auto unsignedRow = static_cast<std::size_t>(row);
-    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    const std::span<const loglib::LogLine> lines = mLogTable.Data().Lines();
     if (unsignedRow >= lines.size())
     {
         return std::nullopt;
@@ -1262,7 +1262,7 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexc
 
 int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept
 {
-    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    const std::span<const loglib::LogLine> lines = mLogTable.Data().Lines();
     for (std::size_t i = 0; i < lines.size(); ++i)
     {
         // Cheap `lineId` filter first; multi-file sessions still
@@ -1372,7 +1372,7 @@ void LogModel::EmitRolesForAnchorKey(const AnchorManager::Key &key, const QList<
     // reverse map in sync across batch appends and FIFO eviction.
     // Cheap `lineId` filter first to skip the cache lookup on
     // misses (the bulk of the iterations).
-    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    const std::span<const loglib::LogLine> lines = mLogTable.Data().Lines();
     for (size_t i = 0; i < lines.size(); ++i)
     {
         if (static_cast<uint64_t>(lines[i].LineId()) != key.lineId)

@@ -62,8 +62,16 @@ public:
     [[nodiscard]] StreamLineSource *BackStreamSource() noexcept;
     [[nodiscard]] const StreamLineSource *BackStreamSource() const noexcept;
 
-    const std::vector<LogLine> &Lines() const;
-    std::vector<LogLine> &Lines();
+    /** @brief The rows in order. A span stays valid until rows are appended or evicted. */
+    [[nodiscard]] std::span<const LogLine> Lines() const noexcept;
+    [[nodiscard]] std::span<LogLine> Lines() noexcept;
+
+    /**
+     * @brief Drops the first count rows and frees their fields. The rows are not moved at once: the table keeps a head
+     * offset and moves the remaining rows only when the dropped ones are half of the storage, so a stream that evicts
+     * after every batch does not move every row every time. The line sources are not told; the caller trims them.
+     */
+    void EvictPrefix(size_t count);
 
     const KeyIndex &Keys() const;
     KeyIndex &Keys();
@@ -85,7 +93,9 @@ public:
 
 private:
     std::vector<std::unique_ptr<LineSource>> mSources;
+    /** @brief Storage of the rows. The first mHead entries are evicted and hold no fields. */
     std::vector<LogLine> mLines;
+    size_t mHead = 0;
     KeyIndex mKeys;
 };
 

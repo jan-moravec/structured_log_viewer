@@ -135,6 +135,9 @@ public:
     /** @brief The row's line id in its source. */
     [[nodiscard]] size_t LineId() const noexcept;
 
+    /** @brief Frees the fields of the row, which then has none. For rows that were evicted but not yet destroyed. */
+    void ReleaseFields() noexcept;
+
     /** @brief Adds delta to the line id. Used when batch-relative ids become absolute. */
     void ShiftLineId(size_t delta) noexcept;
 
