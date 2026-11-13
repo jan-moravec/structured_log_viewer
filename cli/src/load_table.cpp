@@ -406,6 +406,7 @@ private:
         {
             mLoaded.parseErrors.push_back(std::move(error));
         }
+        mLoaded.parseErrorCount += outcome.errorCount;
         // Each source adds the lines of its own parse, so several sources add up.
         mLoaded.linesConsumed += outcome.linesConsumed;
     }

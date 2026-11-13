@@ -170,6 +170,26 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
     CHECK(loglib::FormatParseError(result.errors[0]).contains("did not match"));
 }
 
+TEST_CASE("RegexParser reports invalid UTF-8 for a pattern that turns on UTF mode [regex]", "[regex_parser]")
+{
+    // A leading (*UTF) makes the pattern a UTF pattern. A line that is not valid UTF-8 must give an error for that line
+    // and not be read as if it were valid.
+    const RegexParser parser(R"((*UTF)^(?<level>\w+):(?<message>.+)$)");
+
+    auto result = ParseSource(
+        parser,
+        MemorySource(
+            "info:na\xc3\xafve\n"
+            "warn:bad \xc3\x28 byte\n"
+            "error:boom\n"
+        )
+    );
+    REQUIRE(result.data.Lines().size() == 2);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("line 2"));
+    CHECK(loglib::FormatParseError(result.errors[0]).contains("UTF-8"));
+}
+
 TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_parser]")
 {
     // `pid` is optional: absent on line 1, present on line 2.

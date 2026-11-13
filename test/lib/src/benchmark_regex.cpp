@@ -251,6 +251,35 @@ void RegisterRegexBenchmarks()
         &test_common::ApacheCombinedFormat,
         "bench_regex_apache_combined.log"
     );
+    // The Apache combined rows through LoadFile with no configuration, and through the stream flow with every column
+    // declared up front.
+    RegisterLoadFile("LoadFile on 1'000'000 Apache/nginx Combined entries", [] {
+        return std::make_unique<TestStructuredLogFile>(
+            StreamedRecords{
+                .count = REGEX_BENCH_LINES,
+                .seed = LARGE_FIXTURE_SEED,
+                .timestamps = DeterministicBenchmarkTimestamps(),
+            },
+            test_common::ApacheCombinedFormat(),
+            test_common::RecordSchema{},
+            "bench_regex_apache_combined_load.log"
+        );
+    });
+    RegisterStreaming(
+        "Stream 1'000'000 Apache/nginx Combined entries to LogTable (declared configuration)",
+        [] {
+            return MakeTemplateFixture(
+                "Apache/nginx Combined Log Format",
+                &test_common::ApacheCombinedFormat,
+                "bench_regex_apache_combined_declared.log"
+            );
+        },
+        /*parseLoopOnly=*/false,
+        MEDIUM_LARGE_ITERATIONS,
+        LARGE_REPETITIONS,
+        /*declaredConfiguration=*/true
+    );
+
     RegisterTemplateBenchmark(
         "Stream 1'000'000 Apache/nginx Common entries to LogTable",
         "Apache/nginx Common Log Format",

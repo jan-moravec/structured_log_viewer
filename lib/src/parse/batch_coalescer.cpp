@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <iterator>
 #include <string>
 #include <utility>
 
@@ -69,7 +70,7 @@ bool BatchCoalescer::TryFlush(bool force, size_t lastLineNumber)
     }
 
     mPending.lastLineNumber = lastLineNumber;
-    mPending.convertedTimeKeys = mConvertedTimeKeys;
+    mPending.convertedTimeKeys = TakeConvertedTimeKeys();
     SendBatch(std::move(mPending));
     mPending = RowBatch{};
     mPrimed = false;
@@ -88,7 +89,7 @@ void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
             Prime(lastLineNumber + 1);
         }
         mPending.lastLineNumber = lastLineNumber;
-        mPending.convertedTimeKeys = mConvertedTimeKeys;
+        mPending.convertedTimeKeys = TakeConvertedTimeKeys();
         SendBatch(std::move(mPending));
         mPending = RowBatch{};
         mPrimed = false;
@@ -137,6 +138,29 @@ void BatchCoalescer::FinishAfterException(size_t lastLineNumber, std::exception_
         mPending.errors.push_back(ParseError{.message = "Streaming parse failed: unknown exception"});
         Finish(lastLineNumber, false);
     }
+}
+
+void BatchCoalescer::RestrictConvertedTimeKeys(const std::vector<KeyId> &keys)
+{
+    if (!mRestrictedTimeKeys.has_value())
+    {
+        mRestrictedTimeKeys = keys;
+        return;
+    }
+    std::vector<KeyId> common;
+    std::ranges::set_intersection(*mRestrictedTimeKeys, keys, std::back_inserter(common));
+    mRestrictedTimeKeys = std::move(common);
+}
+
+std::vector<KeyId> BatchCoalescer::TakeConvertedTimeKeys()
+{
+    if (!mRestrictedTimeKeys.has_value())
+    {
+        return mConvertedTimeKeys;
+    }
+    std::vector<KeyId> restricted = std::move(*mRestrictedTimeKeys);
+    mRestrictedTimeKeys.reset();
+    return restricted;
 }
 
 void BatchCoalescer::SendBatch(RowBatch batch)

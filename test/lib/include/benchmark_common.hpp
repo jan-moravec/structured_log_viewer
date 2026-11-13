@@ -22,6 +22,7 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/schema/log_configuration.hpp>
@@ -40,6 +41,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -482,6 +484,16 @@ inline StreamingRunResult RunStreamingFlow(
 }
 
 /**
+ * Loads a file without a configuration and returns the configuration that detection made for it. A benchmark that
+ * uses it as the declared configuration parses the same file with every column and type named up front.
+ */
+inline std::shared_ptr<const loglib::LogConfiguration> DetectedConfiguration(const std::string &path)
+{
+    const loglib::LoadResult loaded = loglib::LoadFile(path);
+    return std::make_shared<loglib::LogConfiguration>(loaded.table.Configuration().Configuration());
+}
+
+/**
  * The input of one streaming benchmark: the log file to parse and the parser that reads it.
  */
 struct StreamingFixture
@@ -508,25 +520,28 @@ struct StreamingInput
  * Registers an end-to-end streaming benchmark. The first call parses once untimed to capture the memory counters
  * (AppendBatch wall time, structural bytes, peak working set); the timed repetitions follow. Each repetition checks
  * the row count after the timed part. With parseLoopOnly the time of an iteration excludes the LogTable::AppendBatch
- * time of the sink.
+ * time of the sink. With declaredConfiguration the table starts with the configuration that detection makes for the
+ * file, so every column and type is declared; otherwise only the timestamp column is.
  */
 inline void RegisterStreaming(
     const std::string &name,
     std::function<StreamingFixture()> makeFixture,
     bool parseLoopOnly = false,
     int iterations = MEDIUM_LARGE_ITERATIONS,
-    int repetitions = LARGE_REPETITIONS
+    int repetitions = LARGE_REPETITIONS,
+    bool declaredConfiguration = false
 )
 {
     RegisterLarge<StreamingInput>(
         name,
-        [makeFixture = std::move(makeFixture)] {
+        [makeFixture = std::move(makeFixture), declaredConfiguration] {
             auto input = std::make_unique<StreamingInput>();
             input->fixture = makeFixture();
             input->bytes = std::filesystem::file_size(input->fixture.logFile->GetFilePath());
             input->rows = input->fixture.logFile->RecordCount();
             InitializeTimezoneData();
-            input->configuration = MakeTimestampConfiguration();
+            input->configuration = declaredConfiguration ? DetectedConfiguration(input->fixture.logFile->GetFilePath())
+                                                         : MakeTimestampConfiguration();
             input->configFile.Write(*input->configuration);
             return input;
         },
@@ -575,6 +590,65 @@ inline void RegisterStreaming(
             state.counters["peak_ws_MiB"] = static_cast<double>(probe.peakWorkingSetBytes) / MIB;
         },
         LargeOptions{.repetitions = repetitions, .iterations = iterations, .manualTime = parseLoopOnly}
+    );
+}
+
+/**
+ * Registers a benchmark of LoadFile on a generated file, the path the application and slp use. The table starts with no
+ * configuration, or with the configuration that detection makes for the file when declaredConfiguration is set. The
+ * check is the row count; the load must report no errors.
+ */
+inline void RegisterLoadFile(
+    const std::string &name,
+    std::function<std::unique_ptr<TestStructuredLogFile>()> makeFile,
+    bool declaredConfiguration = false,
+    int iterations = FAST_LARGE_ITERATIONS
+)
+{
+    struct LoadInput
+    {
+        std::unique_ptr<TestStructuredLogFile> file;
+        std::optional<loglib::LogConfiguration> configuration;
+        std::size_t bytes = 0;
+    };
+    RegisterLarge<LoadInput>(
+        name,
+        [makeFile = std::move(makeFile), declaredConfiguration] {
+            auto input = std::make_unique<LoadInput>();
+            input->file = makeFile();
+            input->bytes = std::filesystem::file_size(input->file->GetFilePath());
+            InitializeTimezoneData();
+            if (declaredConfiguration)
+            {
+                input->configuration = *DetectedConfiguration(input->file->GetFilePath());
+            }
+            return input;
+        },
+        [](LoadInput &input, benchmark::State &state, bool) {
+            const std::filesystem::path path = input.file->GetFilePath();
+            const auto load = [&] {
+                loglib::LoadOptions options;
+                options.configuration = input.configuration;
+                return loglib::LoadFile(path, std::move(options));
+            };
+            std::size_t rows = 0;
+            std::size_t errors = 0;
+            for (const auto _ : state)
+            {
+                const loglib::LoadResult loaded = load();
+                rows = loaded.table.RowCount();
+                errors = loaded.errors.size();
+            }
+            if (rows != input.file->RecordCount() || errors != 0)
+            {
+                Fail(state, "loaded " + std::to_string(rows) + " rows and " + std::to_string(errors) + " errors");
+                return;
+            }
+            const auto iterationCount = static_cast<std::int64_t>(state.iterations());
+            state.SetBytesProcessed(iterationCount * static_cast<std::int64_t>(input.bytes));
+            state.SetItemsProcessed(iterationCount * static_cast<std::int64_t>(rows));
+        },
+        LargeOptions{.iterations = iterations}
     );
 }
 

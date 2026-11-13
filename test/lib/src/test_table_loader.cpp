@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -337,6 +338,182 @@ TEST_CASE("The sink runs on the caller's thread for a stream and never overlaps 
         CHECK_FALSE(sink.Overlapped());
         CHECK(table.RowCount() == 20'000);
     }
+}
+
+namespace
+{
+
+/** Passes everything to a TableSink and keeps which time keys each batch claims to have converted. */
+class ConvertedKeysSink final : public LogParseSink
+{
+public:
+    explicit ConvertedKeysSink(LogTable &table)
+        : mInner(table)
+    {
+    }
+
+    KeyIndex &Keys() override
+    {
+        return mInner.Keys();
+    }
+
+    void OnStarted() override
+    {
+        mInner.OnStarted();
+    }
+
+    void OnBatch(RowBatch batch) override
+    {
+        converted.push_back(batch.convertedTimeKeys);
+        mInner.OnBatch(std::move(batch));
+    }
+
+    void OnFinished(bool cancelled) override
+    {
+        mInner.OnFinished(cancelled);
+    }
+
+    std::vector<Column> TimeColumnsAdded() override
+    {
+        return mInner.TimeColumnsAdded();
+    }
+
+    std::vector<std::vector<KeyId>> converted;
+
+private:
+    TableSink mInner;
+};
+
+} // namespace
+
+TEST_CASE("A time column the table detects is converted by the parser in the later batches", "[table_loader][time]")
+{
+    const TestLogFile file("table_loader_detected_time.jsonl");
+    LogTable table;
+    auto source = FileSourceOf(file, JsonRows(20'000));
+    FileLineSource &sourceRef = *source;
+    table.BeginStreaming(std::move(source));
+    ConvertedKeysSink sink(table);
+    ParserOptions options = ParserOptionsFor(table);
+    REQUIRE(options.timeColumns.empty());
+    options.batchSizeBytes = 16 * 1024;
+    JsonParser{}.ParseStreaming(sourceRef, sink, options);
+    FinishLoading(table);
+
+    REQUIRE(table.RowCount() == 20'000);
+    REQUIRE(sink.converted.size() > 2);
+    // The first batch is parsed before the table knows the column. Once the table has it, the parser converts it.
+    CHECK(sink.converted.front().empty());
+    const auto convertedBatches =
+        std::ranges::count_if(sink.converted, [](const auto &keys) { return keys.size() == 1; });
+    CHECK(static_cast<size_t>(convertedBatches) > sink.converted.size() / 2);
+    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
+    {
+        CHECK(std::holds_alternative<TimeStamp>(table.GetValue(row, 0)));
+    }
+}
+
+TEST_CASE(
+    "A detected time column without a year uses the table's reference time in every batch", "[table_loader][time]"
+)
+{
+    // The table converts the first batch itself and the parser the later ones. Both must read the year from the same
+    // reference time.
+    std::string bytes;
+    for (int i = 0; i < 20'000; ++i)
+    {
+        bytes += R"({"ts":"Mar  1 10:00:00","n":)" + std::to_string(i) + "}\n";
+    }
+    const TestLogFile file("table_loader_detected_syslog_time.jsonl");
+    LogTable table;
+    table.SetReferenceTime(std::chrono::sys_days{std::chrono::year{2020} / 6 / 15});
+    ParserOptions options = ParserOptionsFor(table);
+    options.batchSizeBytes = 16 * 1024;
+    const ParseOutcome outcome = ParseIntoTable(table, JsonParser{}, FileSourceOf(file, bytes), options);
+    FinishLoading(table);
+
+    REQUIRE(outcome.errors.empty());
+    REQUIRE(table.RowCount() == 20'000);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    const TimeStamp expected{std::chrono::sys_days{std::chrono::year{2020} / 3 / 1} + std::chrono::hours{10}};
+    for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
+    {
+        const LogValue value = table.GetValue(row, 0);
+        REQUIRE(std::holds_alternative<TimeStamp>(value));
+        CHECK(std::get<TimeStamp>(value) == expected);
+    }
+}
+
+TEST_CASE("A large batch of enumeration values is encoded the same as a small one", "[table_loader][enum]")
+{
+    // One parsed batch holds all rows, so the encoding runs over a range that is long enough to use several threads.
+    // New values appear late, among rows whose values the dictionary already knows.
+    const std::vector<std::string> pool = {"info", "warn", "error", "debug", "trace"};
+    std::string bytes;
+    std::vector<std::string> expected;
+    for (int i = 0; i < 20'000; ++i)
+    {
+        size_t known = 2;
+        if (i >= 12'000)
+        {
+            known = 5;
+        }
+        else if (i >= 9'000)
+        {
+            known = 4;
+        }
+        else if (i >= 7'000)
+        {
+            known = 3;
+        }
+        const std::string &level = pool[static_cast<size_t>(i) % known];
+        expected.push_back(level);
+        bytes += R"({"level":")" + level + R"(","n":)" + std::to_string(i) + "}\n";
+    }
+    const TestLogFile file("table_loader_enum_large.jsonl");
+    LogTable table;
+    const ParseOutcome outcome =
+        ParseIntoTable(table, JsonParser{}, FileSourceOf(file, bytes), ParserOptionsFor(table));
+    FinishLoading(table);
+
+    REQUIRE(outcome.errors.empty());
+    REQUIRE(table.RowCount() == expected.size());
+    size_t levelColumn = table.ColumnCount();
+    for (size_t column = 0; column < table.ColumnCount(); ++column)
+    {
+        if (table.GetHeader(column) == "level")
+        {
+            levelColumn = column;
+        }
+    }
+    REQUIRE(levelColumn < table.ColumnCount());
+    const ColumnType levelType = table.Configuration().Configuration().columns[levelColumn].type;
+    CHECK((levelType == ColumnType::Enumeration || levelType == ColumnType::Level));
+    for (size_t row = 0; row < expected.size(); ++row)
+    {
+        REQUIRE(table.GetFormattedValue(row, levelColumn) == expected[row]);
+    }
+}
+
+TEST_CASE("A sink keeps the first parse errors and counts the rest", "[table_loader][errors]")
+{
+    const TestLogFile file("table_loader_many_errors.jsonl");
+    std::string bytes = JsonRows(10);
+    for (int i = 0; i < 2500; ++i)
+    {
+        bytes += "not json " + std::to_string(i) + "\n";
+    }
+    bytes += JsonRows(10, 10);
+    LogTable table;
+    const ParseOutcome outcome =
+        ParseIntoTable(table, JsonParser{}, FileSourceOf(file, bytes), ParserOptionsFor(table));
+
+    CHECK(table.RowCount() == 20);
+    REQUIRE(outcome.errors.size() == MAX_STORED_PARSE_ERRORS + 1);
+    CHECK(outcome.errors.back().message == "1500 more parse errors were not recorded.");
+    CHECK(outcome.errorCount == 2500);
+    CHECK(outcome.linesConsumed == 2520);
 }
 
 TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_loader][options]")

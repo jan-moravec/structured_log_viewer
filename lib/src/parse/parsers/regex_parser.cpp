@@ -107,15 +107,23 @@ bool MatchLineAndEmit(
     out.clear();
     errorOut.clear();
 
-    const int rc = pcre2_match(
-        compiled.Code(),
-        reinterpret_cast<PCRE2_SPTR>(line.data()),
-        line.size(),
-        /*startoffset*/ 0,
-        /*options*/ 0,
-        matchData,
-        compiled.Context()
-    );
+    // Outside UTF mode any bytes are a valid subject, so the check is skipped, and a JIT-compiled pattern is matched
+    // directly, which also skips the argument checks of pcre2_match. A UTF pattern keeps the checked call, because
+    // invalid UTF-8 must be reported and not read.
+    const auto *subject = reinterpret_cast<PCRE2_SPTR>(line.data());
+    int rc = 0;
+    if (compiled.Utf())
+    {
+        rc = pcre2_match(compiled.Code(), subject, line.size(), 0, 0, matchData, compiled.Context());
+    }
+    else if (compiled.JitCompiled())
+    {
+        rc = pcre2_jit_match(compiled.Code(), subject, line.size(), 0, 0, matchData, compiled.Context());
+    }
+    else
+    {
+        rc = pcre2_match(compiled.Code(), subject, line.size(), 0, PCRE2_NO_UTF_CHECK, matchData, compiled.Context());
+    }
     if (rc == PCRE2_ERROR_NOMATCH)
     {
         errorOut = "Line did not match the regex pattern.";

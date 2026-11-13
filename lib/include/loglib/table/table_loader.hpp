@@ -28,12 +28,17 @@
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/table/log_table.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace loglib
 {
+
+/** @brief The number of parse errors a TableSink keeps. Later errors are counted and not stored. */
+inline constexpr std::size_t MAX_STORED_PARSE_ERRORS = 1000;
 
 /**
  * @brief Appends the batches of one parse to a table, and keeps its errors and line coverage.
@@ -56,8 +61,19 @@ public:
 
     void OnFinished(bool cancelled) override;
 
-    /** @brief Returns the errors collected so far and clears them. */
+    /** @brief The Time columns the table has that an earlier call did not return, so a parser can convert them. */
+    std::vector<Column> TimeColumnsAdded() override;
+
+    /**
+     * @brief Returns the errors collected so far and clears them.
+     *
+     * The sink keeps the first MAX_STORED_PARSE_ERRORS errors, so a huge file of lines that do not match cannot fill
+     * the memory with messages. When more errors came, the list ends with one error that says how many were left out.
+     */
     [[nodiscard]] std::vector<ParseError> TakeErrors();
+
+    /** @brief How many parse errors the batches held, the ones that were not stored included. */
+    [[nodiscard]] std::uint64_t ErrorCount() const noexcept;
 
     /**
      * @brief The number of physical lines this parse read, which is the highest last line number of its batches.
@@ -73,14 +89,21 @@ public:
 private:
     LogTable *mTable;
     std::vector<ParseError> mErrors;
+    std::uint64_t mDroppedErrors = 0;
+    std::uint64_t mErrorCount = 0;
     std::uint64_t mLinesConsumed = 0;
     bool mCancelled = false;
+    std::vector<std::string> mReportedTimeColumns;
 };
 
 /** @brief What one ParseIntoTable call found. */
 struct ParseOutcome
 {
+    /** @brief The stored errors. See TableSink::TakeErrors. */
     std::vector<ParseError> errors;
+
+    /** @brief How many parse errors the parse found, the ones that errors does not hold included. */
+    std::uint64_t errorCount = 0;
 
     /** @brief The physical lines the parse read. See TableSink::LinesConsumed. */
     std::uint64_t linesConsumed = 0;
