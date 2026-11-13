@@ -168,8 +168,7 @@ TEST_CASE(
         "line\nbreak",
         "x \r\n y",
         "foo bar",
-        "foo\xA0"
-        "bar",
+        "foo\xA0\x62\x61r",
         " foo ",
         "foo",
         "food",
@@ -199,8 +198,7 @@ TEST_CASE(
         "handled for user",
         "after",
         "b",
-        "a\x01"
-        "b",
+        "a\x01\x62",
         "na\xC3\xAFve user",
         "foo bar",
         "abc",
