@@ -76,7 +76,8 @@ public:
         out.append(RawLine(lineId));
     }
 
-    /** @brief Returns the bytes of a MmapSlice cell. Empty for a source whose bytes are not stable. */
+    /** @brief Returns the bytes of a MmapSlice cell. A file source resolves it against its mapping and a stream source
+     * against the raw line of the row. */
     [[nodiscard]] virtual std::string_view ResolveMmapBytes(
         uint64_t offset, uint32_t length, size_t lineId
     ) const noexcept = 0;

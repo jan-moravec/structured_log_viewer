@@ -106,6 +106,11 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, K
         {
             return LogValue{std::monostate{}};
         }
+        if (!source->BytesAreStable())
+        {
+            // A stream row's bytes die with the row when it is evicted, so the caller gets a copy.
+            return LogValue{std::string(bytes)};
+        }
         return LogValue{bytes};
     }
     case CompactTag::OwnedString:

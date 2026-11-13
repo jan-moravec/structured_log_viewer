@@ -35,7 +35,8 @@ class BytesProducer;
  * It keeps the text of every line, and the decoded strings of that line, in memory. Eviction drops the entries of the
  * oldest lines, which is how a streaming session stays within its retention limit.
  *
- * - Its bytes are not stable, so parsers must store decoded values as OwnedString cells and not as MmapSlice cells.
+ * - Its bytes are not stable, so parsers store decoded values as OwnedString cells. A MmapSlice cell of a stream row is
+ * a slice of the raw line of the row, which the source keeps.
  * - It supports eviction.
  * - A mutex guards all state, so a parser thread can append while another thread reads or evicts. A view from
  *   ResolveOwnedBytes is invalid once its line is evicted.

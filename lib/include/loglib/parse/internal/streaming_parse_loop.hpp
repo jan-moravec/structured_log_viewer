@@ -57,6 +57,44 @@ constexpr auto STREAMING_PENDING_RECORD_MAX_AGE = std::chrono::milliseconds(500)
 constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 
 /**
+ * @brief Turns the string values that appear in the stored raw line into slices of it.
+ *
+ * A stream row keeps its raw line, so a value that is a substring of that line need not be stored a second time. Each
+ * such OwnedString field becomes a MmapSlice field that the stream source resolves against the raw line. Values that
+ * are not in the line, such as decoded escapes or text added from continuation lines, stay owned, and ownedArena is
+ * rebuilt to hold only those.
+ */
+inline void SliceValuesOfRawLine(
+    std::vector<CompactLogValue> &values, std::string &ownedArena, std::string_view rawLine
+)
+{
+    if (ownedArena.empty())
+    {
+        return;
+    }
+    const std::string_view arena(ownedArena);
+    std::string kept;
+    for (CompactLogValue &field : values)
+    {
+        if (field.tag != CompactTag::OwnedString)
+        {
+            continue;
+        }
+        const std::string_view text = arena.substr(field.payload, field.aux);
+        const size_t position = text.empty() ? std::string_view::npos : rawLine.find(text);
+        if (position != std::string_view::npos)
+        {
+            field = CompactLogValue::MakeMmapSlice(position, field.aux).WithKey(field.Key());
+            continue;
+        }
+        const uint64_t offset = kept.size();
+        kept.append(text);
+        field.payload = offset;
+    }
+    ownedArena = std::move(kept);
+}
+
+/**
  * @brief Adds continuation text, with a separator in front, to a field of a record.
  *
  * A value that lives in the mapped file needs mmapBytes and is first copied into ownedArena. A field that has no text
@@ -345,6 +383,7 @@ void RunStreamingParseLoopBody(
             return a.Key() < b.Key();
         });
 
+        SliceValuesOfRawLine(rec.compactValues, rec.ownedArena, rec.rawText);
         const size_t lineId = source.AppendLine(std::move(rec.rawText), std::move(rec.ownedArena));
         LogLine logLine(std::move(rec.compactValues), source, lineId);
         if (!options.referenceTime.has_value() && coalescer.Pending().lines.empty())

@@ -42,12 +42,21 @@ void StreamLineSource::AppendRawLine(size_t lineId, std::string &out) const
     out.append(mLines[IndexForLocked(lineId)]);
 }
 
-std::string_view StreamLineSource::ResolveMmapBytes(
-    uint64_t /*offset*/, uint32_t /*length*/, size_t /*lineId*/
-) const noexcept
+std::string_view StreamLineSource::ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept
 {
-    // Stream sources never produce MmapSlice cells.
-    return {};
+    const std::scoped_lock guard(mLock);
+    if (!LineIsLiveLocked(lineId))
+    {
+        return {};
+    }
+    const std::string &line = mLines[IndexForLocked(lineId)];
+    if (offset > line.size() || offset + length > line.size())
+    {
+        return {};
+    }
+    // Deque entries keep their address until they are evicted, so the view outlives the lock. Callers must not keep it
+    // past the next EvictBefore for this line.
+    return {line.data() + offset, length};
 }
 
 std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept
