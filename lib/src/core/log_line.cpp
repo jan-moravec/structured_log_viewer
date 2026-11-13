@@ -229,11 +229,12 @@ const loglib::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
     const uint32_t size = mValues.Size();
     for (uint32_t i = 0; i < size; ++i)
     {
-        if (data[i].Key() == id)
+        const KeyId key = data[i].Key();
+        if (key == id)
         {
             return &data[i];
         }
-        if (data[i].Key() > id)
+        if (key > id)
         {
             return nullptr;
         }

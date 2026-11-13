@@ -14,7 +14,10 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_value.hpp"
 
+#include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -65,10 +68,23 @@ struct CompactLogValue
     uint8_t keyMid = 0;
     uint8_t keyHigh = 0;
 
-    /** @brief The key id of the field. */
+    /**
+     * @brief The key id of the field. On a little-endian machine the tag and the three key bytes are one 32-bit word,
+     * which one load reads.
+     */
     [[nodiscard]] KeyId Key() const noexcept
     {
-        return static_cast<KeyId>(keyLow) | (static_cast<KeyId>(keyMid) << 8U) | (static_cast<KeyId>(keyHigh) << 16U);
+        if constexpr (std::endian::native == std::endian::little)
+        {
+            uint32_t word = 0;
+            std::memcpy(&word, &tag, sizeof(word));
+            return word >> 8U;
+        }
+        else
+        {
+            return static_cast<KeyId>(keyLow) | (static_cast<KeyId>(keyMid) << 8U) |
+                   (static_cast<KeyId>(keyHigh) << 16U);
+        }
     }
 
     /** @brief Sets the key id. It must not be above MAX_ROW_KEY_ID. */
@@ -110,6 +126,10 @@ struct CompactLogValue
 /** @brief Required size of CompactLogValue; growing it inflates every per-line allocation. */
 inline constexpr size_t COMPACT_LOG_VALUE_EXPECTED_BYTES = 16;
 static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "CompactLogValue must stay 16 bytes");
+static_assert(
+    offsetof(CompactLogValue, keyHigh) == offsetof(CompactLogValue, tag) + 3U,
+    "The tag and the key bytes must be one word"
+);
 
 /** @brief Adds delta to the offset of every OwnedString value in the first valueCount fields. */
 void RebaseOwnedStringOffsets(CompactLogValue *values, size_t valueCount, uint64_t delta) noexcept;
