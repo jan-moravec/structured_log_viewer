@@ -40,7 +40,7 @@ constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
  */
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
-void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, KeyId id, loglib::CompactLogValue value)
+void InsertSorted(std::vector<loglib::CompactLogValue> &out, KeyId id, loglib::CompactLogValue value)
 {
     if (out.size() < INSERT_SORTED_LOWER_BOUND_THRESHOLD)
     {
@@ -48,32 +48,30 @@ void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, K
         while (it != out.begin())
         {
             auto prev = it - 1;
-            if (prev->first < id)
+            if (prev->Key() < id)
             {
                 break;
             }
-            if (prev->first == id)
+            if (prev->Key() == id)
             {
-                prev->second = value;
+                *prev = value.WithKey(id);
                 return;
             }
             it = prev;
         }
-        out.emplace(it, id, value);
+        out.insert(it, value.WithKey(id));
         return;
     }
 
-    auto it = std::lower_bound(
-        out.begin(), out.end(), id, [](const std::pair<KeyId, loglib::CompactLogValue> &lhs, KeyId rhs) {
-            return lhs.first < rhs;
-        }
-    );
-    if (it != out.end() && it->first == id)
+    auto it = std::lower_bound(out.begin(), out.end(), id, [](const loglib::CompactLogValue &lhs, KeyId rhs) {
+        return lhs.Key() < rhs;
+    });
+    if (it != out.end() && it->Key() == id)
     {
-        it->second = value;
+        *it = value.WithKey(id);
         return;
     }
-    out.emplace(it, id, value);
+    out.insert(it, value.WithKey(id));
 }
 
 /**
@@ -290,7 +288,7 @@ void ParseLogfmtLine(
     size_t fileSize,
     std::string &ownedArena,
     std::string &quotedScratch,
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+    std::vector<loglib::CompactLogValue> &out,
     bool &outUnterminated,
     KeyId *outLastSourceOrderKey = nullptr
 )
@@ -409,7 +407,7 @@ void DecodeLogfmtBatch(
 
     size_t relativeLineNumber = 1;
 
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
+    std::vector<loglib::CompactLogValue> values;
     // Last source-order key emitted for the current record.
     KeyId lastRecordContinuationTarget = INVALID_KEY_ID;
     // Batch-relative physical span of the current final record.
@@ -473,9 +471,7 @@ void DecodeLogfmtBatch(
                 continuation.append(line.data(), line.size());
 
                 auto compactSpan = parsed.lines.back().CompactValues();
-                std::vector<std::pair<KeyId, loglib::CompactLogValue>> mutableValues(
-                    compactSpan.begin(), compactSpan.end()
-                );
+                std::vector<loglib::CompactLogValue> mutableValues(compactSpan.begin(), compactSpan.end());
                 const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
                 const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
                     mutableValues, parsed.ownedStringsArena, lastRecordContinuationTarget, continuation, mmapView
@@ -607,7 +603,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache &keyCache,
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+        std::vector<loglib::CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )

@@ -172,30 +172,27 @@ LogLine::LogLine(
 #endif
     for (auto &entry : sortedValues)
     {
-        mValues.EmplaceBack(entry.first, MakeCompactFromVariant(source, lineId, entry.second));
+        mValues.EmplaceBack(MakeCompactFromVariant(source, lineId, entry.second).WithKey(entry.first));
     }
 }
 
-LogLine::LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues, LineSource &source, size_t lineId)
+LogLine::LogLine(std::vector<loglib::CompactLogValue> sortedValues, LineSource &source, size_t lineId)
     : mSource(&source), mLineId(lineId)
 {
 #ifndef NDEBUG
-    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
+    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.Key() < b.Key(); }));
 #endif
     // Exact-fit copy keeps each LogLine at `size * 16` bytes.
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
 }
 
 LogLine::LogLine(
-    std::span<const std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
-    FieldArena &arena,
-    LineSource &source,
-    size_t lineId
+    std::span<const loglib::CompactLogValue> sortedValues, FieldArena &arena, LineSource &source, size_t lineId
 )
     : mSource(&source), mLineId(lineId)
 {
 #ifndef NDEBUG
-    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
+    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.Key() < b.Key(); }));
 #endif
     const auto count = static_cast<uint32_t>(sortedValues.size());
     auto *slots = arena.Allocate(count);
@@ -206,13 +203,13 @@ LogLine::LogLine(
 LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId)
     : mValues(static_cast<uint32_t>(values.size())), mSource(&source), mLineId(lineId)
 {
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> staging;
+    std::vector<loglib::CompactLogValue> staging;
     staging.reserve(values.size());
     for (const auto &[key, value] : values)
     {
-        staging.emplace_back(keys.GetOrInsert(key), MakeCompactFromVariant(source, lineId, value));
+        staging.push_back(MakeCompactFromVariant(source, lineId, value).WithKey(keys.GetOrInsert(key)));
     }
-    std::ranges::sort(staging, [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::ranges::sort(staging, [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
     mValues.AssignSorted(staging.data(), static_cast<uint32_t>(staging.size()));
 }
 
@@ -223,11 +220,11 @@ const loglib::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
     const uint32_t size = mValues.Size();
     for (uint32_t i = 0; i < size; ++i)
     {
-        if (data[i].first == id)
+        if (data[i].Key() == id)
         {
-            return &data[i].second;
+            return &data[i];
         }
-        if (data[i].first > id)
+        if (data[i].Key() > id)
         {
             return nullptr;
         }
@@ -315,8 +312,8 @@ std::vector<std::string> LogLine::GetKeys(const KeyIndex &keys) const
     names.reserve(mValues.Size());
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
-        assert(mValues.Data()[i].first < keys.Size() && "GetKeys: the key id is not in this index");
-        names.emplace_back(keys.KeyOf(mValues.Data()[i].first));
+        assert(mValues.Data()[i].Key() < keys.Size() && "GetKeys: the key id is not in this index");
+        names.emplace_back(keys.KeyOf(mValues.Data()[i].Key()));
     }
     return names;
 }
@@ -328,8 +325,8 @@ LogMap LogLine::Values(const KeyIndex &keys) const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        assert(entry.first < keys.Size() && "Values: the key id is not in this index");
-        snapshot.emplace(std::string(keys.KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId, entry.first));
+        assert(entry.Key() < keys.Size() && "Values: the key id is not in this index");
+        snapshot.emplace(std::string(keys.KeyOf(entry.Key())), entry.Materialise(mSource, mLineId, entry.Key()));
     }
     return snapshot;
 }
@@ -358,7 +355,7 @@ void LogLine::SetCompact(KeyId id, loglib::CompactLogValue compact)
     while (lo < hi)
     {
         const uint32_t mid = lo + ((hi - lo) / 2U);
-        if (data[mid].first < id)
+        if (data[mid].Key() < id)
         {
             lo = mid + 1U;
         }
@@ -367,12 +364,13 @@ void LogLine::SetCompact(KeyId id, loglib::CompactLogValue compact)
             hi = mid;
         }
     }
-    if (lo < size && data[lo].first == id)
+    compact.SetKey(id);
+    if (lo < size && data[lo].Key() == id)
     {
         mValues.Set(lo, compact);
         return;
     }
-    mValues.Insert(lo, id, compact);
+    mValues.Insert(lo, compact);
 }
 
 std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
@@ -382,12 +380,12 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId, entry.first));
+        result.emplace_back(entry.Key(), entry.Materialise(mSource, mLineId, entry.Key()));
     }
     return result;
 }
 
-std::span<const std::pair<KeyId, loglib::CompactLogValue>> LogLine::CompactValues() const noexcept
+std::span<const loglib::CompactLogValue> LogLine::CompactValues() const noexcept
 {
     return {mValues.Data(), mValues.Size()};
 }

@@ -12,6 +12,7 @@
 #include <deque>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -90,7 +91,10 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
     // Append to `reverse` first so the string address is stable before any
     // other thread can observe the new id. The assert pins the 2^32 cap:
     // wrapping past it would collide with `INVALID_KEY_ID`.
-    assert(static_cast<uint64_t>(mImpl->reverse.size()) < static_cast<uint64_t>(INVALID_KEY_ID));
+    if (mImpl->reverse.size() > MAX_ROW_KEY_ID)
+    {
+        throw std::length_error("A log can hold at most 16777216 distinct keys.");
+    }
     const auto id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
     shard.map.emplace(mImpl->reverse.back(), id);

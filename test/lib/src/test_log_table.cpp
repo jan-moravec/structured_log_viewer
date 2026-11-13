@@ -988,8 +988,8 @@ RowBatch MakeStreamBatch(
         const size_t publishedId = streamSource.AppendLine("raw" + std::to_string(lineId), std::string{});
         REQUIRE(publishedId == lineId);
 
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> compactValues;
-        compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        std::vector<loglib::CompactLogValue> compactValues;
+        compactValues.push_back(loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)).WithKey(valueKey));
         batch.lines.emplace_back(std::move(compactValues), streamSource, lineId);
     }
     return batch;

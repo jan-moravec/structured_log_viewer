@@ -152,7 +152,7 @@ void ParseCsvLine(
     size_t fileSize,
     std::string &ownedArena,
     std::string &quotedScratch,
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+    std::vector<loglib::CompactLogValue> &out,
     bool &outUnterminated,
     size_t &outRaggedExtra
 )
@@ -200,7 +200,7 @@ void ParseCsvLine(
         }
 
         // Source order, not KeyId order; caller resorts before LogLine ctor.
-        out.emplace_back(keyId, compact);
+        out.push_back(compact.WithKey(keyId));
     });
 
     outUnterminated = !ok;
@@ -256,7 +256,7 @@ void DecodeCsvBatch(
 
     size_t relativeLineNumber = 1;
 
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
+    std::vector<loglib::CompactLogValue> values;
 
     while (cursor < end)
     {
@@ -330,7 +330,7 @@ void DecodeCsvBatch(
             // matches visible source lines.
 
             // LogLine ctor asserts ascending KeyIds; header order may not be.
-            std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+            std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
 
             LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
@@ -363,7 +363,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache &keyCache,
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+        std::vector<loglib::CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )

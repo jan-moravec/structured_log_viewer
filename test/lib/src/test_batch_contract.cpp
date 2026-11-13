@@ -1328,7 +1328,7 @@ public:
         std::string_view line,
         KeyIndex & /*keys*/,
         internal::PerWorkerKeyCache & /*keyCache*/,
-        std::vector<std::pair<KeyId, CompactLogValue>> &out,
+        std::vector<CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string & /*errorOut*/
     )
@@ -1414,7 +1414,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache & /*keyCache*/,
-        std::vector<std::pair<KeyId, CompactLogValue>> &out,
+        std::vector<CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string & /*errorOut*/
     )
@@ -1431,7 +1431,7 @@ public:
         }
         mTarget = keys.GetOrInsert("msg");
         outOwnedArena.append(line);
-        out.emplace_back(mTarget, CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())));
+        out.push_back(CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())).WithKey(mTarget));
         return internal::LineDecodeResult::Emit;
     }
 

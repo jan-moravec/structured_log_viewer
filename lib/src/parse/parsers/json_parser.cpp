@@ -75,7 +75,7 @@ constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 constexpr size_t INITIAL_OBJECT_FIELD_CAPACITY = 16;
 constexpr size_t LINE_PADDED_EXTRA_SLACK_BYTES = 64;
 
-void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, KeyId id, loglib::CompactLogValue value)
+void InsertSorted(std::vector<loglib::CompactLogValue> &out, KeyId id, loglib::CompactLogValue value)
 {
     if (out.size() < INSERT_SORTED_LOWER_BOUND_THRESHOLD)
     {
@@ -83,33 +83,31 @@ void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, K
         while (it != out.begin())
         {
             auto prev = it - 1;
-            if (prev->first < id)
+            if (prev->Key() < id)
             {
                 break;
             }
-            if (prev->first == id)
+            if (prev->Key() == id)
             {
-                prev->second = value;
+                *prev = value.WithKey(id);
                 return;
             }
             it = prev;
         }
-        out.emplace(it, id, value);
+        out.insert(it, value.WithKey(id));
         return;
     }
 
     // Asymmetric comparator: std::ranges::lower_bound rejects it.
-    auto it = std::lower_bound(
-        out.begin(), out.end(), id, [](const std::pair<KeyId, loglib::CompactLogValue> &lhs, KeyId rhs) {
-            return lhs.first < rhs;
-        }
-    );
-    if (it != out.end() && it->first == id)
+    auto it = std::lower_bound(out.begin(), out.end(), id, [](const loglib::CompactLogValue &lhs, KeyId rhs) {
+        return lhs.Key() < rhs;
+    });
+    if (it != out.end() && it->Key() == id)
     {
-        it->second = value;
+        *it = value.WithKey(id);
         return;
     }
-    out.emplace(it, id, value);
+    out.insert(it, value.WithKey(id));
 }
 
 /// Promote a string view into a compact value. When @p sv aliases the
@@ -220,7 +218,7 @@ void EnsureCacheCapacity(ParseCache &cache, KeyId id)
 }
 
 void ParseJsonLine(
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &result,
+    std::vector<loglib::CompactLogValue> &result,
     simdjson::ondemand::object &object,
     KeyIndex &keys,
     ParseCache &cache,
@@ -519,7 +517,7 @@ void DecodeJsonBatch(
 
     size_t relativeLineNumber = 1;
     // One scratch for the whole batch; each row copies it into the batch's field arena.
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
+    std::vector<loglib::CompactLogValue> values;
 
     while (cursor < end)
     {
@@ -687,7 +685,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache &keyCache,
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+        std::vector<loglib::CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )

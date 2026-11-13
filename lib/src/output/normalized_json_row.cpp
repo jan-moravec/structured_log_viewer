@@ -228,8 +228,9 @@ bool NormalizedJsonRowWriter::AppendSlotValue(std::string &out, const LogLine &l
 void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
 {
     mRow.clear();
-    for (const auto &[keyId, slot] : line.CompactValues())
+    for (const auto &slot : line.CompactValues())
     {
+        const KeyId keyId = slot.Key();
         if (slot.tag != CompactTag::Monostate)
         {
             mRow.push_back(RowField{.id = keyId, .slot = &slot});

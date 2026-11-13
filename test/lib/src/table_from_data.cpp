@@ -59,12 +59,12 @@ void AppendData(loglib::LogTable &table, loglib::LogData data)
     batch.lines.reserve(data.Lines().size());
     for (const LogLine &line : data.Lines())
     {
-        std::vector<std::pair<KeyId, CompactLogValue>> remapped;
+        std::vector<CompactLogValue> remapped;
         for (const auto &entry : line.CompactValues())
         {
-            remapped.emplace_back(remap[entry.first], entry.second);
+            remapped.push_back(entry.WithKey(remap[entry.Key()]));
         }
-        std::ranges::sort(remapped, [](const auto &a, const auto &b) { return a.first < b.first; });
+        std::ranges::sort(remapped, [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
         assert(line.Source() != nullptr);
         batch.lines.emplace_back(std::move(remapped), *line.Source(), line.LineId());
     }

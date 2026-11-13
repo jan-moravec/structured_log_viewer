@@ -140,7 +140,8 @@ std::unique_ptr<ParsedInput> ParseFixtureWithDictRefLevel()
     }
     for (auto &[rowIdx, vid] : rowDictRefs)
     {
-        *data.Lines()[rowIdx].FindCompactMutable(input->levelKey) = CompactLogValue::MakeDictRef(vid);
+        *data.Lines()[rowIdx].FindCompactMutable(input->levelKey) =
+            CompactLogValue::MakeDictRef(vid).WithKey(input->levelKey);
     }
     return input;
 }
@@ -253,17 +254,19 @@ std::unique_ptr<StreamRows> MakeStreamRows()
             "api",
         };
         std::string arena;
-        std::vector<std::pair<KeyId, CompactLogValue>> values;
+        std::vector<CompactLogValue> values;
         for (std::size_t i = 0; i < texts.size(); ++i)
         {
             if (i == 3)
             {
-                values.emplace_back(rows->keyIds[i], CompactLogValue::MakeInt64(static_cast<std::int64_t>(row % 16)));
+                values.push_back(
+                    CompactLogValue::MakeInt64(static_cast<std::int64_t>(row % 16)).WithKey(rows->keyIds[i])
+                );
                 continue;
             }
-            values.emplace_back(
-                rows->keyIds[i],
+            values.push_back(
                 CompactLogValue::MakeOwnedString(arena.size(), static_cast<std::uint32_t>(texts[i].size()))
+                    .WithKey(rows->keyIds[i])
             );
             arena += texts[i];
         }

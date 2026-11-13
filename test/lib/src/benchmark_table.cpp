@@ -471,8 +471,8 @@ RowBatch MakeStreamBatch(
     for (std::size_t i = 0; i < count; ++i)
     {
         const std::size_t lineId = source.AppendLine("row " + std::to_string(firstLineId + i), std::string{});
-        std::vector<std::pair<KeyId, CompactLogValue>> values;
-        values.emplace_back(valueKey, CompactLogValue::MakeInt64(static_cast<std::int64_t>(lineId)));
+        std::vector<CompactLogValue> values;
+        values.push_back(CompactLogValue::MakeInt64(static_cast<std::int64_t>(lineId)).WithKey(valueKey));
         batch.lines.emplace_back(std::move(values), source, lineId);
     }
     return batch;

@@ -153,7 +153,7 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, K
     return LogValue{std::monostate{}};
 }
 
-void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept
+void RebaseOwnedStringOffsets(CompactLogValue *values, size_t valueCount, uint64_t delta) noexcept
 {
     if (delta == 0)
     {
@@ -161,9 +161,9 @@ void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t 
     }
     for (size_t i = 0; i < valueCount; ++i)
     {
-        if (values[i].second.tag == CompactTag::OwnedString)
+        if (values[i].tag == CompactTag::OwnedString)
         {
-            values[i].second.payload += delta;
+            values[i].payload += delta;
         }
     }
 }
@@ -172,30 +172,29 @@ namespace
 {
 
 /// `CompactLineFields` uses raw `::operator new` to avoid per-element
-/// ctor/dtor work; the pair must therefore be trivially destructible and
+/// ctor/dtor work; a field must therefore be trivially destructible and
 /// trivially copy-constructible.
-constexpr size_t PAIR_BYTES = sizeof(std::pair<KeyId, CompactLogValue>);
+constexpr size_t FIELD_BYTES = sizeof(CompactLogValue);
 
 static_assert(
-    std::is_trivially_destructible_v<std::pair<KeyId, CompactLogValue>>,
-    "CompactLineFields slots must be trivially destructible"
+    std::is_trivially_destructible_v<CompactLogValue>, "CompactLineFields fields must be trivially destructible"
 );
 static_assert(
-    std::is_trivially_copy_constructible_v<std::pair<KeyId, CompactLogValue>>,
-    "CompactLineFields slots must be trivially copy-constructible"
+    std::is_trivially_copy_constructible_v<CompactLogValue>,
+    "CompactLineFields fields must be trivially copy-constructible"
 );
 
-std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
+CompactLogValue *AllocatePairs(uint32_t capacity)
 {
     if (capacity == 0)
     {
         return nullptr;
     }
-    void *raw = ::operator new(static_cast<size_t>(capacity) * PAIR_BYTES);
-    return static_cast<std::pair<KeyId, CompactLogValue> *>(raw);
+    void *raw = ::operator new(static_cast<size_t>(capacity) * FIELD_BYTES);
+    return static_cast<CompactLogValue *>(raw);
 }
 
-void DeallocatePairs(std::pair<KeyId, CompactLogValue> *data) noexcept
+void DeallocatePairs(CompactLogValue *data) noexcept
 {
     if (data != nullptr)
     {
@@ -312,7 +311,7 @@ void CompactLineFields::AssignSorted(std::vector<value_type> &&values)
     AssignSorted(local.data(), static_cast<uint32_t>(local.size()));
 }
 
-void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
+void CompactLineFields::EmplaceBack(CompactLogValue field)
 {
     // A borrowed array has a capacity of zero and takes its first growth here.
     if (mSize >= mCapacity)
@@ -320,11 +319,11 @@ void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
         Reserve(GrowCapacity(mCapacity, mSize + 1U));
     }
     // Trailing slot is raw memory; `construct_at` begins object lifetime.
-    std::construct_at(mData + mSize, key, value);
+    std::construct_at(mData + mSize, field);
     ++mSize;
 }
 
-void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue value)
+void CompactLineFields::Insert(uint32_t position, CompactLogValue field)
 {
     // A borrowed array has a capacity of zero and takes its first growth here.
     if (mSize >= mCapacity)
@@ -340,37 +339,37 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
         {
             std::copy_backward(mData + position, mData + mSize - 1, mData + mSize);
         }
-        mData[position] = {key, value};
+        mData[position] = field;
     }
     else
     {
-        std::construct_at(mData + mSize, key, value);
+        std::construct_at(mData + mSize, field);
     }
     ++mSize;
 }
 
-void CompactLineFields::Set(uint32_t position, CompactLogValue value) noexcept
+void CompactLineFields::Set(uint32_t position, CompactLogValue field) noexcept
 {
     if (position < mSize)
     {
-        mData[position].second = value;
+        mData[position] = field;
     }
 }
 
 size_t CompactLineFields::OwnedMemoryBytes() const noexcept
 {
-    return static_cast<size_t>(mCapacity) * PAIR_BYTES;
+    return static_cast<size_t>(mCapacity) * FIELD_BYTES;
 }
 
 namespace
 {
 
 /**
- * A chunk holds this many pairs, which is 14 KB. It stays under the 16 KB limit of the Windows low-fragmentation heap,
+ * A chunk holds this many fields, which is 14 KB. It stays under the 16 KB limit of the Windows low-fragmentation heap,
  * whose allocations do not take a global lock; larger chunks made wide rows load slower. The unused tail of the last
  * chunk of a batch is a small part of the batch.
  */
-constexpr uint32_t FIELD_ARENA_CHUNK_PAIRS = 600;
+constexpr uint32_t FIELD_ARENA_CHUNK_FIELDS = 900;
 
 } // namespace
 
@@ -396,7 +395,7 @@ FieldArena::value_type *FieldArena::Allocate(uint32_t count)
     }
     if (mChunks.empty() || mChunks.back().capacity - mChunks.back().used < count)
     {
-        const uint32_t capacity = std::max(count, FIELD_ARENA_CHUNK_PAIRS);
+        const uint32_t capacity = std::max(count, FIELD_ARENA_CHUNK_FIELDS);
         mChunks.push_back(Chunk{.data = AllocatePairs(capacity), .used = 0, .capacity = capacity});
     }
     Chunk &chunk = mChunks.back();
@@ -410,7 +409,7 @@ size_t FieldArena::MemoryBytes() const noexcept
     size_t total = 0;
     for (const Chunk &chunk : mChunks)
     {
-        total += static_cast<size_t>(chunk.capacity) * PAIR_BYTES;
+        total += static_cast<size_t>(chunk.capacity) * FIELD_BYTES;
     }
     return total;
 }

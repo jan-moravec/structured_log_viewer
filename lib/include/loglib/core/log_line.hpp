@@ -1,7 +1,7 @@
 /**
  * @brief One parsed log row.
  *
- * A LogLine is a small sorted array of key and value pairs plus the source and line number it came from. Strings stay
+ * A LogLine is a small array of fields, sorted by key, plus the source and line number it came from. Strings stay
  * as offsets into the source, so a row is cheap to create and keep. This header also defines the span type that marks
  * the physical lines of a multi-line record.
  *
@@ -50,10 +50,10 @@ public:
     LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, LineSource &source, size_t lineId);
 
     /**
-     * @brief Builds a row from values that are already compact and sorted by key. OwnedString offsets must already be
-     * relative to the source's arena. This is the fast path.
+     * @brief Builds a row from fields that are already compact, carry their keys and are sorted by key. OwnedString
+     * offsets must already be relative to the source's arena. This is the fast path.
      */
-    LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues, LineSource &source, size_t lineId);
+    LogLine(std::vector<loglib::CompactLogValue> sortedValues, LineSource &source, size_t lineId);
 
     /**
      * @brief Builds a row from compact values that are sorted by key, and keeps its fields in memory from arena. The
@@ -61,10 +61,7 @@ public:
      * to the heap if one is added later.
      */
     LogLine(
-        std::span<const std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
-        FieldArena &arena,
-        LineSource &source,
-        size_t lineId
+        std::span<const loglib::CompactLogValue> sortedValues, FieldArena &arena, LineSource &source, size_t lineId
     );
 
     /**
@@ -123,7 +120,7 @@ public:
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
 
     /** @brief The compact storage itself, for code that walks every field on a hot path. */
-    std::span<const std::pair<KeyId, loglib::CompactLogValue>> CompactValues() const noexcept;
+    std::span<const loglib::CompactLogValue> CompactValues() const noexcept;
 
     /**
      * @brief All fields by key name.

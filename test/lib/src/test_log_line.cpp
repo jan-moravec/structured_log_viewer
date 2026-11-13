@@ -342,7 +342,7 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
     const KeyId messageKey = keys.GetOrInsert("message");
     LogLine line({}, keys, *source, 1);
     line.SetValue(levelKey, LogValue{std::string("placeholder")});
-    *line.FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(warnId);
+    *line.FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(warnId).WithKey(levelKey);
     line.SetValue(messageKey, LogValue{std::string("hello")});
 
     REQUIRE(line.IsDictRef(levelKey));
@@ -376,7 +376,7 @@ TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / Owned
 
     LogLine line({}, keys, *source, 1);
     line.SetValue(enumKey, LogValue{std::string("placeholder")});
-    *line.FindCompactMutable(enumKey) = CompactLogValue::MakeDictRef(vid);
+    *line.FindCompactMutable(enumKey) = CompactLogValue::MakeDictRef(vid).WithKey(enumKey);
     line.SetValue(stringKey, LogValue{std::string("hello")});
 
     CHECK(line.IsDictRef(enumKey));
@@ -402,8 +402,8 @@ TEST_CASE("Rows that borrow their fields from an arena behave like other rows", 
     constexpr int ROWS = 2000;
     for (int i = 0; i < ROWS; ++i)
     {
-        std::vector<std::pair<KeyId, CompactLogValue>> fields{
-            {first, CompactLogValue::MakeInt64(i)}, {third, CompactLogValue::MakeInt64(-i)}
+        std::vector<CompactLogValue> fields{
+            CompactLogValue::MakeInt64(i).WithKey(first), CompactLogValue::MakeInt64(-i).WithKey(third)
         };
         lines.emplace_back(fields, arena, *source, 0);
     }
@@ -442,7 +442,7 @@ TEST_CASE("Rows that borrow their fields from an arena behave like other rows", 
     {
         LogLine moved = std::move(lines[5]);
         CHECK(std::get<int64_t>(moved.GetValue(first)) == 5);
-        LogLine assigned(std::vector<std::pair<KeyId, CompactLogValue>>{}, *source, 0);
+        LogLine assigned(std::vector<CompactLogValue>{}, *source, 0);
         assigned = std::move(moved);
         CHECK(std::get<int64_t>(assigned.GetValue(third)) == -5);
     }
