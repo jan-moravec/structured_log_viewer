@@ -70,6 +70,22 @@ void TableSink::OnFinished(bool cancelled)
     mCancelled = cancelled;
 }
 
+std::vector<Column> TableSink::TimeColumnsAdded()
+{
+    std::vector<Column> added;
+    for (const Column &column : mTable->Configuration().Configuration().columns)
+    {
+        if (column.type != ColumnType::Time || column.keys.empty() ||
+            std::ranges::contains(mReportedTimeColumns, column.keys.front()))
+        {
+            continue;
+        }
+        mReportedTimeColumns.push_back(column.keys.front());
+        added.push_back(column);
+    }
+    return added;
+}
+
 std::vector<ParseError> TableSink::TakeErrors()
 {
     return std::exchange(mErrors, {});

@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace loglib
@@ -56,6 +57,9 @@ public:
 
     void OnFinished(bool cancelled) override;
 
+    /** @brief The Time columns the table has that an earlier call did not return, so a parser can convert them. */
+    std::vector<Column> TimeColumnsAdded() override;
+
     /** @brief Returns the errors collected so far and clears them. */
     [[nodiscard]] std::vector<ParseError> TakeErrors();
 
@@ -75,6 +79,7 @@ private:
     std::vector<ParseError> mErrors;
     std::uint64_t mLinesConsumed = 0;
     bool mCancelled = false;
+    std::vector<std::string> mReportedTimeColumns;
 };
 
 /** @brief What one ParseIntoTable call found. */

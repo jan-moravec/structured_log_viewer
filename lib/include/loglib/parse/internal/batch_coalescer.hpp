@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -82,6 +83,13 @@ public:
         mConvertedTimeKeys = std::move(keys);
     }
 
+    /**
+     * @brief Narrows the converted time keys of the pending batch to the keys in keys, which must be sorted. A batch
+     * that mixes lines parsed with different time columns claims only the keys that all of them converted. The
+     * restriction ends when the batch is sent.
+     */
+    void RestrictConvertedTimeKeys(const std::vector<KeyId> &keys);
+
     [[nodiscard]] bool IsPrimed() const noexcept
     {
         return mPrimed;
@@ -122,6 +130,8 @@ public:
 private:
     /** Sends a batch to the sink and remembers whether the sink threw. */
     void SendBatch(RowBatch batch);
+    /** Returns the converted time keys the pending batch claims, and ends the restriction. */
+    std::vector<KeyId> TakeConvertedTimeKeys();
 
     LogParseSink &mSink;
     KeyIndex &mKeys;
@@ -132,6 +142,7 @@ private:
     bool mSinkThrew = false;
     bool mFinished = false;
     std::vector<KeyId> mConvertedTimeKeys;
+    std::optional<std::vector<KeyId>> mRestrictedTimeKeys;
     size_t mFlushLines;
     std::chrono::milliseconds mFlushInterval;
     std::chrono::steady_clock::time_point mLastFlush;

@@ -339,6 +339,80 @@ TEST_CASE("The sink runs on the caller's thread for a stream and never overlaps 
     }
 }
 
+namespace
+{
+
+/** Passes everything to a TableSink and keeps which time keys each batch claims to have converted. */
+class ConvertedKeysSink final : public LogParseSink
+{
+public:
+    explicit ConvertedKeysSink(LogTable &table)
+        : mInner(table)
+    {
+    }
+
+    KeyIndex &Keys() override
+    {
+        return mInner.Keys();
+    }
+
+    void OnStarted() override
+    {
+        mInner.OnStarted();
+    }
+
+    void OnBatch(RowBatch batch) override
+    {
+        converted.push_back(batch.convertedTimeKeys);
+        mInner.OnBatch(std::move(batch));
+    }
+
+    void OnFinished(bool cancelled) override
+    {
+        mInner.OnFinished(cancelled);
+    }
+
+    std::vector<Column> TimeColumnsAdded() override
+    {
+        return mInner.TimeColumnsAdded();
+    }
+
+    std::vector<std::vector<KeyId>> converted;
+
+private:
+    TableSink mInner;
+};
+
+} // namespace
+
+TEST_CASE("A time column the table detects is converted by the parser in the later batches", "[table_loader][time]")
+{
+    const TestLogFile file("table_loader_detected_time.jsonl");
+    LogTable table;
+    auto source = FileSourceOf(file, JsonRows(20'000));
+    FileLineSource &sourceRef = *source;
+    table.BeginStreaming(std::move(source));
+    ConvertedKeysSink sink(table);
+    ParserOptions options = ParserOptionsFor(table);
+    REQUIRE(options.timeColumns.empty());
+    options.batchSizeBytes = 16 * 1024;
+    JsonParser{}.ParseStreaming(sourceRef, sink, options);
+    FinishLoading(table);
+
+    REQUIRE(table.RowCount() == 20'000);
+    REQUIRE(sink.converted.size() > 2);
+    // The first batch is parsed before the table knows the column. Once the table has it, the parser converts it.
+    CHECK(sink.converted.front().empty());
+    const auto convertedBatches =
+        std::ranges::count_if(sink.converted, [](const auto &keys) { return keys.size() == 1; });
+    CHECK(static_cast<size_t>(convertedBatches) > sink.converted.size() / 2);
+    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
+    {
+        CHECK(std::holds_alternative<TimeStamp>(table.GetValue(row, 0)));
+    }
+}
+
 TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_loader][options]")
 {
     LogTable table;
