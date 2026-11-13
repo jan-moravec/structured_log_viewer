@@ -177,8 +177,7 @@ TEST_CASE(
         "a\x01\x62",
         "a  b",
         "a\tb",
-        "\x7F"
-        "x",
+        "\x7F\x78",
     };
     // Needles that are already in simplified form, in every class the fast paths tell apart: a plain word, text with
     // single inner spaces, an edge space, non-ASCII text, a control byte and the empty needle.
