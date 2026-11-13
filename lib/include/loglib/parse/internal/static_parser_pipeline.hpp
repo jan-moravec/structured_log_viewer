@@ -280,7 +280,7 @@ void RunStaticParserPipelineBody(
 
     const auto referenceTime = options.referenceTime.value_or(std::chrono::system_clock::now());
     const auto makeSnapshot = [&](std::span<const Column> columns) {
-        auto snapshot = std::make_shared<TimeColumnSnapshot>();
+        const auto snapshot = std::make_shared<TimeColumnSnapshot>();
         snapshot->specs = BuildTimeColumnSpecs(keys, columns, options.defaultSourceTimeZone, referenceTime);
         snapshot->convertedKeys = ConvertedTimeKeys(snapshot->specs);
         return snapshot;

@@ -158,7 +158,9 @@ std::vector<KeyId> BatchCoalescer::TakeConvertedTimeKeys()
     {
         return mConvertedTimeKeys;
     }
-    return std::exchange(mRestrictedTimeKeys, std::nullopt).value();
+    std::vector<KeyId> restricted = std::move(*mRestrictedTimeKeys);
+    mRestrictedTimeKeys.reset();
+    return restricted;
 }
 
 void BatchCoalescer::SendBatch(RowBatch batch)

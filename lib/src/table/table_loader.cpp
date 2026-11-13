@@ -115,7 +115,7 @@ std::vector<ParseError> TableSink::TakeErrors()
         mErrors.push_back(
             ParseError{
                 .message = mDroppedErrors == 1 ? std::string("1 more parse error was not recorded.")
-                                               : std::format("{} more parse errors were not recorded.", mDroppedErrors)
+                                               : std::format("{} more parse errors were not recorded.", mDroppedErrors),
             }
         );
         mDroppedErrors = 0;

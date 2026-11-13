@@ -62,7 +62,7 @@ constexpr std::size_t SMALL_FILE_RECORDS = 10'000;
 test_common::LogFormat JsonLinesWithBrokenLines()
 {
     auto base = test_common::JsonLines();
-    auto counter = std::make_shared<std::size_t>(0);
+    const auto counter = std::make_shared<std::size_t>(0);
     return test_common::LogFormat{
         .suggestedExtension = base.suggestedExtension,
         .writeHeader = base.writeHeader,
