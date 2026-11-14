@@ -355,12 +355,13 @@ private slots:
         // `SortOrder()` and writes them into
         // `Model()->ConfigurationManager()`.
         LogSession session;
+        session.Model()->ConfigurationManager().AppendKeys({"a", "b", "c"});
 
         session.FilterProxy()->sort(2, Qt::DescendingOrder);
         session.MirrorSortToConfiguration();
 
         const auto &sort = session.Model()->Configuration().sort;
-        QCOMPARE(sort.columnIndex, 2);
+        QCOMPARE(sort.columnKeys, session.Model()->Configuration().columns.at(2).keys);
         QCOMPARE(sort.descending, true);
     }
 
@@ -374,7 +375,7 @@ private slots:
         LogSession session;
 
         loglib::Sort persisted;
-        persisted.columnIndex = 4;
+        persisted.columnKeys = {"stale"};
         persisted.descending = true;
         session.Model()->ConfigurationManager().SetSort(persisted);
         session.SetPendingApplySortFromConfig(true);
@@ -383,7 +384,7 @@ private slots:
         session.MirrorSortToConfiguration();
 
         const auto &sort = session.Model()->Configuration().sort;
-        QCOMPARE(sort.columnIndex, 4);
+        QCOMPARE(sort.columnKeys, std::vector<std::string>{"stale"});
         QCOMPARE(sort.descending, true);
     }
 
@@ -395,7 +396,7 @@ private slots:
         LogSession session;
 
         loglib::Sort persisted;
-        persisted.columnIndex = 4;
+        persisted.columnKeys = {"stale"};
         persisted.descending = true;
         session.Model()->ConfigurationManager().SetSort(persisted);
 
@@ -403,7 +404,7 @@ private slots:
         session.MirrorSortToConfiguration();
 
         const auto &sort = session.Model()->Configuration().sort;
-        QCOMPARE(sort.columnIndex, -1);
+        QVERIFY(sort.columnKeys.empty());
     }
 
     static void TestMirrorAnchorsToConfigurationCapturesLiveEntries()

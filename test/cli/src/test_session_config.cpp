@@ -176,7 +176,7 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
 {
     loglib::LogConfiguration configuration = DetectedConfiguration();
     const int msg = ColumnIndex(configuration.columns, "msg");
-    configuration.sort.columnIndex = msg;
+    configuration.sort.columnKeys = configuration.columns[static_cast<std::size_t>(msg)].keys;
     configuration.sort.descending = true;
     const auto path = WriteConfig("sort.json", configuration, loglib::SaveScope::Full);
 
@@ -343,8 +343,8 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
     loglib::LogConfigurationManager manager;
     manager.Load(sessionPath);
     const loglib::LogConfiguration &written = manager.Configuration();
-    REQUIRE(written.sort.columnIndex >= 0);
-    CHECK(written.columns[static_cast<std::size_t>(written.sort.columnIndex)].header == "msg");
+    REQUIRE_FALSE(written.sort.columnKeys.empty());
+    CHECK(written.sort.columnKeys == std::vector<std::string>{"msg"});
     CHECK(written.sort.descending);
     REQUIRE(written.columns.size() >= 2);
     CHECK(written.columns[0].header == "msg");
@@ -421,7 +421,7 @@ TEST_CASE("slp query --save-columns omits session state", "[cli][session][e2e]")
     REQUIRE(written.highlightRules.size() == 1);
     CHECK(written.highlightRules[0].name == "errors");
     CHECK(written.expression == loglib::FilterExpression{});
-    CHECK(written.sort.columnIndex == -1);
+    CHECK(written.sort.columnKeys.empty());
     CHECK_FALSE(written.source.has_value());
 }
 

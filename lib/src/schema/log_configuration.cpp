@@ -492,44 +492,8 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // Filters bind to columns by LeafRule::columnKeys (durable
-    // across reorders), so no filter remap is required here.
-    // sort.columnIndex still tracks the moved column by index,
-    // so run it through the same permutation.
-    const int src = static_cast<int>(srcIndex);
-    const int dest = static_cast<int>(destIndex);
-    mConfiguration.sort.columnIndex =
-        LogConfigurationManager::RemapColumnIndexAfterMove(mConfiguration.sort.columnIndex, src, dest);
+    // Filters, highlight rules and the sort bind to columns by keys, so a reorder needs no fix-up.
     // Pure reorder; key cache is unchanged.
-}
-
-int LogConfigurationManager::RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex)
-{
-    if (srcIndex == destIndex)
-    {
-        return columnIndex;
-    }
-    if (columnIndex == srcIndex)
-    {
-        return destIndex;
-    }
-    if (srcIndex < destIndex)
-    {
-        // Columns in (srcIndex, destIndex] shift one slot left.
-        if (columnIndex > srcIndex && columnIndex <= destIndex)
-        {
-            return columnIndex - 1;
-        }
-    }
-    else
-    {
-        // Columns in [destIndex, srcIndex) shift one slot right.
-        if (columnIndex >= destIndex && columnIndex < srcIndex)
-        {
-            return columnIndex + 1;
-        }
-    }
-    return columnIndex;
 }
 
 void LogConfigurationManager::SetColumnType(size_t columnIndex, ColumnType type)

@@ -12990,7 +12990,7 @@ private slots:
         QVERIFY2(
             loglib::IsMatchAll(probe.Configuration().expression), "SaveScope::ColumnsOnly must omit filter expression"
         );
-        QCOMPARE(probe.Configuration().sort.columnIndex, -1);
+        QVERIFY(probe.Configuration().sort.columnKeys.empty());
         QVERIFY2(!probe.Configuration().source.has_value(), "SaveScope::ColumnsOnly must omit source");
     }
 
@@ -15267,7 +15267,7 @@ private slots:
             loglib::IsMatchAll(probe.Configuration().expression),
             "New Session saved JSON must have no filter expression"
         );
-        QCOMPARE(probe.Configuration().sort.columnIndex, -1);
+        QVERIFY(probe.Configuration().sort.columnKeys.empty());
     }
 
     // Pinning a string-only column (`msg`) to `Integer` is the
@@ -15608,8 +15608,8 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(model->HasFilterForColumn(msgCol), "precondition: filter installed on msg column");
 
-        // Move `msg` past `category` (or vice versa). `RemapColumnIndexAfterMove`
-        // shifts the filter row alongside the column itself.
+        // Move `msg` past `category` (or vice versa). The filter
+        // follows the column by its keys.
         const int src = msgCol;
         const int dest = (msgCol == 0) ? model->columnCount() - 1 : 0;
         QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
@@ -24123,7 +24123,7 @@ private slots:
         {
             loglib::LogConfigurationManager probe;
             probe.Load(lastPath->toStdString());
-            QCOMPARE(probe.Configuration().sort.columnIndex, categoryCol);
+            QCOMPARE(probe.Configuration().sort.columnKeys, std::vector<std::string>{"category"});
             QVERIFY(probe.Configuration().sort.descending);
         }
 
@@ -25744,7 +25744,7 @@ private slots:
         builder.SetExpression(WireLeavesAsExpression({filter}));
 
         loglib::Sort sort;
-        sort.columnIndex = 0;
+        sort.columnKeys = {"category"};
         sort.descending = true;
         builder.SetSort(sort);
 
@@ -25940,7 +25940,7 @@ private slots:
             {QStringLiteral(R"({"value":1,"msg":"first"})"), QStringLiteral(R"({"value":2,"msg":"second"})")},
             [](loglib::LogConfiguration &configuration) {
                 configuration.columns.at(0).header = "Embedded value";
-                configuration.sort = {.columnIndex = 0, .descending = true};
+                configuration.sort = {.columnKeys = {"value"}, .descending = true};
                 configuration.anchors = {{.locator = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
             }
         );

@@ -590,7 +590,7 @@ TEST_CASE(
     filter.filterString = "boot";
     filter.matchType = LeafRule::Match::Contains;
     manager.SetExpression(LeavesAsExpression({filter}));
-    manager.SetSort(Sort{.columnIndex = 1, .descending = true});
+    manager.SetSort(Sort{.columnKeys = {"timestamp"}, .descending = true});
     manager.SetSource(Source{.kind = Source::Kind::File, .locators = {"C:/logs/app.json"}});
 
     const TestLogConfiguration columnsOnlyFile;
@@ -618,7 +618,7 @@ TEST_CASE(
     reloadedFromColumns.Load(columnsOnlyFile.GetFilePath());
     REQUIRE(reloadedFromColumns.Configuration().columns.size() == 2);
     CHECK(IsMatchAll(reloadedFromColumns.Configuration().expression));
-    CHECK(reloadedFromColumns.Configuration().sort.columnIndex == -1);
+    CHECK(reloadedFromColumns.Configuration().sort.columnKeys.empty());
     CHECK_FALSE(reloadedFromColumns.Configuration().sort.descending);
     CHECK_FALSE(reloadedFromColumns.Configuration().source.has_value());
 
@@ -635,7 +635,7 @@ TEST_CASE(
     CHECK(reloadedLeaves[0].columnKeys == std::vector<std::string>{"timestamp"});
     REQUIRE(reloadedLeaves[0].filterString.has_value());
     CHECK(*reloadedLeaves[0].filterString == "boot");
-    CHECK(reloadedFromFull.Configuration().sort.columnIndex == 1);
+    CHECK(reloadedFromFull.Configuration().sort.columnKeys == std::vector<std::string>{"timestamp"});
     CHECK(reloadedFromFull.Configuration().sort.descending);
     REQUIRE(reloadedFromFull.Configuration().source.has_value());
     CHECK(reloadedFromFull.Configuration().source->kind == Source::Kind::File);
@@ -1168,7 +1168,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogConfigurationManager::MoveColumn remaps Sort::columnIndex through the permutation",
+    "LogConfigurationManager::MoveColumn leaves the sort on its column",
     "[LogConfigurationManager][move_column][sort_remap]"
 )
 {
@@ -1180,60 +1180,15 @@ TEST_CASE(
     manager.AppendKeys({"a", "b", "c", "d"});
     REQUIRE(manager.Configuration().columns.size() == 4);
 
-    SECTION("Sort on the dragged column travels with the move")
+    SECTION("The sort names its column by keys, so a move leaves it unchanged")
     {
-        // Index 2 ("c") sorts descending; drag "c" to the front.
-        manager.SetSort(Sort{.columnIndex = 2, .descending = true});
+        manager.SetSort(Sort{.columnKeys = {"c"}, .descending = true});
 
         manager.MoveColumn(2, 0);
-        // "c" is now at index 0; the indicator must follow.
-        CHECK(manager.Configuration().sort.columnIndex == 0);
-        // Direction is preserved.
+        CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"c"});
+        CHECK(manager.Configuration().sort.columnKeys == std::vector<std::string>{"c"});
         CHECK(manager.Configuration().sort.descending == true);
     }
-
-    SECTION("Sort on a downstream column slides up when the drag crosses it")
-    {
-        manager.SetSort(Sort{.columnIndex = 3, .descending = false});
-
-        // Move "a" (0) to position 3 -- "d" shifts left to index 2.
-        manager.MoveColumn(0, 3);
-        CHECK(manager.Configuration().sort.columnIndex == 2);
-    }
-
-    SECTION("Sort indicator outside the rotation window stays put")
-    {
-        manager.SetSort(Sort{.columnIndex = 0, .descending = false});
-
-        manager.MoveColumn(2, 3);
-        CHECK(manager.Configuration().sort.columnIndex == 0);
-    }
-
-    SECTION("No-sort sentinel (-1) survives a move")
-    {
-        manager.SetSort(Sort{.columnIndex = -1, .descending = false});
-
-        manager.MoveColumn(0, 2);
-        CHECK(manager.Configuration().sort.columnIndex == -1);
-    }
-}
-
-TEST_CASE(
-    "RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic",
-    "[LogConfigurationManager][move_column]"
-)
-{
-    // The app uses this static helper to remap its runtime filter
-    // map; keep it in lockstep with `MoveColumn`'s rotation.
-    using Mgr = LogConfigurationManager;
-    CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 0) == 0);
-    CHECK(Mgr::RemapColumnIndexAfterMove(2, 3, 0) == 3);
-    CHECK(Mgr::RemapColumnIndexAfterMove(3, 3, 0) == 0);
-    CHECK(Mgr::RemapColumnIndexAfterMove(0, 3, 0) == 1);
-    CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 3) == 3);
-    CHECK(Mgr::RemapColumnIndexAfterMove(1, 0, 3) == 0);
-    CHECK(Mgr::RemapColumnIndexAfterMove(3, 0, 3) == 2);
-    CHECK(Mgr::RemapColumnIndexAfterMove(5, 1, 2) == 5);
 }
 
 TEST_CASE(
@@ -1805,7 +1760,7 @@ TEST_CASE(
       ]
    },
    "sort": {
-      "columnIndex": 0,
+      "columnKeys": ["timestamp"],
       "descending": true
    },
    "source": {
@@ -1837,7 +1792,7 @@ TEST_CASE(
     REQUIRE(leaves[0].filterString.has_value());
     CHECK(*leaves[0].filterString == "boot");
 
-    CHECK(manager.Configuration().sort.columnIndex == 0);
+    CHECK(manager.Configuration().sort.columnKeys == std::vector<std::string>{"timestamp"});
     CHECK(manager.Configuration().sort.descending);
 
     // The legacy `locator` field is unknown and silently dropped;
@@ -1866,7 +1821,7 @@ TEST_CASE(
    ],
    "filters": [],
    "sort": {
-      "columnIndex": -1,
+      "columnKeys": [],
       "descending": false
    },
    "source": {
@@ -2051,9 +2006,9 @@ TEST_CASE("LogConfiguration aliases extracted value groups", "[log_configuration
     STATIC_REQUIRE(std::is_same_v<LogConfiguration::HighlightRule, HighlightRule>);
 
     LogConfiguration configuration;
-    configuration.sort = Sort{.columnIndex = 0, .descending = true};
+    configuration.sort = Sort{.columnKeys = {"msg"}, .descending = true};
     const SessionView view{.expression = configuration.expression, .sort = configuration.sort};
-    CHECK(view.sort.columnIndex == 0);
+    CHECK(view.sort.columnKeys == std::vector<std::string>{"msg"});
     CHECK(view.sort.descending);
 }
 
@@ -2143,7 +2098,7 @@ TEST_CASE("AnchorEntry without note loads with empty note", "[log_configuration]
     constexpr std::string_view JSON = R"({
         "columns": [],
         "filters": [],
-        "sort": { "columnIndex": -1, "descending": false },
+        "sort": { "columnKeys": [], "descending": false },
         "anchors": [
             { "locator": "c:/logs/legacy.json", "lineId": 7, "colorIndex": 2 }
         ]
@@ -2168,7 +2123,7 @@ TEST_CASE(
     constexpr std::string_view JSON = R"({
         "columns": [],
         "filters": [],
-        "sort": { "columnIndex": -1, "descending": false }
+        "sort": { "columnKeys": [], "descending": false }
     })";
 
     LogConfigurationManager manager;
@@ -2420,7 +2375,7 @@ TEST_CASE("Full save keeps the pre-v1 JSON key set", "[log_configuration][compat
             .autoDetect = false,
         }
     );
-    original.sort = Sort{.columnIndex = 0, .descending = true};
+    original.sort = Sort{.columnKeys = {"a"}, .descending = true};
     original.source = Source{
         .kind = Source::Kind::File,
         .format = Source::Format::Json,
@@ -2448,7 +2403,7 @@ TEST_CASE("Full save keeps the pre-v1 JSON key set", "[log_configuration][compat
              "\"kind\"",         "\"format\"",
              "\"locators\"",     "\"locatorDedupKeys\"",
              "\"regexPattern\"", "\"followRotationSiblings\"",
-             "\"columnIndex\"",  "\"descending\"",
+             "\"columnKeys\"",   "\"descending\"",
              "\"lineId\"",       "\"colorIndex\"",
              "\"note\"",
          })
@@ -2500,7 +2455,7 @@ TEST_CASE(
     CHECK(manager.Configuration().anchors.empty());
     CHECK(manager.Configuration().highlightRules.empty());
     CHECK(IsMatchAll(manager.Configuration().expression));
-    CHECK(manager.Configuration().sort.columnIndex == -1);
+    CHECK(manager.Configuration().sort.columnKeys.empty());
 
     const TestLogConfiguration roundTrip("test_log_configuration_mixed_version_roundtrip.json");
     manager.Save(roundTrip.GetFilePath(), SaveScope::Full);

@@ -189,8 +189,7 @@ public:
     /**
      * @brief Moves a column from srcIndex to destIndex.
      *
-     * Filters and highlight rules find columns by their keys, so they follow the column. The saved sort stores a column
-     * index, and it is updated to follow the column too.
+     * Filters, highlight rules and the sort find columns by their keys, so they follow the column.
      */
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
@@ -243,14 +242,6 @@ public:
      * @brief Replaces all highlight rules. Rules find their column by keys, so nothing else needs fixing after a move.
      */
     void SetHighlightRules(std::vector<HighlightRule> rules);
-
-    /**
-     * @brief Returns where a stored column index ends up after a column moves from srcIndex to destIndex.
-     *
-     * An index out of range, including the -1 that Sort uses for no sort, is returned unchanged. Applications use it to
-     * keep their own column indices in step.
-     */
-    [[nodiscard]] static int RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex);
 
     const LogConfiguration &Configuration() const;
 

@@ -3853,10 +3853,12 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // otherwise overwrite the loaded sort with the cleared
         // proxy sort. Columns-only files default to `-1` (no sort).
         const auto loadedSort = mModel->Configuration().sort;
-        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        const int loadedSortColumn =
+            loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Configuration().columns);
+        if (loadedSortColumn >= 0)
         {
             mTableView->sortByColumn(
-                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                loadedSortColumn, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
             );
         }
 
@@ -10117,10 +10119,12 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         if (!mSession->HasPendingApplySortFromConfig())
         {
             const auto loadedSort = mModel->Configuration().sort;
-            if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+            const int loadedSortColumn =
+                loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Configuration().columns);
+            if (loadedSortColumn >= 0)
             {
                 mTableView->sortByColumn(
-                    loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                    loadedSortColumn, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
                 );
             }
         }
@@ -11579,11 +11583,12 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
         return;
     }
     const auto &cfgSort = model->Configuration().sort;
-    if (cfgSort.columnIndex < 0 || cfgSort.columnIndex >= model->columnCount())
+    const int cfgSortColumn = loglib::ResolveLeafColumnByKeys(cfgSort.columnKeys, model->Configuration().columns);
+    if (cfgSortColumn < 0)
     {
         return;
     }
-    table->sortByColumn(cfgSort.columnIndex, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
+    table->sortByColumn(cfgSortColumn, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
 }
 
 bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
@@ -11762,8 +11767,7 @@ void MainWindow::OnSourceColumnsMoved(
         return;
     }
     const int src = first;
-    // `columnsMoved`'s `destColumn` uses "insert before" semantics;
-    // `RemapColumnIndexAfterMove` wants the absolute final position.
+    // `columnsMoved`'s `destColumn` uses "insert before" semantics.
     const int finalDest = (destColumn > src) ? destColumn - 1 : destColumn;
     if (src == finalDest)
     {

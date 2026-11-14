@@ -263,11 +263,11 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     }
     else if (
         const auto &persisted = session.configuration.sort;
-        persisted.columnIndex >= 0 && static_cast<std::size_t>(persisted.columnIndex) < columns.size()
+        loglib::ResolveLeafColumnByKeys(persisted.columnKeys, columns) >= 0
     )
     {
         session.sort = SortChoice{
-            .columnIndex = static_cast<std::size_t>(persisted.columnIndex),
+            .columnIndex = static_cast<std::size_t>(loglib::ResolveLeafColumnByKeys(persisted.columnKeys, columns)),
             .direction = persisted.descending ? loglib::SortDirection::Descending : loglib::SortDirection::Ascending
         };
     }
@@ -327,17 +327,13 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
         session.visibleColumns = loglib::ColumnProjection(columns).Indices();
     }
 
-    // Persist the sort in the written column order.
+    // The sort names its column by keys, so the written column order does not matter.
     session.configuration.expression = session.expression;
     session.configuration.sort = loglib::Sort{};
     if (session.sort)
     {
-        std::size_t written = session.sort->columnIndex;
-        if (!order.empty())
-        {
-            written = static_cast<std::size_t>(std::ranges::find(order, written) - order.begin());
-        }
-        session.configuration.sort.columnIndex = static_cast<int>(written);
+        session.configuration.sort.columnKeys =
+            table.Configuration().Configuration().columns[session.sort->columnIndex].keys;
         session.configuration.sort.descending = session.sort->direction == loglib::SortDirection::Descending;
     }
     return session;

@@ -584,7 +584,11 @@ void LogSession::MirrorSortToConfiguration()
     if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
     {
         loglib::Sort sort;
-        sort.columnIndex = proxySortColumn;
+        const auto &columns = mModel->Configuration().columns;
+        if (proxySortColumn >= 0 && static_cast<std::size_t>(proxySortColumn) < columns.size())
+        {
+            sort.columnKeys = columns[static_cast<std::size_t>(proxySortColumn)].keys;
+        }
         sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
         mModel->ConfigurationManager().SetSort(sort);
     }

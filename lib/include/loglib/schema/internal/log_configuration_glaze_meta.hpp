@@ -207,7 +207,7 @@ template <> struct glz::meta<loglib::FilterExpression>
 template <> struct glz::meta<loglib::Sort>
 {
     using T = loglib::Sort;
-    static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
+    static constexpr auto value = object("columnKeys", &T::columnKeys, "descending", &T::descending);
 };
 
 // The saved form of one anchor:

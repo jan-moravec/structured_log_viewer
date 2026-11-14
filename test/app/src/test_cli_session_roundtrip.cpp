@@ -263,7 +263,7 @@ private slots:
         QCOMPARE(loaded.highlightRules[0].name, std::string("errors"));
 
         QVERIFY(mWindow->Filters().empty());
-        QCOMPARE(loaded.sort.columnIndex, -1);
+        QVERIFY(loaded.sort.columnKeys.empty());
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
 

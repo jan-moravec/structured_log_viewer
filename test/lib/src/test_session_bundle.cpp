@@ -282,7 +282,7 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
         .filterValues = {},
     };
     configuration.expression = SingleLeafExpression(filter);
-    configuration.sort = {.columnIndex = 1, .descending = true};
+    configuration.sort = {.columnKeys = {"service"}, .descending = true};
     configuration.source = loglib::Source{
         .kind = loglib::Source::Kind::NetworkStream,
         .format = loglib::Source::Format::Regex,
@@ -322,7 +322,7 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     CHECK(restored.columns[1].keys == std::vector<std::string>{"service"});
     CHECK(restored.columns[1].visible);
     CHECK(restored.expression == configuration.expression);
-    CHECK(restored.sort.columnIndex == 1);
+    CHECK(restored.sort.columnKeys == std::vector<std::string>{"service"});
     CHECK(restored.sort.descending);
     CHECK(restored.highlightRules == configuration.highlightRules);
 

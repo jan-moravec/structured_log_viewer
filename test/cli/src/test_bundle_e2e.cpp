@@ -110,8 +110,8 @@ TEST_CASE("slp bundle keeps every row and stores filter, sort, and columns", "[c
 
     const loglib::LogConfiguration written = EmbeddedConfiguration(bundle, "default_session.json");
     CHECK_FALSE(written.expression == loglib::FilterExpression{});
-    REQUIRE(written.sort.columnIndex >= 0);
-    CHECK(written.columns[static_cast<std::size_t>(written.sort.columnIndex)].header == "msg");
+    REQUIRE_FALSE(written.sort.columnKeys.empty());
+    CHECK(written.sort.columnKeys == std::vector<std::string>{"msg"});
     CHECK(written.sort.descending);
     REQUIRE(written.columns.size() >= 2);
     CHECK(written.columns[0].header == "msg");
