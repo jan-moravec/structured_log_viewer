@@ -99,6 +99,16 @@ public:
         return !StableBytes().empty();
     }
 
+    /**
+     * @brief True when the bytes of a MmapSlice cell stay valid after its row is evicted. A file mapping lives as long
+     * as the source, but a stream source drops the raw line of a row together with the row, so a reader that keeps a
+     * value must copy it.
+     */
+    [[nodiscard]] bool SlicesOutliveRows() const noexcept
+    {
+        return mSlicesOutliveRows;
+    }
+
     /** @brief Stores decoded bytes for a line and returns the offset to put in its OwnedString cell. */
     virtual uint64_t AppendOwnedBytes(size_t lineId, std::string_view bytes) = 0;
 
@@ -125,8 +135,16 @@ public:
         mEnumDictionaries = registry;
     }
 
+protected:
+    /** @brief For a source whose MmapSlice bytes are dropped with their row. */
+    explicit LineSource(bool slicesOutliveRows) noexcept
+        : mSlicesOutliveRows(slicesOutliveRows)
+    {
+    }
+
 private:
     const EnumDictionaryRegistry *mEnumDictionaries = nullptr;
+    bool mSlicesOutliveRows = true;
 };
 
 } // namespace loglib

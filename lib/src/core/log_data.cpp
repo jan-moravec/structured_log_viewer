@@ -100,16 +100,6 @@ const StreamLineSource *LogData::BackStreamSource() const noexcept
     return nullptr;
 }
 
-std::span<const LogLine> LogData::Lines() const noexcept
-{
-    return std::span<const LogLine>(mLines).subspan(mHead);
-}
-
-std::span<LogLine> LogData::Lines() noexcept
-{
-    return std::span<LogLine>(mLines).subspan(mHead);
-}
-
 void LogData::EvictPrefix(size_t count)
 {
     count = std::min(count, mLines.size() - mHead);

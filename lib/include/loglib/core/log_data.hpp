@@ -63,8 +63,15 @@ public:
     [[nodiscard]] const StreamLineSource *BackStreamSource() const noexcept;
 
     /** @brief The rows in order. A span stays valid until rows are appended or evicted. */
-    [[nodiscard]] std::span<const LogLine> Lines() const noexcept;
-    [[nodiscard]] std::span<LogLine> Lines() noexcept;
+    [[nodiscard]] std::span<const LogLine> Lines() const noexcept
+    {
+        return std::span<const LogLine>(mLines).subspan(mHead);
+    }
+
+    [[nodiscard]] std::span<LogLine> Lines() noexcept
+    {
+        return std::span<LogLine>(mLines).subspan(mHead);
+    }
 
     /**
      * @brief Drops the first count rows and frees their fields. The rows are not moved at once: the table keeps a head

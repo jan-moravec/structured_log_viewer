@@ -77,7 +77,9 @@ struct CompactLogValue
         if constexpr (std::endian::native == std::endian::little)
         {
             uint32_t word = 0;
-            std::memcpy(&word, &tag, sizeof(word));
+            std::memcpy(
+                &word, reinterpret_cast<const std::byte *>(this) + offsetof(CompactLogValue, tag), sizeof(word)
+            );
             return word >> 8U;
         }
         else

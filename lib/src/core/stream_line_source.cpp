@@ -11,7 +11,7 @@ namespace loglib
 {
 
 StreamLineSource::StreamLineSource(std::filesystem::path displayName, std::unique_ptr<BytesProducer> producer)
-    : mDisplayName(std::move(displayName)), mProducer(std::move(producer))
+    : LineSource(false), mDisplayName(std::move(displayName)), mProducer(std::move(producer))
 {
 }
 

@@ -88,9 +88,8 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
         return it->second;
     }
 
-    // Append to `reverse` first so the string address is stable before any
-    // other thread can observe the new id. The assert pins the 2^32 cap:
-    // wrapping past it would collide with `INVALID_KEY_ID`.
+    // Append to the reverse list first, so the string address is stable before any other thread can see the new id. A
+    // row stores a key id in 24 bits, so ids stop at MAX_ROW_KEY_ID.
     if (mImpl->reverse.size() > MAX_ROW_KEY_ID)
     {
         throw std::length_error("A log can hold at most 16777216 distinct keys.");
