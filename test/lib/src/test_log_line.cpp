@@ -403,7 +403,8 @@ TEST_CASE("Rows that borrow their fields from an arena behave like other rows", 
     for (int i = 0; i < ROWS; ++i)
     {
         std::vector<CompactLogValue> fields{
-            CompactLogValue::MakeInt64(i).WithKey(first), CompactLogValue::MakeInt64(-i).WithKey(third)
+            CompactLogValue::MakeInt64(i).WithKey(first),
+            CompactLogValue::MakeInt64(-i).WithKey(third),
         };
         lines.emplace_back(fields, arena, *source, 0);
     }

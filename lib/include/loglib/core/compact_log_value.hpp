@@ -63,6 +63,10 @@ struct CompactLogValue
     uint64_t payload = 0;
     uint32_t aux = 0;
     CompactTag tag = CompactTag::Monostate;
+    /** @brief Bits and mask of one byte of the key id. */
+    static constexpr uint32_t BYTE_BITS = 8U;
+    static constexpr uint32_t BYTE_MASK = 0xFFU;
+
     /** @brief The key id, least significant byte first. Use Key and SetKey. */
     uint8_t keyLow = 0;
     uint8_t keyMid = 0;
@@ -80,21 +84,21 @@ struct CompactLogValue
             std::memcpy(
                 &word, reinterpret_cast<const std::byte *>(this) + offsetof(CompactLogValue, tag), sizeof(word)
             );
-            return word >> 8U;
+            return word >> BYTE_BITS;
         }
         else
         {
-            return static_cast<KeyId>(keyLow) | (static_cast<KeyId>(keyMid) << 8U) |
-                   (static_cast<KeyId>(keyHigh) << 16U);
+            return static_cast<KeyId>(keyLow) | (static_cast<KeyId>(keyMid) << BYTE_BITS) |
+                   (static_cast<KeyId>(keyHigh) << (2U * BYTE_BITS));
         }
     }
 
     /** @brief Sets the key id. It must not be above MAX_ROW_KEY_ID. */
     void SetKey(KeyId id) noexcept
     {
-        keyLow = static_cast<uint8_t>(id & 0xFFU);
-        keyMid = static_cast<uint8_t>((id >> 8U) & 0xFFU);
-        keyHigh = static_cast<uint8_t>((id >> 16U) & 0xFFU);
+        keyLow = static_cast<uint8_t>(id & BYTE_MASK);
+        keyMid = static_cast<uint8_t>((id >> BYTE_BITS) & BYTE_MASK);
+        keyHigh = static_cast<uint8_t>((id >> (2U * BYTE_BITS)) & BYTE_MASK);
     }
 
     /** @brief A copy of this field with the key id set. */
@@ -147,7 +151,7 @@ void RebaseOwnedStringOffsets(CompactLogValue *values, size_t valueCount, uint64
 class CompactLineFields
 {
 public:
-    using value_type = CompactLogValue;
+    using value_type = CompactLogValue; // NOLINT(readability-identifier-naming): the name containers use
 
     /** @brief The largest number of fields in one line. */
     static constexpr uint32_t MAX_FIELDS = 0x7FFFFFU;
@@ -266,7 +270,7 @@ private:
 class FieldArena
 {
 public:
-    using value_type = CompactLineFields::value_type;
+    using value_type = CompactLineFields::value_type; // NOLINT(readability-identifier-naming): the name containers use
 
     FieldArena() = default;
     FieldArena(const FieldArena &) = delete;

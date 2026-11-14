@@ -63,7 +63,7 @@ void InsertSorted(std::vector<loglib::CompactLogValue> &out, KeyId id, loglib::C
         return;
     }
 
-    auto it = std::lower_bound(out.begin(), out.end(), id, [](const loglib::CompactLogValue &lhs, KeyId rhs) {
+    const auto it = std::lower_bound(out.begin(), out.end(), id, [](const loglib::CompactLogValue &lhs, KeyId rhs) {
         return lhs.Key() < rhs;
     });
     if (it != out.end() && it->Key() == id)
