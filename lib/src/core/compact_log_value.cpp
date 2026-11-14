@@ -177,9 +177,10 @@ void RebaseOwnedStringOffsets(CompactLogValue *values, size_t valueCount, uint64
 namespace
 {
 
-/// `CompactLineFields` uses raw `::operator new` to avoid per-element
-/// ctor/dtor work; a field must therefore be trivially destructible and
-/// trivially copy-constructible.
+/**
+ * CompactLineFields allocates raw memory and runs no constructor or destructor per field, so a field must be trivially
+ * destructible and trivially copyable.
+ */
 constexpr size_t FIELD_BYTES = sizeof(CompactLogValue);
 
 static_assert(

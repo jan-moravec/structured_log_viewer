@@ -226,8 +226,9 @@ public:
      */
     void AssignSorted(const value_type *values, uint32_t count);
 
-    /** @brief Allocates room for count fields on the heap, sets the size, and returns the fields for the caller to
-     * fill. */
+    /**
+     * @brief Allocates room for count fields on the heap, sets the size, and returns the fields for the caller to fill.
+     */
     [[nodiscard]] value_type *AllocateOwned(uint32_t count);
 
     /** @brief Uses count constructed fields at data without owning them. The memory must outlive the fields. */

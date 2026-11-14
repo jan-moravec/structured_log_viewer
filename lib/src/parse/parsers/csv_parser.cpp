@@ -40,7 +40,7 @@ constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 using internal::CsvCell;
 using internal::TokenizeCsvLine;
 
-/// Strip a leading UTF-8 BOM from @p sv if present.
+/** Removes a UTF-8 byte order mark from the start of the text. */
 std::string_view StripBom(std::string_view sv) noexcept
 {
     if (sv.starts_with(UTF8_BOM))
@@ -50,7 +50,7 @@ std::string_view StripBom(std::string_view sv) noexcept
     return sv;
 }
 
-/// Strip a trailing `\r` from @p sv (handles CRLF line endings).
+/** Removes a carriage return from the end of the line, which handles CRLF line endings. */
 std::string_view StripCr(std::string_view sv) noexcept
 {
     if (!sv.empty() && sv.back() == '\r')
@@ -60,10 +60,10 @@ std::string_view StripCr(std::string_view sv) noexcept
     return sv;
 }
 
-/// Rename duplicate column names in place: first occurrence keeps its
-/// name, subsequent ones become `<name>_2`, `<name>_3`, ..., skipping
-/// suffixes already taken by another column. Needed because `LogLine`
-/// requires unique `KeyId`s per row.
+/**
+ * Renames duplicate column names. The first keeps its name, and the later ones get the suffix _2, _3 and so on,
+ * skipping names another column already has. A row needs each key once.
+ */
 void DeduplicateColumnNames(std::vector<std::string> &names)
 {
     std::unordered_set<std::string> seen;
@@ -86,11 +86,11 @@ void DeduplicateColumnNames(std::vector<std::string> &names)
     }
 }
 
-/// Parse a CSV header into `columnKeys`, where `columnKeys[i]` is the
-/// `KeyId` for cell `i` in subsequent data rows. internKey turns a column
-/// name into its key id. Returns false if the header is empty or has an
-/// unterminated quoted cell; duplicates are renamed (see
-/// `DeduplicateColumnNames`).
+/**
+ * Reads a header line into the key id of each column, in the order of the cells of the data rows. internKey turns a
+ * column name into its key id, and duplicate names are renamed first. Returns false when the header is empty or a
+ * quoted cell is not closed.
+ */
 template <class InternKey>
 bool ParseHeaderLine(
     std::string_view headerLine, const InternKey &internKey, std::string &headerScratch, std::vector<KeyId> &columnKeys
@@ -127,8 +127,7 @@ bool ParseHeaderLine(
     return true;
 }
 
-/// Count tokenised cells in @p line; `nullopt` on an unterminated
-/// quoted cell. Used only by `IsValid`.
+/** Counts the cells of a line, or returns nothing when a quoted cell is not closed. Only IsValid uses it. */
 std::optional<size_t> CountCsvCells(std::string_view line, std::string &scratch)
 {
     size_t count = 0;
@@ -140,11 +139,11 @@ std::optional<size_t> CountCsvCells(std::string_view line, std::string &scratch)
     return count;
 }
 
-/// Parse one CSV record into compact values via the header-built
-/// `columnKeys` (so no `KeyIndex` / cache is needed per cell).
-/// Empty cells are omitted from @p out (absent key == monostate on
-/// lookup). `outRaggedExtra` reports cells beyond the header column
-/// count; the caller surfaces that as an error.
+/**
+ * Reads one record into compact values, with the key ids taken from the header, so no key lookup runs per cell. An
+ * empty cell gives no field, which reads the same as an empty value. outRaggedExtra reports cells past the last header
+ * column, which the caller turns into an error.
+ */
 void ParseCsvLine(
     std::string_view line,
     const std::vector<KeyId> &columnKeys,
@@ -206,8 +205,10 @@ void ParseCsvLine(
     outUnterminated = !ok;
 }
 
-/// `IsValid` false-positive guard: a plausible CSV header has at
-/// least 2 cells and at least 2 of them non-empty.
+/**
+ * Keeps IsValid from accepting other formats: a CSV header has at least two cells, and at least two of them are not
+ * empty.
+ */
 bool HeaderLineLooksLikeCsv(std::string_view line, std::string &scratch)
 {
     size_t cellCount = 0;
@@ -352,8 +353,10 @@ void DecodeCsvBatch(
     parsed.totalLineCount = relativeLineNumber - 1;
 }
 
-/// CSV decoder for `RunStreamingParseLoop`. Latches the header on the
-/// first non-blank line; subsequent lines use the cached `columnKeys`.
+/**
+ * The CSV decoder of the streaming parse loop. The first line that is not blank is the header, and the later lines use
+ * its key ids.
+ */
 class CsvLineDecoder
 {
 public:

@@ -25,7 +25,7 @@ using loglib::TransparentStringHash;
 
 struct KeyIndex::Impl
 {
-    /// Power-of-two shard count: hash-low-bits AND `SHARD_MASK` picks a shard.
+    /** The number of shards, a power of two, so the low bits of the hash pick the shard. */
     static constexpr size_t SHARD_COUNT = 16;
     static constexpr size_t SHARD_MASK = SHARD_COUNT - 1;
 
@@ -36,17 +36,16 @@ struct KeyIndex::Impl
     };
     std::array<Shard, SHARD_COUNT> shards;
 
-    /// KeyId -> owning string. `deque` keeps inserted strings pointer-stable,
-    /// which `KeyOf`'s contract relies on.
+    /** The key text of each id. A deque does not move its strings when it grows, which KeyOf relies on. */
     std::deque<std::string> reverse;
 
-    /// High-water KeyId, stored separately so `Size()` is lock-free.
+    /** The number of ids handed out, kept apart so Size takes no lock. */
     std::atomic<size_t> size{0};
 
-    /// Serialises `reverse.emplace_back` against `KeyOf` / `SortedKeys`
-    /// readers. Element addresses are stable, but `deque::operator[]`
-    /// reads the internal chunk-pointer map which `emplace_back` can
-    /// reallocate, so concurrent access is data-race UB.
+    /**
+     * Guards the reverse list against KeyOf and SortedKeys while a key is added. The strings do not move, but indexing
+     * a deque reads its block map, which an append can reallocate.
+     */
     mutable std::shared_mutex reverseMutex;
 
     static size_t ShardIndex(std::string_view key) noexcept

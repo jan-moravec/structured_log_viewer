@@ -34,8 +34,7 @@ namespace loglib
 namespace
 {
 
-/// JSON field key extracted via the no-escape fast path (`isView == true`)
-/// or the `unescaped_key()` slow path (`owned`).
+/** The key of a JSON field. A key without escapes is a view into the line; one with escapes is decoded into owned. */
 struct FastFieldKey
 {
     bool isView = false;
@@ -69,8 +68,10 @@ template <class Field> FastFieldKey ExtractFieldKey(Field &field)
     return result;
 }
 
-/// Crossover at which `InsertSorted` switches from a linear back-scan to
-/// `std::lower_bound`. Tuned for the `[wide]` benchmark.
+/**
+ * The field count from which InsertSorted uses a binary search in place of a scan from the back. Set on the wide-row
+ * benchmarks.
+ */
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 constexpr size_t INITIAL_OBJECT_FIELD_CAPACITY = 16;
 constexpr size_t LINE_PADDED_EXTRA_SLACK_BYTES = 64;
@@ -110,10 +111,10 @@ void InsertSorted(std::vector<loglib::CompactLogValue> &out, KeyId id, loglib::C
     out.insert(it, value.WithKey(id));
 }
 
-/// Promote a string view into a compact value. When @p sv aliases the
-/// mmap (i.e. lies inside `[fileBegin, fileBegin + fileSize)`), the
-/// resulting tag is `MmapSlice` (zero copy). Otherwise the bytes are
-/// appended to @p ownedArena and the tag is `OwnedString`.
+/**
+ * Turns a string into a compact value. Text that lies inside the mapped file becomes a MmapSlice value with no copy.
+ * Other text is appended to ownedArena and becomes an OwnedString value.
+ */
 loglib::CompactLogValue MakeStringCompact(
     std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
@@ -187,10 +188,11 @@ loglib::CompactLogValue ExtractRawJsonValue(
     return loglib::CompactLogValue::MakeMonostate();
 }
 
-/// Per-key simdjson type cache so `value.type()` / `get_number_type()` fire
-/// only on the first occurrence of each key. The cached number type only picks
-/// the fast path. A fast path accepts a value only when the value's own text
-/// has that type, so a key gets the same cell types on every worker.
+/**
+ * The simdjson type seen last for each key, so the type queries run only on the first value of a key. The cached number
+ * type only picks the fast path to try. A fast path accepts a value only when the value's own text has that type, so a
+ * key gets the same cell types on every worker.
+ */
 struct ParseCache
 {
     std::vector<simdjson::ondemand::json_type> keyTypes;
@@ -484,7 +486,7 @@ void ParseJsonLine(
     }
 }
 
-/// JSON-specific per-worker scratch.
+/** The scratch memory of one JSON parse worker. */
 struct JsonWorkerState
 {
     simdjson::ondemand::parser parser;
@@ -665,22 +667,21 @@ bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
 namespace
 {
 
-/// JSON record decoder for `RunStreamingParseLoop`. Owns the simdjson
-/// parser, padded-line scratch (the streaming path always uses the
-/// padded-copy shape because `BytesProducer::Read` doesn't promise
-/// SIMDJSON_PADDING slack), and the per-key type cache so successive
-/// lines reuse allocations. Satisfies `CompactLineDecoder`.
+/**
+ * The JSON decoder of the streaming parse loop. It owns the simdjson parser, a padded copy of the line, and the per-key
+ * type cache, so successive lines reuse them. A stream line is always copied, because a producer's buffer has no
+ * padding after the line.
+ */
 class JsonLineDecoder
 {
 public:
     JsonLineDecoder() = default;
 
-    /// `CompactLineDecoder` entry point. Fills @p out with compact
-    /// values whose `OwnedString` payloads index into @p outOwnedArena.
-    /// Returns `Emit` on success (an empty `{}` object still emits a
-    /// row with no fields — tested contract), `Error` with a body
-    /// message in @p errorOut on parse failure; never returns `Skip`
-    /// (JSON has no header prelude to swallow).
+    /**
+     * Decodes one line into compact values whose OwnedString payloads point into outOwnedArena. It returns Emit for a
+     * row, and an empty object still gives a row with no fields. On a parse failure it returns Error with the message
+     * in errorOut. It never returns Skip, because JSON has no header line.
+     */
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,

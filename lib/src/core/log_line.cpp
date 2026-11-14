@@ -91,8 +91,7 @@ std::optional<int64_t> AsEpochMicroseconds(const LogValue &value)
 namespace
 {
 
-/// Append @p sv to @p source's owned arena and return the corresponding
-/// `OwnedString` value.
+/** Stores the bytes in the owned arena of the source and returns the OwnedString value that points at them. */
 loglib::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
 {
     const uint64_t offset = source.AppendOwnedBytes(lineId, sv);

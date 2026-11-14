@@ -80,8 +80,8 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
 
 std::span<const char> StreamLineSource::StableBytes() const noexcept
 {
-    // No stable bytes: producer buffers are reused; everything must
-    // land in the per-line owned arena.
+    // The producer reuses its buffers, so a parser cannot point into them. The streaming loop turns values into slices
+    // of the stored raw line afterwards, which the source resolves itself.
     return {};
 }
 
