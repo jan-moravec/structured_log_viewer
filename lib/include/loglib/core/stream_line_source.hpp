@@ -20,7 +20,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
-#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 
@@ -38,8 +38,9 @@ class BytesProducer;
  * - Its bytes are not stable, so parsers store decoded values as OwnedString cells. A MmapSlice cell of a stream row is
  * a slice of the raw line of the row, which the source keeps.
  * - It supports eviction.
- * - A mutex guards all state, so a parser thread can append while another thread reads or evicts. A view from
- *   ResolveOwnedBytes is invalid once its line is evicted.
+ * - A reader-writer lock guards all state, so a parser thread can append while other threads read or evict. A view from
+ *   ResolveOwnedBytes or ResolveMmapBytes is invalid once its line is evicted.
+ * - Each read takes the lock on its own. A loop over many rows takes it once with a ReadBatch instead.
  */
 class StreamLineSource final : public LineSource
 {
@@ -108,6 +109,29 @@ public:
     /** @brief Heap bytes held by line text and decoded strings, counting capacity. For the memory benchmark. */
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
+    /**
+     * @brief Holds the read lock of a source on the calling thread, so the reads in between take no lock of their own.
+     *
+     * A filter or an exporter makes one for each chunk of rows. Appends and evictions wait until it is destroyed, so
+     * keep it to one chunk. It does nothing for a null source, and a second one for the same source on the same thread
+     * does nothing either. The thread must not append to or evict from the source while it holds one.
+     */
+    class ReadBatch
+    {
+    public:
+        explicit ReadBatch(const StreamLineSource *source);
+        ~ReadBatch();
+
+        ReadBatch(const ReadBatch &) = delete;
+        ReadBatch &operator=(const ReadBatch &) = delete;
+        ReadBatch(ReadBatch &&) = delete;
+        ReadBatch &operator=(ReadBatch &&) = delete;
+
+    private:
+        const StreamLineSource *mSource = nullptr;
+        const StreamLineSource *mPrevious = nullptr;
+    };
+
 private:
     [[nodiscard]] bool LineIsLiveLocked(size_t lineId) const noexcept;
     [[nodiscard]] size_t IndexForLocked(size_t lineId) const noexcept;
@@ -115,8 +139,11 @@ private:
     std::filesystem::path mDisplayName;
     std::unique_ptr<BytesProducer> mProducer;
 
-    /** @brief Guards every member below. */
-    mutable std::mutex mLock;
+    /** @brief A shared lock for a read, which holds nothing when the thread holds a ReadBatch for this source. */
+    [[nodiscard]] std::shared_lock<std::shared_mutex> LockForRead() const;
+
+    /** @brief Guards every member below. Readers share it, and appends and evictions take it alone. */
+    mutable std::shared_mutex mLock;
 
     /** @brief Line text without its line ending. Appending to a deque does not move existing entries. */
     std::deque<std::string> mLines;
