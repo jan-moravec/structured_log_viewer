@@ -21,6 +21,7 @@
 #include <loglib/query/leaf_rule_compile.hpp>
 #include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
 #include <loglib/table/log_table.hpp>
@@ -114,7 +115,7 @@ ParseResult ParseText(const LogParser &parser, std::string_view text)
 
 LogTable TableOf(LogData data)
 {
-    return test_common_lib::TableFromData(std::move(data), LogConfigurationManager{});
+    return test_common_lib::TableFromData(std::move(data), ColumnLayout{});
 }
 
 class CollectingSink : public LogParseSink
@@ -343,7 +344,7 @@ TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule
 {
     ParseResult result = ParseText(JsonParser{}, "{\"level\":\"info\"}\n{\"level\":\"warn\"}\n{\"level\":\"info\"}\n");
     const LogTable table = TableOf(std::move(result.data));
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     REQUIRE(columns.at(0).type == ColumnType::Level);
 
     const auto rowsFor = [&](const char *query) {
@@ -682,8 +683,7 @@ TEST_CASE("File APIs accept paths outside the active code page", "[paths][unicod
     CHECK_NOTHROW(TailingBytesProducer(path, 10));
 
     const std::filesystem::path config = dir.Path() / std::filesystem::path(u8"設定.json");
-    const LogConfigurationManager manager;
-    CHECK_NOTHROW(manager.Save(config));
+    CHECK_NOTHROW(loglib::SaveConfiguration(loglib::LogConfiguration{}, config, loglib::SaveScope::Full));
     CHECK(std::filesystem::exists(config));
 
     const std::filesystem::path exported = dir.Path() / std::filesystem::path(u8"出力.log");

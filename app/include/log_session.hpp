@@ -6,6 +6,7 @@
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/schema/session_view.hpp>
 
 #include <QAtomicInteger>
 #include <QElapsedTimer>
@@ -322,7 +323,29 @@ public:
     void ResetSimpleFilterState() noexcept;
 
     /**
-     * @brief Rebuilds the model expression from simple filter leaves.
+     * @brief The filter, sort, highlight rules and anchors of this session. Everything in it refers to columns by keys.
+     */
+    [[nodiscard]] const loglib::SessionView &View() const noexcept
+    {
+        return mView;
+    }
+
+    /** @brief The writable view. Callers that change it also mark the session dirty when the user did. */
+    [[nodiscard]] loglib::SessionView &MutableView() noexcept
+    {
+        return mView;
+    }
+
+    /**
+     * @brief The configuration of this session: the columns of the model, the view, and the given source.
+     *
+     * Call MirrorSortToConfiguration, MirrorAnchorsToConfiguration and RebuildFilterExpressionFromSimpleLeaves first,
+     * so the view matches what the user sees.
+     */
+    [[nodiscard]] loglib::LogConfiguration BuildConfiguration(std::optional<loglib::Source> source) const;
+
+    /**
+     * @brief Rebuilds the view expression from simple filter leaves.
      *
      * Simple leaves retain display order. Existing advanced `Or` and `Not`
      * subtrees are preserved, and missing ordered leaf identifiers are skipped.
@@ -330,14 +353,14 @@ public:
     void RebuildFilterExpressionFromSimpleLeaves();
 
     /**
-     * @brief Mirrors the active proxy sort into the model configuration.
+     * @brief Mirrors the active proxy sort into the view.
      *
      * A transient unsorted proxy does not overwrite a deferred loaded sort.
      */
     void MirrorSortToConfiguration();
 
     /**
-     * @brief Mirrors current anchors into the model configuration.
+     * @brief Mirrors current anchors into the view.
      */
     void MirrorAnchorsToConfiguration();
 
@@ -1748,6 +1771,9 @@ private:
 
     // Source represented by the current model contents.
     std::optional<loglib::Source> mCurrentSource;
+
+    // Filter, sort, highlight rules and anchors of the session.
+    loglib::SessionView mView;
 
     // Pending open queue and categorized errors.
     QStringList mPendingOpenFiles;

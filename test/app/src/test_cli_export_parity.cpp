@@ -121,7 +121,7 @@ namespace
         }
         expression = std::move(*parsed);
     }
-    const auto compiled = loglib::CompileExpression(expression, model.Configuration().columns, &model.Table());
+    const auto compiled = loglib::CompileExpression(expression, model.Layout().Columns(), &model.Table());
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(model.Table(), compiled);
 
     if (sort.has_value())
@@ -143,7 +143,7 @@ namespace
             }
         }
         int columnIndex = -1;
-        const auto &columns = model.Configuration().columns;
+        const auto &columns = model.Layout().Columns();
         for (std::size_t i = 0; i < columns.size(); ++i)
         {
             if (columns[i].header == sortSpec)
@@ -225,15 +225,15 @@ namespace
     return std::string(out.constData(), static_cast<std::size_t>(out.size()));
 }
 
-[[nodiscard]] int FindColumn(const loglib::LogConfiguration &configuration, std::string_view name)
+[[nodiscard]] int FindColumn(const std::vector<loglib::Column> &columns, std::string_view name)
 {
-    for (std::size_t i = 0; i < configuration.columns.size(); ++i)
+    for (std::size_t i = 0; i < columns.size(); ++i)
     {
-        if (configuration.columns[i].header == name)
+        if (columns[i].header == name)
         {
             return static_cast<int>(i);
         }
-        for (const std::string &key : configuration.columns[i].keys)
+        for (const std::string &key : columns[i].keys)
         {
             if (key == name)
             {
@@ -298,8 +298,8 @@ private slots:
         LogModel model;
         QString error;
         QVERIFY2(StreamFixtureInto(model, &error), qPrintable(error));
-        const int level = FindColumn(model.Configuration(), "level");
-        const int msg = FindColumn(model.Configuration(), "msg");
+        const int level = FindColumn(model.Layout().Columns(), "level");
+        const int msg = FindColumn(model.Layout().Columns(), "msg");
         QVERIFY(level >= 0);
         QVERIFY(msg >= 0);
 
@@ -335,8 +335,8 @@ private slots:
         LogModel model;
         QString error;
         QVERIFY2(StreamFixtureInto(model, &error), qPrintable(error));
-        const int level = FindColumn(model.Configuration(), "level");
-        const int msg = FindColumn(model.Configuration(), "msg");
+        const int level = FindColumn(model.Layout().Columns(), "level");
+        const int msg = FindColumn(model.Layout().Columns(), "msg");
         QVERIFY(level >= 0);
         QVERIFY(msg >= 0);
 

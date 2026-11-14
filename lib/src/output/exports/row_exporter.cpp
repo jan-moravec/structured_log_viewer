@@ -187,7 +187,7 @@ void CsvExporter::Run(
 {
     assert(source.table != nullptr);
     const auto &table = *source.table;
-    const auto &config = table.Configuration().Configuration();
+    const auto &columns = table.Layout().Columns();
     const auto &lines = table.Data().Lines();
 
     if (source.includeHeaderRow)
@@ -201,9 +201,9 @@ void CsvExporter::Run(
                 scratch.push_back(',');
             }
             first = false;
-            if (col < config.columns.size())
+            if (col < columns.size())
             {
-                AppendCsvField(scratch, config.columns[col].header);
+                AppendCsvField(scratch, columns[col].header);
             }
         }
         // Use LF consistently across export formats.
@@ -342,7 +342,7 @@ void MarkdownExporter::Run(
 {
     assert(source.table != nullptr);
     const auto &table = *source.table;
-    const auto &config = table.Configuration().Configuration();
+    const auto &columns = table.Layout().Columns();
     const auto &lines = table.Data().Lines();
 
     if (source.includeHeaderRow && !source.visibleColumns.empty())
@@ -353,9 +353,9 @@ void MarkdownExporter::Run(
         for (const size_t col : source.visibleColumns)
         {
             scratch.push_back(' ');
-            if (col < config.columns.size())
+            if (col < columns.size())
             {
-                AppendMarkdownCell(scratch, config.columns[col].header);
+                AppendMarkdownCell(scratch, columns[col].header);
             }
             scratch.append(" |");
         }

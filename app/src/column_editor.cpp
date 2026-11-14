@@ -172,7 +172,7 @@ void ColumnEditor::Populate()
         reject();
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (mColumnIndex < 0 || std::cmp_greater_equal(mColumnIndex, columns.size()))
     {
         reject();
@@ -203,7 +203,7 @@ void ColumnEditor::WriteBack()
     {
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (mColumnIndex < 0 || std::cmp_greater_equal(mColumnIndex, columns.size()))
     {
         return;
@@ -216,7 +216,7 @@ void ColumnEditor::WriteBack()
     }
     const auto &choice = choices[static_cast<size_t>(comboIndex)];
 
-    auto &manager = mModel->ConfigurationManager();
+    auto &manager = mModel->MutableLayout();
     const auto idx = static_cast<size_t>(mColumnIndex);
 
     manager.SetColumnHeader(idx, mHeaderEdit->text().toStdString());

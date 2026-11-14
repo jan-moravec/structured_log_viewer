@@ -8,6 +8,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/query/log_compare.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -68,11 +69,9 @@ LogTable BuildSingleColumnTable(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -340,10 +339,8 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -359,7 +356,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     batch.newKeys.emplace_back("category");
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
     const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
@@ -389,10 +386,8 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -438,10 +433,8 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -459,7 +452,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     batch.newKeys.emplace_back("category");
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
     const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
@@ -519,10 +512,8 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -617,11 +608,9 @@ TEST_CASE(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -635,7 +624,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("level");
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Level);
     // Info(1) < Warn(0) < Error(2) < Fatal(3); the qux row joins the tail.
     CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // INFO < WARN
     CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // WARN < ERROR
@@ -663,11 +652,9 @@ TEST_CASE(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -687,7 +674,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("level");
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Level);
 
     const std::vector<size_t> logRows = {0, 1, 2, 3, 4};
     {

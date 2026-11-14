@@ -140,13 +140,13 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
 
 /// Map @p locator (a canonical `locatorDedupKey`) back to the
 /// display-case path. Falls back to @p locator on a miss.
-[[nodiscard]] QString DisplayPathForLocator(const LogModel *model, const std::string &locator)
+[[nodiscard]] QString DisplayPathForLocator(const LogSession *session, const std::string &locator)
 {
-    if (model == nullptr || locator.empty())
+    if (session == nullptr || locator.empty())
     {
         return QString::fromStdString(locator);
     }
-    const auto &configurationSource = model->Configuration().source;
+    const auto &configurationSource = session->CurrentSource();
     if (!configurationSource.has_value())
     {
         return QString::fromStdString(locator);
@@ -214,10 +214,14 @@ public:
 /// `COLUMN_NOTE` would clobber the in-flight text. Full-rebuild
 /// callers set the note cell separately after this call.
 void PopulateAnchorCellForEntry(
-    QTreeWidgetItem *item, const loglib::AnchorEntry &entry, const LogModel *model, ThemeControl *theme, int swatchPx
+    QTreeWidgetItem *item,
+    const loglib::AnchorEntry &entry,
+    const LogSession *session,
+    ThemeControl *theme,
+    int swatchPx
 )
 {
-    const QString displayPath = DisplayPathForLocator(model, entry.locator);
+    const QString displayPath = DisplayPathForLocator(session, entry.locator);
     const QString filename = FilenameFromDisplayPath(displayPath);
     const QString label = filename.isEmpty() ? AnchorsDock::tr("line %1").arg(entry.lineId)
                                              : AnchorsDock::tr("line %1 - %2").arg(entry.lineId).arg(filename);
@@ -548,7 +552,7 @@ void AnchorsDock::RefreshAlways()
     for (const auto &entry : entries)
     {
         auto *item = new QTreeWidgetItem(mTree);
-        PopulateAnchorCellForEntry(item, entry, mModel.data(), mTheme.data(), swatchPx);
+        PopulateAnchorCellForEntry(item, entry, mBoundSession.data(), mTheme.data(), swatchPx);
         // Full rebuild owns the note cell: no in-flight editor can
         // exist here since we just cleared the tree.
         item->setText(COLUMN_NOTE, QString::fromStdString(entry.note));
@@ -890,7 +894,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
 
     if (existing != nullptr)
     {
-        PopulateAnchorCellForEntry(existing, entry, mModel.data(), mTheme.data(), swatchPx);
+        PopulateAnchorCellForEntry(existing, entry, mBoundSession.data(), mTheme.data(), swatchPx);
         if (mClearAllButton != nullptr)
         {
             mClearAllButton->setEnabled(!mAnchors->Empty());
@@ -923,7 +927,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
         }
     }
     auto *newItem = new QTreeWidgetItem();
-    PopulateAnchorCellForEntry(newItem, entry, mModel.data(), mTheme.data(), swatchPx);
+    PopulateAnchorCellForEntry(newItem, entry, mBoundSession.data(), mTheme.data(), swatchPx);
     // Insert path owns the note cell too: no editor can exist on
     // an item that doesn't yet exist.
     newItem->setText(COLUMN_NOTE, QString::fromStdString(entry.note));
@@ -982,7 +986,7 @@ void AnchorsDock::OnAnchorNoteChanged(const AnchorManager::Key &key)
     const auto colorIndex = mAnchors->ColorFor(key).value_or(std::uint8_t{0});
 
     const QString noteText = QString::fromStdString(*note);
-    const QString displayPath = DisplayPathForLocator(mModel.data(), key.locator);
+    const QString displayPath = DisplayPathForLocator(mBoundSession.data(), key.locator);
     const QString tooltipHtml = BuildAnchorTooltipHtml(colorIndex, key.lineId, displayPath, noteText);
 
     // Suppress the `itemChanged` re-entry from `setText` so we

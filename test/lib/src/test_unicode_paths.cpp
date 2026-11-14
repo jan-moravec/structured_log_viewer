@@ -3,6 +3,7 @@
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -156,8 +157,10 @@ TEST_CASE("A session bundle is written and read through a non-ASCII path", "[pat
     const std::filesystem::path plainBundle = paths.ascii.parent_path() / "Sitzung.slvbundle";
     const std::filesystem::path unicodeBundle =
         paths.unicode.parent_path() / std::filesystem::path(u8"Sitzung_äöü_日本.slvbundle");
-    WriteSessionBundle(loaded.table, loaded.table.Configuration().Configuration(), plainBundle);
-    WriteSessionBundle(loaded.table, loaded.table.Configuration().Configuration(), unicodeBundle);
+    WriteSessionBundle(loaded.table, loglib::LogConfiguration{.columns = loaded.table.Layout().Columns()}, plainBundle);
+    WriteSessionBundle(
+        loaded.table, loglib::LogConfiguration{.columns = loaded.table.Layout().Columns()}, unicodeBundle
+    );
     REQUIRE(std::filesystem::exists(unicodeBundle));
 
     const LoadResult fromPlain = LoadFile(plainBundle);
@@ -168,7 +171,7 @@ TEST_CASE("A session bundle is written and read through a non-ASCII path", "[pat
     CHECK(CellsOf(fromUnicode.table) == CellsOf(loaded.table));
 }
 
-TEST_CASE("LogConfigurationManager saves and loads through a non-ASCII path", "[paths][unicode]")
+TEST_CASE("A configuration saves and loads through a non-ASCII path", "[paths][unicode]")
 {
     const test_common::TempDir dir("unicode_config");
     const PathPair paths = MakePaths(dir, "Einstellungen.json", u8"Einstellungen_äöü_日本.json");
@@ -179,18 +182,15 @@ TEST_CASE("LogConfigurationManager saves and loads through a non-ASCII path", "[
     column.keys = {"msg"};
     configuration.columns.push_back(column);
 
-    LogConfigurationManager manager;
-    manager.SetConfiguration(configuration);
-    manager.Save(paths.ascii);
-    manager.Save(paths.unicode);
+    SaveConfiguration(configuration, paths.ascii, SaveScope::Full);
+    SaveConfiguration(configuration, paths.unicode, SaveScope::Full);
     REQUIRE(std::filesystem::exists(paths.unicode));
     CHECK(ReadBytes(paths.unicode) == ReadBytes(paths.ascii));
 
-    LogConfigurationManager loaded;
-    loaded.Load(paths.unicode);
-    REQUIRE(loaded.Configuration().columns.size() == 1);
-    CHECK(loaded.Configuration().columns.front().header == "Meldung");
-    CHECK(loaded.Configuration().columns.front().keys == std::vector<std::string>{"msg"});
+    const LogConfiguration loaded = LoadConfiguration(paths.unicode);
+    REQUIRE(loaded.columns.size() == 1);
+    CHECK(loaded.columns.front().header == "Meldung");
+    CHECK(loaded.columns.front().keys == std::vector<std::string>{"msg"});
 }
 
 TEST_CASE("TailingBytesProducer reads the same bytes through a non-ASCII path", "[paths][unicode][fs-events]")

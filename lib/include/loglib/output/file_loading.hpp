@@ -76,8 +76,9 @@ struct OpenedFile
 struct LoadOptions
 {
     /**
-     * @brief The configuration the table starts with. When unset, a session bundle's own configuration is used, and any
-     * other file starts with an empty one.
+     * @brief The configuration the table starts with: its columns become the layout of the table, and its view is
+     * returned in LoadResult. When unset, a session bundle's own configuration is used, and any other file starts with
+     * empty columns and the default view.
      */
     std::optional<LogConfiguration> configuration;
 
@@ -101,6 +102,9 @@ struct LoadResult
 
     /** @brief Notices about configuration values the library replaced, such as an invalid print format. */
     std::vector<std::string> warnings;
+
+    /** @brief The view of the configuration the load started with. It is the default when there was none. */
+    SessionView view;
 
     /** @brief The metadata line when the file was a session bundle. */
     std::optional<SessionBundleMetadata> bundle;

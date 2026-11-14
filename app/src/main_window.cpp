@@ -350,9 +350,10 @@ bool FileLooksLikeConfiguration(const QString &file)
 
     try
     {
-        loglib::LogConfigurationManager probe;
-        probe.LoadFromString(std::string_view(contentBytes.constData(), static_cast<size_t>(contentBytes.size())));
-        return !probe.Configuration().columns.empty();
+        const loglib::LogConfiguration probe = loglib::ParseConfiguration(
+            std::string_view(contentBytes.constData(), static_cast<size_t>(contentBytes.size()))
+        );
+        return !probe.columns.empty();
     }
     catch (...)
     {
@@ -454,7 +455,11 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     const bool isNumericColumn =
         column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number;
     const bool isEnumLikeColumn = column.type == ColumnType::Enumeration || column.type == ColumnType::Level;
-    const bool typesMatch = (filter.type == LeafType::Time && column.type == ColumnType::Time) ||
+    // A saved configuration holds the type of a column only when the user chose it. A column still waiting for the
+    // detector has no type yet, so a filter that needs one is kept, and it takes effect when the type is known.
+    const bool awaitsDetection = column.type == ColumnType::Any && column.autoDetect;
+    const bool typesMatch = (awaitsDetection && filter.type != LeafType::Time) ||
+                            (filter.type == LeafType::Time && column.type == ColumnType::Time) ||
                             (filter.type == LeafType::Enumeration && isEnumLikeColumn) ||
                             (filter.type == LeafType::Boolean && column.type == ColumnType::Boolean) ||
                             (filter.type == LeafType::Number && isNumericColumn) ||
@@ -552,13 +557,13 @@ using loglib::DetectFormatForPath;
 using loglib::MakeParserForFormat;
 
 /**
- * @brief Parser options for a configuration: its Time columns and the application's display zone as the zone in which
+ * @brief Parser options for a column layout: its Time columns and the application's display zone as the zone in which
  * timestamps without an offset were written. The table is given the same zone by LogModel, so both agree.
  */
-loglib::ParserOptions MakeParserOptionsFor(const loglib::LogConfiguration &configuration)
+loglib::ParserOptions MakeParserOptionsFor(const loglib::ColumnLayout &layout)
 {
     loglib::ParserOptions options;
-    options.timeColumns = loglib::TimeColumnsOf(configuration);
+    options.timeColumns = loglib::TimeColumnsOf(layout);
     options.defaultSourceTimeZone = loglib::ProcessDefaultTimeZone();
     return options;
 }
@@ -1747,8 +1752,9 @@ void MainWindow::RestoreHighlightRulesEditorDraft(LogSession *session)
         mHighlightRulesEditorSession = session;
         return;
     }
-    const auto &config = session->Model()->Configuration();
-    mHighlightRulesEditor->SetColumns(config.columns);
+    const auto &columns = session->Model()->Layout().Columns();
+    const auto &highlightRules = session->View().highlightRules;
+    mHighlightRulesEditor->SetColumns(columns);
     if (const std::optional<HighlightRulesEditorDraft> &draft = session->HighlightEditorDraft(); draft.has_value())
     {
         mHighlightRulesEditor->RestoreDraft(*draft);
@@ -1756,9 +1762,9 @@ void MainWindow::RestoreHighlightRulesEditorDraft(LogSession *session)
     else
     {
         HighlightRulesEditorDraft committed;
-        committed.localRules = config.highlightRules;
-        committed.baseline = config.highlightRules;
-        committed.currentRow = config.highlightRules.empty() ? -1 : 0;
+        committed.localRules = highlightRules;
+        committed.baseline = highlightRules;
+        committed.currentRow = highlightRules.empty() ? -1 : 0;
         mHighlightRulesEditor->RestoreDraft(committed);
     }
     mHighlightRulesEditorSession = session;
@@ -1772,8 +1778,8 @@ void MainWindow::OpenHighlightRulesEditor()
     }
     if (mHighlightRulesEditor.isNull())
     {
-        const auto &config = mModel->Configuration();
-        mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
+        mHighlightRulesEditor =
+            new HighlightRulesEditor(mSession->View().highlightRules, mModel->Layout().Columns(), mTheme, this);
         mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
         connect(
             mHighlightRulesEditor.data(),
@@ -1786,11 +1792,11 @@ void MainWindow::OpenHighlightRulesEditor()
                     return;
                 }
                 auto forRuntime = rules;
-                origin->Model()->ConfigurationManager().SetHighlightRules(std::move(rules));
+                origin->MutableView().highlightRules = std::move(rules);
                 if (HighlightRuleSet *highlights = origin->Highlights(); highlights != nullptr)
                 {
                     highlights->SetRules(
-                        std::move(forRuntime), origin->Model()->Configuration().columns, &origin->Model()->Table()
+                        std::move(forRuntime), origin->Model()->Layout().Columns(), &origin->Model()->Table()
                     );
                     const std::size_t inactive = highlights->InactiveCount();
                     if (inactive > 0)
@@ -1896,7 +1902,7 @@ void MainWindow::RebindSharedDocks(const SessionBindContext &context)
         }
         else if (incoming != nullptr)
         {
-            mHighlightRulesEditor->SetColumns(incoming->Model()->Configuration().columns);
+            mHighlightRulesEditor->SetColumns(incoming->Model()->Layout().Columns());
         }
     }
 }
@@ -2719,9 +2725,9 @@ void MainWindow::InstallActiveSessionConnections()
             }
             if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == mSession)
             {
-                mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+                mHighlightRulesEditor->SetColumns(mModel->Layout().Columns());
             }
-            if (FilterHasUnresolvedLeaves(mModel->Configuration().expression, mModel->Configuration().columns))
+            if (FilterHasUnresolvedLeaves(mSession->View().expression, mModel->Layout().Columns()))
             {
                 UpdateFilters();
             }
@@ -2798,7 +2804,7 @@ void MainWindow::InstallActiveSessionConnections()
             {
                 return;
             }
-            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+            mHighlights->RebindColumns(mModel->Layout().Columns(), &mModel->Table());
         }
     );
     // Enum-column change -> filter rebuild pipeline (Demoted /
@@ -3002,10 +3008,6 @@ void MainWindow::BroadcastRotationHistoryPreference(bool enabled)
         }
         // Source state remains writable during teardown even when its model is unavailable.
         currentSource->followRotationSiblings = enabled;
-        if (session->Model() != nullptr)
-        {
-            session->Model()->ConfigurationManager().SetSource(currentSource);
-        }
     }
 }
 
@@ -3484,9 +3486,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     loglib::LogConfiguration parsed;
     try
     {
-        loglib::LogConfigurationManager probe;
-        probe.Load(jsonPath.toStdString());
-        parsed = probe.Configuration();
+        parsed = loglib::LoadConfiguration(jsonPath.toStdString());
     }
     catch (const std::exception &e)
     {
@@ -3521,9 +3521,7 @@ void MainWindow::OpenSessionFromJson(const QString &uuid, const QString &jsonPat
     loglib::LogConfiguration parsed;
     try
     {
-        loglib::LogConfigurationManager probe;
-        probe.Load(jsonPath.toStdString());
-        parsed = probe.Configuration();
+        parsed = loglib::LoadConfiguration(jsonPath.toStdString());
     }
     catch (const std::exception &)
     {
@@ -3547,9 +3545,7 @@ QString MainWindow::RestoreHostedTabFromJson(const QString &uuid, const QString 
     loglib::LogConfiguration parsed;
     try
     {
-        loglib::LogConfigurationManager probe;
-        probe.Load(jsonPath.toStdString());
-        parsed = probe.Configuration();
+        parsed = loglib::LoadConfiguration(jsonPath.toStdString());
     }
     catch (const std::exception &e)
     {
@@ -3714,10 +3710,11 @@ void MainWindow::NewSession()
     mModel->Reset();
     ClearAllFilters();
 
-    // Wipe the configuration and re-emit `beginResetModel` /
+    // Wipe the columns and re-emit `beginResetModel` /
     // `endResetModel` so the header collapses to zero sections.
     // The double reset (rows then header) is intentional.
-    mModel->ConfigurationManager().Reset();
+    mModel->MutableLayout().Reset();
+    mSession->MutableView() = loglib::SessionView{};
     mModel->NotifyConfigurationReplaced();
 
     // Anchors are session-scoped. Clear after the model reset so
@@ -3807,16 +3804,15 @@ void MainWindow::OpenFiles()
 
 bool MainWindow::TryLoadAsConfiguration(const QString &file)
 {
-    // Probe via a throw-away manager so the live model is untouched
-    // when the file is not actually a configuration. Reject
-    // `columns.empty()` parses: `{}` and any session-only-fields
-    // object would otherwise apply as a default `LogConfiguration`
-    // and wipe the current column layout.
+    // Parse into a temporary so the live model is untouched when the
+    // file is not actually a configuration. Reject `columns.empty()`
+    // parses: a configuration without columns would otherwise wipe
+    // the current column layout.
+    loglib::LogConfiguration loaded;
     try
     {
-        loglib::LogConfigurationManager probe;
-        probe.Load(file.toStdString());
-        if (probe.Configuration().columns.empty())
+        loaded = loglib::LoadConfiguration(file.toStdString());
+        if (loaded.columns.empty())
         {
             return false;
         }
@@ -3831,19 +3827,20 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
     // but live state may be partially mutated.
     try
     {
-        // Drop proxy rules + sort before `Load` rewrites the
-        // configuration so they don't evaluate against the old
-        // column layout under the upcoming reset.
+        // Drop proxy rules + sort before the columns are replaced so
+        // they don't evaluate against the old column layout under the
+        // upcoming reset.
         mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
-        mModel->ConfigurationManager().Load(file.toStdString());
+        mModel->MutableLayout().SetColumns(std::move(loaded.columns));
+        mSession->MutableView() = std::move(loaded.view);
         // Session boundary: drop the previous session's recents
         // pin so a later AutoSave cannot rewrite an unrelated
         // session's JSON under the stale uuid.
         DetachAutoSaveUuid();
-        // `Load` rewrites the configuration without emitting any
-        // model signal; the reset re-initialises the header and
+        // Replacing the columns emits no model signal; the reset
+        // re-initialises the header and
         // pulls the loaded `visible` flags via the wired
         // `modelReset -> ApplyColumnVisibility` connect.
         mModel->NotifyConfigurationReplaced();
@@ -3852,9 +3849,8 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // because that helper re-mirrors session state and would
         // otherwise overwrite the loaded sort with the cleared
         // proxy sort. Columns-only files default to `-1` (no sort).
-        const auto loadedSort = mModel->Configuration().sort;
-        const int loadedSortColumn =
-            loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Configuration().columns);
+        const auto loadedSort = mSession->View().sort;
+        const int loadedSortColumn = loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Layout().Columns());
         if (loadedSortColumn >= 0)
         {
             mTableView->sortByColumn(
@@ -3863,9 +3859,8 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         }
 
         // Mirror the loaded source so the next save round-trips it.
-        // No auto-bind. Backfill `locatorDedupKeys` for JSON that
-        // pre-dates the parallel-array schema split.
-        mSession->MutableCurrentSource() = mModel->Configuration().source;
+        // No auto-bind.
+        mSession->MutableCurrentSource() = std::move(loaded.source);
         logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
         mSession->NotifyPresentationChanged();
         // Loaded source preferences replace the prior session's Undo state.
@@ -3879,7 +3874,7 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // is surfaced to the user.
         if (mAnchors != nullptr)
         {
-            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mSession->View().anchors);
             if (clampedAnchorCount > 0)
             {
                 statusBar()->showMessage(
@@ -4695,8 +4690,6 @@ bool MainWindow::ContinueOpenAfterPrepared(
         fileSource->AttachLifetimeAnchor(std::move(decompressionAnchor));
     }
 
-    auto cfg = std::make_shared<const loglib::LogConfiguration>(model->Configuration());
-
     const bool isFirstFileInSession = !origin->IsSessionActive();
 
     origin->SetStreamingFileName(QFileInfo(originalPath).fileName());
@@ -4759,7 +4752,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     QtStreamingLogSink *sink = model->Sink();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(*cfg);
+    loglib::ParserOptions options = MakeParserOptionsFor(model->Layout());
 
     // Per-file parser detection runs against the effective (possibly
     // decompressed) path so the sniff sees the actual bytes.
@@ -4767,8 +4760,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     const DetectedFormat detectedPerFile = DetectFormatForPath(effectivePath);
     std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(detectedPerFile.format, detectedPerFile.Options());
 
-    // False positive: `parseCallable` is moved into the model and invoked;
-    // `cfg` is consumed by `options`.
+    // False positive: `parseCallable` is moved into the model and invoked.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     auto parseCallable = [sink, fileSourcePtr, options = std::move(options), parser = std::move(parser)](
                              const loglib::StopToken &stopToken
@@ -5238,28 +5230,21 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     if (bundleMetadata.has_value() && armedForThisFile && sessionStillFresh && model != nullptr)
     {
         loglib::LogConfiguration embedded = std::move(bundleMetadata->configuration);
-        const std::string displayPath = logapp::CanonicalDisplayPath(origin->DecompressionOriginalPath()).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(origin->DecompressionOriginalPath()).toStdString();
-        if (!embedded.source.has_value())
-        {
-            embedded.source.emplace();
-        }
-        embedded.source->kind = loglib::Source::Kind::File;
-        loglib::ClearLocators(*embedded.source);
-        loglib::AppendLocator(*embedded.source, displayPath, dedupKey);
         // Anchors use the same canonical locator as source deduplication.
-        for (auto &anchor : embedded.anchors)
+        for (auto &anchor : embedded.view.anchors)
         {
             anchor.locator = dedupKey;
         }
 
-        model->ConfigurationManager().SetConfiguration(std::move(embedded));
+        model->MutableLayout().SetColumns(std::move(embedded.columns));
+        origin->MutableView() = std::move(embedded.view);
         model->NotifyConfigurationReplaced();
         origin->SetPendingApplySortFromConfig(true);
         if (anchors != nullptr)
         {
             // Preserve newer anchors by clamping unsupported colour slots.
-            const std::size_t clampedAnchorCount = anchors->Replace(model->Configuration().anchors);
+            const std::size_t clampedAnchorCount = anchors->Replace(origin->View().anchors);
             if (clampedAnchorCount > 0)
             {
                 PostStatusMessage(
@@ -5276,8 +5261,9 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         // Rebuild the runtime highlight cache from embedded rules.
         if (highlights != nullptr)
         {
-            const auto &appliedConfig = model->Configuration();
-            highlights->SetRules(appliedConfig.highlightRules, appliedConfig.columns, &model->Table());
+            const auto &appliedColumns = model->Layout().Columns();
+            const auto &appliedRules = origin->View().highlightRules;
+            highlights->SetRules(appliedRules, appliedColumns, &model->Table());
             const std::size_t inactive = highlights->InactiveCount();
             if (inactive > 0)
             {
@@ -5291,8 +5277,8 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
             // Only sync the editor when it is bound to the origin session.
             if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == origin)
             {
-                mHighlightRulesEditor->SetColumns(appliedConfig.columns);
-                mHighlightRulesEditor->SetRules(appliedConfig.highlightRules);
+                mHighlightRulesEditor->SetColumns(appliedColumns);
+                mHighlightRulesEditor->SetRules(appliedRules);
             }
             origin->ClearHighlightEditorDraft();
         }
@@ -5500,10 +5486,10 @@ void MainWindow::ExportFilteredRows()
     // columns stay in the configuration; projection reads
     // `Column::visible` only.
     std::vector<std::size_t> visibleColumns;
-    const auto &configuration = mModel->Configuration();
+    const auto &columnLayout = mModel->Layout();
     if (config.includeHiddenColumns)
     {
-        visibleColumns.resize(configuration.columns.size());
+        visibleColumns.resize(columnLayout.Columns().size());
         for (std::size_t i = 0; i < visibleColumns.size(); ++i)
         {
             visibleColumns[i] = i;
@@ -5511,7 +5497,7 @@ void MainWindow::ExportFilteredRows()
     }
     else
     {
-        visibleColumns = loglib::ColumnProjection(configuration).Indices();
+        visibleColumns = loglib::ColumnProjection(columnLayout).Indices();
     }
 
     auto plan = std::make_unique<loglib::exports::ExportPlan>();
@@ -5715,7 +5701,7 @@ void MainWindow::ExportSessionBundle()
     }
 
     // Copy current view state into the embedded configuration.
-    MirrorSessionStateToConfiguration();
+    SyncSessionView();
 
     BeginAsyncBundleExport(logapp::QStringToFsPath(config.destination), config.compressionLevel, config.totalWorkers);
 }
@@ -5743,7 +5729,7 @@ void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
         }
         StopStream();
     }
-    MirrorSessionStateToConfiguration();
+    SyncSessionView();
     constexpr int DEFAULT_TEST_COMPRESSION_LEVEL = 3;
     constexpr int DEFAULT_TEST_TOTAL_WORKERS = 0;
     BeginAsyncBundleExport(
@@ -5780,10 +5766,12 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
 
     // Snapshot on the GUI thread, including runtime-only anchors that
     // the writer remaps into the bundle's dense row space.
-    loglib::LogConfiguration configSnapshot = mModel->Configuration();
+    loglib::LogConfiguration configSnapshot;
+    configSnapshot.columns = mModel->Layout().Columns();
+    configSnapshot.view = mSession->View();
     if (mAnchors != nullptr)
     {
-        configSnapshot.anchors = mAnchors->EntriesIncludingRuntimeOnly();
+        configSnapshot.view.anchors = mAnchors->EntriesIncludingRuntimeOnly();
     }
     const loglib::LogTable *const tablePtr = &mModel->Table();
 
@@ -6277,7 +6265,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // before the AutoSave + destructive reset, so the user sees
     // their discarded selection explicitly rather than having the
     // shared cancel-handler silently clear `mSession->MutablePendingOpenFiles()`.
-    // Must run before AutoSave below: `MirrorSessionStateToConfiguration`
+    // Must run before AutoSave below: `SyncSessionView`
     // would otherwise union the never-opened paths into the prior
     // session's persisted locators.
     const int discardedQueuedFiles = static_cast<int>(mSession->MutablePendingOpenFiles().size());
@@ -6428,9 +6416,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
-
-    loglib::ParserOptions options = MakeParserOptionsFor(*cfg);
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout());
 
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
@@ -6567,8 +6553,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     }
     ApplyDisplayOrder(origin, LogSessionViewForSession(origin));
 
-    auto cfg = std::make_shared<const loglib::LogConfiguration>(model->Configuration());
-    loglib::ParserOptions options = MakeParserOptionsFor(*cfg);
+    loglib::ParserOptions options = MakeParserOptionsFor(model->Layout());
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
@@ -6730,7 +6715,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Configuration());
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout());
 
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
@@ -6896,7 +6881,7 @@ void MainWindow::OpenNetworkStream()
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Configuration());
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout());
 
     // Network streams have no real filesystem path; the producer's
     // display string serves as the LineSource's opaque identity.
@@ -7407,7 +7392,7 @@ void MainWindow::UpdateFilterProblemStatus()
     if (mModel != nullptr && mModel->rowCount() > 0)
     {
         const std::vector<std::string> problems =
-            loglib::FindFilterProblems(mModel->Configuration().expression, mModel->Configuration().columns);
+            loglib::FindFilterProblems(mSession->View().expression, mModel->Layout().Columns());
         if (!problems.empty())
         {
             text = tr("Filter: %1").arg(QString::fromStdString(problems.front()));
@@ -7478,7 +7463,7 @@ void MainWindow::UpdateRowsShownStatus()
     // Mirrors the enabled-state check on `actionClearAllFilters` --
     // the button triggers that action, so the two must agree or a
     // visible button becomes a no-op on click.
-    const bool isMatchAll = (mModel != nullptr) && loglib::IsMatchAll(mModel->Configuration().expression);
+    const bool isMatchAll = (mModel != nullptr) && loglib::IsMatchAll(mSession->View().expression);
     mClearFiltersStatusButton->setVisible(!isMatchAll);
 }
 
@@ -7859,7 +7844,7 @@ void MainWindow::RebuildAddFilterMenu(QMenu *menu)
     }
     menu->clear();
 
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (columns.empty())
     {
         // Disabled placeholder so an empty dropdown advertises
@@ -7958,7 +7943,7 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     entries.reserve(Filters().size());
     for (const auto &[id, filter] : Filters())
     {
-        const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
+        const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, mModel->Layout().Columns());
         QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
                                   ? labels[static_cast<size_t>(row)]
                                   // Filter pointing at a column that no
@@ -8022,7 +8007,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         return false;
     }
 
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (columns.empty())
     {
         return false;
@@ -8140,7 +8125,7 @@ void MainWindow::AppendSortEntriesOrPlaceholder(QMenu *menu)
     {
         return;
     }
-    if (mModel == nullptr || mModel->Configuration().columns.empty())
+    if (mModel == nullptr || mModel->Layout().Columns().empty())
     {
         QAction *placeholder = menu->addAction(tr("(no columns yet)"));
         placeholder->setEnabled(false);
@@ -8491,23 +8476,22 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
     QMessageBox::warning(this, QStringLiteral("Filters Dropped on Load"), message);
 }
 
-void MainWindow::MirrorSessionStateToConfiguration()
+void MainWindow::SyncSessionView()
 {
-    MirrorSessionStateToConfiguration(mSession);
+    SyncSessionView(mSession);
 }
 
-void MainWindow::MirrorSessionStateToConfiguration(LogSession *session)
+void MainWindow::SyncSessionView(LogSession *session)
 {
     if (session == nullptr)
     {
         return;
     }
-    LogModel *const model = session->Model();
-    if (model == nullptr)
+    if (session->Model() == nullptr)
     {
         return;
     }
-    // Recompose `LogConfiguration::expression` from the live simple-mode
+    // Recompose the view expression from the live simple-mode
     // leaves merged with any Advanced-mode structure already carried
     // on the expression. The reconciler is session-local and lives on
     // `LogSession`; see
@@ -8522,7 +8506,16 @@ void MainWindow::MirrorSessionStateToConfiguration(LogSession *session)
     // proxy is still transitioning through `-1`.
     session->MirrorSortToConfiguration();
 
-    // Drop empty-locator Sources before mirroring: on-disk schema
+    // Anchor mirror is session-local; see
+    // `LogSession::MirrorAnchorsToConfiguration`.
+    session->MirrorAnchorsToConfiguration();
+}
+
+loglib::LogConfiguration MainWindow::SnapshotConfiguration(LogSession *session)
+{
+    SyncSessionView(session);
+
+    // Drop empty-locator Sources before saving: on-disk schema
     // omits `source` when nothing is bound, so a `Source{...,
     // locators: {}}` would round-trip as a label-less recents entry.
     //
@@ -8554,28 +8547,16 @@ void MainWindow::MirrorSessionStateToConfiguration(LogSession *session)
                 loglib::AppendLocator(mirrored, displayPath, dedupKey);
             }
         }
-        model->ConfigurationManager().SetSource(std::move(mirrored));
+        return session->BuildConfiguration(std::move(mirrored));
     }
-    else if (loglib::HasLocators(currentSource))
-    {
-        model->ConfigurationManager().SetSource(currentSource);
-    }
-    else
-    {
-        model->ConfigurationManager().SetSource(std::nullopt);
-    }
-
     // Invariant: either no source, or a source with at least one
     // locator. A `Source{kind: ..., locators: {}}` would round-trip
     // as a label-less recents entry.
+    if (loglib::HasLocators(currentSource))
     {
-        const auto &mirrored = model->ConfigurationManager().Configuration().source;
-        Q_ASSERT(!mirrored.has_value() || loglib::HasLocators(mirrored));
+        return session->BuildConfiguration(currentSource);
     }
-
-    // Anchor mirror is session-local; see
-    // `LogSession::MirrorAnchorsToConfiguration`.
-    session->MirrorAnchorsToConfiguration();
+    return session->BuildConfiguration(std::nullopt);
 }
 
 bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
@@ -8619,9 +8600,7 @@ bool MainWindow::AutoSaveSessionSnapshot(LogSession *session, bool publishOpenWi
 
     // Mirror live filters / sort / source so auto-save and the
     // user-driven `SaveSession` path produce the same JSON.
-    MirrorSessionStateToConfiguration(session);
-
-    const loglib::LogConfiguration &configuration = model->ConfigurationManager().Configuration();
+    const loglib::LogConfiguration configuration = SnapshotConfiguration(session);
     // `WriteSnapshotAndPublish` folds the snapshot + open-windows
     // publish under a single cross-process lock. `publishLanded`
     // tells us whether the publish half actually reached disk (it
@@ -8634,7 +8613,7 @@ bool MainWindow::AutoSaveSessionSnapshot(LogSession *session, bool publishOpenWi
     if (uuid.isEmpty())
     {
         // Save failed. The atomic temp+rename in
-        // `LogConfigurationManager::Save` preserves any prior valid
+        // `SaveConfiguration` preserves any prior valid
         // `<uuid>.json`; the existing pins still point there.
         return false;
     }
@@ -9246,7 +9225,7 @@ void MainWindow::SaveConfiguration()
     RememberLastOpenDir(file);
     try
     {
-        DoSaveConfiguration(file, loglib::SaveScope::ColumnsOnly);
+        DoSaveConfiguration(file, loglib::SaveScope::Columns);
     }
     catch (std::exception &e)
     {
@@ -9258,9 +9237,9 @@ bool MainWindow::SaveSession()
 {
     // A stdin session's `<stdin>` locator cannot be reopened; a `Full` save would
     // serialise a stanza the load path can only reject with an info
-    // popup. Offer to demote to `ColumnsOnly` so columns/filters/
-    // highlights round-trip cleanly and the on-disk config omits the
-    // useless source field entirely.
+    // popup. Offer to demote to `SaveScope::Columns` so the columns
+    // round-trip cleanly and the on-disk config omits the useless
+    // source field entirely.
     loglib::SaveScope effectiveScope = loglib::SaveScope::Full;
     if (const auto &currentSource = mSession->CurrentSource();
         currentSource.has_value() && currentSource->kind == loglib::Source::Kind::Stdin)
@@ -9268,7 +9247,7 @@ bool MainWindow::SaveSession()
 #ifdef LOGAPP_BUILD_TESTING
         if (mSuppressDialogsForTest)
         {
-            effectiveScope = loglib::SaveScope::ColumnsOnly;
+            effectiveScope = loglib::SaveScope::Columns;
         }
         else
 #endif
@@ -9277,8 +9256,8 @@ bool MainWindow::SaveSession()
                 this,
                 tr("Save Session (stdin)"),
                 tr("This session was read from standard input, which cannot be reopened later. "
-                   "The columns, filters, and highlights can still be saved so they apply to a "
-                   "future run.\n\nSave columns and filters only?"),
+                   "The columns can still be saved so they apply to a future run."
+                   "\n\nSave the columns only?"),
                 QMessageBox::Save | QMessageBox::Cancel,
                 QMessageBox::Save
             );
@@ -9286,7 +9265,7 @@ bool MainWindow::SaveSession()
             {
                 return false;
             }
-            effectiveScope = loglib::SaveScope::ColumnsOnly;
+            effectiveScope = loglib::SaveScope::Columns;
         }
     }
 
@@ -9316,8 +9295,7 @@ void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scop
     // protects against a mutator that forgets to mirror.
     // `scope` selects which subset lands on disk; `Save` throws on
     // I/O failure (callers catch).
-    MirrorSessionStateToConfiguration();
-    mModel->ConfigurationManager().Save(path.toStdString(), scope);
+    loglib::SaveConfiguration(SnapshotConfiguration(mSession), path.toStdString(), scope);
     // Save succeeded — runtime now matches disk, so drop `[*]`.
     // A throw above (correctly) skips this and leaves the marker set.
     // The session emits `filtersDirtyChanged(false)` which drives
@@ -9377,7 +9355,7 @@ void MainWindow::EditColumn(int columnIndex)
     {
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= columns.size())
     {
         return;
@@ -9922,7 +9900,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                 }
                 mSession->SetApplyingEnumRebuild(true);
                 const auto demoteGuard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
-                const auto &columnsCfg = mModel->Configuration().columns;
+                const auto &columnsCfg = mModel->Layout().Columns();
                 const loglib::Column *demotedColumn = std::cmp_less(columnIndex, columnsCfg.size())
                                                           ? &columnsCfg[static_cast<size_t>(columnIndex)]
                                                           : nullptr;
@@ -9969,14 +9947,14 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                     expanded.erase(dupTail.begin(), dupTail.end());
                     filter.filterValues = std::move(expanded);
                 }
-                MirrorSessionStateToConfiguration();
+                SyncSessionView();
                 SyncColumnFilterIndicators();
             }
         }
     }
     // `columnIndex == -1` means "scope unknown" -- treat as
     // matches-anything to keep the safe broad behaviour.
-    const auto &columnsForResolve = mModel->Configuration().columns;
+    const auto &columnsForResolve = mModel->Layout().Columns();
     const auto matchesAffectedColumn = [columnIndex, &columnsForResolve](const auto &kv) {
         if (columnIndex < 0)
         {
@@ -10027,9 +10005,7 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
     loglib::LogConfiguration parsed;
     try
     {
-        loglib::LogConfigurationManager probe;
-        probe.Load(path.toStdString());
-        parsed = probe.Configuration();
+        parsed = loglib::LoadConfiguration(path.toStdString());
     }
     catch (std::exception &e)
     {
@@ -10100,8 +10076,9 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         SetConfigurationUiEnabled(true);
         UpdateStreamToolbarVisibility();
         UpdateStreamingStatus();
-        mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
-        // `SetConfiguration` does not emit a model signal; the
+        mModel->MutableLayout().SetColumns(std::move(parsed.columns));
+        mSession->MutableView() = std::move(parsed.view);
+        // Replacing the columns does not emit a model signal; the
         // reset re-initialises the header section count and the
         // wired `modelReset` slot pushes the loaded `visible` flags.
         mModel->NotifyConfigurationReplaced();
@@ -10118,9 +10095,9 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance.
         if (!mSession->HasPendingApplySortFromConfig())
         {
-            const auto loadedSort = mModel->Configuration().sort;
+            const auto loadedSort = mSession->View().sort;
             const int loadedSortColumn =
-                loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Configuration().columns);
+                loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Layout().Columns());
             if (loadedSortColumn >= 0)
             {
                 mTableView->sortByColumn(
@@ -10131,8 +10108,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
         // Mirror the loaded source so the next save round-trips
         // it; no auto-bind (foreign sessions would be hostile).
-        // Backfill the parallel dedup-keys array for older JSON.
-        mSession->MutableCurrentSource() = mModel->Configuration().source;
+        mSession->MutableCurrentSource() = std::move(parsed.source);
         logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
         mSession->NotifyPresentationChanged();
         // Session loading updates the menu but does not clear this
@@ -10145,7 +10121,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // surfaced to the user.
         if (mAnchors != nullptr)
         {
-            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mSession->View().anchors);
             if (clampedAnchorCount > 0)
             {
                 statusBar()->showMessage(
@@ -10165,8 +10141,9 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // hook fills it as streams populate.
         if (mHighlights != nullptr)
         {
-            const auto &config = mModel->Configuration();
-            mHighlights->SetRules(config.highlightRules, config.columns, &mModel->Table());
+            const auto &columns = mModel->Layout().Columns();
+            const auto &highlightRules = mSession->View().highlightRules;
+            mHighlights->SetRules(highlightRules, columns, &mModel->Table());
             const std::size_t inactive = mHighlights->InactiveCount();
             if (inactive > 0)
             {
@@ -10180,8 +10157,8 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
             // not the pre-load buffer.
             if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == mSession)
             {
-                mHighlightRulesEditor->SetColumns(config.columns);
-                mHighlightRulesEditor->SetRules(config.highlightRules);
+                mHighlightRulesEditor->SetColumns(columns);
+                mHighlightRulesEditor->SetRules(highlightRules);
             }
             if (mSession != nullptr)
             {
@@ -10223,10 +10200,10 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
     // the root `And`, or a bare-`Leaf` root) from the loaded
     // expression and re-add each via `AddLogFilter`. Non-Leaf
     // children and non-`And` roots are Advanced clauses and are
-    // preserved by `MirrorSessionStateToConfiguration`. UUIDs are
+    // preserved by `SyncSessionView`. UUIDs are
     // GUI-only and regenerated here.
     std::vector<loglib::LeafRule> loadedFilters;
-    const auto &loadedExpression = model->Configuration().expression;
+    const auto &loadedExpression = session->View().expression;
     if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node); rootAnd != nullptr)
     {
         loadedFilters.reserve(rootAnd->children.size());
@@ -10269,7 +10246,7 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
     mLastDroppedFilterCountForTest = 0;
 #endif
 
-    const auto &columns = model->Configuration().columns;
+    const auto &columns = model->Layout().Columns();
     std::vector<FilterValidationFailure> dropped;
     for (const auto &saved : loadedFilters)
     {
@@ -10281,7 +10258,7 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
         // Defer mirror + rule rebuild; one trailing sync below.
         AddLogFilter(session, QUuid::createUuid().toString(), saved, /*deferSync=*/true);
     }
-    MirrorSessionStateToConfiguration(session);
+    SyncSessionView(session);
     UpdateFilters(session);
     // Re-enable Clear-All for the Advanced-only / all-leaves-dropped
     // cases where no `AddLogFilter` fired but rows are still filtered.
@@ -10610,7 +10587,7 @@ void MainWindow::AddFilter(
     std::optional<loglib::LeafRule> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
-        const auto &columns = mModel->Configuration().columns;
+        const auto &columns = mModel->Layout().Columns();
         if (auto failure = ValidateFilterAgainstColumns(*resolvedFilter, columns))
         {
             switch (failure->reason)
@@ -10702,8 +10679,7 @@ void MainWindow::AddFilter(
     {
         // Column keys are the wire identity; the editor needs a
         // live column index, so resolve once here and forward.
-        const int editorRow =
-            loglib::ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
+        const int editorRow = loglib::ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Layout().Columns());
         if (resolvedFilter->type == loglib::LeafRule::Type::Time)
         {
             // At least one bound must be set; the other side may be
@@ -10827,7 +10803,7 @@ void MainWindow::SyncClearAllFiltersEnabled()
     {
         return;
     }
-    ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mModel->Configuration().expression));
+    ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mSession->View().expression));
     // Status-bar button gates on the same condition via
     // `UpdateRowsShownStatus`; route through it so the two stay in
     // lockstep on filter changes that don't shift row counts.
@@ -10841,8 +10817,8 @@ void MainWindow::ClearAllFilters()
     // for a clean slate, so drop any Advanced-mode tree too. The
     // mirror otherwise preserves non-Leaf Advanced subtrees, which
     // would leave filtering active with no UI cue.
-    mModel->ConfigurationManager().SetExpression(loglib::FilterExpression{});
-    MirrorSessionStateToConfiguration();
+    mSession->MutableView().expression = loglib::FilterExpression{};
+    SyncSessionView();
     UpdateFilters();
     MarkFiltersDirty();
     SyncColumnFilterIndicators();
@@ -10853,7 +10829,7 @@ void MainWindow::OpenAdvancedFilter()
     // Seed from the live configuration so simple-mode leaves
     // round-trip through the pretty-printer.
     AdvancedFilterEditor editor(this);
-    editor.LoadFromExpression(mModel->Configuration().expression);
+    editor.LoadFromExpression(mSession->View().expression);
     if (editor.exec() != QDialog::Accepted)
     {
         return;
@@ -10877,12 +10853,12 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     //
     // Extracting the simple leaves lets the Filters menu show one
     // entry per leaf (so Edit/Remove keep working post-Advanced),
-    // and prevents `MirrorSessionStateToConfiguration` from later
+    // and prevents `SyncSessionView` from later
     // dropping a bare `Leaf` root under the "already in simple"
     // rule.
     ResetSimpleFilterState();
 
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     // Only leaves the simple editor can actually load belong in
     // `mSimpleLeaves`: `ValidateFilterAgainstColumns` is what
     // `FilterEditor` uses. The grammar accepts looser leaves
@@ -10914,7 +10890,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     std::vector<loglib::LeafRule> extractedLeaves;
     loglib::FilterExpression::And rest;
     // Wrap a bare `Leaf` remainder in a single-child `And`:
-    // `MirrorSessionStateToConfiguration` drops top-level Leaves
+    // `SyncSessionView` drops top-level Leaves
     // (they should live in `mSimpleLeaves`), so unwrapped it would
     // silently vanish on the next mirror. The wrap is a no-op for
     // evaluation and formatting.
@@ -10967,12 +10943,12 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // Install the non-Leaf remainder first so the mirror preserves
     // it, then re-add the extracted leaves through `AddLogFilter`
     // with deferred sync (one Mirror at the end).
-    mModel->ConfigurationManager().SetExpression(std::move(remainder));
+    mSession->MutableView().expression = std::move(remainder);
     for (const auto &leaf : extractedLeaves)
     {
         AddLogFilter(QUuid::createUuid().toString(), leaf, /*deferSync=*/true);
     }
-    MirrorSessionStateToConfiguration();
+    SyncSessionView();
     UpdateFilters();
     SyncClearAllFiltersEnabled();
     MarkFiltersDirty();
@@ -10990,7 +10966,7 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
     }
     if (!deferSync)
     {
-        MirrorSessionStateToConfiguration();
+        SyncSessionView();
         UpdateFilters();
     }
     MarkFiltersDirty();
@@ -11044,7 +11020,7 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
 
     loglib::LeafRule filter;
     filter.type = loglib::LeafRule::Type::String;
-    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterString = filterString.toStdString();
     filter.matchType = match;
 
@@ -11092,7 +11068,7 @@ void MainWindow::FilterTimeStampSubmitted(
 
     loglib::LeafRule filter;
     filter.type = loglib::LeafRule::Type::Time;
-    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
 
@@ -11105,7 +11081,7 @@ void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QSt
 
     loglib::LeafRule filter;
     filter.type = loglib::LeafRule::Type::Enumeration;
-    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
     for (const QString &v : selectedValues)
     {
@@ -11150,7 +11126,7 @@ void MainWindow::FilterNumericRangeSubmitted(
 
     loglib::LeafRule filter;
     filter.type = loglib::LeafRule::Type::Number;
-    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterMinValue = minValue;
     filter.filterMaxValue = maxValue;
 
@@ -11173,7 +11149,7 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 
     loglib::LeafRule filter;
     filter.type = loglib::LeafRule::Type::Boolean;
-    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     if (includeTrue)
     {
         filter.filterValues.emplace_back("true");
@@ -11318,7 +11294,7 @@ void MainWindow::AddLogFilter(LogSession *session, const QString &id, const logl
     session->MutableSimpleLeaves()[idKey] = filter;
     if (!deferSync)
     {
-        MirrorSessionStateToConfiguration(session);
+        SyncSessionView(session);
         UpdateFilters(session);
     }
     // Every user-driven filter mutation funnels through here, so one
@@ -11361,7 +11337,7 @@ void MainWindow::AddLogFilter(LogSession *session, const QString &id, const logl
     ui->actionClearAllFilters->setDisabled(false);
 
     // Mirror the deferSync gating used for
-    // `MirrorSessionStateToConfiguration` / `UpdateFilters`: bulk
+    // `SyncSessionView` / `UpdateFilters`: bulk
     // callers run a single trailing sync after their loop.
     if (!deferSync)
     {
@@ -11380,7 +11356,7 @@ void MainWindow::SyncColumnFilterIndicators()
     if (cols > 0)
     {
         perColumnTitles.resize(static_cast<size_t>(cols));
-        const auto &columns = mModel->Configuration().columns;
+        const auto &columns = mModel->Layout().Columns();
         for (const auto &[id, filter] : Filters())
         {
             const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
@@ -11582,8 +11558,8 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
     {
         return;
     }
-    const auto &cfgSort = model->Configuration().sort;
-    const int cfgSortColumn = loglib::ResolveLeafColumnByKeys(cfgSort.columnKeys, model->Configuration().columns);
+    const auto &cfgSort = session->View().sort;
+    const int cfgSortColumn = loglib::ResolveLeafColumnByKeys(cfgSort.columnKeys, model->Layout().Columns());
     if (cfgSortColumn < 0)
     {
         return;
@@ -11597,7 +11573,7 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
     {
         return true;
     }
-    const auto &columnsCfg = mModel->Configuration().columns;
+    const auto &columnsCfg = mModel->Layout().Columns();
     const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
     if (resolvedRow < 0)
     {
@@ -11646,7 +11622,7 @@ void MainWindow::UpdateFilters(LogSession *session)
     // predicate construction, level-column expansion, and
     // cost-based ordering).
     loglib::CompiledFilterExpression compiled =
-        loglib::CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
+        loglib::CompileExpression(session->View().expression, model->Layout().Columns(), &model->Table());
     filter->SetFilterExpression(std::move(compiled));
     UpdateFilterProblemStatus();
 }
@@ -11694,7 +11670,7 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
         ApplyColumnVisibility();
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (logicalIndex < 0 || static_cast<size_t>(logicalIndex) >= columns.size())
     {
         return;
@@ -11786,7 +11762,7 @@ void MainWindow::OnSourceColumnsMoved(
     // start tinting rows against the wrong field.
     if (mHighlights != nullptr && mModel != nullptr)
     {
-        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        mHighlights->RebindColumns(mModel->Layout().Columns(), &mModel->Table());
     }
     // Re-apply hidden flags after the move. Qt usually carries them
     // through `columnsMoved`, but `initializeSections()` clears them
@@ -11864,7 +11840,7 @@ void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
 MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
 {
     HeaderContextMenu result;
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (logicalColumn < 0 || static_cast<size_t>(logicalColumn) >= columns.size())
     {
         return result;
@@ -11954,7 +11930,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     };
     std::vector<FilterEntry> filtersForColumn;
     filtersForColumn.reserve(Filters().size());
-    const auto &columnsForResolve = mModel->Configuration().columns;
+    const auto &columnsForResolve = mModel->Layout().Columns();
     for (const auto &entry : Filters())
     {
         if (loglib::ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
@@ -12142,9 +12118,8 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
 
     // Pin to the first time column (shared with the Record Details
     // summary via `FirstTimeColumnIndex`).
-    const auto &config = mModel->Configuration();
-    const auto &columns = config.columns;
-    const int timeCol = loglib::FirstTimeColumnIndex(config);
+    const auto &columns = mModel->Layout().Columns();
+    const int timeCol = loglib::FirstTimeColumnIndex(mModel->Layout());
     const std::optional<int64_t> micros =
         timeCol >= 0 ? loglib::AsEpochMicroseconds(
                            mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
@@ -12473,12 +12448,12 @@ void MainWindow::EditAnchorNoteOnCurrentRow()
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
 {
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (logicalIndex < 0 || static_cast<size_t>(logicalIndex) >= columns.size())
     {
         return;
     }
-    mModel->ConfigurationManager().SetColumnVisible(static_cast<size_t>(logicalIndex), visible);
+    mModel->MutableLayout().SetColumnVisible(static_cast<size_t>(logicalIndex), visible);
     QHeaderView *header = mTableView->horizontalHeader();
     if (header == nullptr)
     {
@@ -12605,7 +12580,7 @@ void MainWindow::RebuildViewMenu()
         viewMenu->addAction(mMainToolbar->toggleViewAction());
     }
 
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (columns.empty())
     {
         viewMenu->addSeparator();
@@ -12636,7 +12611,7 @@ void MainWindow::RebuildViewMenu()
 
 QString MainWindow::ColumnMenuLabel(size_t columnIndex) const
 {
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (columnIndex >= columns.size())
     {
         return {};
@@ -12674,7 +12649,7 @@ QString MainWindow::ColumnMenuLabel(size_t columnIndex) const
 
 std::vector<QString> MainWindow::BuildAllColumnMenuLabels() const
 {
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     std::vector<QString> labels;
     labels.reserve(columns.size());
     if (columns.empty())

@@ -12,6 +12,7 @@
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/query/column_projection.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -25,10 +26,10 @@
 #include <vector>
 
 using loglib::Column;
+using loglib::ColumnLayout;
 using loglib::ColumnProjection;
 using loglib::ColumnType;
 using loglib::LogConfiguration;
-using loglib::LogConfigurationManager;
 using loglib::exports::ExportFormat;
 using loglib::exports::RowSource;
 
@@ -86,8 +87,8 @@ loglib::LogTable BuildSparseTable()
     config.columns.push_back(MakeColumn("B", "b"));
     config.columns.push_back(MakeColumn("C", "c"));
 
-    LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 
@@ -120,7 +121,7 @@ TEST_CASE("column_projection: all visible columns stay in display order", "[colu
     config.columns.push_back(MakeColumn("B", "b"));
     config.columns.push_back(MakeColumn("C", "c"));
 
-    const ColumnProjection projection(config);
+    const ColumnProjection projection(config.columns);
     REQUIRE(projection.Size() == 3);
     REQUIRE_FALSE(projection.Empty());
     REQUIRE(projection.Indices() == std::vector<std::size_t>{0, 1, 2});
@@ -133,7 +134,7 @@ TEST_CASE("column_projection: mixed hidden columns are omitted", "[column_projec
     config.columns.push_back(MakeColumn("B", "b", false));
     config.columns.push_back(MakeColumn("C", "c", true));
 
-    const ColumnProjection fromConfig(config);
+    const ColumnProjection fromConfig(config.columns);
     REQUIRE(fromConfig.Indices() == std::vector<std::size_t>{0, 2});
 
     const ColumnProjection fromSpan(std::span<const Column>(config.columns));
@@ -146,7 +147,7 @@ TEST_CASE("column_projection: all hidden yields an empty projection", "[column_p
     config.columns.push_back(MakeColumn("A", "a", false));
     config.columns.push_back(MakeColumn("B", "b", false));
 
-    const ColumnProjection projection(config);
+    const ColumnProjection projection(config.columns);
     REQUIRE(projection.Empty());
     REQUIRE(projection.Size() == 0);
     REQUIRE(projection.Indices().empty());
@@ -159,15 +160,15 @@ TEST_CASE("column_projection: reorder then project follows display order", "[col
     config.columns.push_back(MakeColumn("B", "b", false));
     config.columns.push_back(MakeColumn("C", "c", true));
 
-    LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
-    REQUIRE(ColumnProjection(manager.Configuration()).Indices() == std::vector<std::size_t>{0, 2});
+    ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
+    REQUIRE(ColumnProjection(manager).Indices() == std::vector<std::size_t>{0, 2});
 
     manager.MoveColumn(2, 0);
-    REQUIRE(manager.Configuration().columns[0].header == "C");
-    REQUIRE(manager.Configuration().columns[1].header == "A");
-    REQUIRE(manager.Configuration().columns[2].header == "B");
-    REQUIRE(ColumnProjection(manager.Configuration()).Indices() == std::vector<std::size_t>{0, 1});
+    REQUIRE(manager.Columns()[0].header == "C");
+    REQUIRE(manager.Columns()[1].header == "A");
+    REQUIRE(manager.Columns()[2].header == "B");
+    REQUIRE(ColumnProjection(manager).Indices() == std::vector<std::size_t>{0, 1});
 }
 
 TEST_CASE("column_projection: SetColumnVisible is the hide/show source", "[column_projection]")
@@ -176,19 +177,19 @@ TEST_CASE("column_projection: SetColumnVisible is the hide/show source", "[colum
     config.columns.push_back(MakeColumn("A", "a"));
     config.columns.push_back(MakeColumn("B", "b"));
 
-    LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     manager.SetColumnVisible(1, false);
-    REQUIRE(ColumnProjection(manager.Configuration()).Indices() == std::vector<std::size_t>{0});
+    REQUIRE(ColumnProjection(manager).Indices() == std::vector<std::size_t>{0});
 
     manager.SetColumnVisible(1, true);
-    REQUIRE(ColumnProjection(manager.Configuration()).Indices() == std::vector<std::size_t>{0, 1});
+    REQUIRE(ColumnProjection(manager).Indices() == std::vector<std::size_t>{0, 1});
 }
 
 TEST_CASE("column_projection: missing keys stay as empty CSV/Markdown cells", "[column_projection][exports]")
 {
     const auto table = BuildSparseTable();
-    const ColumnProjection projection(table.Configuration().Configuration());
+    const ColumnProjection projection(table.Layout());
     REQUIRE(projection.Indices() == std::vector<std::size_t>{0, 1, 2});
 
     const std::string csv = ExportFormatBytes(table, ExportFormat::Csv, projection.Indices(), false);
@@ -203,7 +204,7 @@ TEST_CASE("column_projection: missing keys stay as empty CSV/Markdown cells", "[
 TEST_CASE("column_projection: missing keys are omitted from JSON Lines", "[column_projection][exports]")
 {
     const auto table = BuildSparseTable();
-    const ColumnProjection projection(table.Configuration().Configuration());
+    const ColumnProjection projection(table.Layout());
 
     const std::string jsonAll = ExportFormatBytes(table, ExportFormat::JsonLines, projection.Indices(), true);
     REQUIRE(jsonAll.contains("\"a\":\"x\""));

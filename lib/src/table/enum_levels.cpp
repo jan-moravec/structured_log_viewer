@@ -4,6 +4,7 @@
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
+#include "loglib/schema/column_layout.hpp"
 #include "loglib/schema/log_configuration.hpp"
 
 #include <fmt/format.h>
@@ -22,13 +23,13 @@
 namespace loglib
 {
 
-void EnumInference::MaybePromoteToLevel(LogData &data, LogConfigurationManager &configuration, size_t columnIndex)
+void EnumInference::MaybePromoteToLevel(LogData &data, ColumnLayout &layout, size_t columnIndex)
 {
-    if (columnIndex >= configuration.Configuration().columns.size())
+    if (columnIndex >= layout.Columns().size())
     {
         return;
     }
-    const auto snapshotColumn = [&] -> const Column & { return configuration.Configuration().columns[columnIndex]; };
+    const auto snapshotColumn = [&] -> const Column & { return layout.Columns()[columnIndex]; };
     if (snapshotColumn().type != ColumnType::Enumeration)
     {
         return;
@@ -76,16 +77,14 @@ void EnumInference::MaybePromoteToLevel(LogData &data, LogConfigurationManager &
         return;
     }
 
-    configuration.SetColumnType(columnIndex, ColumnType::Level);
-    RefreshLevelRankCache(data, configuration.Configuration(), columnIndex);
+    layout.SetColumnType(columnIndex, ColumnType::Level);
+    RefreshLevelRankCache(data, layout, columnIndex);
     mPendingLevelBubbleKeys.push_back(canonical);
 }
 
-void EnumInference::RefreshLevelRankCache(
-    const LogData &data, const LogConfiguration &configuration, size_t columnIndex
-)
+void EnumInference::RefreshLevelRankCache(const LogData &data, const ColumnLayout &layout, size_t columnIndex)
 {
-    const auto &columns = configuration.columns;
+    const auto &columns = layout.Columns();
     if (columnIndex >= columns.size())
     {
         return;
@@ -123,10 +122,10 @@ void EnumInference::RefreshLevelRankCache(
 }
 
 const std::vector<LogLevel> *EnumInference::LevelRankCache(
-    const LogData &data, const LogConfiguration &configuration, size_t columnIndex
+    const LogData &data, const ColumnLayout &layout, size_t columnIndex
 ) const noexcept
 {
-    const auto &columns = configuration.columns;
+    const auto &columns = layout.Columns();
     if (columnIndex >= columns.size())
     {
         return nullptr;

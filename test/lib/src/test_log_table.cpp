@@ -12,6 +12,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
@@ -29,7 +30,7 @@
 
 using namespace loglib;
 
-TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager", "[log_table]")
+TEST_CASE("Initialize a LogTable with given LogData and ColumnLayout", "[log_table]")
 {
     // Setup test data
     const MemoryLogFile testFile;
@@ -54,9 +55,7 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
         {.header = "Header2", .keys = {"key2"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration testLogConfiguration;
-    testLogConfiguration.Write(logConfiguration);
-    LogConfigurationManager manager;
-    manager.Load(testLogConfiguration.GetFilePath());
+    ColumnLayout manager(logConfiguration.columns);
 
     // Initialize LogTable with the data and configuration
     const loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
@@ -105,9 +104,7 @@ TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_t
         {.header = "Header1", .keys = {"key1"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration testLogConfiguration;
-    testLogConfiguration.Write(logConfiguration);
-    LogConfigurationManager manager;
-    manager.Load(testLogConfiguration.GetFilePath());
+    ColumnLayout manager(logConfiguration.columns);
 
     // Initialize LogTable with the initial data and configuration
     loglib::LogTable logTable = test_common_lib::TableFromData(std::move(initialData), std::move(manager));
@@ -155,7 +152,7 @@ TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_t
     CHECK(line1.Source()->Path() == newTestFile.GetFilePath());
 }
 
-TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]")
+TEST_CASE("LogTable::Reset preserves the column layout", "[log_table]")
 {
     // Regression: `Reset()` clears data but must keep the configuration
     // (otherwise `LoadConfiguration → File → Open` would lose column layout).
@@ -177,24 +174,8 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     logConfiguration.columns.push_back(
         {.header = "CustomB", .keys = {"key2"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    // Install a top-level `And` expression carrying a single string
-    // leaf on the `CustomA` column so `Reset()` can be tested to
-    // preserve the filter payload.
-    LeafRule filter;
-    filter.type = LeafRule::Type::String;
-    filter.columnKeys = {"key1"};
-    filter.matchType = LeafRule::Match::Contains;
-    filter.filterString = "value1";
-    FilterExpression::And rootAnd;
-    FilterExpression leafExpr;
-    leafExpr.node = FilterExpression::Leaf{filter};
-    rootAnd.children.push_back(std::move(leafExpr));
-    logConfiguration.expression.node = std::move(rootAnd);
-
     const TestLogConfiguration testLogConfiguration;
-    testLogConfiguration.Write(logConfiguration);
-    LogConfigurationManager manager;
-    manager.Load(testLogConfiguration.GetFilePath());
+    ColumnLayout manager(logConfiguration.columns);
 
     loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     REQUIRE(logTable.RowCount() == 2);
@@ -206,13 +187,6 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     REQUIRE(logTable.ColumnCount() == 2);
     CHECK(logTable.GetHeader(0) == "CustomA");
     CHECK(logTable.GetHeader(1) == "CustomB");
-    const auto *rootAndAfter =
-        std::get_if<FilterExpression::And>(&logTable.Configuration().Configuration().expression.node);
-    REQUIRE(rootAndAfter != nullptr);
-    REQUIRE(rootAndAfter->children.size() == 1);
-    const auto *leafAfter = std::get_if<FilterExpression::Leaf>(&rootAndAfter->children.front().node);
-    REQUIRE(leafAfter != nullptr);
-    CHECK(leafAfter->rule.filterString.value_or("") == "value1");
 }
 
 namespace
@@ -530,9 +504,7 @@ TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][a
         {.header = "beta", .keys = {"beta"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(dataA), std::move(mgr));
     REQUIRE(table.ColumnCount() == 2);
@@ -615,7 +587,7 @@ TEST_CASE(
     // column 0; the timestamp back-fill in batch 2 is what this test checks.
 
     // Batch 2: introduces `timestamp`. The auto-promotion heuristic in
-    // `LogConfigurationManager::AppendKeys` recognises the name and creates a Type::Time
+    // `ColumnLayout::AppendKeys` recognises the name and creates a Type::Time
     // column at the END of the configuration, so column index 1 should be the new time
     // column. The two already-appended rows did not see Stage B's timestamp pass (their
     // batch did not even contain the key) so AppendBatch must back-fill them — the new row
@@ -721,11 +693,9 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     // The parser interns the time-column key through BuildTimeColumnSpecs and
@@ -825,11 +795,9 @@ TEST_CASE(
     cfg.columns.push_back(std::move(wide));
 
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     // Pre-populate every key in the KeyIndex once so each AppendBatch is a
@@ -915,11 +883,9 @@ TEST_CASE(
     cfg.columns.push_back(std::move(untouched));
 
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     // Pre-populate every key the columns reference except the brand-new one
@@ -1259,8 +1225,8 @@ TEST_CASE(
     // Stream-mode threshold = 2: promote and back-fill every prior row.
     constexpr size_t FIRST_BATCH_ROWS = 8;
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, columnName, tiers, 1, FIRST_BATCH_ROWS, true));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     const KeyId tierKey = keys.Find(columnName);
     REQUIRE(tierKey != INVALID_KEY_ID);
@@ -1276,7 +1242,7 @@ TEST_CASE(
     );
 
     REQUIRE(table.RowCount() == FIRST_BATCH_ROWS + SECOND_BATCH_ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         CHECK(table.Data().Lines()[row].IsDictRef(tierKey));
@@ -1329,7 +1295,7 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, ROWS, true));
 
     REQUIRE(table.RowCount() == ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -1368,11 +1334,9 @@ TEST_CASE(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1381,7 +1345,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
@@ -1413,11 +1377,9 @@ TEST_CASE(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     // Small cap pins the boundary behaviour without bulk-filling.
     constexpr uint16_t TEST_CAP = 16;
     table.SetEnumValueCap(TEST_CAP);
@@ -1435,7 +1397,7 @@ TEST_CASE(
 
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     REQUIRE(table.EnumDictionaries().Contains(tagKey));
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
@@ -1447,7 +1409,7 @@ TEST_CASE(
     const auto appendResult8 =
         table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, TEST_CAP + 1, 1, false));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
     CHECK(!table.EnumDictionaries().Contains(tagKey));
     REQUIRE(table.RowCount() == TEST_CAP + 1);
 
@@ -1490,11 +1452,9 @@ TEST_CASE(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1506,7 +1466,7 @@ TEST_CASE(
     );
 
     REQUIRE(table.RowCount() == ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Any);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -1534,11 +1494,9 @@ TEST_CASE(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     constexpr uint16_t TEST_CAP = 4;
     table.SetEnumValueCap(TEST_CAP);
     table.BeginStreaming(std::move(source));
@@ -1553,9 +1511,9 @@ TEST_CASE(
         overflowValues.emplace_back("sev-" + std::to_string(i));
     }
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "severity", overflowValues, 1, TEST_CAP + 1, true));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    REQUIRE(table.Layout().Columns().size() == 1);
     // Demote routes to terminal `Type::String`, blocking re-promotion.
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::String);
 
     // Batch 2: canonical key `level` arrives with cap-friendly data.
     // Terminal `Type::String` blocks re-promotion.
@@ -1568,7 +1526,7 @@ TEST_CASE(
         )
     );
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -1593,11 +1551,9 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1616,8 +1572,8 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     // enum / level column, so the registry isn't strictly empty --
     // each slot just has zero observed values until the next batch.
     CHECK(table.RowCount() == 0);
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     {
         const KeyId categoryKid = table.Keys().Find("category");
         REQUIRE(categoryKid != INVALID_KEY_ID);
@@ -1656,8 +1612,8 @@ TEST_CASE(
         manyValues.emplace_back("level-" + std::to_string(i));
     }
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", manyValues, 1, MIN_ROWS_FOR_PROMOTION, true));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::String);
 
     // Batch 2: cap-friendly data must NOT re-promote.
     std::vector<std::string> fewValues;
@@ -1670,7 +1626,7 @@ TEST_CASE(
         table,
         BuildEnumBatch(keys, *sourcePtr, "level", fewValues, MIN_ROWS_FOR_PROMOTION + 1, MIN_ROWS_FOR_PROMOTION, false)
     );
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -1698,11 +1654,9 @@ TEST_CASE(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1747,11 +1701,9 @@ TEST_CASE("Appending data -- snapshot-enum keys are seeded against the merged Ke
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
 
     KeyIndex keysA;
     std::vector<LogLine> linesA;
@@ -1789,11 +1741,9 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -1840,11 +1790,9 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     // `announceNewKey=true` refreshes the column's KeyId cache after the
@@ -1852,7 +1800,7 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "channel", {"alpha"}, 1, 4, true));
 
     REQUIRE(table.RowCount() == 4);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Any);
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         CHECK_FALSE(table.GetEnumValueId(row, 0).has_value());
@@ -1897,7 +1845,7 @@ TEST_CASE(
     REQUIRE(table.RowCount() == 320);
     // Column promoted; the lone long line stays as `OwnedString`
     // (under the 1% health tolerance).
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tierKey));
@@ -1941,7 +1889,7 @@ TEST_CASE(
     AppendFixtureBatch(table, std::move(batch));
 
     REQUIRE(table.RowCount() == 200);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(tierKey));
@@ -1966,11 +1914,9 @@ TEST_CASE(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -1978,7 +1924,7 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "tag", {longValue, "short"}, 1, 4, true));
 
     // Below the min-sample threshold: column stays.
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tagKey));
@@ -2008,11 +1954,9 @@ TEST_CASE(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -2033,7 +1977,7 @@ TEST_CASE(
     }
     const auto appendResult9 = table.AppendBatch(std::move(batch));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(tagKey));
@@ -2077,7 +2021,7 @@ TEST_CASE(
     AppendFixtureBatch(table, std::move(batch1));
 
     {
-        const auto &columns = table.Configuration().Configuration().columns;
+        const auto &columns = table.Layout().Columns();
         const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
         REQUIRE(featureCol != columns.end());
         // Stays a candidate -- no premature route to a terminal type.
@@ -2097,7 +2041,7 @@ TEST_CASE(
     AppendFixtureBatch(table, std::move(batch2));
 
     REQUIRE(table.RowCount() == 10);
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
     REQUIRE(featureCol != columns.end());
     CHECK(featureCol->type == ColumnType::Enumeration);
@@ -2134,11 +2078,9 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -2148,8 +2090,8 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, ROWS, false));
 
     REQUIRE(table.RowCount() == ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
-    CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Any);
+    CHECK_FALSE(table.Layout().Columns()[0].autoDetect);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -2177,16 +2119,14 @@ TEST_CASE(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 6, true));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(categoryKey));
@@ -2240,8 +2180,8 @@ TEST_CASE(
     // 8 rows comfortably exceeds scanCap (4) so the bail fires.
     AppendFixtureBatch(table, BuildNumericBatch<int64_t>(keys, *sourcePtr, "count", 42, 8, true));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Integer);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Integer);
 }
 
 TEST_CASE(
@@ -2259,8 +2199,8 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
     AppendFixtureBatch(table, BuildNumericBatch<double>(keys, *sourcePtr, "ratio", 1.5, 8, true));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Floating);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Floating);
 }
 
 TEST_CASE(
@@ -2294,8 +2234,8 @@ TEST_CASE(
     }
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Number);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Number);
 }
 
 TEST_CASE(
@@ -2322,8 +2262,8 @@ TEST_CASE(
     }
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Boolean);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Boolean);
 }
 
 TEST_CASE(
@@ -2357,26 +2297,24 @@ TEST_CASE(
     }
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Any);
 }
 
 namespace
 {
 
-/// Build a `LogConfigurationManager` pre-loaded with an auto-detect
+/// Build a `ColumnLayout` pre-loaded with an auto-detect
 /// candidate column (`Type::Any + autoDetect = true`) for `key`,
 /// without going through the key list.
-LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
+ColumnLayout MakeUnknownColumnManager(const std::string &key)
 {
     LogConfiguration cfg;
     cfg.columns.push_back(
         {.header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
     return mgr;
 }
 
@@ -2411,7 +2349,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 600);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
 }
 
 TEST_CASE(
@@ -2436,7 +2374,7 @@ TEST_CASE(
 
     // A stream promotes a column after two rows, but FinalizeAutoDetection demotes an enumeration whose values never
     // repeat, so these three distinct values end as plain text.
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
 }
 
 TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay levels", "[log_table][finalize][enum]")
@@ -2456,7 +2394,7 @@ TEST_CASE("LogTable::FinalizeAutoDetection -- all-distinct level columns stay le
 
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("level"));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Level);
 }
 
 TEST_CASE(
@@ -2484,7 +2422,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId tierKey = table.Keys().Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tierKey));
@@ -2516,7 +2454,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 1);
     REQUIRE(table.ColumnCount() == 1);
-    const auto &col = table.Configuration().Configuration().columns[0];
+    const auto &col = table.Layout().Columns()[0];
     CHECK(col.type == ColumnType::Any);
     CHECK(col.autoDetect);
 }
@@ -2545,7 +2483,7 @@ TEST_CASE(
     loglib::LogTable table = test_common_lib::TableFromData(std::move(data), MakeUnknownColumnManager("tier"));
 
     REQUIRE(table.RowCount() == 100);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 }
 
 TEST_CASE(
@@ -2582,13 +2520,13 @@ TEST_CASE(
     // Per-batch path leaves the column promoted: ratio is above the
     // budget but the 50-sample floor prevents a mid-batch demote.
     REQUIRE(table.RowCount() == 30);
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     // End-of-parse sweep demotes via the relaxed health check.
     FinalizeFixture(table);
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
     const KeyId messageKey = keys.Find("message");
     REQUIRE(messageKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(messageKey));
@@ -2619,11 +2557,11 @@ TEST_CASE(
     }
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     FinalizeFixture(table);
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tierKey));
@@ -2652,11 +2590,9 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -2672,12 +2608,12 @@ TEST_CASE(
     }
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     FinalizeFixture(table);
 
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
-    CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
+    CHECK_FALSE(table.Layout().Columns()[0].autoDetect);
 }
 
 TEST_CASE(
@@ -2699,7 +2635,7 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Level);
     // `BuildEnumBatch` cycles values, so row N % 3 picks the value.
     CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
@@ -2729,27 +2665,27 @@ TEST_CASE(
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
     AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    REQUIRE(table.Configuration().Configuration().columns[0].header == "body");
+    REQUIRE(table.Layout().Columns().size() == 1);
+    REQUIRE(table.Layout().Columns()[0].header == "body");
 
     // Batch 2: introduces the level column. Promoted + queued
     // but not moved until the drain.
     const auto appendResult101 =
         table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
-    CHECK(table.Configuration().Configuration().columns[0].header == "body");
-    CHECK(table.Configuration().Configuration().columns[1].header == "level");
-    CHECK(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns().size() == 2);
+    CHECK(table.Layout().Columns()[0].header == "body");
+    CHECK(table.Layout().Columns()[1].header == "level");
+    CHECK(table.Layout().Columns()[1].type == ColumnType::Level);
     CHECK(loglib::CANONICAL_LEVEL_COLUMN_INDEX == 1);
 
     // Drain via the static-load / test entry point. The app's
     // streaming consumer wraps this in `begin/endMoveColumns`.
     table.ApplyPlacements(appendResult101.placements);
-    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
-    CHECK(table.Configuration().Configuration().columns[0].header == "body");
-    CHECK(table.Configuration().Configuration().columns[1].header == "level");
-    CHECK(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns().size() == 2);
+    CHECK(table.Layout().Columns()[0].header == "body");
+    CHECK(table.Layout().Columns()[1].header == "level");
+    CHECK(table.Layout().Columns()[1].type == ColumnType::Level);
 }
 
 TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table][append_batch][level][level_bubble]")
@@ -2774,29 +2710,29 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     firstRows.back().emplace_back("col_b", std::string("b"));
     firstRows.back().emplace_back("col_c", std::string("c"));
     AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 3);
-    REQUIRE(table.Configuration().Configuration().columns[0].header == "col_a");
-    REQUIRE(table.Configuration().Configuration().columns[1].header == "col_b");
-    REQUIRE(table.Configuration().Configuration().columns[2].header == "col_c");
+    REQUIRE(table.Layout().Columns().size() == 3);
+    REQUIRE(table.Layout().Columns()[0].header == "col_a");
+    REQUIRE(table.Layout().Columns()[1].header == "col_b");
+    REQUIRE(table.Layout().Columns()[2].header == "col_c");
 
     // Batch 2: level column appended at index 3, promoted and
     // queued (not yet moved).
     const auto appendResult102 =
         table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 4);
-    CHECK(table.Configuration().Configuration().columns[3].header == "level");
-    CHECK(table.Configuration().Configuration().columns[3].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns().size() == 4);
+    CHECK(table.Layout().Columns()[3].header == "level");
+    CHECK(table.Layout().Columns()[3].type == ColumnType::Level);
 
     // Drain: `level` lands at index 1, `col_b` / `col_c` shift right.
     table.ApplyPlacements(appendResult102.placements);
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 4);
-    CHECK(table.Configuration().Configuration().columns[0].header == "col_a");
-    CHECK(table.Configuration().Configuration().columns[1].header == "level");
-    CHECK(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
-    CHECK(table.Configuration().Configuration().columns[2].header == "col_b");
-    CHECK(table.Configuration().Configuration().columns[3].header == "col_c");
+    REQUIRE(table.Layout().Columns().size() == 4);
+    CHECK(table.Layout().Columns()[0].header == "col_a");
+    CHECK(table.Layout().Columns()[1].header == "level");
+    CHECK(table.Layout().Columns()[1].type == ColumnType::Level);
+    CHECK(table.Layout().Columns()[2].header == "col_b");
+    CHECK(table.Layout().Columns()[3].header == "col_c");
     // Sanity: rank cache survives the bubble.
     CHECK(table.GetLevelForRow(1, 1) == LogLevel::Info);
 }
@@ -2830,7 +2766,7 @@ TEST_CASE(
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
     AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    REQUIRE(table.Layout().Columns().size() == 1);
     const size_t keyCountBeforeLevelBatch = keys.Size();
     REQUIRE(keyCountBeforeLevelBatch == 1);
 
@@ -2850,11 +2786,11 @@ TEST_CASE(
     const auto appendResult103 =
         table.AppendBatch(BuildRowBatch(keys, *sourcePtr, levelRows, keyCountBeforeLevelBatch, 2));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 3);
+    REQUIRE(table.Layout().Columns().size() == 3);
 
     table.ApplyPlacements(appendResult103.placements);
 
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     REQUIRE(columns.size() == 3);
 
     // First-wins: `level` precedes `severity` in `levelRows`, so
@@ -2900,7 +2836,7 @@ TEST_CASE(
     firstRows.back().emplace_back("col_b", std::string("b"));
     firstRows.back().emplace_back("col_c", std::string("c"));
     AppendFixtureBatch(table, BuildRowBatch(keys, *sourcePtr, firstRows, 0, 1));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 3);
+    REQUIRE(table.Layout().Columns().size() == 3);
 
     const auto appendResult10 =
         table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
@@ -2947,8 +2883,8 @@ TEST_CASE(
 
     // Level lands at canonical (1), but the queue must still
     // report its KeyId so a later same-batch reorder can re-bubble.
-    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
-    REQUIRE(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns().size() == 2);
+    REQUIRE(table.Layout().Columns()[1].type == ColumnType::Level);
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != loglib::INVALID_KEY_ID);
     const auto levelPlacements =
@@ -2959,10 +2895,10 @@ TEST_CASE(
 
     // Drain must no-op on the already-canonical column.
     table.ApplyPlacements(appendResult104.placements);
-    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
-    CHECK(table.Configuration().Configuration().columns[0].header == "body");
-    CHECK(table.Configuration().Configuration().columns[1].header == "level");
-    CHECK(table.Configuration().Configuration().columns[1].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns().size() == 2);
+    CHECK(table.Layout().Columns()[0].header == "body");
+    CHECK(table.Layout().Columns()[1].header == "level");
+    CHECK(table.Layout().Columns()[1].type == ColumnType::Level);
 }
 
 TEST_CASE(
@@ -2984,7 +2920,7 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "tier", {"info", "warn", "error"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     CHECK_FALSE(table.GetLevelForRow(0, 0).has_value());
 }
 
@@ -3011,7 +2947,7 @@ TEST_CASE(
     );
 
     REQUIRE(table.RowCount() == 10);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 }
 
 TEST_CASE(
@@ -3037,18 +2973,16 @@ TEST_CASE(
          .levelMapping = {{"PANIC", "Fatal"}, {"NOTICE", "Info"}}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "lvl", {"NOTICE", "PANIC", "info"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Level);
     // BuildEnumBatch cycles through values modulo size: row 0/3 = NOTICE, 1/4 = PANIC, 2/5 = info.
     CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 0) == LogLevel::Fatal);
@@ -3083,7 +3017,7 @@ TEST_CASE(
     );
 
     REQUIRE(table.RowCount() == 10);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Level);
     // BuildEnumBatch cycles values mod 5: row 0 = info, 1 = warn, 2 = error, 3 = fatal, 4 = qux.
     CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
@@ -3117,7 +3051,7 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "l", {"i", "w", "e", "f"}, 1, 8, true));
 
     REQUIRE(table.RowCount() == 8);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Level);
     // BuildEnumBatch cycles values mod 4: row 0 = i, 1 = w, 2 = e, 3 = f.
     CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
@@ -3149,7 +3083,7 @@ TEST_CASE(
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "l", {"red", "green", "blue"}, 1, 6, true));
 
     REQUIRE(table.RowCount() == 6);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     CHECK_FALSE(table.GetLevelForRow(0, 0).has_value());
 }
 
@@ -3178,11 +3112,9 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -3233,11 +3165,9 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
     RowBatch batch;
@@ -3286,18 +3216,18 @@ TEST_CASE(
     // promote path routes to `Type::Level` and our assertion below
     // has to special-case it.
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"first"}, /*firstLineNumber*/ 1, 1, true));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
-    REQUIRE(table.Configuration().Configuration().columns[0].autoDetect == true);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Any);
+    REQUIRE(table.Layout().Columns()[0].autoDetect == true);
 
     // Rename the display header out from under the running tracker.
-    table.Configuration().SetColumnHeader(0, "Display Name");
+    table.Layout().SetColumnHeader(0, "Display Name");
 
     // Batch 2: a second present row pushes `presenceCount` to 2 and
     // promotion fires *only* if the tracker survived the rename.
     AppendFixtureBatch(table, BuildEnumBatch(keys, *sourcePtr, "category", {"second"}, 2, 1, false));
 
-    const auto &column = table.Configuration().Configuration().columns[0];
+    const auto &column = table.Layout().Columns()[0];
     CHECK(column.type == ColumnType::Enumeration);
     CHECK(column.header == "Display Name"); // rename survives the promote
     const KeyId categoryKey = keys.Find("category");
@@ -3334,13 +3264,13 @@ TEST_CASE(
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("not a timestamp")}}}));
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    const auto originalType = table.Configuration().Configuration().columns[0].type;
+    REQUIRE(table.Layout().Columns().size() == 1);
+    const auto originalType = table.Layout().Columns()[0].type;
 
-    table.Configuration().SetColumnTypePair(0, ColumnType::Time, false);
+    table.Layout().SetColumnTypePair(0, ColumnType::Time, false);
     table.OnUserChangedColumnType(0, originalType);
     {
-        const auto &col = table.Configuration().Configuration().columns[0];
+        const auto &col = table.Layout().Columns()[0];
         CHECK(col.type == ColumnType::Time);
         CHECK_FALSE(col.printFormat.empty());  // seeded default
         CHECK_FALSE(col.parseFormats.empty()); // seeded default
@@ -3349,10 +3279,10 @@ TEST_CASE(
     // Time -> Integer: the format strings must NOT survive into the
     // new type or `fmt::vformat` will print the literal format on
     // every row.
-    table.Configuration().SetColumnTypePair(0, ColumnType::Integer, false);
+    table.Layout().SetColumnTypePair(0, ColumnType::Integer, false);
     table.OnUserChangedColumnType(0, ColumnType::Time);
     {
-        const auto &col = table.Configuration().Configuration().columns[0];
+        const auto &col = table.Layout().Columns()[0];
         CHECK(col.type == ColumnType::Integer);
         CHECK(col.printFormat == "{}");
         CHECK(col.parseFormats.empty());
@@ -3380,8 +3310,8 @@ TEST_CASE(
 
     // Promote `category` to Enumeration via the streaming detector.
     const auto appendResult12 = table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"a", "b"}, 1, 2, true));
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns().size() == 1);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
 
     // The streaming detector left the demote vector clean.
     CHECK(std::ranges::none_of(appendResult12.enumEvents, [](const EnumColumnEvent &event) {
@@ -3390,9 +3320,9 @@ TEST_CASE(
 
     // User picks Type::String -- `OnUserChangedColumnType` runs the
     // demote walk but must NOT show up in the next batch result.
-    table.Configuration().SetColumnTypePair(0, ColumnType::String, false);
+    table.Layout().SetColumnTypePair(0, ColumnType::String, false);
     table.OnUserChangedColumnType(0, ColumnType::Enumeration);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
     CHECK(std::ranges::none_of(table.AppendBatch(RowBatch{}).enumEvents, [](const EnumColumnEvent &event) {
         return event.change == EnumColumnChange::Demoted;
     }));
@@ -3436,27 +3366,25 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager manager;
-    manager.Load(cfgFile.GetFilePath());
+    ColumnLayout manager(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     REQUIRE(table.RowCount() == values.size());
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Integer);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Integer);
 
     // User picks "Auto-detect" -- combo's first entry. The model
     // writes the (Type::Any, autoDetect=true) pair atomically. Before
     // the fix, `OnUserChangedColumnType` would leave the column at
     // `Any` with no detection ever running.
-    table.Configuration().SetColumnTypePair(0, ColumnType::Any, true);
+    table.Layout().SetColumnTypePair(0, ColumnType::Any, true);
     table.OnUserChangedColumnType(0, ColumnType::Integer);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
-    REQUIRE(table.Configuration().Configuration().columns[0].autoDetect);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Any);
+    REQUIRE(table.Layout().Columns()[0].autoDetect);
 
     const auto resolved = table.RescanColumnForAutoDetection(0);
 
     CHECK(resolved == ColumnType::Enumeration);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     // PromoteColumnToEnum encodes every existing row -- the data side
     // must reflect the new type for the GUI's column-wide
     // `dataChanged` to actually paint encoded values.
@@ -3504,19 +3432,17 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager manager;
-    manager.Load(cfgFile.GetFilePath());
+    ColumnLayout manager(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     REQUIRE(table.RowCount() == 32);
 
-    table.Configuration().SetColumnTypePair(0, ColumnType::Any, true);
+    table.Layout().SetColumnTypePair(0, ColumnType::Any, true);
     table.OnUserChangedColumnType(0, ColumnType::String);
     const auto resolved = table.RescanColumnForAutoDetection(0);
 
     CHECK(resolved == ColumnType::Integer);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Integer);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Integer);
 }
 
 TEST_CASE(
@@ -3528,15 +3454,15 @@ TEST_CASE(
     // not synthesise a type out of thin air; the next batch (or a
     // re-open) handles detection through the normal streaming path.
     LogTable table;
-    table.Configuration().AppendKeys({"only_key"});
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    table.Configuration().SetColumnTypePair(0, ColumnType::Any, true);
+    table.Layout().AppendKeys({"only_key"});
+    REQUIRE(table.Layout().Columns().size() == 1);
+    table.Layout().SetColumnTypePair(0, ColumnType::Any, true);
 
     const auto resolved = table.RescanColumnForAutoDetection(0);
 
     CHECK(resolved == ColumnType::Any);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Any);
-    CHECK(table.Configuration().Configuration().columns[0].autoDetect);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Any);
+    CHECK(table.Layout().Columns()[0].autoDetect);
 }
 
 TEST_CASE(
@@ -3572,16 +3498,14 @@ TEST_CASE(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager manager;
-    manager.Load(cfgFile.GetFilePath());
+    ColumnLayout manager(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
     const auto resolved = table.RescanColumnForAutoDetection(0);
 
     CHECK(resolved == ColumnType::String);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::String);
-    CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::String);
+    CHECK_FALSE(table.Layout().Columns()[0].autoDetect);
 }
 
 TEST_CASE(
@@ -3589,7 +3513,7 @@ TEST_CASE(
     "[log_table][load][regression]"
 )
 {
-    // Regression for bug 2/5: `LogConfigurationManager::Load` rewrites
+    // Regression for bug 2/5: `ColumnLayout::Load` rewrites
     // the configuration without notifying `LogTable`, leaving the
     // per-column key id cache out of sync with the new column count.
     // The GUI seam `LogModel::NotifyConfigurationReplaced` now calls
@@ -3606,9 +3530,9 @@ TEST_CASE(
     big.columns.push_back({.header = "C", .keys = {"c"}, .printFormat = "{}", .type = ColumnType::Any});
     const TestLogConfiguration cfgFileBig("test_reload_big.json");
     cfgFileBig.Write(big);
-    table.Configuration().Load(cfgFileBig.GetFilePath());
+    table.Layout().SetColumns(loglib::LoadConfiguration(cfgFileBig.GetFilePath()).columns);
     table.OnConfigurationReloaded();
-    REQUIRE(table.Configuration().Configuration().columns.size() == 3);
+    REQUIRE(table.Layout().Columns().size() == 3);
 
     // Reload a SMALLER configuration through the same manager. Without
     // the fix the cache would keep its size-3 backing storage with
@@ -3617,11 +3541,11 @@ TEST_CASE(
     small.columns.push_back({.header = "Z", .keys = {"z"}, .printFormat = "{}", .type = ColumnType::Any});
     const TestLogConfiguration cfgFileSmall("test_reload_small.json");
     cfgFileSmall.Write(small);
-    table.Configuration().Load(cfgFileSmall.GetFilePath());
+    table.Layout().SetColumns(loglib::LoadConfiguration(cfgFileSmall.GetFilePath()).columns);
     table.OnConfigurationReloaded();
 
-    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].header == "Z");
+    REQUIRE(table.Layout().Columns().size() == 1);
+    CHECK(table.Layout().Columns()[0].header == "Z");
     // Behavioural assertion: the next operation that touches the
     // cache (e.g. `AppendBatch` queries) must see exactly one column.
     // `ColumnCount` is the closest observable proxy.

@@ -95,7 +95,7 @@ void TableSink::OnFinished(bool cancelled)
 std::vector<Column> TableSink::TimeColumnsAdded()
 {
     std::vector<Column> added;
-    for (const Column &column : mTable->Configuration().Configuration().columns)
+    for (const Column &column : mTable->Layout().Columns())
     {
         if (column.type != ColumnType::Time || column.keys.empty() ||
             std::ranges::contains(mReportedTimeColumns, column.keys.front()))
@@ -142,7 +142,7 @@ ParserOptions ParserOptionsFor(const LogTable &table, StopToken stop)
 {
     ParserOptions options;
     options.stopToken = std::move(stop);
-    options.timeColumns = TimeColumnsOf(table.Configuration().Configuration());
+    options.timeColumns = TimeColumnsOf(table.Layout());
     options.defaultSourceTimeZone = table.DefaultSourceTimeZone();
     return options;
 }

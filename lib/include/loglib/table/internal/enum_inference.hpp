@@ -30,8 +30,7 @@ namespace loglib
 {
 
 class LogData;
-struct LogConfiguration;
-class LogConfigurationManager;
+class ColumnLayout;
 
 /** @brief For each level, the raw dictionary values that mapped to it. */
 using LevelValueMap = std::unordered_map<LogLevel, std::vector<std::string>>;
@@ -157,7 +156,7 @@ struct EnumColumnHealth
  * @brief Decides which columns are enumerations and keeps the dictionaries and level cache that follow from it.
  *
  * LogTable owns one. It owns the dictionaries, the candidate trackers, the health counts, the level rank cache and the
- * level columns waiting to move. It borrows the LogData and the configuration for each pass and does not own any rows.
+ * level columns waiting to move. It borrows the LogData and the layout for each pass and does not own any rows.
  * Its hot paths are plain member functions, with no per-row virtual calls.
  */
 class EnumInference
@@ -219,7 +218,7 @@ public:
     /**
      * @brief Returns the problems found since the last call, and forgets them.
      *
-     * A key that cannot share the dictionary of its column's first key is a configuration the table cannot honor. The
+     * A key that cannot share the dictionary of its column's first key is a layout the table cannot honor. The
      * column keeps working with the keys that did share. The error has no line numbers.
      */
     [[nodiscard]] std::vector<ParseError> TakePendingErrors() noexcept;
@@ -236,7 +235,7 @@ public:
      *
      * The level cache is cleared first, so a newly loaded level mapping takes effect. Calling it again is harmless.
      */
-    void RefreshSnapshot(LogData &data, const LogConfigurationManager &configuration);
+    void RefreshSnapshot(LogData &data, const ColumnLayout &layout);
 
     /**
      * @brief Runs the enumeration pass over the rows added since oldLineCount.
@@ -246,7 +245,7 @@ public:
      */
     void RunPassForAppendBatch(
         LogData &data,
-        LogConfigurationManager &configuration,
+        ColumnLayout &layout,
         const std::vector<std::vector<KeyId>> &columnKeyIds,
         size_t oldLineCount,
         std::optional<size_t> &firstBackfilled,
@@ -257,18 +256,15 @@ public:
      * @brief Finishes detection at the end of a parse or stream. Returns true if a column became an enumeration.
      * Repeating it changes nothing.
      */
-    bool Finalize(LogData &data, LogConfigurationManager &configuration);
+    bool Finalize(LogData &data, ColumnLayout &layout);
 
     /** @brief Runs detection again over all existing rows of a column. Returns the column type afterwards. */
     ColumnType RescanColumn(
-        LogData &data,
-        LogConfigurationManager &configuration,
-        const std::vector<std::vector<KeyId>> &columnKeyIds,
-        size_t columnIndex
+        LogData &data, ColumnLayout &layout, const std::vector<std::vector<KeyId>> &columnKeyIds, size_t columnIndex
     );
 
     /** @brief Makes the column an enumeration and encodes every existing row's value as a DictRef cell. */
-    void PromoteColumnToEnum(LogData &data, LogConfigurationManager &configuration, size_t columnIndex);
+    void PromoteColumnToEnum(LogData &data, ColumnLayout &layout, size_t columnIndex);
 
     /**
      * @brief Makes the column a String column again, turning every DictRef cell back into an owned string and dropping
@@ -276,9 +272,7 @@ public:
      *
      * With recordForBatch the key is added to LastBatchDemotedKeys. The column editor passes false.
      */
-    void DemoteColumnFromEnum(
-        LogData &data, LogConfigurationManager &configuration, size_t columnIndex, bool recordForBatch = true
-    );
+    void DemoteColumnFromEnum(LogData &data, ColumnLayout &layout, size_t columnIndex, bool recordForBatch = true);
 
     /**
      * @brief Turns an enumeration column into a Level column if its key names a level and its values look like levels.
@@ -286,10 +280,10 @@ public:
      * The dictionary must not be larger than LEVEL_DICT_TOLERANCE_RATIO times its recognized values. The column is
      * queued for TakePendingLevelBubbleKeys and is not moved here.
      */
-    void MaybePromoteToLevel(LogData &data, LogConfigurationManager &configuration, size_t columnIndex);
+    void MaybePromoteToLevel(LogData &data, ColumnLayout &layout, size_t columnIndex);
 
     /** @brief Builds or extends the level cache of a Level column. Other columns are ignored. */
-    void RefreshLevelRankCache(const LogData &data, const LogConfiguration &configuration, size_t columnIndex);
+    void RefreshLevelRankCache(const LogData &data, const ColumnLayout &layout, size_t columnIndex);
 
     /**
      * @brief Encodes the values of a column in the given row range as DictRef cells.
@@ -309,7 +303,7 @@ public:
 
     /** @brief The level cache of a Level column, or null for any other column. See LogTable::LevelRankCache. */
     [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(
-        const LogData &data, const LogConfiguration &configuration, size_t columnIndex
+        const LogData &data, const ColumnLayout &layout, size_t columnIndex
     ) const noexcept;
 
 private:

@@ -9,6 +9,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/query/log_filter.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -65,11 +66,9 @@ LogTable BuildEnumTable(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -112,11 +111,9 @@ LogTable BuildStringTable(
          .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -152,11 +149,9 @@ LogTable BuildTimeTable(
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -208,7 +203,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
     fixture.Write("");
     const std::vector<std::string> values = {"info", "warn", "error"};
     LogTable table = BuildEnumTable(fixture, "category", values, 12);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     const EnumDictionary *dict = FindDictionary(table, "category");
     REQUIRE(dict != nullptr);
 
@@ -253,7 +248,7 @@ TEST_CASE(
     fixture.Write("");
     const std::vector<std::string> values = {"alpha", "beta", "gamma", "alpha", "beta"};
     LogTable table = BuildStringTable(fixture, "label", values);
-    REQUIRE(table.Configuration().Configuration().columns[0].type != ColumnType::Enumeration);
+    REQUIRE(table.Layout().Columns()[0].type != ColumnType::Enumeration);
 
     const std::vector<std::string> selected = {"alpha", "gamma"};
     const std::vector<std::string_view> selectedViews = ToViews(selected);
@@ -567,11 +562,9 @@ LogTable BuildSingleColumnTable(
         {.header = columnKey, .keys = {columnKey}, .printFormat = "{}", .type = type, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -782,11 +775,9 @@ TEST_CASE(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -800,7 +791,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("level");
     AppendFixtureBatch(table, std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Level);
     const auto *ranks = table.LevelRankCache(0);
     REQUIRE(ranks != nullptr);
     const auto &registry = table.EnumDictionaries();
@@ -881,7 +872,7 @@ CompiledFilterExpression MakeEnumLeaf(
     const LogTable &table, size_t columnIndex, const std::vector<std::string> &selectedValues
 )
 {
-    const KeyId key = table.Keys().Find(table.Configuration().Configuration().columns[columnIndex].keys.front());
+    const KeyId key = table.Keys().Find(table.Layout().Columns()[columnIndex].keys.front());
     REQUIRE(key != INVALID_KEY_ID);
     const EnumDictionary *dict = table.EnumDictionaries().Find(key);
     REQUIRE(dict != nullptr);
@@ -997,10 +988,8 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -1087,10 +1076,8 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();

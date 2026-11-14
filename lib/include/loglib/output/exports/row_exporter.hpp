@@ -59,7 +59,8 @@ struct RowSource
     std::span<const std::size_t> sourceRows;
 
     /**
-     * @brief The columns to write for CSV and Markdown, as indices into LogConfiguration::columns, in display order.
+     * @brief The columns to write for CSV and Markdown, as indices into the columns of the table layout, in display
+     * order.
      *
      * JSON Lines ignores them when includeAllFieldsForJson is set, and the snapshot format does not use them.
      */

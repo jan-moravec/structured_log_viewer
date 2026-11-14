@@ -1,8 +1,9 @@
 /**
- * @brief JSON field names and enum spellings for the configuration types.
+ * @brief JSON field names, enum spellings and the document shape of a configuration file.
  *
- * This header tells the JSON library how to read and write each schema type. It is only included where the
- * configuration is serialized, so the public headers stay free of the JSON library.
+ * This header tells the JSON library how to read and write each schema type, and defines the document that a
+ * configuration file and the metadata line of a session bundle hold. It is only included where the configuration is
+ * serialized, so the public headers stay free of the JSON library.
  *
  * This is part of the schema module.
  */
@@ -14,6 +15,106 @@
 #include <glaze/glaze.hpp>
 
 #include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace loglib::internal
+{
+
+/** @brief The version that a configuration file must carry. */
+inline constexpr std::uint32_t CONFIGURATION_FORMAT_VERSION = 1;
+
+/**
+ * @brief A column as a file holds it. The type is present only when the user chose it, which is when the column has
+ * autoDetect off. The other defaults are those of Column.
+ */
+struct ColumnDocument
+{
+    std::string header;
+    std::vector<std::string> keys;
+    std::optional<ColumnType> type;
+    std::string printFormat;
+    std::vector<std::string> parseFormats;
+    bool visible = true;
+    std::vector<std::pair<std::string, std::string>> levelMapping;
+};
+
+/** @brief The JSON document of a configuration. A missing view and a missing source have their defaults. */
+struct ConfigurationDocument
+{
+    std::uint32_t version = 0;
+    std::vector<ColumnDocument> columns;
+    std::optional<SessionView> view;
+    std::optional<Source> source;
+};
+
+/** @brief The document to write for a configuration. A Columns scope leaves out the view and the source. */
+[[nodiscard]] inline ConfigurationDocument MakeDocument(const LogConfiguration &configuration, SaveScope scope)
+{
+    ConfigurationDocument document;
+    document.version = CONFIGURATION_FORMAT_VERSION;
+    document.columns.reserve(configuration.columns.size());
+    for (const Column &column : configuration.columns)
+    {
+        ColumnDocument &out = document.columns.emplace_back();
+        out.header = column.header;
+        out.keys = column.keys;
+        if (!column.autoDetect)
+        {
+            out.type = column.type;
+        }
+        out.printFormat = column.printFormat;
+        out.parseFormats = column.parseFormats;
+        out.visible = column.visible;
+        out.levelMapping = column.levelMapping;
+    }
+    if (scope == SaveScope::Full)
+    {
+        document.view = configuration.view;
+        document.source = configuration.source;
+    }
+    return document;
+}
+
+/** @brief The configuration that a document describes. The caller has checked the version. */
+[[nodiscard]] inline LogConfiguration MakeConfiguration(ConfigurationDocument &&document)
+{
+    LogConfiguration configuration;
+    configuration.columns.reserve(document.columns.size());
+    for (ColumnDocument &in : document.columns)
+    {
+        Column &column = configuration.columns.emplace_back();
+        column.header = std::move(in.header);
+        column.keys = std::move(in.keys);
+        column.autoDetect = !in.type.has_value();
+        column.type = in.type.value_or(ColumnType::Any);
+        column.printFormat = std::move(in.printFormat);
+        column.parseFormats = std::move(in.parseFormats);
+        column.visible = in.visible;
+        column.levelMapping = std::move(in.levelMapping);
+    }
+    if (document.view.has_value())
+    {
+        configuration.view = std::move(*document.view);
+    }
+    configuration.source = std::move(document.source);
+    return configuration;
+}
+
+/** @brief A base for the metas of types whose keys may all be missing. They then keep the default of their member. */
+struct AllKeysOptional
+{
+    static constexpr bool requires_key(std::string_view, bool) // NOLINT(readability-identifier-naming)
+    {
+        return false;
+    }
+};
+
+} // namespace loglib::internal
 
 // Enums are written as strings, which keeps saved files readable and stable. The strings are lowerCamelCase while the
 // C++ enumerators are UpperCamelCase. The specializations live in this header so the public headers do not include the
@@ -71,7 +172,7 @@ template <> struct glz::meta<loglib::ContinuationMode>
 
 // The saved field names of the nested types are listed explicitly. Renaming a member then fails to compile and cannot
 // silently change the saved format.
-template <> struct glz::meta<loglib::Source>
+template <> struct glz::meta<loglib::Source> : loglib::internal::AllKeysOptional
 {
     using T = loglib::Source;
 
@@ -104,31 +205,54 @@ template <> struct glz::meta<loglib::Source>
     );
 };
 
-template <> struct glz::meta<loglib::Column>
+// A column needs a header and keys. Every other field has the default of Column.
+template <> struct glz::meta<loglib::internal::ColumnDocument>
 {
-    using T = loglib::Column;
+    using T = loglib::internal::ColumnDocument;
+    static constexpr bool requires_key(std::string_view key, bool)
+    {
+        return key == "header" || key == "keys";
+    }
     static constexpr auto value = object(
         "header",
         &T::header,
         "keys",
         &T::keys,
-        "printFormat",
-        &T::printFormat,
         "type",
         &T::type,
+        "printFormat",
+        &T::printFormat,
         "parseFormats",
         &T::parseFormats,
         "visible",
         &T::visible,
         "levelMapping",
-        &T::levelMapping,
-        "autoDetect",
-        &T::autoDetect
+        &T::levelMapping
+    );
+};
+
+// The version and the columns are required. The view and the source may be missing.
+template <> struct glz::meta<loglib::internal::ConfigurationDocument>
+{
+    using T = loglib::internal::ConfigurationDocument;
+    static constexpr bool requires_key(std::string_view key, bool)
+    {
+        return key == "version" || key == "columns";
+    }
+    static constexpr auto value =
+        object("version", &T::version, "columns", &T::columns, "view", &T::view, "source", &T::source);
+};
+
+template <> struct glz::meta<loglib::SessionView> : loglib::internal::AllKeysOptional
+{
+    using T = loglib::SessionView;
+    static constexpr auto value = object(
+        "expression", &T::expression, "sort", &T::sort, "highlightRules", &T::highlightRules, "anchors", &T::anchors
     );
 };
 
 // A leaf of the filter tree. It finds its column by matching its keys against Column::keys.
-template <> struct glz::meta<loglib::LeafRule>
+template <> struct glz::meta<loglib::LeafRule> : loglib::internal::AllKeysOptional
 {
     using T = loglib::LeafRule;
     static constexpr auto value = object(
@@ -159,19 +283,19 @@ template <> struct glz::meta<loglib::LeafRule>
 //   { "kind": "not", "child": <sub-expression> }
 //   { "kind": "leaf", "rule": <LeafRule> }
 // The kind comes from the tag of the variant specialization below, and each node type exposes only its payload.
-template <> struct glz::meta<loglib::FilterExpression::Leaf>
+template <> struct glz::meta<loglib::FilterExpression::Leaf> : loglib::internal::AllKeysOptional
 {
     using T = loglib::FilterExpression::Leaf;
     static constexpr auto value = object("rule", &T::rule);
 };
 
-template <> struct glz::meta<loglib::FilterExpression::And>
+template <> struct glz::meta<loglib::FilterExpression::And> : loglib::internal::AllKeysOptional
 {
     using T = loglib::FilterExpression::And;
     static constexpr auto value = object("children", &T::children);
 };
 
-template <> struct glz::meta<loglib::FilterExpression::Or>
+template <> struct glz::meta<loglib::FilterExpression::Or> : loglib::internal::AllKeysOptional
 {
     using T = loglib::FilterExpression::Or;
     static constexpr auto value = object("children", &T::children);
@@ -179,7 +303,7 @@ template <> struct glz::meta<loglib::FilterExpression::Or>
 
 // The child of a Not is a smart pointer, which the JSON library reads and writes by itself. A null child is saved as
 // null and loaded as null, and an editor treats such a tree as unfinished and turns it into match-all.
-template <> struct glz::meta<loglib::FilterExpression::Not>
+template <> struct glz::meta<loglib::FilterExpression::Not> : loglib::internal::AllKeysOptional
 {
     using T = loglib::FilterExpression::Not;
     static constexpr auto value = object("child", &T::child);
@@ -204,7 +328,7 @@ template <> struct glz::meta<loglib::FilterExpression>
     static constexpr auto value = &T::node;
 };
 
-template <> struct glz::meta<loglib::Sort>
+template <> struct glz::meta<loglib::Sort> : loglib::internal::AllKeysOptional
 {
     using T = loglib::Sort;
     static constexpr auto value = object("columnKeys", &T::columnKeys, "descending", &T::descending);
@@ -215,16 +339,15 @@ template <> struct glz::meta<loglib::Sort>
 //     "lineId":  1234,     // the line id from the parser
 //     "colorIndex": 0,     // the palette color
 //     "note":    "..." }   // optional, loads as an empty string when missing
-// Add new fields at the end of the object, with defaults in AnchorEntry, so older files still load. Unknown fields are
-// ignored, so older builds can read files that have newer fields.
-template <> struct glz::meta<loglib::AnchorEntry>
+// Every field is optional and has the default of AnchorEntry.
+template <> struct glz::meta<loglib::AnchorEntry> : loglib::internal::AllKeysOptional
 {
     using T = loglib::AnchorEntry;
     static constexpr auto value =
         object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
 };
 
-template <> struct glz::meta<loglib::HighlightRule>
+template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysOptional
 {
     using T = loglib::HighlightRule;
     static constexpr auto value = object(

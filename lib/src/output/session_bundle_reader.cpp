@@ -21,7 +21,7 @@ struct SessionBundleMetadataFields
 {
     std::uint32_t formatVersion = 0;
     std::uint64_t rowCount = 0;
-    LogConfiguration configuration;
+    ConfigurationDocument configuration;
 };
 
 struct SessionBundleMetadataEnvelope
@@ -53,7 +53,7 @@ namespace loglib
 SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
 {
     internal::SessionBundleMetadataEnvelope envelope;
-    const auto error = glz::read<internal::LOG_CONFIG_OPTS>(envelope, json);
+    const auto error = glz::read<internal::CONFIGURATION_OPTS>(envelope, json);
     if (error)
     {
         throw FormatError("Session bundle metadata is malformed: " + glz::format_error(error, std::string(json)));
@@ -75,10 +75,17 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
             "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
         );
     }
+    if (envelope.bundle->configuration.version != internal::CONFIGURATION_FORMAT_VERSION)
+    {
+        throw FormatError(
+            "Session bundle configuration has version " + std::to_string(envelope.bundle->configuration.version) +
+            " (expected " + std::to_string(internal::CONFIGURATION_FORMAT_VERSION) + ")"
+        );
+    }
     return SessionBundleMetadata{
         .formatVersion = envelope.bundle->formatVersion,
         .rowCount = envelope.bundle->rowCount,
-        .configuration = std::move(envelope.bundle->configuration),
+        .configuration = internal::MakeConfiguration(std::move(envelope.bundle->configuration)),
     };
 }
 

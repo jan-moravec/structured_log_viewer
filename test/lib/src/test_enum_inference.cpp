@@ -3,6 +3,7 @@
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/enum_inference.hpp>
 
@@ -127,17 +128,12 @@ TEST_CASE("EnumInference encodes a pinned Enumeration column as DictRef", "[enum
             .autoDetect = false,
         }
     );
-    const TestLogConfiguration cfgFile("enum_inference_encode_cfg.json");
-    cfgFile.Write(configuration);
-    LogConfigurationManager manager;
-    manager.Load(cfgFile.GetFilePath());
+    ColumnLayout manager(configuration.columns);
 
     EnumInference inference;
     inference.RefreshSnapshot(data, manager);
     EnumColumnHealth health;
-    REQUIRE(
-        inference.EncodeColumnRangeAsEnum(data, manager.Configuration().columns[0], 0, data.Lines().size(), health)
-    );
+    REQUIRE(inference.EncodeColumnRangeAsEnum(data, manager.Columns()[0], 0, data.Lines().size(), health));
     CHECK(health.totalSlots == 2);
     CHECK(health.longValueSlots == 0);
     CHECK(health.wrongTypeSlots == 0);

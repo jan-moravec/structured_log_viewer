@@ -85,7 +85,7 @@ LogSession::LogSession(
     connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { mHighlights->ClearMatches(); });
     // New columns can resolve previously unmatched highlight keys.
     connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
-        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        mHighlights->RebindColumns(mModel->Layout().Columns(), &mModel->Table());
     });
 }
 
@@ -536,9 +536,8 @@ void LogSession::RebuildFilterExpressionFromSimpleLeaves()
         leaf.node = loglib::FilterExpression::Leaf{it->second};
         newAnd.children.push_back(std::move(leaf));
     }
-    // Copy by value: `SetExpression` below invalidates references
-    // into `mModel->Configuration().expression`.
-    const loglib::FilterExpression existing = mModel->Configuration().expression;
+    // Copy by value: the assignment below replaces the expression.
+    const loglib::FilterExpression existing = mView.expression;
     if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node); existingAnd != nullptr)
     {
         for (const auto &child : existingAnd->children)
@@ -570,7 +569,7 @@ void LogSession::RebuildFilterExpressionFromSimpleLeaves()
     }
     loglib::FilterExpression rootExpression;
     rootExpression.node = std::move(newAnd);
-    mModel->ConfigurationManager().SetExpression(std::move(rootExpression));
+    mView.expression = std::move(rootExpression);
 }
 
 void LogSession::MirrorSortToConfiguration()
@@ -584,20 +583,29 @@ void LogSession::MirrorSortToConfiguration()
     if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
     {
         loglib::Sort sort;
-        const auto &columns = mModel->Configuration().columns;
+        const auto &columns = mModel->Layout().Columns();
         if (proxySortColumn >= 0 && static_cast<std::size_t>(proxySortColumn) < columns.size())
         {
             sort.columnKeys = columns[static_cast<std::size_t>(proxySortColumn)].keys;
         }
         sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
-        mModel->ConfigurationManager().SetSort(sort);
+        mView.sort = std::move(sort);
     }
+}
+
+loglib::LogConfiguration LogSession::BuildConfiguration(std::optional<loglib::Source> source) const
+{
+    loglib::LogConfiguration configuration;
+    configuration.columns = mModel->Layout().Columns();
+    configuration.view = mView;
+    configuration.source = std::move(source);
+    return configuration;
 }
 
 void LogSession::MirrorAnchorsToConfiguration()
 {
     // Both objects are owned by the session and remain valid here.
-    mModel->ConfigurationManager().SetAnchors(mAnchors->Entries());
+    mView.anchors = mAnchors->Entries();
 }
 
 void LogSession::SetMode(Mode mode)
@@ -1427,7 +1435,7 @@ int LogSession::FindColumnIndexByKeys(const std::vector<std::string> &keys) cons
     {
         return -1;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     for (std::size_t i = 0; i < columns.size(); ++i)
     {
         if (columns[i].keys == keys)

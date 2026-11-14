@@ -42,6 +42,7 @@ add_library(
     src/ingest/udp_server_producer.cpp
     src/time/timestamp_promotion.cpp
     src/parse/parse_runtime.cpp
+    src/schema/column_layout.cpp
     src/schema/log_configuration.cpp
     src/query/column_projection.cpp
     src/table/column_key_id_cache.cpp
@@ -104,6 +105,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/parse/auto_detect_parser.hpp
     include/loglib/core/bytes_producer.hpp
     include/loglib/query/column_projection.hpp
+    include/loglib/schema/column_layout.hpp
     include/loglib/schema/column_schema.hpp
     include/loglib/table/column_type_health.hpp
     include/loglib/core/compact_log_value.hpp

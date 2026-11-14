@@ -27,8 +27,8 @@ ColumnProjection::ColumnProjection(std::span<const Column> columns)
 {
 }
 
-ColumnProjection::ColumnProjection(const LogConfiguration &configuration)
-    : ColumnProjection(std::span<const Column>(configuration.columns))
+ColumnProjection::ColumnProjection(const ColumnLayout &layout)
+    : ColumnProjection(std::span<const Column>(layout.Columns()))
 {
 }
 

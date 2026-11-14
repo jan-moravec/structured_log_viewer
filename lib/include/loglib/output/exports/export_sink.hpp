@@ -60,7 +60,7 @@ public:
 /**
  * @brief A sink that writes to a temporary file next to the destination and renames it when Finish succeeds.
  *
- * A cancelled or failed export never leaves a partial file at the destination. LogConfigurationManager::Save works the
+ * A cancelled or failed export never leaves a partial file at the destination. SaveConfiguration works the
  * same way.
  */
 class FileSink final : public ExportSink

@@ -208,7 +208,7 @@ TEST_CASE("session bundle v1 exports documented metadata and typed normalized JS
     );
 
     loglib::LogTable table = ParseTable(source.Path());
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
+    loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path());
 
     REQUIRE(loglib::HasSessionBundleExtension(bundle.Path()));
     auto decoded = DecodeBundle(bundle.Path());
@@ -281,15 +281,15 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
         .filterMaxValue = std::nullopt,
         .filterValues = {},
     };
-    configuration.expression = SingleLeafExpression(filter);
-    configuration.sort = {.columnKeys = {"service"}, .descending = true};
+    configuration.view.expression = SingleLeafExpression(filter);
+    configuration.view.sort = {.columnKeys = {"service"}, .descending = true};
     configuration.source = loglib::Source{
         .kind = loglib::Source::Kind::NetworkStream,
         .format = loglib::Source::Format::Regex,
         .locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}},
         .regexPattern = "(?<service>.*)",
     };
-    configuration.highlightRules = {
+    configuration.view.highlightRules = {
         {.name = "Auth",
          .enabled = true,
          .columnKeys = {"service"},
@@ -321,10 +321,10 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     CHECK(restored.columns[1].header == "Service");
     CHECK(restored.columns[1].keys == std::vector<std::string>{"service"});
     CHECK(restored.columns[1].visible);
-    CHECK(restored.expression == configuration.expression);
-    CHECK(restored.sort.columnKeys == std::vector<std::string>{"service"});
-    CHECK(restored.sort.descending);
-    CHECK(restored.highlightRules == configuration.highlightRules);
+    CHECK(restored.view.expression == configuration.view.expression);
+    CHECK(restored.view.sort.columnKeys == std::vector<std::string>{"service"});
+    CHECK(restored.view.sort.descending);
+    CHECK(restored.view.highlightRules == configuration.view.highlightRules);
 
     REQUIRE(restored.source.has_value());
     CHECK(restored.source->kind == loglib::Source::Kind::File);
@@ -395,7 +395,9 @@ TEST_CASE("session bundle uses canonicalizeSourceLocator for embedded source ded
         std::string out = "canonical://" + p.string();
         return out;
     };
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options);
+    loglib::WriteSessionBundle(
+        table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path(), options
+    );
 
     auto decoded = DecodeBundle(bundle.Path());
     const loglib::LogConfiguration restored =
@@ -429,8 +431,8 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
 
     loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
 
-    loglib::LogConfiguration configuration = table.Configuration().Configuration();
-    configuration.anchors = {
+    loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
+    configuration.view.anchors = {
         {.locator = sourceA.Path().string(), .lineId = 1, .colorIndex = 1, .note = "second A"},
         {.locator = sourceB.Path().string(), .lineId = 0, .colorIndex = 2, .note = "first B"},
         {.locator = "detached.json", .lineId = 99, .colorIndex = 3, .note = "drop me"},
@@ -438,7 +440,7 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     REQUIRE(anchors.size() == 2);
     CHECK(anchors[0].locator == bundle.Path().string());
     CHECK(anchors[0].lineId == 1);
@@ -469,8 +471,8 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
     // Force a canonical form that does not equal `PathToUtf8()`.
     const std::string canonicalLocator = "canonical://" + source.Path().string();
 
-    loglib::LogConfiguration configuration = table.Configuration().Configuration();
-    configuration.anchors = {
+    loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
+    configuration.view.anchors = {
         {.locator = canonicalLocator, .lineId = 0, .colorIndex = 1, .note = "kept"},
         {.locator = canonicalLocator, .lineId = 1, .colorIndex = 2, .note = "also kept"},
     };
@@ -481,7 +483,8 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
         const TempPath unbridged(".slvbundle");
         loglib::WriteSessionBundle(table, configuration, unbridged.Path());
         auto decoded = DecodeBundle(unbridged.Path());
-        const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+        const auto anchors =
+            loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
         CHECK(anchors.empty());
     }
 
@@ -490,7 +493,7 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
     loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     REQUIRE(anchors.size() == 2);
     // Anchors flatten to the canonical destination form so they
     // match `Source::locatorDedupKeys` on the receiving side (the
@@ -523,8 +526,8 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
 
     loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
 
-    loglib::LogConfiguration configuration = table.Configuration().Configuration();
-    configuration.anchors = {
+    loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
+    configuration.view.anchors = {
         {.locator = "collapsed", .lineId = 0, .colorIndex = 1, .note = "ambiguous - drop me"},
     };
 
@@ -534,7 +537,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
     loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     CHECK(anchors.empty());
 }
 
@@ -552,8 +555,8 @@ TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundl
     );
     loglib::LogTable table = ParseTable(source.Path());
 
-    loglib::LogConfiguration configuration = table.Configuration().Configuration();
-    configuration.anchors = {
+    loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
+    configuration.view.anchors = {
         {.locator = "", .lineId = 0, .colorIndex = 1, .note = "empty locator - drop"},
         {.locator = "", .lineId = 1, .colorIndex = 2, .note = "empty locator - drop"},
     };
@@ -561,7 +564,7 @@ TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundl
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     CHECK(anchors.empty());
 }
 
@@ -590,7 +593,7 @@ TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBun
     std::filesystem::remove(bundlePath, cleanupError);
     try
     {
-        loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundlePath);
+        loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundlePath);
         REQUIRE(std::filesystem::exists(bundlePath));
         CHECK(loglib::HasSessionBundleExtension(bundlePath));
 
@@ -625,7 +628,9 @@ TEST_CASE("session bundle cancellation before write preserves destination and le
     loglib::SessionBundleWriteOptions options;
     options.stopToken = stop.GetToken();
     CHECK_THROWS_AS(
-        loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
+        loglib::WriteSessionBundle(
+            table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path(), options
+        ),
         loglib::OperationCancelled
     );
     CHECK(Read(bundle.Path()) == "existing destination");
@@ -656,7 +661,9 @@ TEST_CASE("session bundle cancellation from progress preserves destination and r
         }
     };
     CHECK_THROWS_AS(
-        loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path(), options),
+        loglib::WriteSessionBundle(
+            table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path(), options
+        ),
         loglib::OperationCancelled
     );
     CHECK(Read(bundle.Path()) == "existing destination");
@@ -675,7 +682,7 @@ TEST_CASE("successful session bundle write atomically replaces destination", "[S
     Write(bundle.Path(), "old destination");
     loglib::LogTable table = ParseTable(source.Path());
 
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
+    loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path());
 
     CHECK(Read(bundle.Path()) != "old destination");
     CHECK(loglib::HasSessionBundleExtension(bundle.Path()));
@@ -701,7 +708,7 @@ TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destin
     Write(decoy, DECOY_CONTENTS);
 
     loglib::LogTable table = ParseTable(source.Path());
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
+    loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path());
 
     CHECK(loglib::HasSessionBundleExtension(bundle.Path()));
     REQUIRE(std::filesystem::exists(decoy));
@@ -763,7 +770,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     const loglib::TimeStamp originalRow1 =
         std::get<loglib::TimeStamp>(table.Data().Lines()[1].GetValue(table.Data().Keys(), "ts"));
 
-    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
+    loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
     const std::string jsonl = Read(decoded.EffectivePath());
@@ -792,7 +799,7 @@ TEST_CASE("session bundle prepends bundle-canonical Time parseFormat to embedded
     );
     loglib::LogTable table = ParseTable(source.Path());
 
-    loglib::LogConfiguration configuration = table.Configuration().Configuration();
+    loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
     // Use a custom source format with auto-detection disabled.
     for (auto &column : configuration.columns)
     {
@@ -850,7 +857,7 @@ TEST_CASE("WriteSessionBundle with a row list writes exactly those rows in that 
     Write(source.Path(), content);
     loglib::LogTable table = ParseTable(source.Path());
     REQUIRE(table.RowCount() == 5);
-    const loglib::LogConfiguration configuration = table.Configuration().Configuration();
+    const loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
 
     SECTION("a list of rows")
     {

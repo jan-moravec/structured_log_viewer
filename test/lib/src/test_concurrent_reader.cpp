@@ -145,9 +145,8 @@ TEST_CASE(
         const std::size_t columns = table.ColumnCount();
         for (std::size_t column = 0; column < columns; ++column)
         {
-            sawEnumeration = sawEnumeration ||
-                             (table.GetHeader(column) == "svc" &&
-                              table.Configuration().Configuration().columns.at(column).type == ColumnType::Enumeration);
+            sawEnumeration = sawEnumeration || (table.GetHeader(column) == "svc" &&
+                                                table.Layout().Columns().at(column).type == ColumnType::Enumeration);
         }
         for (std::size_t row = 0; row < table.RowCount(); ++row)
         {
@@ -187,7 +186,7 @@ TEST_CASE(
         }
     }
     REQUIRE(svcColumn < table.ColumnCount());
-    CHECK(table.Configuration().Configuration().columns.at(svcColumn).type != ColumnType::Enumeration);
+    CHECK(table.Layout().Columns().at(svcColumn).type != ColumnType::Enumeration);
     CHECK(table.GetFormattedValue(0, svcColumn) == "svc-0");
     CHECK(table.GetFormattedValue(STABLE_ROWS - 1, svcColumn) == "svc-3");
     CHECK(table.GetFormattedValue(TOTAL_ROWS - 1, svcColumn) == "svc-unique-" + std::to_string(TOTAL_ROWS - 1));

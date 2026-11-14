@@ -101,7 +101,7 @@ using reports::ValidateReport;
         report.errors.push_back(std::move(error));
     }
 
-    const auto &columns = loaded.table.Configuration().Configuration().columns;
+    const auto &columns = loaded.table.Layout().Columns();
     for (std::size_t index = 0; index < columns.size(); ++index)
     {
         const auto health = loaded.table.ComputeColumnTypeHealth(index);

@@ -340,13 +340,13 @@ constexpr const char *TIME_LINES = "{\"ts\":\"2026-01-15 12:00:00\"}\n{\"ts\":\"
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.Configuration().SetConfiguration(TimeConfiguration());
+    table.Layout().SetColumns((TimeConfiguration()).columns);
     table.BeginStreaming(std::move(source));
 
     ParserOptions options;
     if (passTimeColumns)
     {
-        options.timeColumns = TimeColumnsOf(table.Configuration().Configuration());
+        options.timeColumns = TimeColumnsOf(table.Layout());
     }
     AppendingSink sink(table);
     JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
@@ -801,7 +801,7 @@ struct TableText
 [[nodiscard]] TableText DescribeTable(const LogTable &table)
 {
     TableText text;
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     for (std::size_t column = 0; column < table.ColumnCount(); ++column)
     {
         text.headers.push_back(table.GetHeader(column));

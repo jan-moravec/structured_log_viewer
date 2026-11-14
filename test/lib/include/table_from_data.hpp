@@ -11,6 +11,7 @@
 #pragma once
 
 #include "loglib/core/log_data.hpp"
+#include "loglib/schema/column_layout.hpp"
 #include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/log_table.hpp"
 
@@ -28,6 +29,6 @@ void AppendData(loglib::LogTable &table, loglib::LogData data);
 /**
  * @brief A table that starts with the given configuration and holds data, with type detection finished.
  */
-[[nodiscard]] loglib::LogTable TableFromData(loglib::LogData data, loglib::LogConfigurationManager configuration);
+[[nodiscard]] loglib::LogTable TableFromData(loglib::LogData data, loglib::ColumnLayout configuration);
 
 } // namespace test_common_lib

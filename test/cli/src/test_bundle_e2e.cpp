@@ -84,9 +84,7 @@ constexpr std::string_view FOUR_ROWS =
     );
     INFO(result.err);
     REQUIRE(result.exitCode == 0);
-    loglib::LogConfigurationManager manager;
-    manager.Load(sessionPath);
-    return manager.Configuration();
+    return loglib::LoadConfiguration(sessionPath);
 }
 
 } // namespace
@@ -109,10 +107,10 @@ TEST_CASE("slp bundle keeps every row and stores filter, sort, and columns", "[c
     CHECK(CountRows(bundle, {"--filter", "msg:charlie"}).out == "1\n");
 
     const loglib::LogConfiguration written = EmbeddedConfiguration(bundle, "default_session.json");
-    CHECK_FALSE(written.expression == loglib::FilterExpression{});
-    REQUIRE_FALSE(written.sort.columnKeys.empty());
-    CHECK(written.sort.columnKeys == std::vector<std::string>{"msg"});
-    CHECK(written.sort.descending);
+    CHECK_FALSE(written.view.expression == loglib::FilterExpression{});
+    REQUIRE_FALSE(written.view.sort.columnKeys.empty());
+    CHECK(written.view.sort.columnKeys == std::vector<std::string>{"msg"});
+    CHECK(written.view.sort.descending);
     REQUIRE(written.columns.size() >= 2);
     CHECK(written.columns[0].header == "msg");
     CHECK(written.columns[1].header == "level");
@@ -135,7 +133,7 @@ TEST_CASE("slp bundle --filtered-rows writes only matching rows", "[cli][bundle]
     CHECK(excluded.exitCode == 1);
 
     const loglib::LogConfiguration written = EmbeddedConfiguration(bundle, "filtered_session.json");
-    CHECK(written.expression == loglib::FilterExpression{});
+    CHECK(written.view.expression == loglib::FilterExpression{});
 }
 
 TEST_CASE("slp bundle appends a missing .slvbundle extension once", "[cli][bundle][e2e]")
@@ -172,7 +170,7 @@ TEST_CASE("slp bundle seeds the embedded configuration from --config", "[cli][bu
     const loglib::LogConfiguration seed = EmbeddedConfiguration(firstBundle, "seed_session.json");
 
     const auto configPath = ScratchRoot() / "seed_config.json";
-    loglib::LogConfigurationManager::Save(seed, configPath, loglib::SaveScope::Full);
+    loglib::SaveConfiguration(seed, configPath, loglib::SaveScope::Full);
 
     const auto seeded = ScratchRoot() / "seeded.slvbundle";
     std::filesystem::remove(seeded);
@@ -182,8 +180,8 @@ TEST_CASE("slp bundle seeds the embedded configuration from --config", "[cli][bu
 
     CHECK(CountRows(seeded).out == "2\n");
     const loglib::LogConfiguration written = EmbeddedConfiguration(seeded, "seeded_session.json");
-    CHECK(written.expression == seed.expression);
-    CHECK(written.sort.descending);
+    CHECK(written.view.expression == seed.view.expression);
+    CHECK(written.view.sort.descending);
 
     const auto missing = RunBundle({"-o", seeded.string(), "--config", (ScratchRoot() / "nope.json").string()});
     CHECK(missing.exitCode == 3);

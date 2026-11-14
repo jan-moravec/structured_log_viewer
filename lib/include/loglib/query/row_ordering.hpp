@@ -39,7 +39,7 @@ public:
     /**
      * @brief Constructs an ordering over @p columnIndex.
      *
-     * @param columnIndex Index into LogConfiguration::columns.
+     * @param columnIndex Index into the columns of the table layout.
      * @param direction Display order.
      * @param rankForEnumColumn Precomputed enum ranks, or nullptr.
      *     Required for the Enumeration fast path in Permute.

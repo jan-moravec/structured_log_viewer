@@ -113,7 +113,7 @@ std::expected<loglib::FilterExpression, Failure> BuildRowFilter(
     const FilterOptions &filter, const loglib::LogTable &table, const RuntimeContext &runtime, std::string_view command
 )
 {
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     loglib::FilterExpression::And combined;
 
     for (const std::string &query : filter.filters)

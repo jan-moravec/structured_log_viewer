@@ -152,6 +152,20 @@
 namespace
 {
 
+/// Saves the columns of @p model as a configuration file.
+void SaveLayoutForTest(const LogModel &model, const std::string &path)
+{
+    loglib::SaveConfiguration(
+        loglib::LogConfiguration{.columns = model.Layout().Columns()}, path, loglib::SaveScope::Full
+    );
+}
+
+/// Replaces the columns of @p model with those of a configuration file.
+void LoadLayoutForTest(LogModel &model, const std::string &path)
+{
+    model.MutableLayout().SetColumns(loglib::LoadConfiguration(path).columns);
+}
+
 /// Extract top-level `LeafRule` children from a `FilterExpression`.
 /// Test-only shim: the historical simple-mode UX only ever wrote
 /// flat AND trees, so this covers `LegacyLeavesOf` for the app
@@ -303,9 +317,9 @@ QString WriteBundleFixture(
     const TempJsonFile source(lines);
     const loglib::LoadResult loaded = loglib::LoadFile(logapp::QStringToFsPath(source.Path()));
     const loglib::LogTable &table = loaded.table;
-    loglib::LogConfiguration configuration = table.Configuration().Configuration();
+    loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
     configure(configuration);
-    for (auto &anchor : configuration.anchors)
+    for (auto &anchor : configuration.view.anchors)
     {
         if (anchor.locator.empty())
         {
@@ -696,7 +710,7 @@ bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::millisecon
 int ColumnByHeader(const LogModel &model, const QString &header)
 {
     const std::string needle = header.toStdString();
-    const auto &columns = model.Configuration().columns;
+    const auto &columns = model.Layout().Columns();
     for (size_t col = 0; col < columns.size(); ++col)
     {
         if (columns[col].header == needle)
@@ -1045,8 +1059,8 @@ private slots:
             QCOMPARE(static_cast<int>(fromLibrary.ColumnCount()), static_cast<int>(fromModel.ColumnCount()));
             QVERIFY2(fromLibrary.ColumnCount() >= 5, qPrintable(name));
 
-            const auto &modelColumns = fromModel.Configuration().Configuration().columns;
-            const auto &libraryColumns = fromLibrary.Configuration().Configuration().columns;
+            const auto &modelColumns = fromModel.Layout().Columns();
+            const auto &libraryColumns = fromLibrary.Layout().Columns();
             for (size_t column = 0; column < fromLibrary.ColumnCount(); ++column)
             {
                 QVERIFY2(
@@ -1199,7 +1213,7 @@ private slots:
         QCOMPARE(run.model->rowCount(), 3);
         QVERIFY(run.model->StreamingErrors().empty());
 
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         const auto findColumn = [&](const std::string &header) -> const loglib::Column * {
             for (const auto &c : columns)
             {
@@ -1355,7 +1369,7 @@ private slots:
         const int msgCol = ColumnByHeader(*run.model, QStringLiteral("msg"));
         QVERIFY(tsCol >= 0 && msgCol >= 0);
 
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::ColumnType::Time);
 
         // (1) Loading: rows preserve file order (msg column).
@@ -5606,7 +5620,7 @@ private slots:
         sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
-        QCOMPARE(loglib::FirstTimeColumnIndex(model->Configuration()), -1);
+        QCOMPARE(loglib::FirstTimeColumnIndex(model->Layout()), -1);
 
         mWindow->statusBar()->clearMessage();
         mWindow->ExecuteGotoTimestampForTest(
@@ -8064,7 +8078,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "auto-promoted level column must exist");
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
@@ -8250,7 +8264,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
         // Every dict entry is canonical, so the tolerance trivially
         // holds and promotion must reach `Type::Level`.
@@ -8317,7 +8331,7 @@ private slots:
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QCOMPARE(columns.size(), static_cast<size_t>(3));
         QCOMPARE(columns[0].header, std::string{"body"});
         QCOMPARE(columns[1].header, std::string{"level"});
@@ -8381,7 +8395,7 @@ private slots:
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
 
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         QCOMPARE(columns.size(), static_cast<size_t>(3));
         QCOMPARE(columns[0].header, std::string{"time"});
         QCOMPARE(columns[0].type, loglib::ColumnType::Time);
@@ -8924,6 +8938,7 @@ private slots:
         column.keys = {"lvl"};
         column.printFormat = "{}";
         column.type = loglib::ColumnType::Level;
+        column.autoDetect = false;
         column.parseFormats = {};
         column.levelMapping = {
             {"NOTICE", "Info"},
@@ -8934,7 +8949,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("level-mapping.json"));
-        loglib::LogConfigurationManager::Save(cfg, cfgPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(cfg, cfgPath.toStdString(), loglib::SaveScope::Full);
 
         // Step 2: load through MainWindow so the filter UI rebuilds.
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
@@ -8944,7 +8959,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
         const int levelCol = ColumnByHeader(*model, QStringLiteral("lvl"));
         QVERIFY2(levelCol >= 0, "lvl column must exist after configuration load");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Step 3: drive a stream with mixed canonical / aliased values.
         const TempJsonFile emptyFixture(QStringList{});
@@ -9044,7 +9059,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Find the Filters-menu action whose data matches `filterId`.
@@ -9097,7 +9112,7 @@ private slots:
         // column. The type-mismatch guard must drop the active rule.
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::String;
-        savedFilter.columnKeys = mWindow->Model()->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        savedFilter.columnKeys = mWindow->Model()->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         savedFilter.filterString = std::string("info");
         savedFilter.matchType = loglib::LeafRule::Match::Exactly;
 
@@ -9165,7 +9180,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         const loglib::EnumDictionary *dictionary = nullptr;
@@ -9268,7 +9283,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promoting batch");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
         const loglib::KeyId levelKey = keys.Find("category");
         QVERIFY(levelKey != loglib::INVALID_KEY_ID);
         const loglib::EnumDictionary *dict = model->Table().EnumDictionaries().Find(levelKey);
@@ -9303,7 +9318,7 @@ private slots:
             model->AppendBatch(std::move(batch));
         }
 
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
         QVERIFY2(
             model->Table().EnumDictionaries().Find(levelKey) == nullptr, "demotion must erase the dictionary entry"
         );
@@ -9432,7 +9447,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist post-batch");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
         const loglib::KeyId levelKey = model->Table().Keys().Find("category");
         QVERIFY2(
             model->Table().EnumDictionaries().Find(levelKey) == nullptr,
@@ -9500,7 +9515,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Submit `Info` through FilterEditor. Only the two `info`
         // rows out of three should survive.
@@ -9535,7 +9550,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
 
         // Translation succeeded iff the two `info` rows still match
         // post-demote. Without it, `["Info"]` would byte-compare
@@ -9584,7 +9599,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Install an enum filter selecting the one resolved value via
         // `FilterEnumSubmitted` (the FilterEditor slot).
@@ -9618,7 +9633,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
 
         // Rebuilt predicate has no dictionary, so the string-set
         // fallback runs against the demoted column's string slots:
@@ -9823,7 +9838,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
@@ -9953,14 +9968,14 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            model->Layout().Columns()[static_cast<size_t>(levelCol)].visible,
             "column must default to visible before hide"
         );
 
         mWindow->SetColumnVisible(levelCol, false);
 
         QVERIFY2(
-            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible, "Column::visible must flip to false"
+            !model->Layout().Columns()[static_cast<size_t>(levelCol)].visible, "Column::visible must flip to false"
         );
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
@@ -9976,13 +9991,12 @@ private slots:
 
         auto *model = mWindow->Model();
         mWindow->SetColumnVisible(levelCol, false);
-        QVERIFY(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible);
+        QVERIFY(!model->Layout().Columns()[static_cast<size_t>(levelCol)].visible);
 
         mWindow->SetColumnVisible(levelCol, true);
 
         QVERIFY2(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
-            "Column::visible must flip back to true"
+            model->Layout().Columns()[static_cast<size_t>(levelCol)].visible, "Column::visible must flip back to true"
         );
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
@@ -10478,9 +10492,9 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString savedPath = tempDir.filePath(QStringLiteral("rowless.json"));
-        model->ConfigurationManager().Save(savedPath.toStdString());
+        SaveLayoutForTest(*model, savedPath.toStdString());
         model->Reset();
-        model->ConfigurationManager().Load(savedPath.toStdString());
+        LoadLayoutForTest(*model, savedPath.toStdString());
         mWindow->ApplyColumnVisibility();
         QCoreApplication::processEvents();
 
@@ -10748,7 +10762,7 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &installed = mWindow->Filters().begin()->second;
         QCOMPARE(installed.type, loglib::LeafRule::Type::Time);
-        QCOMPARE(installed.columnKeys, model->Configuration().columns[static_cast<size_t>(timeCol)].keys);
+        QCOMPARE(installed.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY(installed.filterBegin.has_value());
         // Open upper bound encoded as `std::nullopt` (not INT64_MAX).
         QVERIFY2(!installed.filterEnd.has_value(), "open upper bound must be std::nullopt, not INT64_MAX");
@@ -10780,7 +10794,7 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &installed = mWindow->Filters().begin()->second;
         QCOMPARE(installed.type, loglib::LeafRule::Type::Time);
-        QCOMPARE(installed.columnKeys, model->Configuration().columns[static_cast<size_t>(timeCol)].keys);
+        QCOMPARE(installed.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY2(!installed.filterBegin.has_value(), "open lower bound must be std::nullopt, not INT64_MIN");
         QVERIFY(installed.filterEnd.has_value());
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
@@ -10832,7 +10846,7 @@ private slots:
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &installed = mWindow->Filters().begin()->second;
-        QCOMPARE(installed.columnKeys, model->Configuration().columns[static_cast<size_t>(timeColAfter)].keys);
+        QCOMPARE(installed.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeColAfter)].keys);
     }
 
     // Each click adds a fresh-UUID filter rather than replacing an
@@ -10968,7 +10982,7 @@ private slots:
         QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
         QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
-        QCOMPARE(it->second.columnKeys, model->Configuration().columns[static_cast<size_t>(timeCol)].keys);
+        QCOMPARE(it->second.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY(it->second.filterBegin.has_value());
         QVERIFY2(!it->second.filterEnd.has_value(), "open upper bound must round-trip as std::nullopt");
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
@@ -11096,7 +11110,7 @@ private slots:
         QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
         QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
-        QCOMPARE(it->second.columnKeys, model->Configuration().columns[static_cast<size_t>(timeCol)].keys);
+        QCOMPARE(it->second.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY2(it->second.filterBegin.has_value(), "uncheck must promote begin from nullopt to the seed value");
         QVERIFY(it->second.filterEnd.has_value());
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
@@ -11189,22 +11203,22 @@ private slots:
         auto *model = mWindow->Model();
 
         mWindow->SetColumnVisible(levelCol, false);
-        QVERIFY(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible);
+        QVERIFY(!model->Layout().Columns()[static_cast<size_t>(levelCol)].visible);
 
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString savedPath = savedDir.filePath(QStringLiteral("config.json"));
-        model->ConfigurationManager().Save(savedPath.toStdString());
+        SaveLayoutForTest(*model, savedPath.toStdString());
 
         // `Reset` wipes the model; `Load` repopulates columns;
         // `ApplyColumnVisibility` is the production hook that pushes
         // the loaded flags onto the header.
         model->Reset();
-        model->ConfigurationManager().Load(savedPath.toStdString());
+        LoadLayoutForTest(*model, savedPath.toStdString());
         mWindow->ApplyColumnVisibility();
         QCoreApplication::processEvents();
 
-        const auto &reloadedColumns = model->Configuration().columns;
+        const auto &reloadedColumns = model->Layout().Columns();
         QVERIFY2(
             static_cast<size_t>(levelCol) < reloadedColumns.size(), "level column index must remain valid after reload"
         );
@@ -11237,8 +11251,7 @@ private slots:
         // Seed a saved filter on `level`. The public `AddFilter`
         // path opens an editor, so write through Save / Load instead
         // (the manager only exposes a const `Configuration()`).
-        auto &mgr = model->ConfigurationManager();
-        loglib::LogConfiguration configuration = mgr.Configuration();
+        loglib::LogConfiguration configuration{.columns = model->Layout().Columns()};
         // Bind by column keys so the leaf survives column moves
         // without any remap step.
         QVERIFY(std::cmp_less(static_cast<size_t>(levelCol), configuration.columns.size()));
@@ -11257,14 +11270,15 @@ private slots:
             .filterValues = {"info"},
         }};
         andRoot.children.push_back(std::move(leafExpr));
-        configuration.expression.node = std::move(andRoot);
+        configuration.view.expression.node = std::move(andRoot);
 
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("with-filter.json"));
-        loglib::LogConfigurationManager::Save(configuration, path.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(configuration, path.toStdString(), loglib::SaveScope::Full);
         model->Reset();
-        mgr.Load(path.toStdString());
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(path);
         QCoreApplication::processEvents();
 
         const int levelAfterReload = ColumnByHeader(*model, QStringLiteral("category"));
@@ -11280,7 +11294,7 @@ private slots:
             return leaf != nullptr ? leaf->rule.columnKeys : std::vector<std::string>{};
         };
 
-        QCOMPARE(extractSoleLeafKeys(mgr.Configuration().expression), levelKeys);
+        QCOMPARE(extractSoleLeafKeys(mWindow->activeSession()->View().expression), levelKeys);
 
         // Move `level`; the leaf's `columnKeys` stay the same, but
         // resolving them now yields the new column index.
@@ -11290,7 +11304,7 @@ private slots:
         QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
         QCoreApplication::processEvents();
 
-        QCOMPARE(extractSoleLeafKeys(mgr.Configuration().expression), levelKeys);
+        QCOMPARE(extractSoleLeafKeys(mWindow->activeSession()->View().expression), levelKeys);
         QCOMPARE(ColumnByHeader(*model, QStringLiteral("category")), dest);
     }
 
@@ -11329,8 +11343,7 @@ private slots:
 
         const std::string filterKey = filterId.toStdString();
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must land in mSimpleLeaves after submit");
-        const std::vector<std::string> expectedKeys =
-            model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> expectedKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         QCOMPARE(mWindow->Filters().at(filterKey).columnKeys, expectedKeys);
 
         // Bypass `OnHeaderSectionMoved` and emit `columnsMoved`
@@ -11347,7 +11360,7 @@ private slots:
         // move unchanged; the leaf still binds by keys.
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the source-side move");
         QCOMPARE(mWindow->Filters().at(filterKey).columnKeys, expectedKeys);
-        const auto &loadedExpr = model->Configuration().expression;
+        const auto &loadedExpr = mWindow->activeSession()->View().expression;
         const auto *loadedAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpr.node);
         QVERIFY(loadedAnd != nullptr);
         QCOMPARE(loadedAnd->children.size(), static_cast<size_t>(1));
@@ -11390,7 +11403,7 @@ private slots:
         rule.matchType = loglib::HighlightRule::Match::Contains;
         rule.filterString = "info";
         rule.backgroundIndex = 1;
-        highlights->SetRules({rule}, model->Configuration().columns, &model->Table());
+        highlights->SetRules({rule}, model->Layout().Columns(), &model->Table());
 
         const auto &resolvedBefore = highlights->ResolvedColumnsForTest();
         QCOMPARE(resolvedBefore.size(), static_cast<size_t>(1));
@@ -11461,11 +11474,11 @@ private slots:
         // The whole `Column` struct rotates with the move, so
         // `dest` is now the hidden index.
         QVERIFY2(
-            !model->Configuration().columns[static_cast<size_t>(dest)].visible,
+            !model->Layout().Columns()[static_cast<size_t>(dest)].visible,
             "Column::visible must follow the moved column to its new index"
         );
         QVERIFY2(
-            model->Configuration().columns[static_cast<size_t>(src)].visible,
+            model->Layout().Columns()[static_cast<size_t>(src)].visible,
             "the column displaced to `src` must remain visible"
         );
 
@@ -11491,7 +11504,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("with-visible.json"));
-        model->ConfigurationManager().Save(path.toStdString());
+        SaveLayoutForTest(*model, path.toStdString());
 
         QFile file(path);
         QVERIFY(file.open(QFile::ReadOnly));
@@ -11524,12 +11537,11 @@ private slots:
         QVERIFY2(resetSpy.count() >= 1, "Reset must emit modelReset");
 
         QVERIFY2(
-            !model->Configuration().columns.empty(),
+            !model->Layout().Columns().empty(),
             "configuration columns must survive Reset (Reset wipes data, not configuration)"
         );
         QVERIFY2(
-            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
-            "Column::visible flag must survive Reset"
+            !model->Layout().Columns()[static_cast<size_t>(levelCol)].visible, "Column::visible flag must survive Reset"
         );
         QVERIFY2(header->isSectionHidden(levelCol), "modelReset hook must reapply Column::visible to the header");
     }
@@ -11549,7 +11561,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString savedPath = tempDir.filePath(QStringLiteral("hidden-level.json"));
-        model->ConfigurationManager().Save(savedPath.toStdString());
+        SaveLayoutForTest(*model, savedPath.toStdString());
 
         // Re-show first so the load + reapply has something to
         // do; otherwise the test would pass without the new
@@ -11564,7 +11576,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            !model->Layout().Columns()[static_cast<size_t>(levelCol)].visible,
             "loaded configuration must mark level hidden"
         );
         QVERIFY2(header->isSectionHidden(levelCol), "TryLoadAsConfiguration must reapply visibility to the header");
@@ -11600,7 +11612,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString savedPath = tempDir.filePath(QStringLiteral("with-sort.json"));
-        model->ConfigurationManager().Save(savedPath.toStdString());
+        SaveLayoutForTest(*model, savedPath.toStdString());
 
         // The single-file open path; `DoLoadConfiguration` does the
         // same reset, so both entry points share the contract.
@@ -11628,7 +11640,7 @@ private slots:
         emit viewMenu->aboutToShow();
 
         const QString levelHeader =
-            QString::fromStdString(model->Configuration().columns[static_cast<size_t>(levelCol)].header);
+            QString::fromStdString(model->Layout().Columns()[static_cast<size_t>(levelCol)].header);
         QAction *levelAction = nullptr;
         for (QAction *act : viewMenu->actions())
         {
@@ -11648,7 +11660,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            !model->Layout().Columns()[static_cast<size_t>(levelCol)].visible,
             "toggling the View menu action must flip Column::visible"
         );
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
@@ -11674,7 +11686,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            model->Layout().Columns()[static_cast<size_t>(levelCol)].visible,
             "second toggle must restore Column::visible"
         );
         QVERIFY2(!header->isSectionHidden(levelCol), "second toggle must un-hide the header section");
@@ -11714,7 +11726,7 @@ private slots:
         const std::string filterKey = filterId.toStdString();
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must land in mSimpleLeaves after submit");
         const std::vector<std::string> levelKeysAtSubmit =
-            model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+            model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         QCOMPARE(mWindow->Filters().at(filterKey).columnKeys, levelKeysAtSubmit);
 
         // Reorder `level` via the production header-drag slot; the
@@ -11833,12 +11845,12 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         // The eager mirror must have copied the filter into the
         // wire-format expression before any Save -- the load-
         // bearing invariant this fix establishes.
-        auto mirrored = WireLeavesOf(model->Configuration().expression);
+        auto mirrored = WireLeavesOf(mWindow->activeSession()->View().expression);
         QCOMPARE(mirrored.size(), static_cast<size_t>(1));
         QCOMPARE(mirrored[0].columnKeys, msgKeys);
         QCOMPARE(mirrored[0].type, loglib::LeafRule::Type::String);
@@ -11854,7 +11866,7 @@ private slots:
         QMetaObject::invokeMethod(mWindow, "ClearAllFilters", Qt::DirectConnection);
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
-        QVERIFY(loglib::IsMatchAll(model->Configuration().expression));
+        QVERIFY(loglib::IsMatchAll(mWindow->activeSession()->View().expression));
 
         // Suppress the modal so the test thread does not block.
         // No drops are expected here, but the load path always
@@ -11874,7 +11886,7 @@ private slots:
         QCOMPARE(*revived.matchType, loglib::LeafRule::Match::Contains);
 
         // The wire-format expression also reflects the revived state.
-        QCOMPARE(WireLeavesOf(model->Configuration().expression).size(), static_cast<size_t>(1));
+        QCOMPARE(WireLeavesOf(mWindow->activeSession()->View().expression).size(), static_cast<size_t>(1));
     }
 
     // Multi-type round-trip: a string filter and an enum filter
@@ -11915,7 +11927,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
-        QCOMPARE(WireLeavesOf(model->Configuration().expression).size(), static_cast<size_t>(2));
+        QCOMPARE(WireLeavesOf(mWindow->activeSession()->View().expression).size(), static_cast<size_t>(2));
 
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
@@ -11935,8 +11947,8 @@ private slots:
 
         // Verify both types survived. UUIDs are regenerated on load
         // so look up by (type, columnKeys) rather than original IDs.
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
-        const std::vector<std::string> levelKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> levelKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         bool sawString = false;
         bool sawEnum = false;
         for (const auto &[id, f] : mWindow->Filters())
@@ -11988,9 +12000,9 @@ private slots:
         // via Glaze so the load path sees the same wire format
         // `Save` emits.
         (void)columnCount;
-        loglib::LogConfiguration configuration = model->Configuration();
+        loglib::LogConfiguration configuration{.columns = model->Layout().Columns()};
         const std::vector<std::string> levelKeys = configuration.columns[static_cast<size_t>(levelCol)].keys;
-        configuration.expression = WireLeavesAsExpression({
+        configuration.view.expression = WireLeavesAsExpression({
             loglib::LeafRule{
                 .type = loglib::LeafRule::Type::Enumeration,
                 .columnKeys = levelKeys,
@@ -12018,7 +12030,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("mixed-filters.json"));
-        loglib::LogConfigurationManager::Save(configuration, path.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(configuration, path.toStdString(), loglib::SaveScope::Full);
 
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(path);
@@ -12030,11 +12042,11 @@ private slots:
         QCOMPARE(surviving.type, loglib::LeafRule::Type::Enumeration);
         const int levelColAfterLoad = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelColAfterLoad >= 0, "level column must reload");
-        QCOMPARE(surviving.columnKeys, model->Configuration().columns[static_cast<size_t>(levelColAfterLoad)].keys);
+        QCOMPARE(surviving.columnKeys, model->Layout().Columns()[static_cast<size_t>(levelColAfterLoad)].keys);
     }
 
     // Two consecutive `Save`s of the same filter set must produce
-    // byte-identical JSON. `MirrorSessionStateToConfiguration` sorts the
+    // byte-identical JSON. `SyncSessionView` sorts the
     // snapshot so the output is independent of the `unordered_map`
     // iteration order. Without the sort, save -> reopen -> save
     // would change the file every round-trip.
@@ -12112,7 +12124,7 @@ private slots:
     // Regression: an Advanced-editor tree whose root is `Or` / `Not`
     // (i.e. cannot be represented by simple-mode leaves) must survive
     // a Save / Load round-trip. Before the fix the load path called
-    // `MirrorSessionStateToConfiguration` after `ClearAllFilters` and
+    // `SyncSessionView` after `ClearAllFilters` and
     // that helper only preserved non-Leaf siblings of an `And` root
     // -- an `Or` / `Not` root was silently overwritten with the
     // empty simple-mode `And` (match-all), losing the user's tree.
@@ -12124,8 +12136,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
-        const std::vector<std::string> levelKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> levelKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
 
         // Build `NOT msg:m1 OR level in [info]` -- a two-node
         // Advanced tree whose root is `Or` and one branch is a
@@ -12154,7 +12166,7 @@ private slots:
 
         // Install the Advanced tree exactly as `OpenAdvancedFilter`
         // would after the user clicks OK.
-        model->ConfigurationManager().SetExpression(advancedTree);
+        mWindow->activeSession()->MutableView().expression = advancedTree;
 
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
@@ -12167,9 +12179,9 @@ private slots:
         // `ClearAllFilters` would work equally well here (it also
         // resets to match-all; see `TestClearAllFiltersDropsAdvancedTree`),
         // but going through the manager keeps the intent explicit.
-        model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+        mWindow->activeSession()->MutableView().expression = loglib::FilterExpression{};
         QCoreApplication::processEvents();
-        QVERIFY(loglib::IsMatchAll(model->Configuration().expression));
+        QVERIFY(loglib::IsMatchAll(mWindow->activeSession()->View().expression));
 
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(savedPath);
@@ -12179,7 +12191,7 @@ private slots:
         // pure-Advanced root in a single-child `And` for uniform
         // simple-mode-plus-Advanced siblings; both shapes are
         // semantically equivalent, so accept either.
-        const auto &reloaded = model->Configuration().expression;
+        const auto &reloaded = mWindow->activeSession()->View().expression;
         const loglib::FilterExpression *advanced = &reloaded;
         if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&reloaded.node); asAnd != nullptr)
         {
@@ -12206,7 +12218,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         auto *clearAction = mWindow->findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
         QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
@@ -12234,7 +12246,7 @@ private slots:
                 }
             )
         );
-        model->ConfigurationManager().SetExpression(loglib::MakeOr(std::move(orChildren)));
+        mWindow->activeSession()->MutableView().expression = loglib::MakeOr(std::move(orChildren));
 
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
@@ -12245,7 +12257,7 @@ private slots:
         // of truth. Setting it through the manager leaves the action
         // in its pristine disabled state, which is exactly the
         // pre-load condition that used to survive the load.
-        model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+        mWindow->activeSession()->MutableView().expression = loglib::FilterExpression{};
         QCoreApplication::processEvents();
         QVERIFY2(!clearAction->isEnabled(), "precondition: action starts disabled with no simple filters");
 
@@ -12255,7 +12267,7 @@ private slots:
 
         QVERIFY2(mWindow->Filters().empty(), "an Advanced-only expression must not populate mSimpleLeaves");
         QVERIFY2(
-            !loglib::IsMatchAll(model->Configuration().expression),
+            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
             "precondition: the loaded Advanced tree must still be filtering rows"
         );
         QVERIFY2(clearAction->isEnabled(), "Clear All Filters must be enabled after loading an Advanced-only session");
@@ -12269,7 +12281,7 @@ private slots:
         clearAction->trigger();
         QCoreApplication::processEvents();
         QVERIFY2(
-            loglib::IsMatchAll(model->Configuration().expression),
+            loglib::IsMatchAll(mWindow->activeSession()->View().expression),
             "triggering the re-enabled action must clear the loaded Advanced tree"
         );
     }
@@ -12294,7 +12306,7 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         const auto levelType = columns[static_cast<size_t>(levelCol)].type;
         QVERIFY2(
             levelType == loglib::ColumnType::Enumeration || levelType == loglib::ColumnType::Level,
@@ -12342,7 +12354,7 @@ private slots:
             });
         };
         QVERIFY2(
-            findEnumStringLeaf(model->Configuration().expression),
+            findEnumStringLeaf(mWindow->activeSession()->View().expression),
             "the un-representable leaf must stay on the wire expression"
         );
 
@@ -12351,7 +12363,7 @@ private slots:
         const QString savedPath = savedDir.filePath(QStringLiteral("string-on-enum.json"));
         mWindow->SaveConfigurationToPathForTest(savedPath);
 
-        model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+        mWindow->activeSession()->MutableView().expression = loglib::FilterExpression{};
         QCoreApplication::processEvents();
 
         mWindow->SetSuppressDialogsForTest(true);
@@ -12360,7 +12372,7 @@ private slots:
 
         QCOMPARE(mWindow->LastDroppedFilterCountForTest(), 0);
         QVERIFY2(
-            findEnumStringLeaf(model->Configuration().expression),
+            findEnumStringLeaf(mWindow->activeSession()->View().expression),
             "a String leaf on an enum column must survive Save/Load instead of being dropped"
         );
         // The representable sibling still round-trips into simple mode.
@@ -12370,7 +12382,7 @@ private slots:
 
     // Regression: a follow-up simple-mode edit after the user commits
     // an Advanced `Or` / `Not` tree must not clobber that tree. The
-    // trigger is `MirrorSessionStateToConfiguration`, which runs on
+    // trigger is `SyncSessionView`, which runs on
     // every `AddLogFilter` / `ClearFilter`; before the fix it read
     // the existing root, saw non-`And`, and dropped the whole subtree.
     void TestSimpleFilterEditPreservesAdvancedRoot()
@@ -12380,7 +12392,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         // Install a `NOT msg:m1` Advanced tree exactly as
         // `OpenAdvancedFilter` would after user commit.
@@ -12394,10 +12406,10 @@ private slots:
                 }
             )
         );
-        model->ConfigurationManager().SetExpression(advancedTree);
+        mWindow->activeSession()->MutableView().expression = advancedTree;
 
         // A simple-mode leaf submission funnels through `AddLogFilter`
-        // -> `MirrorSessionStateToConfiguration`. The Advanced tree
+        // -> `SyncSessionView`. The Advanced tree
         // must still be reachable in the resulting configuration.
         QMetaObject::invokeMethod(
             mWindow,
@@ -12410,7 +12422,7 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        const auto &current = model->Configuration().expression;
+        const auto &current = mWindow->activeSession()->View().expression;
         const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
         QVERIFY2(asAnd != nullptr, "root must be And after simple-mode edit");
         bool sawAdvancedNot = false;
@@ -12439,7 +12451,7 @@ private slots:
     // the empty editor) must not be silently dropped by a subsequent
     // mirror. Before the fix, `OpenAdvancedFilter` wrote the bare
     // Leaf onto the configuration and cleared `mSimpleLeaves`. Any
-    // later trigger of `MirrorSessionStateToConfiguration`
+    // later trigger of `SyncSessionView`
     // (`AddLogFilter`, `ClearFilter`, `AutoSaveSessionSnapshot` on
     // close) rebuilt the expression from the empty simple set, saw
     // the existing bare Leaf, matched neither the And / Or / Not
@@ -12454,7 +12466,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         // Simulate the user typing `msg:m1` and clicking OK. `Result`
         // is a bare `Leaf` -- the shape the pre-fix branch dropped.
@@ -12474,7 +12486,7 @@ private slots:
         // expression must be `And{[Leaf]}` -- not match-all.
         QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
         {
-            const auto &current = model->Configuration().expression;
+            const auto &current = mWindow->activeSession()->View().expression;
             const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
             QVERIFY2(asAnd != nullptr, "root must be And after Advanced commit of a bare Leaf");
             QCOMPARE(static_cast<int>(asAnd->children.size()), 1);
@@ -12498,7 +12510,7 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        const auto &current = model->Configuration().expression;
+        const auto &current = mWindow->activeSession()->View().expression;
         const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
         QVERIFY2(asAnd != nullptr, "root must remain And after the follow-up simple edit");
         QCOMPARE(static_cast<int>(asAnd->children.size()), 2);
@@ -12532,7 +12544,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         loglib::LeafRule exactEmpty;
         exactEmpty.type = loglib::LeafRule::Type::String;
@@ -12580,8 +12592,8 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
-        const std::vector<std::string> levelKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> levelKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
 
         // Build `msg:m1 AND msg:m2 AND (msg:m3 OR msg:m4)` -- two
         // representable-as-simple leaves plus one non-Leaf child.
@@ -12635,7 +12647,7 @@ private slots:
         // stays under the wire as a non-Leaf child.
         QCOMPARE(static_cast<int>(mWindow->Filters().size()), 2);
 
-        const auto &current = model->Configuration().expression;
+        const auto &current = mWindow->activeSession()->View().expression;
         const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
         QVERIFY2(asAnd != nullptr, "root must be And after Advanced commit of a mixed tree");
         QCOMPARE(static_cast<int>(asAnd->children.size()), 3);
@@ -12687,7 +12699,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("multi-key.json"));
-        loglib::LogConfigurationManager::Save(cfg, cfgPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(cfg, cfgPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
         QCoreApplication::processEvents();
 
@@ -12695,7 +12707,7 @@ private slots:
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
         const int svcColIndex = ColumnByHeader(*model, QStringLiteral("svc"));
         QVERIFY2(svcColIndex >= 0, "svc column must exist after configuration load");
-        const auto &svcColumn = model->Configuration().columns[static_cast<size_t>(svcColIndex)];
+        const auto &svcColumn = model->Layout().Columns()[static_cast<size_t>(svcColIndex)];
         QCOMPARE(static_cast<int>(svcColumn.keys.size()), 3);
 
         // Parse `svc:auth` -- ParseQuery emits a single-key
@@ -12722,7 +12734,7 @@ private slots:
         // Mirror consistency: the persisted expression carries
         // the same promoted key set, so a follow-up load / mirror
         // won't silently narrow the rule.
-        const auto &mirrored = model->Configuration().expression;
+        const auto &mirrored = mWindow->activeSession()->View().expression;
         const auto *mirroredAnd = std::get_if<loglib::FilterExpression::And>(&mirrored.node);
         QVERIFY2(mirroredAnd != nullptr, "mirror wraps a single leaf in And so it survives future mirrors");
         QCOMPARE(static_cast<int>(mirroredAnd->children.size()), 1);
@@ -12748,7 +12760,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("clearFiltersStatusButton"));
         QVERIFY2(button != nullptr, "MainWindow must own the clear-filters status button");
@@ -12789,7 +12801,7 @@ private slots:
         // action does.
         QVERIFY2(mWindow->Filters().empty(), "Advanced-only commit must not populate mSimpleLeaves");
         QVERIFY2(
-            !loglib::IsMatchAll(model->Configuration().expression),
+            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
             "Advanced NOT tree must produce a non-match-all expression"
         );
         QVERIFY2(clearAction->isEnabled(), "clear-all action must be enabled with an active Advanced tree");
@@ -12820,7 +12832,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         auto *clearAction = mWindow->findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
         QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
@@ -12883,7 +12895,7 @@ private slots:
 
         QVERIFY2(mWindow->Filters().empty(), "simple leaf must be gone after ClearFilter");
         QVERIFY2(
-            !loglib::IsMatchAll(model->Configuration().expression),
+            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
             "the Advanced Or subtree must survive ClearFilter of the sibling simple leaf"
         );
         QVERIFY2(
@@ -12899,7 +12911,7 @@ private slots:
     // Regression: `Clear All Filters` is the user's explicit signal
     // that they want every row visible. Before the fix,
     // `ClearAllFilters` cleared `mSimpleLeaves` and then called
-    // `MirrorSessionStateToConfiguration`, which preserves any
+    // `SyncSessionView`, which preserves any
     // pre-existing Advanced-mode Or/Not root -- so an Advanced tree
     // committed via the editor stayed active with no UI cue (menu
     // showed "(no filters)", funnel decorations were gone, yet rows
@@ -12913,7 +12925,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
         // Install a `NOT msg:m1` Advanced tree exactly as
         // `OpenAdvancedFilter` would after user commit.
@@ -12927,10 +12939,10 @@ private slots:
                 }
             )
         );
-        model->ConfigurationManager().SetExpression(advancedTree);
+        mWindow->activeSession()->MutableView().expression = advancedTree;
         QCoreApplication::processEvents();
         QVERIFY2(
-            !loglib::IsMatchAll(model->Configuration().expression),
+            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
             "precondition: Advanced tree must be live before ClearAllFilters"
         );
 
@@ -12938,14 +12950,14 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            loglib::IsMatchAll(model->Configuration().expression),
+            loglib::IsMatchAll(mWindow->activeSession()->View().expression),
             "ClearAllFilters must reset the expression to match-all even when the "
             "root is an Advanced Or/Not/And-with-non-Leaf subtree"
         );
         QVERIFY2(mWindow->Filters().empty(), "simple-mode leaves must be drained too");
     }
 
-    // `Save Configuration...` (SaveScope::ColumnsOnly) writes a
+    // `Save Configuration...` (SaveScope::Columns) writes a
     // portable layout: columns survive, session-only state
     // (filters, sort) is omitted from the file on purpose so the
     // configuration can be applied to a different log source
@@ -12979,19 +12991,16 @@ private slots:
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString columnsOnlyPath = savedDir.filePath(QStringLiteral("columns-only.json"));
-        mWindow->SaveConfigurationToPathForTest(columnsOnlyPath, loglib::SaveScope::ColumnsOnly);
+        mWindow->SaveConfigurationToPathForTest(columnsOnlyPath, loglib::SaveScope::Columns);
 
         // Reload into a fresh manager and confirm the on-disk file is
         // a configuration-shape file: columns present, session-only
         // fields back at their inert defaults.
-        loglib::LogConfigurationManager probe;
-        probe.Load(columnsOnlyPath.toStdString());
-        QVERIFY(!probe.Configuration().columns.empty());
-        QVERIFY2(
-            loglib::IsMatchAll(probe.Configuration().expression), "SaveScope::ColumnsOnly must omit filter expression"
-        );
-        QVERIFY(probe.Configuration().sort.columnKeys.empty());
-        QVERIFY2(!probe.Configuration().source.has_value(), "SaveScope::ColumnsOnly must omit source");
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(columnsOnlyPath.toStdString());
+        QVERIFY(!probe.columns.empty());
+        QVERIFY2(loglib::IsMatchAll(probe.view.expression), "SaveScope::Columns must omit filter expression");
+        QVERIFY(probe.view.sort.columnKeys.empty());
+        QVERIFY2(!probe.source.has_value(), "SaveScope::Columns must omit source");
     }
 
     // `Save Session...` (SaveScope::Full) persists the live sort
@@ -13066,17 +13075,15 @@ private slots:
 
         // Read back through a fresh manager so we don't accidentally
         // observe the still-live runtime mirror.
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
         QVERIFY2(
-            probe.Configuration().source.has_value(),
+            probe.source.has_value(),
             "SaveScope::Full must persist the source descriptor for a streamed-then-finished file"
         );
-        QCOMPARE(static_cast<int>(probe.Configuration().source->kind), static_cast<int>(loglib::Source::Kind::File));
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(static_cast<int>(probe.source->kind), static_cast<int>(loglib::Source::Kind::File));
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
-            QString::fromStdString(syntheticSource)
+            QString::fromStdString(probe.source->locators.front().displayPath), QString::fromStdString(syntheticSource)
         );
 
         // Now load the freshly-saved session back into the running
@@ -13091,14 +13098,10 @@ private slots:
         const QString resavePath = savedDir.filePath(QStringLiteral("with-source-resave.json"));
         mWindow->SaveConfigurationToPathForTest(resavePath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager resaveProbe;
-        resaveProbe.Load(resavePath.toStdString());
-        QVERIFY2(
-            resaveProbe.Configuration().source.has_value(),
-            "Load -> Save round trip must preserve a loaded source descriptor"
-        );
-        QCOMPARE(resaveProbe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(resaveProbe.Configuration().source->locators.front().displayPath, syntheticSource);
+        const loglib::LogConfiguration resaveProbe = loglib::LoadConfiguration(resavePath.toStdString());
+        QVERIFY2(resaveProbe.source.has_value(), "Load -> Save round trip must preserve a loaded source descriptor");
+        QCOMPARE(resaveProbe.source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(resaveProbe.source->locators.front().displayPath, syntheticSource);
     }
 
     // `OpenMode::Append` keeps the active static session's rows / filters /
@@ -13140,37 +13143,26 @@ private slots:
         QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
 
         // Source descriptor lists every appended file in load order.
-        loglib::LogConfigurationManager manager;
-        manager.SetSource(loglib::Source{});
         const QTemporaryDir saved;
         QVERIFY(saved.isValid());
         const QString sessionPath = saved.filePath(QStringLiteral("appended.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(2));
         // `locators` stores case-preserved display paths; the
         // lower-cased dedup form is parallel-indexed under
         // `locatorDedupKeys`. Assert both stay populated.
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
-            logapp::CanonicalDisplayPath(fixtureA.Path())
+            QString::fromStdString(probe.source->locators[0].displayPath), logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
-            logapp::CanonicalDisplayPath(fixtureB.Path())
+            QString::fromStdString(probe.source->locators[1].displayPath), logapp::CanonicalDisplayPath(fixtureB.Path())
         );
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
-        QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0].dedupKey),
-            logapp::CanonicalLocator(fixtureA.Path())
-        );
-        QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1].dedupKey),
-            logapp::CanonicalLocator(fixtureB.Path())
-        );
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(QString::fromStdString(probe.source->locators[0].dedupKey), logapp::CanonicalLocator(fixtureA.Path()));
+        QCOMPARE(QString::fromStdString(probe.source->locators[1].dedupKey), logapp::CanonicalLocator(fixtureB.Path()));
     }
 
     // Opening a primary prepends every sibling in oldest-first order.
@@ -13273,10 +13265,9 @@ private slots:
         const QString sessionPath = savedDir.filePath(QStringLiteral("rotation-sorted.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        const auto &locators = probe.Configuration().source->locators;
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        const auto &locators = probe.source->locators;
         QCOMPARE(locators.size(), static_cast<std::size_t>(3));
         QCOMPARE(QString::fromStdString(locators[0].displayPath), logapp::CanonicalDisplayPath(olderPath));
         QCOMPARE(QString::fromStdString(locators[1].displayPath), logapp::CanonicalDisplayPath(oldPath));
@@ -14031,7 +14022,7 @@ private slots:
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString columnsPath = savedDir.filePath(QStringLiteral("cols.json"));
-        mWindow->SaveConfigurationToPathForTest(columnsPath, loglib::SaveScope::ColumnsOnly);
+        mWindow->SaveConfigurationToPathForTest(columnsPath, loglib::SaveScope::Columns);
 
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(columnsPath));
         QCoreApplication::processEvents();
@@ -14616,17 +14607,14 @@ private slots:
         const QString sessionPath = saved.filePath(QStringLiteral("appended_during_stream.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
-            logapp::CanonicalDisplayPath(fixtureA.Path())
+            QString::fromStdString(probe.source->locators[0].displayPath), logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
-            logapp::CanonicalDisplayPath(fixtureB.Path())
+            QString::fromStdString(probe.source->locators[1].displayPath), logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
 
@@ -14730,12 +14718,11 @@ private slots:
         const QString sessionPath = saved.filePath(QStringLiteral("replaced.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
+            QString::fromStdString(probe.source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
@@ -14802,17 +14789,15 @@ private slots:
         const QString sessionPath = savedDir.filePath(QStringLiteral("compressed_happy.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
-            logapp::CanonicalDisplayPath(path)
+            QString::fromStdString(probe.source->locators.front().displayPath), logapp::CanonicalDisplayPath(path)
         );
         // Format sniff runs on the DECOMPRESSED bytes -- extension
         // (`.jsonl.gz`) must not fool the classifier.
-        QCOMPARE(probe.Configuration().source->format, loglib::Source::Format::Json);
+        QCOMPARE(probe.source->format, loglib::Source::Format::Json);
     }
 
     // Regression: appending during an in-flight decompression must
@@ -14899,16 +14884,12 @@ private slots:
         const QString sessionPath = savedDir.filePath(QStringLiteral("append_during_decompression.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(QString::fromStdString(probe.source->locators[0].displayPath), logapp::CanonicalDisplayPath(gzipPath));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
-            logapp::CanonicalDisplayPath(gzipPath)
-        );
-        QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
+            QString::fromStdString(probe.source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(appendFixture.Path())
         );
     }
@@ -14990,18 +14971,14 @@ private slots:
         const QString sessionPath = savedDir.filePath(QStringLiteral("queued_compressed_follow_up.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
+            QString::fromStdString(probe.source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(uncompressedFixture.Path())
         );
-        QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
-            logapp::CanonicalDisplayPath(gzipPath)
-        );
+        QCOMPARE(QString::fromStdString(probe.source->locators[1].displayPath), logapp::CanonicalDisplayPath(gzipPath));
     }
 
     // Cancel-path regression. Verifies a stop mid-decompression
@@ -15249,7 +15226,7 @@ private slots:
         // Rows, columns, runtime filters gone; sort cleared.
         QCOMPARE(model->rowCount(), 0);
         QCOMPARE(model->columnCount(), 0);
-        QVERIFY2(model->Configuration().columns.empty(), "New Session must clear the persisted column configuration");
+        QVERIFY2(model->Layout().Columns().empty(), "New Session must clear the persisted column configuration");
         QVERIFY2(mWindow->Filters().empty(), "New Session must clear the runtime filter map");
         QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
 
@@ -15259,15 +15236,11 @@ private slots:
         QVERIFY(saved.isValid());
         const QString sessionPath = saved.filePath(QStringLiteral("new-session.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
-        loglib::LogConfigurationManager probe;
-        probe.Load(sessionPath.toStdString());
-        QVERIFY2(!probe.Configuration().source.has_value(), "New Session must clear the source descriptor");
-        QVERIFY2(probe.Configuration().columns.empty(), "New Session saved JSON must have no columns");
-        QVERIFY2(
-            loglib::IsMatchAll(probe.Configuration().expression),
-            "New Session saved JSON must have no filter expression"
-        );
-        QVERIFY(probe.Configuration().sort.columnKeys.empty());
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
+        QVERIFY2(!probe.source.has_value(), "New Session must clear the source descriptor");
+        QVERIFY2(probe.columns.empty(), "New Session saved JSON must have no columns");
+        QVERIFY2(loglib::IsMatchAll(probe.view.expression), "New Session saved JSON must have no filter expression");
+        QVERIFY(probe.view.sort.columnKeys.empty());
     }
 
     // Pinning a string-only column (`msg`) to `Integer` is the
@@ -15285,8 +15258,8 @@ private slots:
 
         // Streaming auto-detected `msg` to `String`; pin it to
         // `Integer` to force a mismatch and re-snapshot health.
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
 
         const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
         model->RefreshColumnHealth();
@@ -15510,8 +15483,8 @@ private slots:
         QVERIFY2(!funnelOnly.isNull(), "filter-only decoration must be the funnel icon");
         const QImage funnelOnlyImage = funnelOnly.pixmap(16, 16).toImage();
 
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -15561,7 +15534,7 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(model->HasFilterForColumn(msgCol), "precondition: filter recorded on msg column");
 
-        model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(msgCol), std::string("message"));
+        model->MutableLayout().SetColumnHeader(static_cast<size_t>(msgCol), std::string("message"));
         model->NotifyColumnEdited(msgCol);
         QCoreApplication::processEvents();
 
@@ -15708,7 +15681,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Level);
 
         // Submit `Info` while the column is still Level; the
         // pre-demote tooltip lists the canonical name.
@@ -15745,7 +15718,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
 
         const QString tooltipAfter = model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(
@@ -15866,7 +15839,7 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "category column must exist after streaming");
         auto *model = mWindow->Model();
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Enum branch: assert each selected value is mentioned;
         // the exact separator is an implementation detail. The
@@ -15957,8 +15930,8 @@ private slots:
         QVERIFY2(button->isHidden(), "Diagnostics button must be hidden when no mismatches are present");
 
         // Force a mismatch by pinning `msg` to Integer.
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -15982,15 +15955,15 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
 
         const ConfigurationDiagnosticsDialog dialog(model);
         const auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
-        QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
+        QCOMPARE(table->rowCount(), static_cast<int>(model->Layout().Columns().size()));
 
         // Find the mismatched row by header text and assert the
         // counter columns. Sorting is enabled, so look up by item
@@ -16076,8 +16049,8 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         // Force `msg` into a mismatch so the dialog paints a warning row.
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
 
         // Snapshot the Light-theme brushes for the `msg` row.
@@ -16346,8 +16319,8 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         // Baseline: msg auto-detected to String, visible, header "msg".
-        QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(msgCol)].type, loglib::ColumnType::String);
+        QVERIFY(model->Layout().Columns()[static_cast<size_t>(msgCol)].visible);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(msgCol)].type, loglib::ColumnType::String);
 
         ColumnEditor editor(model, msgCol);
 
@@ -16375,7 +16348,7 @@ private slots:
         const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
         editor.Apply();
 
-        const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
+        const auto &updated = model->Layout().Columns()[static_cast<size_t>(msgCol)];
         QCOMPARE(QString::fromStdString(updated.header), QStringLiteral("message"));
         QCOMPARE(updated.type, loglib::ColumnType::Integer);
         QVERIFY2(!updated.autoDetect, "Pinning a concrete type must flip autoDetect off");
@@ -16414,7 +16387,7 @@ private slots:
         // it stops short of `Type::Level`). Verify the precondition
         // so a future detector change doesn't silently disarm the
         // test.
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // (1) Enumeration -> String: editor demotes the column. The
         // signal must fire so any active enum filter rebuilds onto
@@ -16433,7 +16406,7 @@ private slots:
             typeCombo->setCurrentIndex(STRING_CHOICE_INDEX);
             editor.Apply();
 
-            QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
+            QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::String);
             bool sawDemote = false;
             for (int i = 0; i < enumSpy.count(); ++i)
             {
@@ -16464,9 +16437,7 @@ private slots:
             typeCombo->setCurrentIndex(ENUMERATION_CHOICE_INDEX);
             editor.Apply();
 
-            QCOMPARE(
-                model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration
-            );
+            QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
             bool sawPromote = false;
             for (int i = 0; i < enumSpy.count(); ++i)
             {
@@ -16524,7 +16495,7 @@ private slots:
         // `Enumeration` with `autoDetect = true`: the detector
         // never clears the flag. `FindTypeChoiceIndex` must surface
         // this as "Enumeration", not as index 0 ("Auto-detect").
-        const auto &preEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
+        const auto &preEdit = model->Layout().Columns()[static_cast<size_t>(categoryCol)];
         QCOMPARE(preEdit.type, loglib::ColumnType::Enumeration);
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
 
@@ -16546,7 +16517,7 @@ private slots:
         QVERIFY(enumSpy.isValid());
         editor.Apply();
 
-        const auto &postEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
+        const auto &postEdit = model->Layout().Columns()[static_cast<size_t>(categoryCol)];
         QCOMPARE(postEdit.type, loglib::ColumnType::Enumeration);
         QVERIFY2(postEdit.autoDetect, "Accept-without-change must preserve the auto-detector's autoDetect=true flag");
         QCOMPARE(enumSpy.count(), 0);
@@ -16573,8 +16544,8 @@ private slots:
         // "Auto-detect" then exercises both the autoDetect flag
         // restoration *and* the rescan that promotes the column
         // back to the detector's preferred type.
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
         ColumnEditor editor(model, msgCol);
         auto *typeCombo = editor.findChild<QComboBox *>();
@@ -16583,7 +16554,7 @@ private slots:
         typeCombo->setCurrentIndex(0); // "Auto-detect"
         editor.Apply();
 
-        const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
+        const auto &updated = model->Layout().Columns()[static_cast<size_t>(msgCol)];
         // The rescan kicks in (bug 4 fix). `msg` carries 200 unique
         // values, so the candidate tracker bails on cardinality and
         // routes to `String`. The autoDetect flag survives the
@@ -16611,14 +16582,14 @@ private slots:
 
         // `category` was already promoted by streaming. Demote it
         // to Integer so picking Auto-detect is a real transition.
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(categoryCol), loglib::ColumnType::Integer);
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(categoryCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(categoryCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(categoryCol), false);
 
         // Pump the model through the same edit path the user would
         // hit to make sure `OnUserChangedColumnType` is invoked
         // (which clears dict state) before the rescan runs.
         model->ApplyColumnTypeEdit(categoryCol, loglib::ColumnType::Integer, false);
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(categoryCol)].type, loglib::ColumnType::Integer);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(categoryCol)].type, loglib::ColumnType::Integer);
 
         ColumnEditor editor(model, categoryCol);
         auto *typeCombo = editor.findChild<QComboBox *>();
@@ -16627,7 +16598,7 @@ private slots:
         typeCombo->setCurrentIndex(0); // "Auto-detect"
         editor.Apply();
 
-        const auto promotedType = model->Configuration().columns[static_cast<size_t>(categoryCol)].type;
+        const auto promotedType = model->Layout().Columns()[static_cast<size_t>(categoryCol)].type;
         QVERIFY2(
             promotedType == loglib::ColumnType::Enumeration || promotedType == loglib::ColumnType::Level,
             "RescanColumnForAutoDetection must promote a small-cardinality column out of Any"
@@ -16693,7 +16664,7 @@ private slots:
         auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
-        QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
+        QCOMPARE(table->rowCount(), static_cast<int>(model->Layout().Columns().size()));
 
         // The Visible cell sits in column 4 (see COL_VISIBLE in
         // columns_manager_dialog.cpp); a row whose underlying
@@ -16723,7 +16694,7 @@ private slots:
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
-        QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
+        QVERIFY(model->Layout().Columns()[static_cast<size_t>(msgCol)].visible);
 
         const ColumnsManagerDialog dialog(model, mWindow);
         auto *table = dialog.findChild<QTableWidget *>();
@@ -16737,7 +16708,7 @@ private slots:
         item->setCheckState(Qt::Unchecked);
 
         QVERIFY2(
-            !model->Configuration().columns[static_cast<size_t>(msgCol)].visible,
+            !model->Layout().Columns()[static_cast<size_t>(msgCol)].visible,
             "Unchecking the Visible cell must flip Column::visible to false"
         );
 
@@ -16761,13 +16732,13 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
-        QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
+        QVERIFY2(model->Layout().Columns().size() >= 2, "fixture must yield at least two columns");
 
-        const std::string firstKeys = model->Configuration().columns.front().keys.empty()
+        const std::string firstKeys = model->Layout().Columns().front().keys.empty()
                                           ? std::string{}
-                                          : model->Configuration().columns.front().keys.front();
+                                          : model->Layout().Columns().front().keys.front();
         const std::string secondKeys =
-            model->Configuration().columns[1].keys.empty() ? std::string{} : model->Configuration().columns[1].keys[0];
+            model->Layout().Columns()[1].keys.empty() ? std::string{} : model->Layout().Columns()[1].keys[0];
         QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");
 
         ColumnsManagerDialog dialog(model, mWindow);
@@ -16778,7 +16749,7 @@ private slots:
 
         dialog.MoveSelectedDown();
 
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QVERIFY2(columns.size() >= 2, "Move must not lose columns");
         QCOMPARE(columns[0].keys.empty() ? std::string{} : columns[0].keys.front(), secondKeys);
         QCOMPARE(columns[1].keys.empty() ? std::string{} : columns[1].keys.front(), firstKeys);
@@ -16798,7 +16769,7 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
-        const auto initialColumns = model->Configuration().columns;
+        const auto initialColumns = model->Layout().Columns();
         QVERIFY2(initialColumns.size() >= 2, "fixture must yield at least two columns");
 
         ColumnsManagerDialog dialog(model, mWindow);
@@ -16811,7 +16782,7 @@ private slots:
         dialog.MoveSelectedUp();
         for (size_t i = 0; i < initialColumns.size(); ++i)
         {
-            QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
+            QCOMPARE(model->Layout().Columns()[i].keys, initialColumns[i].keys);
         }
 
         // Bottom row: Move down is a no-op.
@@ -16820,7 +16791,7 @@ private slots:
         dialog.MoveSelectedDown();
         for (size_t i = 0; i < initialColumns.size(); ++i)
         {
-            QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
+            QCOMPARE(model->Layout().Columns()[i].keys, initialColumns[i].keys);
         }
     }
 
@@ -16838,7 +16809,7 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
-        QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
+        QVERIFY2(model->Layout().Columns().size() >= 2, "fixture must yield at least two columns");
 
         ColumnsManagerDialog dialog(model, mWindow);
         dialog.show();
@@ -16937,7 +16908,7 @@ private slots:
         QCOMPARE(beforeHide.front().column(), levelCol);
 
         mWindow->SetColumnVisible(levelCol, false);
-        QVERIFY(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible);
+        QVERIFY(!model->Layout().Columns()[static_cast<size_t>(levelCol)].visible);
 
         const QModelIndexList afterHide = proxy->MatchRow(start, Qt::DisplayRole, needle, 1, flags, true, 0);
         QVERIFY2(
@@ -17038,8 +17009,7 @@ private slots:
         // Make column 1's header collide with column 0's so we
         // have a real duplicate. The configuration is read-only
         // through the manager, so we round-trip via Save / Load.
-        auto &mgr = model->ConfigurationManager();
-        const auto &columns = mgr.Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QVERIFY2(columns.size() >= 2, "fixture must have at least two columns");
 
         loglib::LogConfiguration mutated;
@@ -17050,7 +17020,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("dupes.json"));
-        loglib::LogConfigurationManager::Save(mutated, cfgPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(mutated, cfgPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
         QCoreApplication::processEvents();
 
@@ -17114,7 +17084,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
-        QCOMPARE(model.Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model.Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Warm the cache.
         filterModel.sort(levelCol, Qt::AscendingOrder);
@@ -17215,7 +17185,7 @@ private slots:
         const int levelColA = ColumnByHeader(modelA, QStringLiteral("category"));
         QVERIFY(levelColA >= 0);
         const loglib::KeyId keyA =
-            modelA.Table().Keys().Find(modelA.Configuration().columns[static_cast<size_t>(levelColA)].keys.front());
+            modelA.Table().Keys().Find(modelA.Layout().Columns()[static_cast<size_t>(levelColA)].keys.front());
         const loglib::EnumDictionary *dictA = modelA.Table().EnumDictionaries().Find(keyA);
         QVERIFY(dictA != nullptr);
 
@@ -17254,7 +17224,7 @@ private slots:
         const int levelColB = ColumnByHeader(modelB, QStringLiteral("category"));
         QVERIFY(levelColB >= 0);
         const loglib::KeyId keyB =
-            modelB.Table().Keys().Find(modelB.Configuration().columns[static_cast<size_t>(levelColB)].keys.front());
+            modelB.Table().Keys().Find(modelB.Layout().Columns()[static_cast<size_t>(levelColB)].keys.front());
         const loglib::EnumDictionary *dictB = modelB.Table().EnumDictionaries().Find(keyB);
         QVERIFY(dictB != nullptr);
         QVERIFY2(dictB != dictA, "fixtures must have distinct dictionary instances");
@@ -20060,8 +20030,8 @@ private slots:
         // Pin `msg` (string-only) to `Integer` to force a
         // type mismatch and re-snapshot health. Same pattern as
         // `TestColumnHealthFlagsMismatchedType`.
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -20142,8 +20112,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
 
-        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
+        model->MutableLayout().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->MutableLayout().SetColumnType(static_cast<size_t>(msgCol), loglib::ColumnType::Integer);
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -20242,7 +20212,7 @@ private slots:
         // The tooltip must catch the new label without any
         // sort / filter event in between.
         auto *model = mWindow->Model();
-        model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(categoryCol), std::string("renamed-cat"));
+        model->MutableLayout().SetColumnHeader(static_cast<size_t>(categoryCol), std::string("renamed-cat"));
         model->NotifyColumnEdited(categoryCol);
         QCoreApplication::processEvents();
 
@@ -20748,15 +20718,17 @@ private slots:
         // Save through the manager so the JSON matches the live schema,
         // then load it back into the model.
         {
-            loglib::LogConfigurationManager scratch;
+            loglib::ColumnLayout scratch;
             scratch.AppendKeys({"category"});
-            scratch.SetColumnType(0, loglib::ColumnType::Enumeration);
-            scratch.Save(cfgPath.toStdString());
+            scratch.SetColumnTypePair(0, loglib::ColumnType::Enumeration, false);
+            loglib::SaveConfiguration(
+                loglib::LogConfiguration{.columns = scratch.Columns()}, cfgPath.toStdString(), loglib::SaveScope::Full
+            );
         }
-        model->ConfigurationManager().Load(cfgPath.toStdString());
+        LoadLayoutForTest(*model, cfgPath.toStdString());
 
-        QCOMPARE(model->Configuration().columns.size(), static_cast<size_t>(1));
-        QCOMPARE(model->Configuration().columns[0].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns().size(), static_cast<size_t>(1));
+        QCOMPARE(model->Layout().Columns()[0].type, loglib::ColumnType::Enumeration);
 
         const FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
         // `UpdateSelectedColumn(0)` settles the OK / placeholder state.
@@ -20816,11 +20788,11 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::Enumeration;
-        savedFilter.columnKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
 
         mWindow->statusBar()->clearMessage();
         const QString filterId = QStringLiteral("saved-empty-enum");
@@ -20907,7 +20879,7 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         // Don't pin an exact count: dictionary growth may re-fire.
@@ -21038,7 +21010,7 @@ private slots:
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QCOMPARE(columns[static_cast<size_t>(valueCol)].type, loglib::ColumnType::Integer);
 
         const QString filterId = QStringLiteral("numeric-range");
@@ -21147,7 +21119,7 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        const auto &columns = model->Configuration().columns;
+        const auto &columns = model->Layout().Columns();
         QCOMPARE(columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         const QString filterId = QStringLiteral("boolean-true-only");
@@ -21211,7 +21183,7 @@ private slots:
         // to confirm the wire-format keys survive (mirrors the
         // lib-side tests for `Type::Number`). Leaf binds by
         // `columnKeys`; resolve the `value` column's keys once.
-        const std::vector<std::string> valueKeys = model->Configuration().columns[static_cast<size_t>(valueCol)].keys;
+        const std::vector<std::string> valueKeys = model->Layout().Columns()[static_cast<size_t>(valueCol)].keys;
 
         loglib::LogConfiguration cfg;
         loglib::LeafRule leaf;
@@ -21219,16 +21191,14 @@ private slots:
         leaf.columnKeys = valueKeys;
         leaf.filterMinValue = 10.0;
         leaf.filterMaxValue = 19.0;
-        cfg.expression = WireLeavesAsExpression({leaf});
+        cfg.view.expression = WireLeavesAsExpression({leaf});
 
         const QTemporaryDir roundTripDir;
         QVERIFY(roundTripDir.isValid());
         const QString roundTripPath = roundTripDir.filePath(QStringLiteral("roundtrip.json"));
-        loglib::LogConfigurationManager::Save(cfg, roundTripPath.toStdString(), loglib::SaveScope::Full);
-        loglib::LogConfigurationManager loader;
-        loader.Load(roundTripPath.toStdString());
-        const loglib::LogConfiguration &loaded = loader.Configuration();
-        const auto loadedLeaves = WireLeavesOf(loaded.expression);
+        loglib::SaveConfiguration(cfg, roundTripPath.toStdString(), loglib::SaveScope::Full);
+        const loglib::LogConfiguration loaded = loglib::LoadConfiguration(roundTripPath.toStdString());
+        const auto loadedLeaves = WireLeavesOf(loaded.view.expression);
         QCOMPARE(loadedLeaves.size(), static_cast<size_t>(1));
         QCOMPARE(loadedLeaves[0].type, loglib::LeafRule::Type::Number);
         QVERIFY(loadedLeaves[0].filterMinValue.has_value());
@@ -21320,11 +21290,11 @@ private slots:
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::Number;
-        savedFilter.columnKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         savedFilter.filterMinValue = 0.0;
         savedFilter.filterMaxValue = 1.0;
 
@@ -21400,11 +21370,11 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::String;
-        savedFilter.columnKeys = model->Configuration().columns[static_cast<size_t>(flagCol)].keys;
+        savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(flagCol)].keys;
         savedFilter.filterString = "true";
         savedFilter.matchType = loglib::LeafRule::Match::Exactly;
 
@@ -21477,11 +21447,11 @@ private slots:
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(valueCol)].type, loglib::ColumnType::Integer);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(valueCol)].type, loglib::ColumnType::Integer);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::String;
-        savedFilter.columnKeys = model->Configuration().columns[static_cast<size_t>(valueCol)].keys;
+        savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(valueCol)].keys;
         savedFilter.filterString = "42";
         savedFilter.matchType = loglib::LeafRule::Match::Exactly;
 
@@ -21555,11 +21525,11 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         loglib::LeafRule savedFilter;
         savedFilter.type = loglib::LeafRule::Type::Boolean;
-        savedFilter.columnKeys = model->Configuration().columns[static_cast<size_t>(flagCol)].keys;
+        savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(flagCol)].keys;
         // Non-canonical casing: lower path must still recognise both.
         savedFilter.filterValues = {"True", "FALSE"};
 
@@ -21635,8 +21605,8 @@ private slots:
 
         const int col = ColumnByHeader(*model, QStringLiteral("mycol"));
         QVERIFY2(col >= 0, "mycol column must exist after the first batch");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::ColumnType::Any);
-        QVERIFY(model->Configuration().columns[static_cast<size_t>(col)].autoDetect);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(col)].type, loglib::ColumnType::Any);
+        QVERIFY(model->Layout().Columns()[static_cast<size_t>(col)].autoDetect);
 
         // Install an enum filter while the column is still a candidate:
         // predicate built with `dictionary = nullptr`, only the slow
@@ -21677,7 +21647,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(col)].type, loglib::ColumnType::Enumeration);
         bool sawPromoted = false;
         for (const auto &args : enumChangedSpy)
         {
@@ -21746,7 +21716,7 @@ private slots:
 
         const int colA = ColumnByHeader(*model, QStringLiteral("colA"));
         QVERIFY2(colA >= 0, "colA must exist after batch 1");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colA)].type, loglib::ColumnType::Enumeration);
 
         // Install an enum filter on colA only. Predicate is built
         // with the live dictionary so it's already on the fast path.
@@ -21783,7 +21753,7 @@ private slots:
 
         const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
         QVERIFY2(colB >= 0, "colB must exist after batch 2");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
         QVERIFY2(colA != colB, "colA and colB must be distinct columns for the scoping test");
 
         // The filter on colA must NOT have been rebuilt. The only
@@ -21858,9 +21828,9 @@ private slots:
         const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
         QVERIFY2(colA == 0, "colA must land at column 0 (first appended new key)");
         QVERIFY2(colB == 1, "colB must land at column 1 (second appended new key)");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::ColumnType::Any);
-        QVERIFY(model->Configuration().columns[static_cast<size_t>(colA)].autoDetect);
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colA)].type, loglib::ColumnType::Any);
+        QVERIFY(model->Layout().Columns()[static_cast<size_t>(colA)].autoDetect);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
         const loglib::KeyId colBKey = keys.Find("colB");
         QVERIFY(colBKey != loglib::INVALID_KEY_ID);
         const loglib::EnumDictionary *colBDict = model->Table().EnumDictionaries().Find(colBKey);
@@ -21888,9 +21858,9 @@ private slots:
 
         const int colC = ColumnByHeader(*model, QStringLiteral("colC"));
         QVERIFY2(colC == 2, "colC must land at column 2 (only new key in batch 2)");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::ColumnType::Enumeration);
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colC)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colA)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colB)].type, loglib::ColumnType::Enumeration);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(colC)].type, loglib::ColumnType::Enumeration);
         const loglib::EnumDictionary *colBDictAfter = model->Table().EnumDictionaries().Find(colBKey);
         QVERIFY2(colBDictAfter != nullptr, "colB must remain enum across batch 2");
         QCOMPARE(static_cast<int>(colBDictAfter->Size()), 2);
@@ -22110,7 +22080,7 @@ private slots:
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
-        QCOMPARE(model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
+        QCOMPARE(model->Layout().Columns()[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
         const QString filterId = QStringLiteral("bool-canonical-title");
         QVERIFY2(
@@ -22255,7 +22225,7 @@ private slots:
         // after a middle-dot.
         QVERIFY2(row1.summary.contains(QStringLiteral("\u00B7")), qPrintable(row1.summary));
 
-        QCOMPARE(row1.fields.size(), static_cast<qsizetype>(run.model->Configuration().columns.size()));
+        QCOMPARE(row1.fields.size(), static_cast<qsizetype>(run.model->Layout().Columns().size()));
         // Look up by header -- column order from the streaming path is
         // insertion-driven.
         bool sawLevel = false;
@@ -23350,7 +23320,7 @@ private slots:
         QVERIFY(sawOriginalHeader);
 
         // Rename the column out-of-band.
-        run.model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
+        run.model->MutableLayout().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
         run.model->NotifyColumnEdited(kColumn);
         QCoreApplication::processEvents();
 
@@ -23458,7 +23428,7 @@ private slots:
         // Hide, then rename. With the visibility gate, content stays
         // pre-hide until something re-pins.
         emit dock.visibilityChanged(false);
-        run.model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
+        run.model->MutableLayout().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
         run.model->NotifyColumnEdited(kColumn);
         QCoreApplication::processEvents();
 
@@ -23765,7 +23735,7 @@ private slots:
         const int tsCol = ColumnByHeader(*run.model, QStringLiteral("timestamp"));
         QVERIFY2(tsCol >= 0, "auto-promoted timestamp column must exist");
 
-        const auto &columns = run.model->Configuration().columns;
+        const auto &columns = run.model->Layout().Columns();
         QVERIFY(static_cast<size_t>(tsCol) < columns.size());
         QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::ColumnType::Time);
 
@@ -23831,11 +23801,10 @@ private slots:
         QVERIFY(QFileInfo::exists(jsonPath));
 
         // Round-trip through the library loader.
-        loglib::LogConfigurationManager probe;
-        probe.Load(jsonPath.toStdString());
-        QVERIFY(probe.Configuration().source.has_value());
-        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
-        QCOMPARE(probe.Configuration().columns.size(), static_cast<std::size_t>(2));
+        const loglib::LogConfiguration probe = loglib::LoadConfiguration(jsonPath.toStdString());
+        QVERIFY(probe.source.has_value());
+        QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(probe.columns.size(), static_cast<std::size_t>(2));
     }
 
     // Recents label for a `NetworkStream` source round-trips the
@@ -24121,10 +24090,9 @@ private slots:
 
         // Sanity: the saved JSON carries the sort.
         {
-            loglib::LogConfigurationManager probe;
-            probe.Load(lastPath->toStdString());
-            QCOMPARE(probe.Configuration().sort.columnKeys, std::vector<std::string>{"category"});
-            QVERIFY(probe.Configuration().sort.descending);
+            const loglib::LogConfiguration probe = loglib::LoadConfiguration(lastPath->toStdString());
+            QCOMPARE(probe.view.sort.columnKeys, std::vector<std::string>{"category"});
+            QVERIFY(probe.view.sort.descending);
         }
 
         // Fresh window restores the snapshot.
@@ -25428,12 +25396,11 @@ private slots:
 
         // Both JSON files exist on disk and decode independently.
         QVERIFY(QFileInfo::exists(pathA));
-        loglib::LogConfigurationManager probeA;
-        probeA.Load(pathA.toStdString());
-        QVERIFY(probeA.Configuration().source.has_value());
-        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        const loglib::LogConfiguration probeA = loglib::LoadConfiguration(pathA.toStdString());
+        QVERIFY(probeA.source.has_value());
+        QCOMPARE(probeA.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
+            QString::fromStdString(probeA.source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25507,7 +25474,7 @@ private slots:
         const QTemporaryDir configDir;
         QVERIFY(configDir.isValid());
         const QString configPath = QDir(configDir.path()).filePath(QStringLiteral("columns_only.json"));
-        wired->SaveConfigurationToPathForTest(configPath, loglib::SaveScope::ColumnsOnly);
+        wired->SaveConfigurationToPathForTest(configPath, loglib::SaveScope::Columns);
         wired->LoadConfigurationFromPathForTest(configPath);
         QCoreApplication::processEvents();
 
@@ -25529,12 +25496,11 @@ private slots:
 
         // Session A's JSON is untouched.
         QVERIFY(QFileInfo::exists(pathA));
-        loglib::LogConfigurationManager probeA;
-        probeA.Load(pathA.toStdString());
-        QVERIFY(probeA.Configuration().source.has_value());
-        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        const loglib::LogConfiguration probeA = loglib::LoadConfiguration(pathA.toStdString());
+        QVERIFY(probeA.source.has_value());
+        QCOMPARE(probeA.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
+            QString::fromStdString(probeA.source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25610,12 +25576,11 @@ private slots:
         // Session A's JSON is untouched: single-locator File
         // source still points at fixtureA.
         QVERIFY(QFileInfo::exists(pathA));
-        loglib::LogConfigurationManager probeA;
-        probeA.Load(pathA.toStdString());
-        QVERIFY(probeA.Configuration().source.has_value());
-        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        const loglib::LogConfiguration probeA = loglib::LoadConfiguration(pathA.toStdString());
+        QVERIFY(probeA.source.has_value());
+        QCOMPARE(probeA.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
+            QString::fromStdString(probeA.source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25732,23 +25697,24 @@ private slots:
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("mixed-cfg.json"));
 
-        loglib::LogConfigurationManager builder;
-        builder.SetSource(loglib::Source{});
-        builder.AppendKeys({"category", "msg"});
+        loglib::ColumnLayout builderLayout;
+        builderLayout.AppendKeys({"category", "msg"});
+        loglib::LogConfiguration builder{.columns = builderLayout.Columns()};
+        builder.source = loglib::Source{};
 
         loglib::LeafRule filter;
         filter.type = loglib::LeafRule::Type::String;
         filter.columnKeys = {"category"};
         filter.filterString = "alpha";
         filter.matchType = loglib::LeafRule::Match::Contains;
-        builder.SetExpression(WireLeavesAsExpression({filter}));
+        builder.view.expression = WireLeavesAsExpression({filter});
 
         loglib::Sort sort;
         sort.columnKeys = {"category"};
         sort.descending = true;
-        builder.SetSort(sort);
+        builder.view.sort = sort;
 
-        builder.Save(cfgPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(builder, cfgPath.toStdString(), loglib::SaveScope::Full);
 
         const MainWindow::MixedInputDispatch result =
             wired->OpenMixedFilesForTest({cfgPath, fixtureA.Path(), fixtureB.Path()}, MainWindow::OpenMode::Append);
@@ -25762,7 +25728,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), expectedRows, 60000);
 
         // Cfg columns drove the load (no autodetect fallback).
-        QCOMPARE(static_cast<int>(model->Configuration().columns.size()), 2);
+        QCOMPARE(static_cast<int>(model->Layout().Columns().size()), 2);
 
         // Full-scope filter survived; proxy hides non-`alpha`.
         QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
@@ -25791,9 +25757,13 @@ private slots:
         const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("lone-cfg.json"));
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"msg", "level"});
-        builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        loglib::ColumnLayout builderLayout;
+        builderLayout.AppendKeys({"msg", "level"});
+        loglib::SaveConfiguration(
+            loglib::LogConfiguration{.columns = builderLayout.Columns()},
+            cfgPath.toStdString(),
+            loglib::SaveScope::Columns
+        );
 
         const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -25803,7 +25773,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigOnly);
-        QCOMPARE(static_cast<int>(wired->Model()->Configuration().columns.size()), 2);
+        QCOMPARE(static_cast<int>(wired->Model()->Layout().Columns().size()), 2);
         QCOMPARE(wired->Model()->rowCount(), 0);
         QCOMPARE(finishedSpy.count(), 0);
     }
@@ -25827,7 +25797,7 @@ private slots:
         QCoreApplication::processEvents();
 
         const int rowsBefore = wired->Model()->rowCount();
-        const auto columnsBefore = wired->Model()->Configuration().columns.size();
+        const auto columnsBefore = wired->Model()->Layout().Columns().size();
         const QString uuidBefore = wired->ActiveSessionUuid();
         QVERIFY2(rowsBefore > 0, "priming open must produce at least one row");
         QVERIFY2(columnsBefore > 0, "priming open must produce at least one column");
@@ -25838,12 +25808,20 @@ private slots:
         const QString cfgPathA = cfgDir.filePath(QStringLiteral("cfg-a.json"));
         const QString cfgPathB = cfgDir.filePath(QStringLiteral("cfg-b.json"));
         {
-            loglib::LogConfigurationManager builderA;
+            loglib::ColumnLayout builderA;
             builderA.AppendKeys({"alpha"});
-            builderA.Save(cfgPathA.toStdString(), loglib::SaveScope::ColumnsOnly);
-            loglib::LogConfigurationManager builderB;
+            loglib::SaveConfiguration(
+                loglib::LogConfiguration{.columns = builderA.Columns()},
+                cfgPathA.toStdString(),
+                loglib::SaveScope::Columns
+            );
+            loglib::ColumnLayout builderB;
             builderB.AppendKeys({"beta"});
-            builderB.Save(cfgPathB.toStdString(), loglib::SaveScope::ColumnsOnly);
+            loglib::SaveConfiguration(
+                loglib::LogConfiguration{.columns = builderB.Columns()},
+                cfgPathB.toStdString(),
+                loglib::SaveScope::Columns
+            );
         }
         const TempJsonFile log({QStringLiteral(R"({"msg": "ignored"})")});
 
@@ -25857,7 +25835,7 @@ private slots:
 
         QCOMPARE(result, MainWindow::MixedInputDispatch::RejectedMultiConfig);
         QCOMPARE(wired->Model()->rowCount(), rowsBefore);
-        QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
+        QCOMPARE(wired->Model()->Layout().Columns().size(), columnsBefore);
         QCOMPARE(wired->ActiveSessionUuid(), uuidBefore);
         QCOMPARE(finishedSpy.count(), 0);
     }
@@ -25940,8 +25918,8 @@ private slots:
             {QStringLiteral(R"({"value":1,"msg":"first"})"), QStringLiteral(R"({"value":2,"msg":"second"})")},
             [](loglib::LogConfiguration &configuration) {
                 configuration.columns.at(0).header = "Embedded value";
-                configuration.sort = {.columnKeys = {"value"}, .descending = true};
-                configuration.anchors = {{.locator = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
+                configuration.view.sort = {.columnKeys = {"value"}, .descending = true};
+                configuration.view.anchors = {{.locator = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
             }
         );
         const QString moved = bundleDir.filePath(QStringLiteral("renamed.slvbundle"));
@@ -25957,9 +25935,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
-        QCOMPARE(
-            QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Embedded value")
-        );
+        QCOMPARE(QString::fromStdString(wired->Model()->Layout().Columns().at(0).header), QString("Embedded value"));
         QCOMPARE(wired->FilterModel()->SortColumn(), 0);
         QCOMPARE(wired->FilterModel()->SortOrder(), Qt::DescendingOrder);
 
@@ -25969,13 +25945,11 @@ private slots:
         QCOMPARE(source->DisplayPaths(), std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
         QCOMPARE(source->DedupKeys(), std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
-        QCOMPARE(wired->Model()->Configuration().anchors.size(), static_cast<size_t>(1));
+        QCOMPARE(wired->activeSession()->View().anchors.size(), static_cast<size_t>(1));
         // Anchor locators must match `Source::locatorDedupKeys`
         // (canonical form) so `AnchorManager::Key` compares hit; the
         // display path silently mismatched on Windows.
-        QCOMPARE(
-            wired->Model()->Configuration().anchors.front().locator, logapp::CanonicalLocator(moved).toStdString()
-        );
+        QCOMPARE(wired->activeSession()->View().anchors.front().locator, logapp::CanonicalLocator(moved).toStdString());
         // Fixture anchored line-id 1 -> source row 1 must actually be
         // reachable through `LogModel`. Guards a load-side
         // canonicalization regression where `AnchorSlotForRow` would
@@ -26019,7 +25993,7 @@ private slots:
                 rule.foregroundIndex = 2;
                 rule.backgroundIndex = 0;
                 rule.bold = true;
-                configuration.highlightRules = {rule};
+                configuration.view.highlightRules = {rule};
             }
         );
 
@@ -26034,7 +26008,7 @@ private slots:
 
         QCOMPARE(wired->Model()->rowCount(), 2);
         // First verify the embedded rule reached configuration.
-        QCOMPARE(wired->Model()->Configuration().highlightRules.size(), static_cast<size_t>(1));
+        QCOMPARE(wired->activeSession()->View().highlightRules.size(), static_cast<size_t>(1));
 
         const HighlightRuleSet *const highlights = wired->Highlights();
         QVERIFY(highlights != nullptr);
@@ -26080,9 +26054,7 @@ private slots:
             wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace);
             QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 60000);
 
-            loglib::LogConfiguration changed = wired->Model()->Configuration();
-            changed.columns.at(0).header = "Autosaved";
-            wired->Model()->ConfigurationManager().SetConfiguration(std::move(changed));
+            wired->Model()->MutableLayout().SetColumnHeader(0, "Autosaved");
             wired->Model()->NotifyConfigurationReplaced();
             wired->AutoSaveSessionSnapshot();
             uuid = wired->ActiveSessionUuid();
@@ -26093,7 +26065,7 @@ private slots:
         const QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->OpenRecentSessionForTest(uuid);
         QTRY_VERIFY_WITH_TIMEOUT(restoredSpy.count() >= 1, 60000);
-        QCOMPARE(QString::fromStdString(restored->Model()->Configuration().columns.at(0).header), QString("Autosaved"));
+        QCOMPARE(QString::fromStdString(restored->Model()->Layout().Columns().at(0).header), QString("Autosaved"));
     }
 
     void TestAppendingSessionBundlePreservesActiveConfiguration()
@@ -26110,9 +26082,7 @@ private slots:
         wired->OpenFilesForTest({initial.Path()}, MainWindow::OpenMode::Replace);
         QTRY_VERIFY_WITH_TIMEOUT(initialSpy.count() >= 1, 60000);
 
-        loglib::LogConfiguration active = wired->Model()->Configuration();
-        active.columns.at(0).header = "Active";
-        wired->Model()->ConfigurationManager().SetConfiguration(std::move(active));
+        wired->Model()->MutableLayout().SetColumnHeader(0, "Active");
         wired->Model()->NotifyConfigurationReplaced();
 
         const QString bundle = WriteBundleFixture(
@@ -26125,7 +26095,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 60000);
 
         QCOMPARE(wired->Model()->rowCount(), 2);
-        QCOMPARE(QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Active"));
+        QCOMPARE(QString::fromStdString(wired->Model()->Layout().Columns().at(0).header), QString("Active"));
         QVERIFY(wired->CurrentSourceForTest().has_value());
         QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::Source::Kind::File);
         QCOMPARE(wired->CurrentSourceForTest()->locators.size(), static_cast<size_t>(2));
@@ -26198,9 +26168,13 @@ private slots:
         const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("cli-cfg.json"));
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"msg"});
-        builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        loglib::LogConfiguration builder;
+        {
+            loglib::ColumnLayout builderLayout;
+            builderLayout.AppendKeys({"msg"});
+            builder.columns = builderLayout.Columns();
+        }
+        loglib::SaveConfiguration(builder, cfgPath.toStdString(), loglib::SaveScope::Columns);
 
         const TempJsonFile log({QStringLiteral(R"({"msg": "from cli"})")});
 
@@ -26212,7 +26186,7 @@ private slots:
 
         // Configuration applied: single column `msg` from the cfg.
         // Log streamed under it: one row.
-        QCOMPARE(static_cast<int>(wired->Model()->Configuration().columns.size()), 1);
+        QCOMPARE(static_cast<int>(wired->Model()->Layout().Columns().size()), 1);
         QCOMPARE(wired->Model()->rowCount(), 1);
     }
 
@@ -26236,7 +26210,7 @@ private slots:
         QVERIFY(finishedSpy.wait(60000));
         QCoreApplication::processEvents();
 
-        const auto columnsBefore = wired->Model()->Configuration().columns.size();
+        const auto columnsBefore = wired->Model()->Layout().Columns().size();
         QVERIFY2(columnsBefore > 0, "fixture must produce at least one column");
 
         // `{}` parses cleanly into a default config; without the
@@ -26254,7 +26228,7 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
+        QCOMPARE(wired->Model()->Layout().Columns().size(), columnsBefore);
     }
 
     // `openWindowsAtQuit` is maintained eagerly so multi-window
@@ -26612,10 +26586,14 @@ private slots:
         const QString jsonPath = manager.PathForUuid(uuid);
         QDir().mkpath(QFileInfo(jsonPath).absolutePath());
 
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"msg", "level"});
+        loglib::LogConfiguration builder;
+        {
+            loglib::ColumnLayout builderLayout;
+            builderLayout.AppendKeys({"msg", "level"});
+            builder.columns = builderLayout.Columns();
+        }
         // No `SetSource`: column-only snapshot.
-        builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
@@ -26728,12 +26706,15 @@ private slots:
         const QString jsonPath = manager.PathForUuid(uuid);
         QDir().mkpath(QFileInfo(jsonPath).absolutePath());
 
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"msg"});
-        builder.SetSource(
-            loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}}
-        );
-        builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+        loglib::LogConfiguration builder;
+        {
+            loglib::ColumnLayout builderLayout;
+            builderLayout.AppendKeys({"msg"});
+            builder.columns = builderLayout.Columns();
+        }
+        builder.source =
+            (loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}});
+        loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
@@ -26770,12 +26751,15 @@ private slots:
             const QString jsonPath = manager.PathForUuid(uuid);
             QDir().mkpath(QFileInfo(jsonPath).absolutePath());
 
-            loglib::LogConfigurationManager builder;
-            builder.AppendKeys({"msg"});
-            builder.SetSource(
-                loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}}
-            );
-            builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+            loglib::LogConfiguration builder;
+            {
+                loglib::ColumnLayout builderLayout;
+                builderLayout.AppendKeys({"msg"});
+                builder.columns = builderLayout.Columns();
+            }
+            builder.source =
+                (loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}});
+            loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
 
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->RestoreLastSessionFromPath(jsonPath);
@@ -26792,10 +26776,14 @@ private slots:
             const QString jsonPath = manager.PathForUuid(uuid);
             QDir().mkpath(QFileInfo(jsonPath).absolutePath());
 
-            loglib::LogConfigurationManager builder;
-            builder.AppendKeys({"msg"});
+            loglib::LogConfiguration builder;
+            {
+                loglib::ColumnLayout builderLayout;
+                builderLayout.AppendKeys({"msg"});
+                builder.columns = builderLayout.Columns();
+            }
             // Intentionally no `SetSource`.
-            builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+            loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
 
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->RestoreLastSessionFromPath(jsonPath);
@@ -26829,13 +26817,16 @@ private slots:
         QVERIFY(adhocDir.isValid());
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "stem"})")});
 
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"msg"});
-        builder.SetSource(
-            loglib::Source{.kind = loglib::Source::Kind::File, .locators = {fixture.Path().toStdString()}}
-        );
+        loglib::LogConfiguration builder;
+        {
+            loglib::ColumnLayout builderLayout;
+            builderLayout.AppendKeys({"msg"});
+            builder.columns = builderLayout.Columns();
+        }
+        builder.source =
+            (loglib::Source{.kind = loglib::Source::Kind::File, .locators = {fixture.Path().toStdString()}});
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
-        builder.Save(adhocPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(builder, adhocPath.toStdString(), loglib::SaveScope::Full);
 
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
@@ -26987,11 +26978,15 @@ private slots:
         const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString externalPath = externalDir.filePath(uuid + QStringLiteral(".json"));
 
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"msg"});
+        loglib::LogConfiguration builder;
+        {
+            loglib::ColumnLayout builderLayout;
+            builderLayout.AppendKeys({"msg"});
+            builder.columns = builderLayout.Columns();
+        }
         // Columns-only (no `SetSource`): restore hits the no-source
         // branch and never starts streaming.
-        builder.Save(externalPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(builder, externalPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(externalPath));
 
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
@@ -27141,25 +27136,24 @@ private slots:
             col.header = "msg";
             col.keys = {"msg"};
             cfg.columns.push_back(col);
-            loglib::LogConfigurationManager::Save(cfg, path.toStdString(), loglib::SaveScope::Full);
+            loglib::SaveConfiguration(cfg, path.toStdString(), loglib::SaveScope::Full);
         }
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly));
         const QByteArray content = file.readAll();
 
-        loglib::LogConfigurationManager mgr;
-        mgr.LoadFromString(std::string_view(content.constData(), static_cast<size_t>(content.size())));
-        QCOMPARE(mgr.Configuration().columns.size(), static_cast<size_t>(1));
-        QCOMPARE(QString::fromStdString(mgr.Configuration().columns.front().header), QStringLiteral("msg"));
+        const loglib::LogConfiguration parsed =
+            loglib::ParseConfiguration(std::string_view(content.constData(), static_cast<size_t>(content.size())));
+        QCOMPARE(parsed.columns.size(), static_cast<size_t>(1));
+        QCOMPARE(QString::fromStdString(parsed.columns.front().header), QStringLiteral("msg"));
     }
 
     void TestLoadFromStringRejectsNonJsonGarbage()
     {
-        loglib::LogConfigurationManager mgr;
         bool threw = false;
         try
         {
-            mgr.LoadFromString("definitely not json {{");
+            static_cast<void>(loglib::ParseConfiguration("definitely not json {{"));
         }
         catch (const std::exception &)
         {
@@ -27223,9 +27217,13 @@ private slots:
 
         // Pre-seed an existing JSON we can detect modifications on.
         const QString destPath = scratchDir.filePath(QStringLiteral("seed.json"));
-        loglib::LogConfigurationManager seeder;
-        seeder.AppendKeys({"a", "b"});
-        seeder.Save(destPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        loglib::LogConfiguration seeder;
+        {
+            loglib::ColumnLayout seederLayout;
+            seederLayout.AppendKeys({"a", "b"});
+            seeder.columns = seederLayout.Columns();
+        }
+        loglib::SaveConfiguration(seeder, destPath.toStdString(), loglib::SaveScope::Columns);
         QVERIFY(QFileInfo::exists(destPath));
         QFile destFile(destPath);
         QVERIFY(destFile.open(QIODevice::ReadOnly));
@@ -27238,12 +27236,16 @@ private slots:
         const QString unreachablePath =
             QDir(scratchDir.path()).filePath(QStringLiteral("does/not/exist/save-target.json"));
 
-        loglib::LogConfigurationManager doomed;
-        doomed.AppendKeys({"x", "y"});
+        loglib::LogConfiguration doomed;
+        {
+            loglib::ColumnLayout doomedLayout;
+            doomedLayout.AppendKeys({"x", "y"});
+            doomed.columns = doomedLayout.Columns();
+        }
         bool threw = false;
         try
         {
-            doomed.Save(unreachablePath.toStdString(), loglib::SaveScope::ColumnsOnly);
+            loglib::SaveConfiguration(doomed, unreachablePath.toStdString(), loglib::SaveScope::Columns);
         }
         catch (const std::exception &)
         {
@@ -27275,9 +27277,13 @@ private slots:
         const QTemporaryDir scratch;
         QVERIFY(scratch.isValid());
         const QString configPath = scratch.filePath(QStringLiteral("hint-cfg.json"));
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"timestamp", "level", "msg"});
-        builder.Save(configPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        loglib::LogConfiguration builder;
+        {
+            loglib::ColumnLayout builderLayout;
+            builderLayout.AppendKeys({"timestamp", "level", "msg"});
+            builder.columns = builderLayout.Columns();
+        }
+        loglib::SaveConfiguration(builder, configPath.toStdString(), loglib::SaveScope::Columns);
 
         wired->OpenFilesForCli({configPath});
         QCoreApplication::processEvents();

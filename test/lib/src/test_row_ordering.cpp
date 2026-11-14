@@ -9,6 +9,7 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/query/log_compare.hpp>
 #include <loglib/query/row_ordering.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -58,11 +59,9 @@ LogTable BuildSingleColumnTable(
         {.header = columnKey, .keys = {columnKey}, .printFormat = "{}", .type = type, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -218,10 +217,8 @@ TEST_CASE("RowOrdering Enumeration uses EnumDictRank and keeps input-index ties"
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
@@ -274,10 +271,8 @@ TEST_CASE("RowOrdering Level uses canonical severity, not byte order", "[row_ord
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
@@ -317,10 +312,8 @@ TEST_CASE("RowOrdering mixed-column table sorts the requested column only", "[ro
         {.header = "s", .keys = {"s"}, .printFormat = "{}", .type = ColumnType::String, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
-    loglib::LogTable table(mgr.Configuration());
+    ColumnLayout mgr(cfg.columns);
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 

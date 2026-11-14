@@ -1,7 +1,7 @@
 /**
  * @brief Table of parsed rows with their column configuration.
  *
- * LogTable holds the rows of a static file or a live stream, and the LogConfigurationManager that describes its
+ * LogTable holds the rows of a static file or a live stream, and the ColumnLayout that describes its
  * columns. Parsers feed it batches through AppendBatch. It decides column types as data arrives, backfills timestamps,
  * evicts old rows from live streams and exposes the cells to filters, sorting and exporters. The interface wraps it in
  * a model.
@@ -17,7 +17,7 @@
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/row_batch.hpp"
-#include "loglib/schema/log_configuration.hpp"
+#include "loglib/schema/column_layout.hpp"
 #include "loglib/table/column_type_health.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
@@ -139,7 +139,7 @@ public:
     LogTable();
 
     /** @brief An empty table that starts with the given column configuration. */
-    explicit LogTable(LogConfiguration configuration);
+    explicit LogTable(ColumnLayout layout);
 
     LogTable(const LogTable &) = delete;
     LogTable &operator=(const LogTable &) = delete;
@@ -454,10 +454,10 @@ public:
     /** @brief The "now" the table uses to convert timestamp formats without a year. */
     [[nodiscard]] std::chrono::system_clock::time_point ReferenceTime() const noexcept;
 
-    const LogConfigurationManager &Configuration() const;
+    const ColumnLayout &Layout() const;
 
     /** @brief The configuration for loading and saving. Do not change it while a streaming parse runs. */
-    LogConfigurationManager &Configuration();
+    ColumnLayout &Layout();
 
 private:
     /** @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
@@ -495,7 +495,7 @@ private:
     [[nodiscard]] std::chrono::system_clock::time_point ReadClock() const;
 
     LogData mData;
-    LogConfigurationManager mConfiguration;
+    ColumnLayout mLayout;
 
     TimeZoneContext mDisplayTimeZone;
     TimeZoneContext mDefaultSourceTimeZone;

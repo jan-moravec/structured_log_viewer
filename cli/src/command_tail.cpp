@@ -237,7 +237,7 @@ struct TextLayout
 
 [[nodiscard]] TextLayout MakeTextLayout(const loglib::LogTable &table, const std::vector<std::size_t> &visible)
 {
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     TextLayout layout;
     for (const std::size_t index : visible)
     {
@@ -324,7 +324,7 @@ void AppendField(std::string &line, std::string_view text)
     const loglib::LogTable &table, std::size_t row, const TextLayout &layout, bool color
 )
 {
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     std::string line;
     if (layout.time >= 0)
     {
@@ -472,7 +472,7 @@ private:
     /** @brief Resolves the session when the column set changed. Returns it, or null when it cannot be resolved yet. */
     [[nodiscard]] const EffectiveSession *EnsureSession()
     {
-        const auto &columns = mTable->Configuration().Configuration().columns;
+        const auto &columns = mTable->Layout().Columns();
         std::vector<std::string> headers;
         headers.reserve(columns.size());
         for (const loglib::Column &column : columns)
@@ -483,8 +483,9 @@ private:
         {
             return &*mSession;
         }
-        auto resolved =
-            ApplySessionConfiguration(mSessionFilter, mOptions->view, *mTable, *mRuntime, TailOptions::NAME);
+        auto resolved = ApplySessionConfiguration(
+            mSessionFilter, mOptions->view, loglib::SessionView{}, *mTable, *mRuntime, TailOptions::NAME
+        );
         if (!resolved)
         {
             mSessionError = std::move(resolved.error());
@@ -537,8 +538,7 @@ private:
             return;
         }
 
-        const auto compiled =
-            loglib::CompileExpression(session->expression, mTable->Configuration().Configuration().columns, mTable);
+        const auto compiled = loglib::CompileExpression(session->expression, mTable->Layout().Columns(), mTable);
         std::vector<std::size_t> accepted;
         std::string buffer;
         for (std::size_t row = mNextRow; row < total; ++row)

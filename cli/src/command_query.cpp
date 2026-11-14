@@ -89,7 +89,7 @@ void SortRows(
     const loglib::LogTable &table, const SortChoice &sort, const RowWindow &window, std::vector<std::size_t> &rows
 )
 {
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     std::optional<loglib::EnumDictRank> rankStorage;
     const loglib::EnumDictRank *rank = nullptr;
     if (columns[sort.columnIndex].type == loglib::ColumnType::Enumeration)
@@ -175,7 +175,8 @@ ExitCode RunQuery(
     loglib::LogTable &table = loaded->table;
     console.Stage("parse", table.RowCount(), parseStarted);
 
-    auto session = ApplySessionConfiguration(options.filter, options.view, table, runtime, QueryOptions::NAME);
+    auto session =
+        ApplySessionConfiguration(options.filter, options.view, loaded->view, table, runtime, QueryOptions::NAME);
     if (!session)
     {
         return console.Report(session.error());
@@ -186,8 +187,7 @@ ExitCode RunQuery(
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled =
-        loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
+    const auto compiled = loglib::CompileExpression(session->expression, table.Layout().Columns(), &table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     console.Stage("filter", rows.size(), filterStarted);
 

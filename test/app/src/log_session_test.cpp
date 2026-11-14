@@ -292,11 +292,11 @@ private slots:
         rootAnd.children.push_back(std::move(advancedBranch));
         loglib::FilterExpression rootExpression;
         rootExpression.node = std::move(rootAnd);
-        session.Model()->ConfigurationManager().SetExpression(std::move(rootExpression));
+        session.MutableView().expression = std::move(rootExpression);
 
         session.RebuildFilterExpressionFromSimpleLeaves();
 
-        const auto &recomposed = session.Model()->Configuration().expression;
+        const auto &recomposed = session.View().expression;
         const auto *recomposedAnd = std::get_if<loglib::FilterExpression::And>(&recomposed.node);
         QVERIFY(recomposedAnd != nullptr);
         QCOMPARE(recomposedAnd->children.size(), std::size_t{3});
@@ -337,11 +337,11 @@ private slots:
         rootOr.children.push_back(std::move(orLeaf));
         loglib::FilterExpression rootExpression;
         rootExpression.node = std::move(rootOr);
-        session.Model()->ConfigurationManager().SetExpression(std::move(rootExpression));
+        session.MutableView().expression = std::move(rootExpression);
 
         session.RebuildFilterExpressionFromSimpleLeaves();
 
-        const auto &recomposed = session.Model()->Configuration().expression;
+        const auto &recomposed = session.View().expression;
         const auto *recomposedAnd = std::get_if<loglib::FilterExpression::And>(&recomposed.node);
         QVERIFY(recomposedAnd != nullptr);
         QCOMPARE(recomposedAnd->children.size(), std::size_t{2});
@@ -353,15 +353,15 @@ private slots:
     {
         // The sort mirror reads `FilterProxy()->SortColumn()` /
         // `SortOrder()` and writes them into
-        // `Model()->ConfigurationManager()`.
+        // `Model()->MutableLayout()`.
         LogSession session;
-        session.Model()->ConfigurationManager().AppendKeys({"a", "b", "c"});
+        session.Model()->MutableLayout().AppendKeys({"a", "b", "c"});
 
         session.FilterProxy()->sort(2, Qt::DescendingOrder);
         session.MirrorSortToConfiguration();
 
-        const auto &sort = session.Model()->Configuration().sort;
-        QCOMPARE(sort.columnKeys, session.Model()->Configuration().columns.at(2).keys);
+        const auto &sort = session.View().sort;
+        QCOMPARE(sort.columnKeys, session.Model()->Layout().Columns().at(2).keys);
         QCOMPARE(sort.descending, true);
     }
 
@@ -377,13 +377,13 @@ private slots:
         loglib::Sort persisted;
         persisted.columnKeys = {"stale"};
         persisted.descending = true;
-        session.Model()->ConfigurationManager().SetSort(persisted);
+        session.MutableView().sort = persisted;
         session.SetPendingApplySortFromConfig(true);
 
         QCOMPARE(session.FilterProxy()->SortColumn(), -1);
         session.MirrorSortToConfiguration();
 
-        const auto &sort = session.Model()->Configuration().sort;
+        const auto &sort = session.View().sort;
         QCOMPARE(sort.columnKeys, std::vector<std::string>{"stale"});
         QCOMPARE(sort.descending, true);
     }
@@ -398,12 +398,12 @@ private slots:
         loglib::Sort persisted;
         persisted.columnKeys = {"stale"};
         persisted.descending = true;
-        session.Model()->ConfigurationManager().SetSort(persisted);
+        session.MutableView().sort = persisted;
 
         session.SetPendingApplySortFromConfig(false);
         session.MirrorSortToConfiguration();
 
-        const auto &sort = session.Model()->Configuration().sort;
+        const auto &sort = session.View().sort;
         QVERIFY(sort.columnKeys.empty());
     }
 
@@ -411,7 +411,7 @@ private slots:
     {
         // The anchor mirror reads `Anchors()->Entries()` (which drops
         // runtime-only anchors with empty locators) and writes them
-        // to `Model()->ConfigurationManager().SetAnchors(...)`.
+        // to `Model()->MutableLayout().SetAnchors(...)`.
         LogSession session;
 
         const AnchorManager::Key persistedKey{.locator = "log-a", .lineId = 42};
@@ -421,7 +421,7 @@ private slots:
 
         session.MirrorAnchorsToConfiguration();
 
-        const auto &mirrored = session.Model()->Configuration().anchors;
+        const auto &mirrored = session.View().anchors;
         QCOMPARE(mirrored.size(), std::size_t{1});
         QCOMPARE(mirrored.front().locator, std::string{"log-a"});
         QCOMPARE(mirrored.front().lineId, static_cast<std::uint64_t>(42));
@@ -1776,7 +1776,7 @@ private slots:
     static void TestFindColumnIndexByKeysLocatesConfiguredColumns()
     {
         // `FindColumnIndexByKeys` is an exact lookup over
-        // `Model()->Configuration().columns`.
+        // `Model()->Layout().Columns()`.
         LogSession session;
 
         // No columns installed yet -> every lookup returns -1.
@@ -1804,7 +1804,7 @@ private slots:
                 .type = loglib::ColumnType::String,
             }
         );
-        session.Model()->ConfigurationManager().SetConfiguration(cfg);
+        session.Model()->MutableLayout().SetColumns(cfg.columns);
 
         // Single-key column lookup.
         QCOMPARE(session.FindColumnIndexByKeys({std::string{"ts"}}), 0);
@@ -1849,7 +1849,7 @@ private slots:
                 .type = loglib::ColumnType::Time,
             }
         );
-        session.Model()->ConfigurationManager().SetConfiguration(cfg);
+        session.Model()->MutableLayout().SetColumns(cfg.columns);
         QCOMPARE(session.FindFirstRowAtOrAfterTimestamp(0, 0), -1);
     }
 

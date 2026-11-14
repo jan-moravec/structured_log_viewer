@@ -149,7 +149,7 @@ double RunOnce(const Payload &payload, Transport transport)
     BytesProducer *producerPtr = producer.get();
 
     const std::shared_ptr<const LogConfiguration> configuration = MakeTimestampConfiguration();
-    LogTable table(*configuration);
+    LogTable table{ColumnLayout(configuration->columns)};
     table.SetDisplayTimeZone(ProcessDefaultTimeZone());
     table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
     auto owned = std::make_unique<StreamLineSource>(std::filesystem::path("network"), std::move(producer));
@@ -161,7 +161,7 @@ double RunOnce(const Payload &payload, Transport transport)
     StopSource stop;
     ParserOptions options;
     options.stopToken = stop.GetToken();
-    options.timeColumns = TimeColumnsOf(*configuration);
+    options.timeColumns = TimeColumnsOf(configuration->columns);
     options.defaultSourceTimeZone = table.DefaultSourceTimeZone();
     std::thread parser([&] { LogfmtParser{}.ParseStreaming(source, sink, options); });
 

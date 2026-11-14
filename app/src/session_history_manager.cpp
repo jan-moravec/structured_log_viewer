@@ -89,7 +89,7 @@ void SyncWarnIfNeeded(QSettings &settings, const char *context)
 /// The timeout doubles as the worst-case GUI freeze under sibling
 /// contention; 1.5 s stays under the 2 s "UI feels wedged" threshold.
 /// A busy session file can add up to one second from
-/// `LogConfigurationManager::Save`.
+/// `SaveConfiguration`.
 ///
 /// Shutdown: covers user-initiated / shutdown mutators (`Remove`,
 /// `Clear`, `SetOpenWindowsAtQuit`). Not on an interactive path; a
@@ -372,7 +372,7 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
         // leaves in-process state untouched.
         try
         {
-            loglib::LogConfigurationManager::Save(configuration, jsonPath.toStdString(), loglib::SaveScope::Full);
+            loglib::SaveConfiguration(configuration, jsonPath.toStdString(), loglib::SaveScope::Full);
 
             QList<RecentSessionEntry> entries = mIndexStorage->Read();
 

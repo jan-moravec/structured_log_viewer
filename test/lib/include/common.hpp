@@ -80,6 +80,7 @@ public:
     ~TestLogConfiguration() noexcept;
 
     const std::string &GetFilePath() const;
+    /** Writes a configuration file. A column keeps its type in the file only when its autoDetect flag is off. */
     void Write(const loglib::LogConfiguration &configuration) const;
 
 private:

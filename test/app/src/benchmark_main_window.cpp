@@ -198,7 +198,7 @@ private slots:
     void BenchEnumFilterApply()
     {
         const ProxyChain chain = BuildLoadedChain();
-        const auto &columns = chain.model->Configuration().columns;
+        const auto &columns = chain.model->Layout().Columns();
         const int levelCol = FindColumnByKey(columns, "level");
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
         // The `level` column auto-promotes through Enumeration to the
@@ -307,7 +307,7 @@ private slots:
     void BenchEnumColumnSort()
     {
         const ProxyChain chain = BuildLoadedChain();
-        const auto &columns = chain.model->Configuration().columns;
+        const auto &columns = chain.model->Layout().Columns();
         const int levelCol = FindColumnByKey(columns, "level");
         const int componentCol = FindColumnByKey(columns, "component");
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
@@ -409,7 +409,7 @@ private slots:
         using Ms = std::chrono::duration<double, std::milli>;
 
         const ProxyChain chain = BuildLoadedChain();
-        const auto &columns = chain.model->Configuration().columns;
+        const auto &columns = chain.model->Layout().Columns();
         const loglib::LogTable &table = chain.model->Table();
         QCOMPARE(static_cast<std::size_t>(table.RowCount()), LINE_COUNT);
 
@@ -557,7 +557,7 @@ private:
         const loglib::LogTable &table = chain.model->Table();
         const size_t rowCount = table.RowCount();
         QCOMPARE(static_cast<std::size_t>(rowCount), LINE_COUNT);
-        const auto &columns = chain.model->Configuration().columns;
+        const auto &columns = chain.model->Layout().Columns();
         const auto &column = columns[static_cast<size_t>(columnIndex)];
 
         const loglib::EnumDictRank *rankPtr = nullptr;

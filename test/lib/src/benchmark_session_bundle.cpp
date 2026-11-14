@@ -222,7 +222,7 @@ void RegisterSessionBundleBenchmarks()
             [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
             [workers](TableOnly &input, benchmark::State &state, bool first) {
                 const TableFixture &fixture = input.table->Get();
-                const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
+                const LogConfiguration cfg{.columns = fixture.Table().Layout().Columns()};
                 std::size_t compressed = 0;
                 const auto writeOnce = [&] {
                     const TempBundlePath dest;
@@ -255,7 +255,7 @@ void RegisterSessionBundleBenchmarks()
             input->bundlePath = std::make_unique<TempBundlePath>();
             WriteSessionBundle(
                 fixture.Table(),
-                fixture.Table().Configuration().Configuration(),
+                LogConfiguration{.columns = fixture.Table().Layout().Columns()},
                 input->bundlePath->Path(),
                 WriteOptions()
             );
@@ -287,7 +287,7 @@ void RegisterSessionBundleBenchmarks()
         [table] { return std::make_unique<TableOnly>(TableOnly{.table = table}); },
         [](TableOnly &input, benchmark::State &state, bool first) {
             const TableFixture &fixture = input.table->Get();
-            const LogConfiguration &cfg = fixture.Table().Configuration().Configuration();
+            const LogConfiguration cfg{.columns = fixture.Table().Layout().Columns()};
             const auto roundTrip = [&] {
                 const TempBundlePath dest;
                 WriteSessionBundle(fixture.Table(), cfg, dest.Path(), WriteOptions());

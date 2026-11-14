@@ -1,104 +1,56 @@
 #include "loglib/schema/log_configuration.hpp"
-#include "loglib/core/ascii_case.hpp"
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/file_busy_retry.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
-#include "loglib/core/log_data.hpp"
-#include "loglib/schema/internal/level_column_slot.hpp"
 #include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <fmt/format.h>
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
-#include <array>
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace
 {
 
-std::string ToLower(const std::string &str)
+/** The text of the key that starts at the given offset, up to its closing quote. */
+std::string KeyAt(std::string_view content, size_t offset)
 {
-    std::string lower = str;
-    std::ranges::transform(lower, lower.begin(), [](auto c) { return static_cast<unsigned char>(std::tolower(c)); });
-    return lower;
+    if (offset >= content.size())
+    {
+        return {};
+    }
+    const size_t end = content.find('"', offset);
+    return std::string(content.substr(offset, end == std::string_view::npos ? std::string_view::npos : end - offset));
 }
 
-bool IsTimestampKey(const std::string &key)
+/** The first line of the message names the key, because callers often show only that line. */
+std::string Describe(const glz::error_ctx &error, std::string_view content)
 {
-    // Common JSON / structured-log timestamp field names; bare "t" is
-    // excluded to avoid false-positives.
-    static const std::vector<std::string> TIMESTAMP_KEYS = {
-        "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
-    };
-    return std::ranges::any_of(TIMESTAMP_KEYS, [lowerKey = ToLower(key)](const std::string &value) {
-        return (lowerKey == value);
-    });
+    if (error.ec == glz::error_code::unknown_key)
+    {
+        return fmt::format("unknown key '{}'.\n{}", KeyAt(content, error.count), glz::format_error(error, content));
+    }
+    if (error.ec == glz::error_code::missing_key)
+    {
+        return fmt::format(
+            "the required key '{}' is missing.\n{}", error.custom_error_message, glz::format_error(error, content)
+        );
+    }
+    return glz::format_error(error, content);
 }
 
 } // namespace
 
 namespace loglib
 {
-
-bool IsLogLevelKey(const std::string &key)
-{
-    // Known log-level field names. Matched case-insensitively and
-    // allocation-free because this fires once per column per batch.
-    // Advisory only -- false positives (e.g. a length column matching
-    // l) are caught by the dictionary-content check in
-    // LogTable::MaybePromoteToLevel.
-    static constexpr std::array<std::string_view, 23> LEVEL_KEYS = {
-        // Long-form / classic.
-        "level",
-        "severity",
-        "loglevel",
-        "log.level",
-        "log_level",
-        "lvl",
-        "levelname",
-        "priority",
-        // Short forms (compact / embedded loggers).
-        "l",
-        "lv",
-        "lev",
-        "sev",
-        "s",
-        "loglvl",
-        // OpenTelemetry / ECS / GCP.
-        "severity_text",
-        "severity.text",
-        "severitytext",
-        "log_severity",
-        "log.severity",
-        "logseverity",
-        // Separator variants of levelname.
-        "level_name",
-        "level.name",
-        // Serilog @l, Datadog @-fields, ...
-        "@level",
-    };
-    const std::string_view keyView(key);
-    return std::ranges::any_of(LEVEL_KEYS, [keyView](std::string_view value) {
-        return EqualsIgnoreCaseAscii(keyView, value);
-    });
-}
-
-int FirstTimeColumnIndex(const LogConfiguration &configuration)
-{
-    for (size_t i = 0; i < configuration.columns.size(); ++i)
-    {
-        if (configuration.columns[i].type == ColumnType::Time)
-        {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
 
 void Source::ReplaceDisplayPaths(std::vector<std::string> paths)
 {
@@ -157,124 +109,65 @@ std::vector<std::string> Source::DedupKeys() const
     return keys;
 }
 
-} // namespace loglib
-
-namespace
-{
-
-// The pinned options are defined in glaze_options.hpp.
-constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
-
-/**
- * Wire-format shim for SaveScope::ColumnsOnly: emits the two
- * Configuration-scope vectors (columns + highlightRules) and
- * skips the session-scope blocks (expression / sort / source
- * / anchors). Files written this way still round-trip through
- * glz::read_json<LogConfiguration> -- missing members default.
- */
-struct ColumnsOnlyDocument
-{
-    // References (not pointers) so the glaze accessor can't deref
-    // null; Save is the only construction site and holds the
-    // source vectors for the synchronous glz::write call.
-    // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
-    const std::vector<loglib::Column> &columns;
-    const std::vector<loglib::HighlightRule> &highlightRules;
-    // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
-};
-
-} // namespace
-
-// value is glaze's required slot name (same exemption as the
-// canonical meta block in log_configuration_glaze_meta.hpp).
-// NOLINTBEGIN(readability-identifier-naming)
-template <> struct glz::meta<ColumnsOnlyDocument>
-{
-    using T = ColumnsOnlyDocument;
-    static constexpr auto value = object(
-        "columns",
-        [](auto &self) -> const auto & { return self.columns; },
-        "highlightRules",
-        [](auto &self) -> const auto & { return self.highlightRules; }
-    );
-};
-// NOLINTEND(readability-identifier-naming)
-
-namespace loglib
-{
-
-void LogConfigurationManager::Load(const std::filesystem::path &path)
+LogConfiguration LoadConfiguration(const std::filesystem::path &path)
 {
     const std::ifstream file(path);
     if (!file.is_open())
     {
-        throw std::runtime_error("Failed to open file '" + internal::PathToUtf8(path) + "'.");
+        throw IoError("Failed to open file '" + internal::PathToUtf8(path) + "'.");
     }
     std::ostringstream buffer;
     buffer << file.rdbuf();
-    LoadFromString(buffer.str());
+    return ParseConfiguration(buffer.str(), internal::PathToUtf8(path));
 }
 
-void LogConfigurationManager::LoadFromString(std::string_view content)
+LogConfiguration ParseConfiguration(std::string_view content, std::string_view origin)
 {
-    // Parse into a temporary first: Glaze writes member-by-member,
-    // so reading directly into mConfiguration could leave it
-    // half-populated on a mid-file parse error.
-    LogConfiguration parsed;
-    // LOG_CONFIG_OPTS (not glz::read_json) so
-    // error_on_unknown_keys=false lets files with extra keys load.
-    // See the header for the rationale.
-    const auto error = glz::read<LOG_CONFIG_OPTS>(parsed, content);
+    const std::string name = origin.empty() ? std::string("configuration") : fmt::format("configuration '{}'", origin);
+
+    // The document is parsed on its own first, so a mid-file error leaves nothing half built.
+    internal::ConfigurationDocument document;
+    const auto error = glz::read<internal::CONFIGURATION_OPTS>(document, content);
     if (error)
     {
-        throw std::runtime_error(
-            "Failed to parse configuration file: " + glz::format_error(error, std::string(content))
+        throw FormatError(fmt::format("Invalid {}: {}", name, Describe(error, content)));
+    }
+    if (document.version != internal::CONFIGURATION_FORMAT_VERSION)
+    {
+        throw FormatError(
+            fmt::format(
+                "Invalid {}: the version is {}, but only version {} is supported.",
+                name,
+                document.version,
+                internal::CONFIGURATION_FORMAT_VERSION
+            )
         );
     }
-    mConfiguration = std::move(parsed);
-    mCacheStale = true;
-    SanitizePrintFormats();
+    return internal::MakeConfiguration(std::move(document));
 }
 
-void LogConfigurationManager::Save(const std::filesystem::path &path) const
+std::string SerializeConfiguration(const LogConfiguration &configuration, SaveScope scope, ConfigurationLayout layout)
 {
-    Save(path, SaveScope::Full);
+    const internal::ConfigurationDocument document = internal::MakeDocument(configuration, scope);
+    std::string json;
+    const auto error = layout == ConfigurationLayout::Compact
+                           ? glz::write<internal::CONFIGURATION_COMPACT_OPTS>(document, json)
+                           : glz::write<internal::CONFIGURATION_OPTS>(document, json);
+    if (error)
+    {
+        throw IoError("Failed to serialize configuration: " + glz::format_error(error));
+    }
+    return json;
 }
 
-void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope scope) const
-{
-    Save(mConfiguration, path, scope);
-}
-
-void LogConfigurationManager::Save(
+void SaveConfiguration(
     const LogConfiguration &configuration,
     const std::filesystem::path &path,
     SaveScope scope,
     std::chrono::milliseconds busyRetryTimeout
 )
 {
-    std::string json;
-    if (scope == SaveScope::ColumnsOnly)
-    {
-        // Use the shim so only the Configuration-scope members
-        // land in the JSON.
-        const ColumnsOnlyDocument document{
-            .columns = configuration.columns, .highlightRules = configuration.highlightRules
-        };
-        const auto error = glz::write<LOG_CONFIG_OPTS>(document, json);
-        if (error)
-        {
-            throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
-        }
-    }
-    else
-    {
-        const auto error = glz::write<LOG_CONFIG_OPTS>(configuration, json);
-        if (error)
-        {
-            throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
-        }
-    }
+    const std::string json = SerializeConfiguration(configuration, scope);
 
     // Atomic write: stream to <path>.tmp, flush + check stream
     // state, then rename. Prevents a crash / ENOSPC mid-write from
@@ -286,7 +179,7 @@ void LogConfigurationManager::Save(
         std::ofstream file(tempPath);
         if (!file.is_open())
         {
-            throw std::runtime_error("Failed to open file '" + internal::PathToUtf8(tempPath) + "'.");
+            throw IoError("Failed to open file '" + internal::PathToUtf8(tempPath) + "'.");
         }
         file << json;
         file.flush();
@@ -294,7 +187,7 @@ void LogConfigurationManager::Save(
         {
             std::error_code cleanupEc;
             std::filesystem::remove(tempPath, cleanupEc);
-            throw std::runtime_error("Failed to write file '" + internal::PathToUtf8(tempPath) + "'.");
+            throw IoError("Failed to write file '" + internal::PathToUtf8(tempPath) + "'.");
         }
         // Explicit close + good() check so close-time failures
         // (network shares, deferred-write filesystems) are observable
@@ -304,7 +197,7 @@ void LogConfigurationManager::Save(
         {
             std::error_code cleanupEc;
             std::filesystem::remove(tempPath, cleanupEc);
-            throw std::runtime_error("Failed to close file '" + internal::PathToUtf8(tempPath) + "'.");
+            throw IoError("Failed to close file '" + internal::PathToUtf8(tempPath) + "'.");
         }
     }
     const std::error_code ec = internal::RenameRetryingWhileFileBusy(tempPath, path, busyRetryTimeout);
@@ -312,346 +205,11 @@ void LogConfigurationManager::Save(
     {
         std::error_code cleanupEc;
         std::filesystem::remove(tempPath, cleanupEc);
-        throw std::runtime_error(
+        throw IoError(
             "Failed to rename '" + internal::PathToUtf8(tempPath) + "' to '" + internal::PathToUtf8(path) +
             "': " + ec.message()
         );
     }
-}
-
-void LogConfigurationManager::Reset()
-{
-    // Default-construct so all fields return to factory state in
-    // one assignment.
-    mConfiguration = LogConfiguration{};
-    mCacheStale = true;
-}
-
-void LogConfigurationManager::SetConfiguration(LogConfiguration configuration)
-{
-    mConfiguration = std::move(configuration);
-    mCacheStale = true;
-    SanitizePrintFormats();
-}
-
-std::vector<std::string> LogConfigurationManager::TakeWarnings()
-{
-    return std::exchange(mWarnings, {});
-}
-
-namespace
-{
-
-constexpr const char *DEFAULT_TIME_PRINT_FORMAT = "%F %H:%M:%S";
-
-/**
- * @brief True if fmt accepts the format for at least one of the value types a cell can hold. A format such as {:d} is
- * fine for integers and not for doubles, so only a format that fails for every type counts as invalid.
- */
-bool PrintFormatIsUsable(const std::string &format)
-{
-    constexpr double SAMPLE_DOUBLE = 1.5;
-    const auto accepts = [&format](const auto &sample) {
-        try
-        {
-            static_cast<void>(fmt::vformat(format, fmt::make_format_args(sample)));
-            return true;
-        }
-        catch (const fmt::format_error &)
-        {
-            return false;
-        }
-    };
-    return accepts(std::int64_t{1}) || accepts(std::uint64_t{1}) || accepts(SAMPLE_DOUBLE) || accepts(true);
-}
-
-} // namespace
-
-void LogConfigurationManager::SetTimeFormatCheck(TimeFormatCheck check)
-{
-    mTimeFormatCheck = std::move(check);
-}
-
-void LogConfigurationManager::SanitizePrintFormats()
-{
-    for (Column &column : mConfiguration.columns)
-    {
-        if (column.type == ColumnType::Time)
-        {
-            // A Time column holds a time format, not an fmt format.
-            if (!mTimeFormatCheck || mTimeFormatCheck(column.printFormat))
-            {
-                continue;
-            }
-            mWarnings.push_back(
-                fmt::format(
-                    "Column '{}': the time format '{}' is not valid and was replaced by '{}'.",
-                    column.header,
-                    column.printFormat,
-                    DEFAULT_TIME_PRINT_FORMAT
-                )
-            );
-            column.printFormat = DEFAULT_TIME_PRINT_FORMAT;
-            continue;
-        }
-        if (PrintFormatIsUsable(column.printFormat))
-        {
-            continue;
-        }
-        mWarnings.push_back(
-            fmt::format(
-                "Column '{}': the print format '{}' is not valid and was replaced by {{}}.",
-                column.header,
-                column.printFormat
-            )
-        );
-        column.printFormat = "{}";
-    }
-}
-
-void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
-{
-    // Append-only; Qt's beginInsertColumns expects appends.
-    EnsureKeyCacheBuilt();
-    for (const std::string &key : newKeys)
-    {
-        if (IsKeyInAnyColumnCached(key))
-        {
-            continue;
-        }
-        if (IsTimestampKey(key))
-        {
-            mConfiguration.columns.push_back(
-                Column{
-                    .header = key,
-                    .keys = {key},
-                    .printFormat = DEFAULT_TIME_PRINT_FORMAT,
-                    .type = ColumnType::Time,
-                    .parseFormats = DefaultTimeParseFormats(),
-                }
-            );
-        }
-        else
-        {
-            mConfiguration.columns.push_back(
-                Column{.header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
-            );
-        }
-        mKeysInColumns.insert(key);
-    }
-}
-
-bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept
-{
-    if (columnIndex >= config.columns.size())
-    {
-        return false;
-    }
-    if (config.columns.size() < 2)
-    {
-        return false;
-    }
-    if (columnIndex == CANONICAL_LEVEL_COLUMN_INDEX)
-    {
-        return false;
-    }
-    // Multi-Level guard: "first promoted wins" the canonical slot
-    // when a payload carries more than one Level-typed key (e.g.
-    // level and severity). Without this, draining multiple
-    // bubbles would shuffle the slot's occupant.
-    if (CANONICAL_LEVEL_COLUMN_INDEX < config.columns.size() &&
-        config.columns[CANONICAL_LEVEL_COLUMN_INDEX].type == ColumnType::Level)
-    {
-        return false;
-    }
-    return true;
-}
-
-void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
-{
-    if (srcIndex == destIndex || srcIndex >= mConfiguration.columns.size() ||
-        destIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    using Diff = std::vector<Column>::difference_type;
-    auto begin = mConfiguration.columns.begin();
-    if (srcIndex > destIndex)
-    {
-        std::rotate(
-            std::next(begin, static_cast<Diff>(destIndex)),
-            std::next(begin, static_cast<Diff>(srcIndex)),
-            std::next(begin, static_cast<Diff>(srcIndex + 1))
-        );
-    }
-    else
-    {
-        std::rotate(
-            std::next(begin, static_cast<Diff>(srcIndex)),
-            std::next(begin, static_cast<Diff>(srcIndex + 1)),
-            std::next(begin, static_cast<Diff>(destIndex + 1))
-        );
-    }
-    // Filters, highlight rules and the sort bind to columns by keys, so a reorder needs no fix-up.
-    // Pure reorder; key cache is unchanged.
-}
-
-void LogConfigurationManager::SetColumnType(size_t columnIndex, ColumnType type)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    mConfiguration.columns[columnIndex].type = type;
-}
-
-void LogConfigurationManager::SetColumnAutoDetect(size_t columnIndex, bool autoDetect)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    mConfiguration.columns[columnIndex].autoDetect = autoDetect;
-}
-
-void LogConfigurationManager::SetColumnTypePair(size_t columnIndex, ColumnType type, bool autoDetect)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    auto &column = mConfiguration.columns[columnIndex];
-    column.type = type;
-    column.autoDetect = autoDetect;
-}
-
-void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    mConfiguration.columns[columnIndex].visible = visible;
-}
-
-void LogConfigurationManager::SetColumnHeader(size_t columnIndex, std::string header)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    mConfiguration.columns[columnIndex].header = std::move(header);
-}
-
-void LogConfigurationManager::SetColumnPrintFormat(size_t columnIndex, std::string printFormat)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    mConfiguration.columns[columnIndex].printFormat = std::move(printFormat);
-    SanitizePrintFormats();
-}
-
-void LogConfigurationManager::SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats)
-{
-    if (columnIndex >= mConfiguration.columns.size())
-    {
-        return;
-    }
-    mConfiguration.columns[columnIndex].parseFormats = std::move(parseFormats);
-}
-
-void LogConfigurationManager::SetExpression(FilterExpression expression)
-{
-    mConfiguration.expression = std::move(expression);
-}
-
-void LogConfigurationManager::SetSort(Sort sort)
-{
-    mConfiguration.sort = sort;
-}
-
-void LogConfigurationManager::SetSource(std::optional<Source> source)
-{
-    mConfiguration.source = std::move(source);
-}
-
-void LogConfigurationManager::SetAnchors(std::vector<AnchorEntry> anchors)
-{
-    mConfiguration.anchors = std::move(anchors);
-}
-
-void LogConfigurationManager::SetHighlightRules(std::vector<HighlightRule> rules)
-{
-    mConfiguration.highlightRules = std::move(rules);
-}
-
-size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
-{
-    if (newKeys.empty())
-    {
-        return 0;
-    }
-    EnsureKeyCacheBuilt();
-    // Mirrors AppendKeys's skip predicate plus an in-input de-dupe.
-    std::unordered_set<std::string_view> alreadyCounted;
-    alreadyCounted.reserve(newKeys.size());
-    size_t count = 0;
-    for (const std::string &key : newKeys)
-    {
-        if (IsKeyInAnyColumnCached(key))
-        {
-            continue;
-        }
-        if (alreadyCounted.insert(std::string_view(key)).second)
-        {
-            ++count;
-        }
-    }
-    return count;
-}
-
-const LogConfiguration &LogConfigurationManager::Configuration() const
-{
-    return mConfiguration;
-}
-
-void LogConfigurationManager::EnsureKeyCacheBuilt() const
-{
-    if (!mCacheStale)
-    {
-        return;
-    }
-    mKeysInColumns.clear();
-    mKeysInColumns.reserve(mConfiguration.columns.size() * 4);
-    for (const Column &column : mConfiguration.columns)
-    {
-        for (const std::string &key : column.keys)
-        {
-            mKeysInColumns.insert(key);
-        }
-    }
-    mCacheStale = false;
-}
-
-bool LogConfigurationManager::IsKeyInAnyColumnCached(const std::string &key) const
-{
-    EnsureKeyCacheBuilt();
-    return mKeysInColumns.contains(key);
-}
-
-std::vector<Column> TimeColumnsOf(const LogConfiguration &configuration)
-{
-    std::vector<Column> result;
-    for (const Column &column : configuration.columns)
-    {
-        if (column.type == ColumnType::Time)
-        {
-            result.push_back(column);
-        }
-    }
-    return result;
 }
 
 } // namespace loglib

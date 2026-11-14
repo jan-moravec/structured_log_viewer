@@ -5,6 +5,7 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_line.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -194,7 +195,7 @@ TEST_CASE("Level rank cache is found when the first configured key appears after
     auto source = std::make_unique<FileLineSource>(testFile.GetFilePath());
     FileLineSource *sourcePtr = source.get();
 
-    LogTable table(LevelConfiguration({"level", "severity"}));
+    LogTable table(ColumnLayout(LevelConfiguration({"level", "severity"}).columns));
     table.AppendStreaming(std::move(source));
 
     // Only the alias "severity" appears; "level" is never interned.
@@ -206,7 +207,7 @@ TEST_CASE("Level rank cache is found when the first configured key appears after
     AppendFixtureBatch(table, MakeBatch(table.Keys(), *sourcePtr, rows, 1));
 
     REQUIRE(table.RowCount() == 3);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Level);
     CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
     CHECK(table.GetLevelForRow(2, 0) == LogLevel::Error);
@@ -255,7 +256,7 @@ TEST_CASE("The append report of a static-like load in two batch sizes", "[append
     expected.resize(batchSize == 1000 ? 6 : 3);
     CHECK(steps == expected);
 
-    const auto &columns = stream.Table().Configuration().Configuration().columns;
+    const auto &columns = stream.Table().Layout().Columns();
     REQUIRE(columns.size() == 4);
     CHECK(columns[0].header == "timestamp");
     CHECK(columns[1].header == "level");
@@ -291,7 +292,7 @@ TEST_CASE("The append report of a column that grows and then demotes", "[append_
         {},
     };
     CHECK(steps == expected);
-    CHECK(stream.Table().Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(stream.Table().Layout().Columns()[0].type == ColumnType::String);
 }
 
 TEST_CASE("The append report of a column that is promoted and demoted in one batch", "[append_report][events]")
@@ -307,7 +308,7 @@ TEST_CASE("The append report of a column that is promoted and demoted in one bat
     CHECK(batch == Described{"Demoted 0"});
     CHECK(finalize.empty());
     CHECK(stream.Events().front().levelValuesBeforeDemotion.empty());
-    CHECK(stream.Table().Configuration().Configuration().columns[0].type == ColumnType::String);
+    CHECK(stream.Table().Layout().Columns()[0].type == ColumnType::String);
 }
 
 TEST_CASE("The append report carries the level values of a demoted Level column", "[append_report][events]")
@@ -378,7 +379,7 @@ TEST_CASE(
     const std::vector<Described> expected{{}, {"Promoted 1 backfill", "Promoted 2 backfill"}, {}};
     CHECK(steps == expected);
 
-    const auto &columns = stream.Table().Configuration().Configuration().columns;
+    const auto &columns = stream.Table().Layout().Columns();
     REQUIRE(columns.size() == 3);
     CHECK(columns[0].header == "body");
     CHECK(columns[1].header == "level");
@@ -405,7 +406,7 @@ TEST_CASE("The append report moves two new time columns of one batch to the fron
     const std::vector<Described> expected{{}, {"Promoted 0 backfill", "move 1->0", "move 2->0"}, {"Demoted 2"}};
     CHECK(steps == expected);
 
-    const auto &columns = stream.Table().Configuration().Configuration().columns;
+    const auto &columns = stream.Table().Layout().Columns();
     REQUIRE(columns.size() == 3);
     CHECK(columns[0].type == ColumnType::Time);
     CHECK(columns[1].type == ColumnType::Time);
@@ -430,7 +431,7 @@ TEST_CASE("The append report of promotions and demotions at the end of a stream"
         const Described finalize = stream.Finalize();
         CHECK(batch.empty());
         CHECK(finalize == Described{"Promoted 0", "Promoted 1", "Promoted 2"});
-        CHECK(stream.Table().Configuration().Configuration().columns[1].type == ColumnType::Level);
+        CHECK(stream.Table().Layout().Columns()[1].type == ColumnType::Level);
     }
 
     SECTION("a Level column that fails its health check is demoted with its level values")
@@ -578,7 +579,7 @@ TEST_CASE(
             .autoDetect = false,
         }
     );
-    LogTable table(std::move(configuration));
+    LogTable table(ColumnLayout(std::move(configuration.columns)));
     table.SetEnumValueCap(4);
     table.BeginStreaming(std::move(source));
 
@@ -596,7 +597,7 @@ TEST_CASE(
     AppendFixtureBatch(table, MakeBatch(table.Keys(), *sourcePtr, rowsOf({"a", "e", "b", "f", "c", "d"}), 5));
 
     REQUIRE(table.RowCount() == 10);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Enumeration);
     for (const size_t row : {size_t{4}, size_t{6}, size_t{8}, size_t{9}})
     {
         INFO("row " << row);
@@ -641,7 +642,7 @@ std::vector<ColumnType> TypesAfterSplit(
     }
     static_cast<void>(stream.Finalize());
     std::vector<ColumnType> types;
-    for (const Column &column : stream.Table().Configuration().Configuration().columns)
+    for (const Column &column : stream.Table().Layout().Columns())
     {
         types.push_back(column.type);
     }
@@ -684,7 +685,7 @@ TEST_CASE("A streamed column of all-distinct values does not stay an enumeration
     }));
     const LogTable::FinalizeResult result = stream.Table().FinalizeAutoDetection();
 
-    const auto &columns = stream.Table().Configuration().Configuration().columns;
+    const auto &columns = stream.Table().Layout().Columns();
     REQUIRE(columns.size() == 2);
     CHECK(columns[0].type == ColumnType::String);
     CHECK(columns[1].type == ColumnType::Enumeration);

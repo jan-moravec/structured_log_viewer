@@ -11,6 +11,7 @@
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -294,8 +295,8 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
         {.header = "OK", .keys = {"ok"}, .printFormat = "{}", .type = loglib::ColumnType::Boolean}
     );
 
-    loglib::LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    loglib::ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 
@@ -552,8 +553,8 @@ TEST_CASE("exports: CSV formula-injection cells are quoted and prefixed", "[expo
     config.columns.push_back(
         {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
-    loglib::LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    loglib::ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0, 1, 2, 3};
@@ -604,8 +605,8 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
     config.columns.push_back(
         {.header = "Value", .keys = {"value"}, .printFormat = "{}", .type = loglib::ColumnType::Floating}
     );
-    loglib::LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    loglib::ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0, 1, 2, 3};
@@ -714,8 +715,8 @@ TEST_CASE("exports: JSON Lines escapes strings and writes numbers as JSON requir
     {
         config.columns.push_back({.header = key, .keys = {key}, .printFormat = "{}", .type = loglib::ColumnType::Any});
     }
-    loglib::LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    loglib::ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows(texts.size());
@@ -765,8 +766,8 @@ TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][r
     config.columns.push_back(
         {.header = "Msg", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
-    loglib::LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    loglib::ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0};
@@ -828,8 +829,8 @@ TEST_CASE("exports: Snapshot skips unavailable source rows", "[exports][row_expo
     config.columns.push_back(
         {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
-    loglib::LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(config));
+    loglib::ColumnLayout manager;
+    manager.SetColumns((std::move(config)).columns);
     const loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
 
     std::vector<std::size_t> rows = {0, 1, 2, 3};

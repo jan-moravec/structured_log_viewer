@@ -167,7 +167,8 @@ public:
         {
             return LoadFail(ExitCode::Input, configuration.error());
         }
-        mLoaded.table.Configuration().SetConfiguration(std::move(*configuration));
+        mLoaded.table.Layout().SetColumns(std::move(configuration->columns));
+        mLoaded.view = std::move(configuration->view);
         ReportConfigurationWarnings();
         return std::nullopt;
     }
@@ -295,7 +296,8 @@ private:
                 // column pins and filter defaults apply.
                 if (mLoaded.table.Data().Sources().empty() && !mInput->config)
                 {
-                    mLoaded.table.Configuration().SetConfiguration(opened.bundle->configuration);
+                    mLoaded.table.Layout().SetColumns(opened.bundle->configuration.columns);
+                    mLoaded.view = opened.bundle->configuration.view;
                     ReportConfigurationWarnings();
                 }
             }
@@ -387,7 +389,7 @@ private:
     /** @brief Reports once the print formats that the configuration check replaced. */
     void ReportConfigurationWarnings()
     {
-        for (const std::string &warning : mLoaded.table.Configuration().TakeWarnings())
+        for (const std::string &warning : mLoaded.table.Layout().TakeWarnings())
         {
             mConsole->Warn(warning);
         }

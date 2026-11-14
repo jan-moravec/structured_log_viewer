@@ -144,7 +144,7 @@ NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table)
       mTimestampFormatter(TimeZoneContext::Utc(), "%FT%T", FractionPrecision::Microseconds)
 {
     std::uint32_t next = 0;
-    for (const Column &column : table.Configuration().Configuration().columns)
+    for (const Column &column : table.Layout().Columns())
     {
         for (const std::string &key : column.keys)
         {

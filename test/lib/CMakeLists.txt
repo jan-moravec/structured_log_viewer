@@ -49,6 +49,7 @@ add_executable(
     "src/test_key_index.cpp"
     "src/test_leaf_rule_compile.cpp"
     "src/test_line_bytes_queue.cpp"
+    "src/test_column_layout.cpp"
     "src/test_log_configuration.cpp"
     "src/test_log_compare.cpp"
     "src/test_log_data.cpp"
@@ -127,6 +128,12 @@ target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INST
 
 # The version the library must report, taken from the same project() call that sets it.
 target_compile_definitions(tests PRIVATE "LOGLIB_TEST_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
+
+# The configuration files the round-trip test loads. They are also the seed corpus of the configuration fuzz target.
+target_compile_definitions(
+    tests
+    PRIVATE "LOGLIB_TEST_CONFIGURATION_FIXTURES=\"${PROJECT_SOURCE_DIR}/test/fuzz/corpus/log_configuration\""
+)
 
 # Benchmarks: a separate executable on Google Benchmark, so changing one does not relink the unit tests and two builds
 # can be compared by copying only this binary. It has its own main (benchmark_main.cpp).
