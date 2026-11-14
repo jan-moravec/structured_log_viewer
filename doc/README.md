@@ -225,7 +225,7 @@ StructuredLogViewer --stdin < file.jsonl
 
 **Positional files.** The CLI accepts files together with `-` / `--stdin`, but opening stdin clears in-flight and queued file opens. Use a separate window if you need both.
 
-**Session persistence.** Stdin sessions never appear in Recent Sessions or auto-reopen. After EOF or **Stop**, use **Save Configuration…** or **Save Session…** to save columns and filters; the `<stdin>` source is omitted.
+**Session persistence.** Stdin sessions never appear in Recent Sessions or auto-reopen. After EOF or **Stop**, use **Save Configuration…** to save the columns, or **Save Session…** to save the columns, filters, sort, anchors and highlight rules; the `<stdin>` source is omitted.
 
 **Shutdown.** Producer exit, a finite redirected source, **Stop**, or closing the viewer ends the pipe cleanly. Retained rows remain available after EOF or **Stop**.
 
@@ -390,7 +390,7 @@ Exports run on a worker thread with a deferred-appearance `QProgressDialog` — 
 
 ### Exporting a Session Bundle
 
-**File → Export Session Bundle…** (`Ctrl+Shift+E`) packages every retained source-model row plus the current `LogConfiguration` (columns, filters, sort, anchors + notes, and highlight rules) into one `.slvbundle` file. The scope is always "everything retained": the current filter, sort, and selection do not change which rows are written because that view state is embedded for the recipient.
+**File → Export Session Bundle…** (`Ctrl+Shift+E`) packages every retained source-model row plus the current configuration (columns, filters, sort, anchors + notes, and highlight rules) into one `.slvbundle` file. The scope is always "everything retained": the current filter, sort, and selection do not change which rows are written because that view state is embedded for the recipient.
 
 A v1 bundle is a standard checksummed zstd stream. Its decompressed content is JSON Lines:
 
@@ -530,7 +530,7 @@ A rule whose target column is not present in the currently loaded log (e.g. you 
 
 ### Persistence and scope
 
-Highlight rules are Configuration-scope: they are saved with `File → Save Configuration…` in both the *Full* and *Columns only* [save scopes](#configurations). Two sessions that load the same configuration share the same rule set; a session that never saves its config keeps its rules only until the window closes.
+Highlight rules belong to the session: they are saved with `File → Save Session…`, and `File → Save Configuration…` does not write them. A session that is never saved keeps its rules only until the window closes.
 
 ## Histogram / activity-rate strip
 
@@ -702,9 +702,9 @@ Filters are live: the table updates immediately when a filter is added, edited, 
 
 ## Configurations
 
-A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / `level` / …), per-column log-level alias overrides (`levelMapping`), **column order**, **per-column visibility** — the **active filter set**, and the current [anchors](#anchors). Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
+A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type, per-column log-level alias overrides (`levelMapping`), **column order**, **per-column visibility**. A column type is saved only when you chose it in the column editor; a type that the detector found is found again when you open the logs. Configurations are saved as JSON files with a `version` and can be loaded into future sessions to enforce a consistent layout across teammates. A file with an unknown key or another version is rejected, and the message names the file and the key. A *session* adds the **active filter set**, the sort, the current [anchors](#anchors), the highlight rules and the source.
 
-- **File → Save Configuration…** (`Ctrl+S`) — writes the current layout and filters to a `.json` file.
+- **File → Save Configuration…** (`Ctrl+S`) — writes the current column layout to a `.json` file.
 - **File → Load Configuration or Session…** — loads a configuration (or [session](#sessions-and-recent-sessions)) file and clears any open logs. Open logs again afterwards to apply the layout.
 
 Because `Open…` auto-detects configurations, double-clicking a saved configuration file also works (it loads the layout without opening any logs).

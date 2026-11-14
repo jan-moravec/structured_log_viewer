@@ -93,7 +93,7 @@ Filters, sorts, and exports rows.
 | `--strict`                  | off          | Exit 4 when the parse reported errors.           |
 | `--config PATH`             | none         | Session or columns JSON applied before flags.    |
 | `--save-session PATH`       | none         | Write the effective full session after the run.  |
-| `--save-columns PATH`       | none         | Write columns and highlight rules only.          |
+| `--save-columns PATH`       | none         | Write the columns only.                          |
 
 JSON Lines output lists the fields of each row in the order of the table's columns. A field that has no column comes last, in key order.
 
@@ -208,6 +208,12 @@ For session state (filter, sort, columns), later layers override earlier ones:
 1. individual flags: `--filter`, `--since`, `--until`, `--min-level`, `--invert`, `--sort`, `--columns`, `--all-columns`.
 
 Any row-selection flag replaces the configuration's filter as a whole. `--all-columns` beats `--columns`, which beats the configuration's column visibility.
+
+## Configuration files
+
+`--config`, `--save-session` and `--save-columns` use the configuration file of the GUI: JSON with a required `"version": 1`, the `columns`, and for a session a `view` (filter, sort, highlight rules, anchors) and a `source`. Details are in [CONTRIBUTING.md](../CONTRIBUTING.md#configuration-file). A column is written with its `type` only if you chose it, so `--save-session` and `--save-columns` do not write the types that `slp` detected; they are detected again on the next run. The sort names its column by `columnKeys`.
+
+A file that cannot be read stops the command with exit code 3. The message names the file and the problem: a missing or wrong `version`, a missing required key, or an unknown key, for example `unknown key 'expression'`. Files from builds before 1.0 are not read.
 
 ## Recipes
 
