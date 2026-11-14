@@ -194,8 +194,8 @@ namespace
 {
 
 /** @brief The source whose ReadBatch the calling thread holds, or null. */
-thread_local const StreamLineSource *tReadBatchSource =
-    nullptr; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+thread_local const StreamLineSource *tReadBatchSource = nullptr;
 
 } // namespace
 
