@@ -69,7 +69,7 @@ concept CompactLineDecoder = requires(
     std::string_view line,
     KeyIndex &keys,
     PerWorkerKeyCache &keyCache,
-    std::vector<std::pair<KeyId, CompactLogValue>> &outValues,
+    std::vector<CompactLogValue> &outValues,
     std::string &outOwnedArena,
     std::string &outError
 ) {

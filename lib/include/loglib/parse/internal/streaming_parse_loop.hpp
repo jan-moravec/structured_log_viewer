@@ -57,13 +57,51 @@ constexpr auto STREAMING_PENDING_RECORD_MAX_AGE = std::chrono::milliseconds(500)
 constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 
 /**
+ * @brief Turns the string values that appear in the stored raw line into slices of it.
+ *
+ * A stream row keeps its raw line, so a value that is a substring of that line need not be stored a second time. Each
+ * such OwnedString field becomes a MmapSlice field that the stream source resolves against the raw line. Values that
+ * are not in the line, such as decoded escapes or text added from continuation lines, stay owned, and ownedArena is
+ * rebuilt to hold only those.
+ */
+inline void SliceValuesOfRawLine(
+    std::vector<CompactLogValue> &values, std::string &ownedArena, std::string_view rawLine
+)
+{
+    if (ownedArena.empty())
+    {
+        return;
+    }
+    const std::string_view arena(ownedArena);
+    std::string kept;
+    for (CompactLogValue &field : values)
+    {
+        if (field.tag != CompactTag::OwnedString)
+        {
+            continue;
+        }
+        const std::string_view text = arena.substr(field.payload, field.aux);
+        const size_t position = text.empty() ? std::string_view::npos : rawLine.find(text);
+        if (position != std::string_view::npos)
+        {
+            field = CompactLogValue::MakeMmapSlice(position, field.aux).WithKey(field.Key());
+            continue;
+        }
+        const uint64_t offset = kept.size();
+        kept.append(text);
+        field.payload = offset;
+    }
+    ownedArena = std::move(kept);
+}
+
+/**
  * @brief Adds continuation text, with a separator in front, to a field of a record.
  *
  * A value that lives in the mapped file needs mmapBytes and is first copied into ownedArena. A field that has no text
  * yet, such as a bare key=, gets the text without a separator.
  */
 inline ContinuationSpliceOutcome ExtendContinuationTarget(
-    std::vector<std::pair<KeyId, CompactLogValue>> &values,
+    std::vector<CompactLogValue> &values,
     std::string &ownedArena,
     KeyId targetKey,
     std::string_view continuationBytes,
@@ -81,11 +119,11 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
 
     for (auto &kv : values)
     {
-        if (kv.first != targetKey)
+        if (kv.Key() != targetKey)
         {
             continue;
         }
-        CompactLogValue &v = kv.second;
+        CompactLogValue &v = kv;
         switch (v.tag)
         {
         case CompactTag::OwnedString:
@@ -206,7 +244,7 @@ void RunStreamingParseLoopBody(
     const size_t maxLineBytes = options.maxLineBytes;
 
     // Reused per line; move-transferred into the source on success.
-    std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
+    std::vector<CompactLogValue> compactValues;
     std::string ownedArena;
     std::string lineError;
 
@@ -218,7 +256,7 @@ void RunStreamingParseLoopBody(
     {
         std::string rawText;
         std::string ownedArena;
-        std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
+        std::vector<CompactLogValue> compactValues;
         size_t startLineNumber = 0;
         KeyId continuationTarget = INVALID_KEY_ID;
         // The continuation text for the target field, each part with a separator in front. Blank lines are left out.
@@ -249,18 +287,18 @@ void RunStreamingParseLoopBody(
     };
 
     // Reject invalid targets before buffering to keep memory bounded.
-    auto canAcceptContinuation = [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
+    auto canAcceptContinuation = [](std::span<const CompactLogValue> values, KeyId key) -> bool {
         if (key == INVALID_KEY_ID)
         {
             return false;
         }
         for (const auto &kv : values)
         {
-            if (kv.first != key)
+            if (kv.Key() != key)
             {
                 continue;
             }
-            switch (kv.second.tag)
+            switch (kv.tag)
             {
             case CompactTag::OwnedString:
             case CompactTag::Monostate:
@@ -342,9 +380,10 @@ void RunStreamingParseLoopBody(
         }
 
         std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
-            return a.first < b.first;
+            return a.Key() < b.Key();
         });
 
+        SliceValuesOfRawLine(rec.compactValues, rec.ownedArena, rec.rawText);
         const size_t lineId = source.AppendLine(std::move(rec.rawText), std::move(rec.ownedArena));
         LogLine logLine(std::move(rec.compactValues), source, lineId);
         if (!options.referenceTime.has_value() && coalescer.Pending().lines.empty())
@@ -458,9 +497,8 @@ void RunStreamingParseLoopBody(
         {
             fresh.continuationTarget = decoder.LastContinuationTarget();
         }
-        fresh.continuationAcceptsText = canAcceptContinuation(
-            std::span<const std::pair<KeyId, CompactLogValue>>(fresh.compactValues), fresh.continuationTarget
-        );
+        fresh.continuationAcceptsText =
+            canAcceptContinuation(std::span<const CompactLogValue>(fresh.compactValues), fresh.continuationTarget);
         pending = std::move(fresh);
 
         // Reset moved-from buffers explicitly for clang-analyzer.

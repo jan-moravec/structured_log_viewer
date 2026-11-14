@@ -207,6 +207,37 @@ TEST_CASE("The last batch of a parse holds the number of lines read", "[batch_co
     }
 }
 
+TEST_CASE(
+    "A stream row reads its string values from the raw line, and keeps the ones that are not in it",
+    "[batch_contract][stream_slices]"
+)
+{
+    const JsonParser json;
+    const std::string bytes = "{\"msg\":\"plain text\",\"note\":\"two\\nlines\",\"n\":5}\n";
+    RecordingSink sink;
+    ParseAsStream(json, bytes, std::string::npos, sink);
+    REQUIRE(sink.RowCount() == 1);
+    const LogLine &line = sink.batches.front().lines.front();
+    const KeyId msg = sink.Keys().Find("msg");
+    const KeyId note = sink.Keys().Find("note");
+
+    const CompactLogValue *msgSlot = line.FindCompact(msg);
+    REQUIRE(msgSlot != nullptr);
+    CHECK(msgSlot->tag == CompactTag::MmapSlice);
+    CHECK(*line.PeekStringView(msg) == "plain text");
+    CHECK(std::get<std::string>(line.GetValue(msg)) == "plain text");
+
+    // The escaped value is not a substring of the raw line, so it stays an owned string.
+    const CompactLogValue *noteSlot = line.FindCompact(note);
+    REQUIRE(noteSlot != nullptr);
+    CHECK(noteSlot->tag == CompactTag::OwnedString);
+    CHECK(*line.PeekStringView(note) == "two\nlines");
+
+    // Evicting the line ends both kinds of view.
+    sink.streamSource->EvictBefore(line.LineId() + 1);
+    CHECK(!line.PeekStringView(msg).has_value());
+}
+
 TEST_CASE("A stream counts an oversized line that it drops", "[batch_contract][line_count]")
 {
     const std::string bytes = "{\"a\":1}\n" + std::string(200, 'x') + "\n{\"a\":3}\n";
@@ -1328,7 +1359,7 @@ public:
         std::string_view line,
         KeyIndex & /*keys*/,
         internal::PerWorkerKeyCache & /*keyCache*/,
-        std::vector<std::pair<KeyId, CompactLogValue>> &out,
+        std::vector<CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string & /*errorOut*/
     )
@@ -1414,7 +1445,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache & /*keyCache*/,
-        std::vector<std::pair<KeyId, CompactLogValue>> &out,
+        std::vector<CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string & /*errorOut*/
     )
@@ -1431,7 +1462,7 @@ public:
         }
         mTarget = keys.GetOrInsert("msg");
         outOwnedArena.append(line);
-        out.emplace_back(mTarget, CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())));
+        out.push_back(CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())).WithKey(mTarget));
         return internal::LineDecodeResult::Emit;
     }
 

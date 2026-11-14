@@ -6,6 +6,7 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
+#include <loglib/core/stream_line_source.hpp>
 
 #include <test_common/log_format.hpp>
 
@@ -27,8 +28,14 @@ RowMemory MeasureRowMemory(const loglib::LogTable &table)
     }
     if (const loglib::FileLineSource *file = data.FrontFileSource(); file != nullptr)
     {
+        memory.fieldArenas = file->FieldArenasMemoryBytes();
         memory.lineOffsets = file->LineOffsetsMemoryBytes();
         memory.arena = file->OwnedStringsMemoryBytes();
+    }
+    else if (const loglib::StreamLineSource *stream = data.BackStreamSource(); stream != nullptr)
+    {
+        // A stream keeps the text of each line and its decoded strings.
+        memory.arena = stream->OwnedMemoryBytes();
     }
     memory.keyIndex = data.Keys().EstimatedMemoryBytes();
     memory.enumDictionaries = table.EnumDictionaries().EstimatedMemoryBytes();

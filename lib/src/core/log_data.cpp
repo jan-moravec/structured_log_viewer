@@ -100,14 +100,20 @@ const StreamLineSource *LogData::BackStreamSource() const noexcept
     return nullptr;
 }
 
-const std::vector<LogLine> &LogData::Lines() const
+void LogData::EvictPrefix(size_t count)
 {
-    return mLines;
-}
-
-std::vector<LogLine> &LogData::Lines()
-{
-    return mLines;
+    count = std::min(count, mLines.size() - mHead);
+    for (size_t row = mHead; row < mHead + count; ++row)
+    {
+        mLines[row].ReleaseFields();
+    }
+    mHead += count;
+    // Moving the live rows costs as much as they are many, so wait until the dead rows are as many as the live ones.
+    if (mHead != 0 && mHead >= mLines.size() - mHead)
+    {
+        mLines.erase(mLines.begin(), mLines.begin() + static_cast<std::ptrdiff_t>(mHead));
+        mHead = 0;
+    }
 }
 
 const KeyIndex &LogData::Keys() const

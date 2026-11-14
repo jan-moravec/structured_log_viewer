@@ -34,8 +34,7 @@ namespace loglib
 namespace
 {
 
-/// JSON field key extracted via the no-escape fast path (`isView == true`)
-/// or the `unescaped_key()` slow path (`owned`).
+/** The key of a JSON field. A key without escapes is a view into the line; one with escapes is decoded into owned. */
 struct FastFieldKey
 {
     bool isView = false;
@@ -69,13 +68,15 @@ template <class Field> FastFieldKey ExtractFieldKey(Field &field)
     return result;
 }
 
-/// Crossover at which `InsertSorted` switches from a linear back-scan to
-/// `std::lower_bound`. Tuned for the `[wide]` benchmark.
+/**
+ * The field count from which InsertSorted uses a binary search in place of a scan from the back. Set on the wide-row
+ * benchmarks.
+ */
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 constexpr size_t INITIAL_OBJECT_FIELD_CAPACITY = 16;
 constexpr size_t LINE_PADDED_EXTRA_SLACK_BYTES = 64;
 
-void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, KeyId id, loglib::CompactLogValue value)
+void InsertSorted(std::vector<loglib::CompactLogValue> &out, KeyId id, loglib::CompactLogValue value)
 {
     if (out.size() < INSERT_SORTED_LOWER_BOUND_THRESHOLD)
     {
@@ -83,39 +84,37 @@ void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, K
         while (it != out.begin())
         {
             auto prev = it - 1;
-            if (prev->first < id)
+            if (prev->Key() < id)
             {
                 break;
             }
-            if (prev->first == id)
+            if (prev->Key() == id)
             {
-                prev->second = value;
+                *prev = value.WithKey(id);
                 return;
             }
             it = prev;
         }
-        out.emplace(it, id, value);
+        out.insert(it, value.WithKey(id));
         return;
     }
 
     // Asymmetric comparator: std::ranges::lower_bound rejects it.
-    auto it = std::lower_bound(
-        out.begin(), out.end(), id, [](const std::pair<KeyId, loglib::CompactLogValue> &lhs, KeyId rhs) {
-            return lhs.first < rhs;
-        }
-    );
-    if (it != out.end() && it->first == id)
+    const auto it = std::lower_bound(out.begin(), out.end(), id, [](const loglib::CompactLogValue &lhs, KeyId rhs) {
+        return lhs.Key() < rhs;
+    });
+    if (it != out.end() && it->Key() == id)
     {
-        it->second = value;
+        *it = value.WithKey(id);
         return;
     }
-    out.emplace(it, id, value);
+    out.insert(it, value.WithKey(id));
 }
 
-/// Promote a string view into a compact value. When @p sv aliases the
-/// mmap (i.e. lies inside `[fileBegin, fileBegin + fileSize)`), the
-/// resulting tag is `MmapSlice` (zero copy). Otherwise the bytes are
-/// appended to @p ownedArena and the tag is `OwnedString`.
+/**
+ * Turns a string into a compact value. Text that lies inside the mapped file becomes a MmapSlice value with no copy.
+ * Other text is appended to ownedArena and becomes an OwnedString value.
+ */
 loglib::CompactLogValue MakeStringCompact(
     std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
@@ -189,10 +188,11 @@ loglib::CompactLogValue ExtractRawJsonValue(
     return loglib::CompactLogValue::MakeMonostate();
 }
 
-/// Per-key simdjson type cache so `value.type()` / `get_number_type()` fire
-/// only on the first occurrence of each key. The cached number type only picks
-/// the fast path. A fast path accepts a value only when the value's own text
-/// has that type, so a key gets the same cell types on every worker.
+/**
+ * The simdjson type seen last for each key, so the type queries run only on the first value of a key. The cached number
+ * type only picks the fast path to try. A fast path accepts a value only when the value's own text has that type, so a
+ * key gets the same cell types on every worker.
+ */
 struct ParseCache
 {
     std::vector<simdjson::ondemand::json_type> keyTypes;
@@ -219,7 +219,8 @@ void EnsureCacheCapacity(ParseCache &cache, KeyId id)
     growTo(cache.hasNumberType, false);
 }
 
-std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
+void ParseJsonLine(
+    std::vector<loglib::CompactLogValue> &result,
     simdjson::ondemand::object &object,
     KeyIndex &keys,
     ParseCache &cache,
@@ -231,7 +232,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
     simdjson::error_code &outError
 )
 {
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> result;
+    result.clear();
     result.reserve(INITIAL_OBJECT_FIELD_CAPACITY);
     outError = simdjson::SUCCESS;
 
@@ -240,13 +241,13 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
         if (field.error())
         {
             outError = field.error();
-            return result;
+            return;
         }
         const FastFieldKey fk = ExtractFieldKey(field);
         if (!fk.isView && fk.owned.empty())
         {
             outError = simdjson::STRING_ERROR;
-            return result;
+            return;
         }
 
         const KeyId keyId = internal::InternKeyVia(fk.isView ? fk.view : std::string_view(fk.owned), keys, keyCache);
@@ -342,7 +343,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                     // Reading a malformed container has already moved the iterator past its start, so the value
                     // cannot be asked for its type again. The line is an error, as it is on the uncached path.
                     outError = simdjson::TAPE_ERROR;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, rawValue);
                 continue;
@@ -363,7 +364,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
         if (typeResult.error())
         {
             outError = typeResult.error();
-            return result;
+            return;
         }
 
         const auto type = typeResult.value();
@@ -378,7 +379,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (const auto error = value.get(b); error)
             {
                 outError = error;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, loglib::CompactLogValue::MakeBool(b));
             break;
@@ -389,7 +390,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (numberType.error())
             {
                 outError = numberType.error();
-                return result;
+                return;
             }
             cache.numberTypes[keyId] = numberType.value();
             cache.hasNumberType[keyId] = true;
@@ -401,7 +402,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (const auto error = value.get(i); error)
                 {
                     outError = error;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, loglib::CompactLogValue::MakeInt64(i));
                 break;
@@ -412,7 +413,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (const auto error = value.get(u); error)
                 {
                     outError = error;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, loglib::CompactLogValue::MakeUint64(u));
                 break;
@@ -423,7 +424,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (const auto error = value.get(d); error)
                 {
                     outError = error;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, loglib::CompactLogValue::MakeDouble(d));
                 break;
@@ -436,7 +437,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
                 if (rawValue.tag == loglib::CompactTag::Monostate)
                 {
                     outError = simdjson::NUMBER_ERROR;
-                    return result;
+                    return;
                 }
                 InsertSorted(result, keyId, rawValue);
                 break;
@@ -451,7 +452,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (stringValue.tag == loglib::CompactTag::Monostate)
             {
                 outError = simdjson::STRING_ERROR;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, stringValue);
             break;
@@ -464,7 +465,7 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (rawValue.tag == loglib::CompactTag::Monostate)
             {
                 outError = simdjson::TAPE_ERROR;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, rawValue);
             break;
@@ -476,18 +477,16 @@ std::vector<std::pair<KeyId, loglib::CompactLogValue>> ParseJsonLine(
             if (const auto error = value.is_null().get(isNull); error || !isNull)
             {
                 outError = error ? error : simdjson::N_ATOM_ERROR;
-                return result;
+                return;
             }
             InsertSorted(result, keyId, loglib::CompactLogValue::MakeMonostate());
             break;
         }
         }
     }
-
-    return result;
 }
 
-/// JSON-specific per-worker scratch.
+/** The scratch memory of one JSON parse worker. */
 struct JsonWorkerState
 {
     simdjson::ondemand::parser parser;
@@ -519,6 +518,8 @@ void DecodeJsonBatch(
     parsed.localLineOffsets.reserve(estimatedLines);
 
     size_t relativeLineNumber = 1;
+    // One scratch for the whole batch; each row copies it into the batch's field arena.
+    std::vector<loglib::CompactLogValue> values;
 
     while (cursor < end)
     {
@@ -590,7 +591,8 @@ void DecodeJsonBatch(
             auto objectValue = object.value();
             const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
             simdjson::error_code parseError = simdjson::SUCCESS;
-            auto values = ParseJsonLine(
+            ParseJsonLine(
+                values,
                 objectValue,
                 keys,
                 worker.user.cache,
@@ -617,7 +619,7 @@ void DecodeJsonBatch(
             // running cursor so `FileLineSource::RawLine(LineId())` indexes
             // `mLineOffsets` correctly. `relativeLineNumber` stays
             // 1-based for human-facing error messages.
-            LogLine logLine(std::move(values), source, relativeLineNumber - 1);
+            LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 
@@ -665,27 +667,26 @@ bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
 namespace
 {
 
-/// JSON record decoder for `RunStreamingParseLoop`. Owns the simdjson
-/// parser, padded-line scratch (the streaming path always uses the
-/// padded-copy shape because `BytesProducer::Read` doesn't promise
-/// SIMDJSON_PADDING slack), and the per-key type cache so successive
-/// lines reuse allocations. Satisfies `CompactLineDecoder`.
+/**
+ * The JSON decoder of the streaming parse loop. It owns the simdjson parser, a padded copy of the line, and the per-key
+ * type cache, so successive lines reuse them. A stream line is always copied, because a producer's buffer has no
+ * padding after the line.
+ */
 class JsonLineDecoder
 {
 public:
     JsonLineDecoder() = default;
 
-    /// `CompactLineDecoder` entry point. Fills @p out with compact
-    /// values whose `OwnedString` payloads index into @p outOwnedArena.
-    /// Returns `Emit` on success (an empty `{}` object still emits a
-    /// row with no fields — tested contract), `Error` with a body
-    /// message in @p errorOut on parse failure; never returns `Skip`
-    /// (JSON has no header prelude to swallow).
+    /**
+     * Decodes one line into compact values whose OwnedString payloads point into outOwnedArena. It returns Emit for a
+     * row, and an empty object still gives a row with no fields. On a parse failure it returns Error with the message
+     * in errorOut. It never returns Skip, because JSON has no header line.
+     */
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache &keyCache,
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+        std::vector<loglib::CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )
@@ -728,7 +729,8 @@ public:
             // `MakeStringCompact` from mistaking a padded-buffer view
             // for an mmap slice.
             simdjson::error_code parseError = simdjson::SUCCESS;
-            out = ParseJsonLine(
+            ParseJsonLine(
+                out,
                 objectValue,
                 keys,
                 mCache,

@@ -673,7 +673,7 @@ void LogTable::EvictPrefixRows(size_t count)
     {
         return;
     }
-    auto &lines = mData.Lines();
+    const auto lines = mData.Lines();
     const size_t evicted = std::min(count, lines.size());
 
     // Line ids are per source, so each source is trimmed by its own rows. A
@@ -697,7 +697,7 @@ void LogTable::EvictPrefixRows(size_t count)
         }
     }
 
-    lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(evicted));
+    mData.EvictPrefix(evicted);
     for (const auto &[source, lineId] : lastEvicted)
     {
         source->EvictBefore(lineId + 1);

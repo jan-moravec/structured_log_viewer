@@ -144,7 +144,7 @@ public:
                     continue;
                 }
 
-                std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> values;
+                std::vector<loglib::CompactLogValue> values;
                 values.reserve(8);
                 size_t pos = 0;
                 while (pos < line.size())
@@ -184,17 +184,17 @@ public:
                     auto val =
                         loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
                     auto it = values.begin();
-                    while (it != values.end() && it->first < keyId)
+                    while (it != values.end() && it->Key() < keyId)
                     {
                         ++it;
                     }
-                    if (it != values.end() && it->first == keyId)
+                    if (it != values.end() && it->Key() == keyId)
                     {
-                        it->second = val;
+                        *it = val.WithKey(keyId);
                     }
                     else
                     {
-                        values.emplace(it, keyId, val);
+                        values.insert(it, val.WithKey(keyId));
                     }
                 }
 
@@ -324,9 +324,7 @@ public:
                         continuation.append(line.data(), line.size());
 
                         auto compactSpan = parsed.lines.back().CompactValues();
-                        std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> mutableValues(
-                            compactSpan.begin(), compactSpan.end()
-                        );
+                        std::vector<loglib::CompactLogValue> mutableValues(compactSpan.begin(), compactSpan.end());
                         const std::string_view mmapView(
                             fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
                         );
@@ -371,7 +369,7 @@ public:
                     continue;
                 }
 
-                std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> values;
+                std::vector<loglib::CompactLogValue> values;
                 values.reserve(8);
                 loglib::KeyId lastSourceOrderKey = loglib::INVALID_KEY_ID;
                 size_t pos = 0;
@@ -406,17 +404,17 @@ public:
                     auto val =
                         loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
                     auto it = values.begin();
-                    while (it != values.end() && it->first < keyId)
+                    while (it != values.end() && it->Key() < keyId)
                     {
                         ++it;
                     }
-                    if (it != values.end() && it->first == keyId)
+                    if (it != values.end() && it->Key() == keyId)
                     {
-                        it->second = val;
+                        *it = val.WithKey(keyId);
                     }
                     else
                     {
-                        values.emplace(it, keyId, val);
+                        values.insert(it, val.WithKey(keyId));
                     }
                     lastSourceOrderKey = keyId;
                 }

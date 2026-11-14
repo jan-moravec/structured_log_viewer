@@ -54,7 +54,7 @@ bool EnumInference::EncodeColumnRange(
         EnumDictionary &ref = mDictionaries.GetOrInsert(aliasKeys.front(), mValueCap);
         dict = &ref;
     }
-    auto &lines = data.Lines();
+    const auto lines = data.Lines();
     rowEnd = std::min(rowEnd, lines.size());
     const size_t valueMaxLen = mValueMaxLen;
     bool overflowed = false;
@@ -96,7 +96,7 @@ bool EnumInference::EncodeColumnRange(
                 overflowed = true;
                 break;
             }
-            *slot = CompactLogValue::MakeDictRef(vid);
+            *slot = CompactLogValue::MakeDictRef(vid).WithKey(id);
             encoded = true;
             break;
         }
@@ -181,7 +181,7 @@ bool EnumInference::EncodeColumnRange(
                     lastBytes = *bytes;
                     lastId = valueId;
                 }
-                *slot = CompactLogValue::MakeDictRef(valueId);
+                *slot = CompactLogValue::MakeDictRef(valueId).WithKey(id);
                 encoded = true;
                 break;
             }
@@ -339,7 +339,7 @@ void EnumInference::DemoteColumnFromEnum(
         mLastBatchDemotedKeys.push_back(keyIds.front());
     }
 
-    auto &lines = data.Lines();
+    const auto lines = data.Lines();
 
     if (!keyIds.empty())
     {
@@ -383,11 +383,11 @@ void EnumInference::DemoteColumnFromEnum(
                 if (source != nullptr)
                 {
                     const uint64_t offset = source->AppendOwnedBytes(lineId, bytes);
-                    *slot = CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(bytes.size()));
+                    *slot = CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(bytes.size())).WithKey(id);
                 }
                 else
                 {
-                    *slot = CompactLogValue::MakeMonostate();
+                    *slot = CompactLogValue::MakeMonostate().WithKey(id);
                 }
             }
         }

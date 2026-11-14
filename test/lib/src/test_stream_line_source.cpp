@@ -7,6 +7,8 @@
 #include <catch2/catch_all.hpp>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -14,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 using loglib::StreamLineSource;
@@ -84,15 +87,47 @@ TEST_CASE("StreamLineSource: ResolveOwnedBytes resolves per-line arenas", "[Stre
     CHECK(source.ResolveOwnedBytes(lineOneArena.size(), 1, id1).empty());
 }
 
-TEST_CASE("StreamLineSource: ResolveMmapBytes always returns empty (defensive)", "[StreamLineSource]")
+TEST_CASE("StreamLineSource: ResolveMmapBytes resolves slices of the raw line", "[StreamLineSource]")
 {
     StreamLineSource source(std::filesystem::path("s.log"), nullptr);
-    source.AppendLine("raw", "payload");
+    const size_t id = source.AppendLine(R"({"msg":"hello"})", "");
 
-    // Stream sources never produce MmapSlice compact values. The
-    // resolver returns an empty view if a stale value somehow reaches
-    // it — defensive, not a correctness path.
-    CHECK(source.ResolveMmapBytes(0, 7, /*lineId=*/1).empty());
+    CHECK(source.ResolveMmapBytes(8, 5, id) == "hello");
+    CHECK_FALSE(source.SlicesOutliveRows());
+
+    // A range past the end of the line, or a line that does not exist, gives an empty view and not a partial one.
+    CHECK(source.ResolveMmapBytes(8, 64, id).empty());
+    CHECK(source.ResolveMmapBytes(0, 1, id + 1).empty());
+}
+
+TEST_CASE("StreamLineSource: ReadBatch holds the lock for the reads of a chunk", "[StreamLineSource]")
+{
+    StreamLineSource source(std::filesystem::path("s.log"), nullptr);
+    const size_t id = source.AppendLine("raw", "payload");
+
+    std::atomic<bool> appended{false};
+    std::thread writer;
+    {
+        const StreamLineSource::ReadBatch batch(&source);
+        // A second batch for the same source on the same thread takes no second lock, and a null source is allowed.
+        const StreamLineSource::ReadBatch nested(&source);
+        const StreamLineSource::ReadBatch none(nullptr);
+
+        CHECK(source.ResolveOwnedBytes(0, 7, id) == "payload");
+        CHECK(source.ResolveMmapBytes(0, 3, id) == "raw");
+        CHECK(source.Size() == 1);
+
+        writer = std::thread([&] {
+            source.AppendLine("next", "");
+            appended = true;
+        });
+        // The append waits for the batch to end.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        CHECK_FALSE(appended.load());
+    }
+    writer.join();
+    CHECK(appended.load());
+    CHECK(source.Size() == 2);
 }
 
 TEST_CASE("StreamLineSource: EvictBefore drops prefix lines", "[StreamLineSource]")

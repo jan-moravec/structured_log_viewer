@@ -76,7 +76,10 @@ public:
         out.append(RawLine(lineId));
     }
 
-    /** @brief Returns the bytes of a MmapSlice cell. Empty for a source whose bytes are not stable. */
+    /**
+     * @brief Returns the bytes of a MmapSlice cell. A file source resolves it against its mapping and a stream source
+     * against the raw line of the row.
+     */
     [[nodiscard]] virtual std::string_view ResolveMmapBytes(
         uint64_t offset, uint32_t length, size_t lineId
     ) const noexcept = 0;
@@ -96,6 +99,16 @@ public:
     [[nodiscard]] bool BytesAreStable() const noexcept
     {
         return !StableBytes().empty();
+    }
+
+    /**
+     * @brief True when the bytes of a MmapSlice cell stay valid after its row is evicted. A file mapping lives as long
+     * as the source, but a stream source drops the raw line of a row together with the row, so a reader that keeps a
+     * value must copy it.
+     */
+    [[nodiscard]] bool SlicesOutliveRows() const noexcept
+    {
+        return mSlicesOutliveRows;
     }
 
     /** @brief Stores decoded bytes for a line and returns the offset to put in its OwnedString cell. */
@@ -124,8 +137,16 @@ public:
         mEnumDictionaries = registry;
     }
 
+protected:
+    /** @brief For a source whose MmapSlice bytes are dropped with their row. */
+    explicit LineSource(bool slicesOutliveRows) noexcept
+        : mSlicesOutliveRows(slicesOutliveRows)
+    {
+    }
+
 private:
     const EnumDictionaryRegistry *mEnumDictionaries = nullptr;
+    bool mSlicesOutliveRows = true;
 };
 
 } // namespace loglib

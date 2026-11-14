@@ -2,7 +2,9 @@
 // apply here.
 #include "loglib/query/log_filter.hpp"
 
+#include "loglib/core/log_data.hpp"
 #include "loglib/core/log_value.hpp"
+#include "loglib/core/stream_line_source.hpp"
 #include "loglib/table/log_table.hpp"
 
 #include <oneapi/tbb/blocked_range.h>
@@ -247,6 +249,7 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, rowCount),
         [&predicate, &table, &workerBitsets](const tbb::blocked_range<size_t> &range) {
+            const StreamLineSource::ReadBatch readBatch(table.Data().BackStreamSource());
             auto &local = workerBitsets.local();
             for (size_t row = range.begin(); row != range.end(); ++row)
             {
@@ -455,6 +458,7 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, rowCount),
         [&table, &expression, &workers](const tbb::blocked_range<size_t> &range) {
+            const StreamLineSource::ReadBatch readBatch(table.Data().BackStreamSource());
             WorkerRows &local = workers.local();
             const size_t offset = local.rows.size();
             for (size_t row = range.begin(); row != range.end(); ++row)

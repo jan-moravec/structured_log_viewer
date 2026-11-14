@@ -3,6 +3,8 @@
 #include "loglib/core/bytes_producer.hpp"
 
 #include <algorithm>
+#include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -11,7 +13,7 @@ namespace loglib
 {
 
 StreamLineSource::StreamLineSource(std::filesystem::path displayName, std::unique_ptr<BytesProducer> producer)
-    : mDisplayName(std::move(displayName)), mProducer(std::move(producer))
+    : LineSource(false), mDisplayName(std::move(displayName)), mProducer(std::move(producer))
 {
 }
 
@@ -24,7 +26,7 @@ const std::filesystem::path &StreamLineSource::Path() const noexcept
 
 std::string StreamLineSource::RawLine(size_t lineId) const
 {
-    const std::scoped_lock guard(mLock);
+    const auto guard = LockForRead();
     if (!LineIsLiveLocked(lineId))
     {
         throw std::out_of_range("StreamLineSource::RawLine: lineId " + std::to_string(lineId) + " is not available");
@@ -34,7 +36,7 @@ std::string StreamLineSource::RawLine(size_t lineId) const
 
 void StreamLineSource::AppendRawLine(size_t lineId, std::string &out) const
 {
-    const std::scoped_lock guard(mLock);
+    const auto guard = LockForRead();
     if (!LineIsLiveLocked(lineId))
     {
         throw std::out_of_range("StreamLineSource::RawLine: lineId " + std::to_string(lineId) + " is not available");
@@ -42,17 +44,26 @@ void StreamLineSource::AppendRawLine(size_t lineId, std::string &out) const
     out.append(mLines[IndexForLocked(lineId)]);
 }
 
-std::string_view StreamLineSource::ResolveMmapBytes(
-    uint64_t /*offset*/, uint32_t /*length*/, size_t /*lineId*/
-) const noexcept
+std::string_view StreamLineSource::ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept
 {
-    // Stream sources never produce MmapSlice cells.
-    return {};
+    const auto guard = LockForRead();
+    if (!LineIsLiveLocked(lineId))
+    {
+        return {};
+    }
+    const std::string &line = mLines[IndexForLocked(lineId)];
+    if (offset > line.size() || offset + length > line.size())
+    {
+        return {};
+    }
+    // Deque entries keep their address until they are evicted, so the view outlives the lock. Callers must not keep it
+    // past the next EvictBefore for this line.
+    return {line.data() + offset, length};
 }
 
 std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept
 {
-    const std::scoped_lock guard(mLock);
+    const auto guard = LockForRead();
     if (!LineIsLiveLocked(lineId))
     {
         return {};
@@ -69,14 +80,14 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
 
 std::span<const char> StreamLineSource::StableBytes() const noexcept
 {
-    // No stable bytes: producer buffers are reused; everything must
-    // land in the per-line owned arena.
+    // The producer reuses its buffers, so a parser cannot point into them. The streaming loop turns values into slices
+    // of the stored raw line afterwards, which the source resolves itself.
     return {};
 }
 
 uint64_t StreamLineSource::AppendOwnedBytes(size_t lineId, std::string_view bytes)
 {
-    const std::scoped_lock guard(mLock);
+    const std::unique_lock guard(mLock);
     if (!LineIsLiveLocked(lineId))
     {
         throw std::out_of_range(
@@ -96,7 +107,7 @@ bool StreamLineSource::SupportsEviction() const noexcept
 
 void StreamLineSource::EvictBefore(size_t firstSurvivingLineId)
 {
-    const std::scoped_lock guard(mLock);
+    const std::unique_lock guard(mLock);
     if (firstSurvivingLineId <= mFirstAvailableLineId)
     {
         return;
@@ -114,7 +125,7 @@ void StreamLineSource::EvictBefore(size_t firstSurvivingLineId)
 
 size_t StreamLineSource::FirstAvailableLineId() const noexcept
 {
-    const std::scoped_lock guard(mLock);
+    const auto guard = LockForRead();
     return mFirstAvailableLineId;
 }
 
@@ -135,7 +146,7 @@ size_t StreamLineSource::DroppedByteCount() const noexcept
 
 size_t StreamLineSource::AppendLine(std::string rawLine, std::string ownedBytes)
 {
-    const std::scoped_lock guard(mLock);
+    const std::unique_lock guard(mLock);
     const size_t lineId = mNextLineId++;
     mLines.push_back(std::move(rawLine));
     mLineOwnedBytes.push_back(std::move(ownedBytes));
@@ -144,26 +155,26 @@ size_t StreamLineSource::AppendLine(std::string rawLine, std::string ownedBytes)
 
 void StreamLineSource::UnreadBytes(std::string bytes)
 {
-    const std::scoped_lock guard(mLock);
+    const std::unique_lock guard(mLock);
     bytes.append(mUnreadBytes);
     mUnreadBytes = std::move(bytes);
 }
 
 std::string StreamLineSource::TakeUnreadBytes()
 {
-    const std::scoped_lock guard(mLock);
+    const std::unique_lock guard(mLock);
     return std::exchange(mUnreadBytes, std::string{});
 }
 
 size_t StreamLineSource::Size() const noexcept
 {
-    const std::scoped_lock guard(mLock);
+    const auto guard = LockForRead();
     return mLines.size();
 }
 
 size_t StreamLineSource::OwnedMemoryBytes() const noexcept
 {
-    const std::scoped_lock guard(mLock);
+    const auto guard = LockForRead();
     // A lower bound: the string objects and the capacity of each string. The deque's own blocks, the slack of short
     // strings and the members of this object are not counted. To see whether a stream keeps growing, a lower bound is
     // more useful than an estimate that mixes allocator rounding with real growth.
@@ -177,6 +188,45 @@ size_t StreamLineSource::OwnedMemoryBytes() const noexcept
         total += arena.capacity();
     }
     return total;
+}
+
+namespace
+{
+
+/** @brief The source whose ReadBatch the calling thread holds, or null. */
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+thread_local const StreamLineSource *tReadBatchSource = nullptr;
+
+} // namespace
+
+StreamLineSource::ReadBatch::ReadBatch(const StreamLineSource *source)
+{
+    if (source == nullptr || tReadBatchSource == source)
+    {
+        return;
+    }
+    source->mLock.lock_shared();
+    mSource = source;
+    mPrevious = std::exchange(tReadBatchSource, source);
+}
+
+StreamLineSource::ReadBatch::~ReadBatch()
+{
+    if (mSource == nullptr)
+    {
+        return;
+    }
+    tReadBatchSource = mPrevious;
+    mSource->mLock.unlock_shared();
+}
+
+std::shared_lock<std::shared_mutex> StreamLineSource::LockForRead() const
+{
+    if (tReadBatchSource == this)
+    {
+        return {};
+    }
+    return std::shared_lock(mLock);
 }
 
 bool StreamLineSource::LineIsLiveLocked(size_t lineId) const noexcept

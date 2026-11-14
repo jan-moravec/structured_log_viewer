@@ -463,24 +463,24 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
 class BundleRows
 {
 public:
-    BundleRows(const std::vector<LogLine> &lines, std::span<const std::size_t> rows, bool all)
-        : mLines(&lines), mRows(rows), mAll(all)
+    BundleRows(std::span<const LogLine> lines, std::span<const std::size_t> rows, bool all)
+        : mLines(lines), mRows(rows), mAll(all)
     {
     }
 
     [[nodiscard]] std::size_t Size() const noexcept
     {
-        return mAll ? mLines->size() : mRows.size();
+        return mAll ? mLines.size() : mRows.size();
     }
 
     [[nodiscard]] const LogLine &operator[](std::size_t position) const
     {
         if (mAll)
         {
-            return (*mLines)[position];
+            return mLines[position];
         }
-        assert(mRows[position] < mLines->size() && "WriteSessionBundle: row number out of range");
-        return (*mLines)[mRows[position]];
+        assert(mRows[position] < mLines.size() && "WriteSessionBundle: row number out of range");
+        return mLines[mRows[position]];
     }
 
     [[nodiscard]] bool Empty() const noexcept
@@ -489,7 +489,7 @@ public:
     }
 
 private:
-    const std::vector<LogLine> *mLines;
+    std::span<const LogLine> mLines;
     std::span<const std::size_t> mRows;
     bool mAll;
 };

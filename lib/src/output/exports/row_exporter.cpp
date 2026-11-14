@@ -5,6 +5,7 @@
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
+#include <loglib/core/stream_line_source.hpp>
 #include <loglib/output/internal/normalized_json_row.hpp>
 #include <loglib/output/internal/ordered_chunks.hpp>
 
@@ -60,6 +61,7 @@ void ExportRows(
         makeWorker,
         [&] { PollStop(stopToken); },
         [&](Worker &worker, size_t first, size_t count, std::string &text) {
+            const loglib::StreamLineSource::ReadBatch readBatch(source.table->Data().BackStreamSource());
             for (size_t slot = first; slot < first + count; ++slot)
             {
                 const size_t sourceRow = source.sourceRows[slot];

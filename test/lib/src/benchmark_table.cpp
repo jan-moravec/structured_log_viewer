@@ -234,6 +234,68 @@ SharedMixed MakeSharedTextMixed(const Tier &tier)
     });
 }
 
+// A table of rows from a live stream with one String column. Each message is a slice of the row's raw JSON line, as the
+// stream parser stores it, so every read of the cell goes through the stream source. One row in ten is a timeout row.
+SharedMixed MakeSharedStreamMessages(const Tier &tier)
+{
+    return MakeLazy<MixedTable>([rows = tier.rows] {
+        auto result = std::make_unique<MixedTable>();
+        result->rows = rows;
+        LogConfiguration configuration;
+        configuration.columns.push_back(MakeColumn("message", ColumnType::String, "{}"));
+        const TestLogConfiguration configurationFile("benchmark_table_stream_configuration.json");
+        configurationFile.Write(configuration);
+        LogConfigurationManager manager;
+        manager.Load(configurationFile.GetFilePath());
+        result->table = std::make_unique<LogTable>(manager.Configuration());
+        LogTable &table = *result->table;
+        auto owned = std::make_unique<StreamLineSource>(std::filesystem::path("stream messages"), nullptr);
+        StreamLineSource &source = *owned;
+        table.BeginStreaming(std::move(owned));
+        const KeyId messageKey = table.Keys().GetOrInsert(std::string_view("message"));
+
+        constexpr std::string_view PREFIX = R"({"message":")";
+        // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp, bugprone-random-generator-seed)
+        std::mt19937 rng{0xC0FFEE5U};
+        for (std::size_t first = 0; first < rows; first += BATCH_ROWS)
+        {
+            const std::size_t batchRows = std::min(BATCH_ROWS, rows - first);
+            RowBatch batch;
+            batch.firstLineNumber = first + 1;
+            if (first == 0)
+            {
+                batch.newKeys.emplace_back("message");
+            }
+            batch.lines.reserve(batchRows);
+            for (std::size_t i = 0; i < batchRows; ++i)
+            {
+                const std::uint32_t pick = rng();
+                std::string message;
+                if (pick % 10 == 0)
+                {
+                    message = std::string(TIMEOUT_PREFIX) + std::to_string(100 + (rng() % 900)) + " ms";
+                    ++result->timeoutRows;
+                }
+                else
+                {
+                    message = "request handled for user id=" + std::to_string(rng() % 100'000);
+                }
+                const auto length = static_cast<std::uint32_t>(message.size());
+                const std::size_t lineId = source.AppendLine(std::string(PREFIX) + message + R"("})", std::string{});
+                std::vector<CompactLogValue> values;
+                values.push_back(CompactLogValue::MakeMmapSlice(PREFIX.size(), length).WithKey(messageKey));
+                batch.lines.emplace_back(std::move(values), source, lineId);
+            }
+            AppendFixtureBatch(table, std::move(batch));
+        }
+        if (table.RowCount() != rows || result->timeoutRows == 0)
+        {
+            throw std::runtime_error("the stream table was not built");
+        }
+        return result;
+    });
+}
+
 struct MixedInput
 {
     SharedMixed table;
@@ -471,8 +533,8 @@ RowBatch MakeStreamBatch(
     for (std::size_t i = 0; i < count; ++i)
     {
         const std::size_t lineId = source.AppendLine("row " + std::to_string(firstLineId + i), std::string{});
-        std::vector<std::pair<KeyId, CompactLogValue>> values;
-        values.emplace_back(valueKey, CompactLogValue::MakeInt64(static_cast<std::int64_t>(lineId)));
+        std::vector<CompactLogValue> values;
+        values.push_back(CompactLogValue::MakeInt64(static_cast<std::int64_t>(lineId)).WithKey(valueKey));
         batch.lines.emplace_back(std::move(values), source, lineId);
     }
     return batch;
@@ -581,6 +643,20 @@ void RegisterTableBenchmarks()
         FULL_TIER, text, "Contains filter on cells with doubled spaces", contains, [](const MixedTable &fixture) {
             return fixture.timeoutRows;
         }
+    );
+
+    // The same Contains filter on rows of a live stream, whose cells resolve through the stream source.
+    LeafRule streamContains;
+    streamContains.type = LeafRule::Type::String;
+    streamContains.columnKeys = {"message"};
+    streamContains.matchType = LeafRule::Match::Contains;
+    streamContains.filterString = "timeout after";
+    RegisterLeafFilter(
+        FULL_TIER,
+        MakeSharedStreamMessages(FULL_TIER),
+        "Contains filter on stream rows",
+        streamContains,
+        [](const MixedTable &fixture) { return fixture.timeoutRows; }
     );
 
     // The Time range covers the middle quarter of the day the times are spread over. The counts come from plain reads.

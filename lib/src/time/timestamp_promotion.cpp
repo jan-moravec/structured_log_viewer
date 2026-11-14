@@ -37,13 +37,13 @@ std::optional<std::string_view> ExtractStringBytes(
     const auto compact = line.CompactValues();
     // Asymmetric comparator: std::ranges::lower_bound rejects it.
     auto it = std::lower_bound(compact.begin(), compact.end(), keyId, [](const auto &entry, KeyId target) {
-        return entry.first < target;
+        return entry.Key() < target;
     });
-    if (it == compact.end() || it->first != keyId)
+    if (it == compact.end() || it->Key() != keyId)
     {
         return std::nullopt;
     }
-    const CompactLogValue &value = it->second;
+    const CompactLogValue &value = *it;
     const LineSource *source = line.Source();
     if (value.tag == CompactTag::MmapSlice)
     {

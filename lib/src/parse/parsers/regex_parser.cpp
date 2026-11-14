@@ -94,7 +94,7 @@ bool MatchLineAndEmit(
     const char *fileBegin,
     size_t fileSize,
     std::string &ownedArena,
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+    std::vector<loglib::CompactLogValue> &out,
     std::string &errorOut,
     KeyId textOnlyKey
 )
@@ -173,7 +173,7 @@ bool MatchLineAndEmit(
         const loglib::CompactLogValue compact =
             columnKeys[i] == textOnlyKey ? internal::MakeStringCompact(captured, fileBegin, fileSize, ownedArena)
                                          : internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
-        out.emplace_back(columnKeys[i], compact);
+        out.push_back(compact.WithKey(columnKeys[i]));
     }
     return true;
 }
@@ -271,7 +271,7 @@ void DecodeRegexBatch(
     parsed.localLineOffsets.reserve(estimatedLines);
 
     size_t relativeLineNumber = 1;
-    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
+    std::vector<loglib::CompactLogValue> values;
     std::string lineError;
     // Batch-relative physical span of the current final record.
     size_t tailHeaderPhysical = 0;
@@ -347,9 +347,7 @@ void DecodeRegexBatch(
                 continuation.append(line.data(), line.size());
 
                 const auto compactSpan = parsed.lines.back().CompactValues();
-                std::vector<std::pair<KeyId, loglib::CompactLogValue>> mutableValues(
-                    compactSpan.begin(), compactSpan.end()
-                );
+                std::vector<loglib::CompactLogValue> mutableValues(compactSpan.begin(), compactSpan.end());
                 const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
                 const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
                     mutableValues, parsed.ownedStringsArena, continuationTargetKey, continuation, mmapView
@@ -412,9 +410,9 @@ void DecodeRegexBatch(
         }
 
         // `LogLine` requires KeyId order, unlike source-order captures.
-        std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
 
-        LogLine logLine(std::move(values), source, relativeLineNumber - 1);
+        LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
         parsed.lines.push_back(std::move(logLine));
         worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
         tailHeaderPhysical = relativeLineNumber - 1;
@@ -493,7 +491,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache &keyCache,
-        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
+        std::vector<loglib::CompactLogValue> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )

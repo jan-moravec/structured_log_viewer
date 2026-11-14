@@ -1,7 +1,7 @@
 /**
  * @brief One parsed log row.
  *
- * A LogLine is a small sorted array of key and value pairs plus the source and line number it came from. Strings stay
+ * A LogLine is a small array of fields, sorted by key, plus the source and line number it came from. Strings stay
  * as offsets into the source, so a row is cheap to create and keep. This header also defines the span type that marks
  * the physical lines of a multi-line record.
  *
@@ -50,10 +50,19 @@ public:
     LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, LineSource &source, size_t lineId);
 
     /**
-     * @brief Builds a row from values that are already compact and sorted by key. OwnedString offsets must already be
-     * relative to the source's arena. This is the fast path.
+     * @brief Builds a row from fields that are already compact, carry their keys and are sorted by key. OwnedString
+     * offsets must already be relative to the source's arena. This is the fast path.
      */
-    LogLine(std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues, LineSource &source, size_t lineId);
+    LogLine(std::vector<loglib::CompactLogValue> sortedValues, LineSource &source, size_t lineId);
+
+    /**
+     * @brief Builds a row from compact values that are sorted by key, and keeps its fields in memory from arena. The
+     * caller must hand the arena to the source, which has to keep it as long as the row lives. The row moves its fields
+     * to the heap if one is added later.
+     */
+    LogLine(
+        std::span<const loglib::CompactLogValue> sortedValues, FieldArena &arena, LineSource &source, size_t lineId
+    );
 
     /**
      * @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests.
@@ -111,7 +120,7 @@ public:
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
 
     /** @brief The compact storage itself, for code that walks every field on a hot path. */
-    std::span<const std::pair<KeyId, loglib::CompactLogValue>> CompactValues() const noexcept;
+    std::span<const loglib::CompactLogValue> CompactValues() const noexcept;
 
     /**
      * @brief All fields by key name.
@@ -123,8 +132,11 @@ public:
     /** @brief The source that holds this row's bytes. Never null. */
     [[nodiscard]] LineSource *Source() const noexcept;
 
-    /** @brief The row's line id in its source. */
+    /** @brief The row's line id in its source. It is below 2^39. */
     [[nodiscard]] size_t LineId() const noexcept;
+
+    /** @brief Frees the fields of the row, which then has none. For rows that were evicted but not yet destroyed. */
+    void ReleaseFields() noexcept;
 
     /** @brief Adds delta to the line id. Used when batch-relative ids become absolute. */
     void ShiftLineId(size_t delta) noexcept;
@@ -158,15 +170,15 @@ private:
     /** @brief Replaces the cell for id, or inserts it. May allocate. */
     void SetCompact(KeyId id, loglib::CompactLogValue compact);
 
+    /** @brief The fields. The line id is kept in the spare number of the fields, which saves a word per row. */
     loglib::CompactLineFields mValues;
     LineSource *mSource = nullptr;
-    size_t mLineId = 0;
 };
 
-// A log holds millions of rows, and every filter, sort and export scans them in order. A row is 32 bytes: its fields
-// (16 bytes), the source pointer (8 bytes) and the line id (8 bytes). Two rows then fit in one cache line of 64 bytes.
-// A new member would add its size to every row of every log.
-inline constexpr size_t LOG_LINE_EXPECTED_BYTES = 32;
-static_assert(sizeof(LogLine) == LOG_LINE_EXPECTED_BYTES, "LogLine must stay 32 bytes");
+// A log holds millions of rows, and every filter, sort and export scans them in order. A row is 24 bytes: its fields
+// (16 bytes, which also hold the line id) and the source pointer (8 bytes). A new member would add its size to every
+// row of every log.
+inline constexpr size_t LOG_LINE_EXPECTED_BYTES = 24;
+static_assert(sizeof(LogLine) == LOG_LINE_EXPECTED_BYTES, "LogLine must stay 24 bytes");
 
 } // namespace loglib

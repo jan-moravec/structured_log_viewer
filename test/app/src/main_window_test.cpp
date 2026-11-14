@@ -755,8 +755,8 @@ loglib::RowBatch MakeSyntheticBatch(
         const size_t publishedId = streamSource.AppendLine("synthetic line " + std::to_string(lineId), std::string{});
         Q_ASSERT(publishedId == lineId);
         Q_UNUSED(publishedId);
-        std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
-        compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        std::vector<loglib::CompactLogValue> compactValues;
+        compactValues.push_back(loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)).WithKey(valueKey));
         batch.lines.emplace_back(std::move(compactValues), streamSource, lineId);
     }
     return batch;
@@ -2420,8 +2420,10 @@ private slots:
             {
                 const size_t lineId = staticBatchRows + 1 + i;
                 static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
-                std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
-                compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+                std::vector<loglib::CompactLogValue> compactValues;
+                compactValues.push_back(
+                    loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)).WithKey(valueKey)
+                );
                 batch.lines.emplace_back(std::move(compactValues), liveTailSource, lineId);
             }
             sink->OnBatch(std::move(batch));

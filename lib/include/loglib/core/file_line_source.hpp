@@ -19,6 +19,7 @@
  */
 #pragma once
 
+#include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/line_source.hpp"
 
 #include <cstddef>
@@ -157,6 +158,15 @@ public:
     /** @brief Heap bytes reserved by the owned-string arena. */
     [[nodiscard]] size_t OwnedStringsMemoryBytes() const noexcept;
 
+    /**
+     * @brief Takes over the memory that rows of this source borrow their fields from. The parser calls it for each
+     * batch before the batch's rows reach anyone. Not thread safe: the caller is the serial stage.
+     */
+    void AdoptFieldArena(FieldArena arena);
+
+    /** @brief Heap bytes of the field arenas this source holds. Used by the memory benchmark. */
+    [[nodiscard]] size_t FieldArenasMemoryBytes() const noexcept;
+
 private:
     struct Backing;
     struct InMemoryTag
@@ -193,6 +203,9 @@ private:
 
     /** @brief Maps the first line of each multi-line record to its last line. */
     std::unordered_map<size_t, size_t> mMultiLineSpans;
+
+    /** @brief Field memory of the rows. Rows only borrow it, so it is freed with the source. */
+    std::vector<FieldArena> mFieldArenas;
 };
 
 } // namespace loglib

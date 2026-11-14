@@ -280,6 +280,24 @@ size_t FileLineSource::OwnedStringsMemoryBytes() const noexcept
     return mOwnedStrings->CapacityBytes();
 }
 
+void FileLineSource::AdoptFieldArena(FieldArena arena)
+{
+    if (!arena.Empty())
+    {
+        mFieldArenas.push_back(std::move(arena));
+    }
+}
+
+size_t FileLineSource::FieldArenasMemoryBytes() const noexcept
+{
+    size_t total = 0;
+    for (const FieldArena &arena : mFieldArenas)
+    {
+        total += arena.MemoryBytes();
+    }
+    return total;
+}
+
 void FileLineSource::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
 {
     if (mLifetimeAnchor)
