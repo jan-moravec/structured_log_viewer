@@ -109,8 +109,7 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
         configuration.columns.push_back(MakeColumn("spaced", ColumnType::String, "{}"));
     }
 
-    // A configuration that went through the manager is the one the application has, with its columns normalized.
-    const TestLogConfiguration configurationFile("benchmark_table_configuration.json");
+    // The layout sanitizes the print formats, as it does for the application.
     ColumnLayout manager(configuration.columns);
     result->table = std::make_unique<LogTable>(manager);
     LogTable &table = *result->table;
@@ -242,7 +241,6 @@ SharedMixed MakeSharedStreamMessages(const Tier &tier)
         result->rows = rows;
         LogConfiguration configuration;
         configuration.columns.push_back(MakeColumn("message", ColumnType::String, "{}"));
-        const TestLogConfiguration configurationFile("benchmark_table_stream_configuration.json");
         ColumnLayout manager(configuration.columns);
         result->table = std::make_unique<LogTable>(manager);
         LogTable &table = *result->table;

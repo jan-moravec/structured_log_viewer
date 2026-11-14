@@ -17,38 +17,6 @@
 #include <system_error>
 #include <utility>
 
-namespace
-{
-
-/** The text of the key that starts at the given offset, up to its closing quote. */
-std::string KeyAt(std::string_view content, size_t offset)
-{
-    if (offset >= content.size())
-    {
-        return {};
-    }
-    const size_t end = content.find('"', offset);
-    return std::string(content.substr(offset, end == std::string_view::npos ? std::string_view::npos : end - offset));
-}
-
-/** The first line of the message names the key, because callers often show only that line. */
-std::string Describe(const glz::error_ctx &error, std::string_view content)
-{
-    if (error.ec == glz::error_code::unknown_key)
-    {
-        return fmt::format("unknown key '{}'.\n{}", KeyAt(content, error.count), glz::format_error(error, content));
-    }
-    if (error.ec == glz::error_code::missing_key)
-    {
-        return fmt::format(
-            "the required key '{}' is missing.\n{}", error.custom_error_message, glz::format_error(error, content)
-        );
-    }
-    return glz::format_error(error, content);
-}
-
-} // namespace
-
 namespace loglib
 {
 
@@ -130,7 +98,7 @@ LogConfiguration ParseConfiguration(std::string_view content, std::string_view o
     const auto error = glz::read<internal::CONFIGURATION_OPTS>(document, content);
     if (error)
     {
-        throw FormatError(fmt::format("Invalid {}: {}", name, Describe(error, content)));
+        throw FormatError(fmt::format("Invalid {}: {}", name, internal::DescribeConfigurationError(error, content)));
     }
     if (document.version != internal::CONFIGURATION_FORMAT_VERSION)
     {
@@ -169,10 +137,8 @@ void SaveConfiguration(
 {
     const std::string json = SerializeConfiguration(configuration, scope);
 
-    // Atomic write: stream to <path>.tmp, flush + check stream
-    // state, then rename. Prevents a crash / ENOSPC mid-write from
-    // leaving a truncated <uuid>.json the recents index points at.
-    // Stale .tmp files are swept by CleanupOrphanFiles.
+    // The text goes to a temporary file that is renamed over the destination, so a crash or a full disk never leaves a
+    // truncated file behind.
     std::filesystem::path tempPath = path;
     tempPath += ".tmp";
     {
@@ -189,9 +155,8 @@ void SaveConfiguration(
             std::filesystem::remove(tempPath, cleanupEc);
             throw IoError("Failed to write file '" + internal::PathToUtf8(tempPath) + "'.");
         }
-        // Explicit close + good() check so close-time failures
-        // (network shares, deferred-write filesystems) are observable
-        // -- the destructor would swallow them.
+        // Closing explicitly reports failures that only show at close, for example on network shares. The destructor
+        // would hide them.
         file.close();
         if (!file.good())
         {

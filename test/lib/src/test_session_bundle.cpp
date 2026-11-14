@@ -240,6 +240,21 @@ TEST_CASE("session bundle v1 exports documented metadata and typed normalized JS
     CHECK(loglib::AsStringView(row.GetValue(restored.data.Keys(), "msg")) == "quote: \" slash: \\ newline:\n");
 }
 
+TEST_CASE("session bundle metadata names an unknown configuration key", "[SessionBundle]")
+{
+    const std::string metadata =
+        R"({"__slv_bundle__":{"formatVersion":1,"rowCount":0,"configuration":{"version":1,"columns":[],"extraKey":1}}})";
+    try
+    {
+        static_cast<void>(loglib::ParseSessionBundleMetadata(metadata));
+        FAIL("the metadata was accepted");
+    }
+    catch (const loglib::FormatError &error)
+    {
+        CHECK(std::string(error.what()).contains("unknown key 'extraKey'"));
+    }
+}
+
 TEST_CASE("session bundle metadata preserves investigation configuration and flattens source", "[SessionBundle]")
 {
     const TempPath source(".jsonl");

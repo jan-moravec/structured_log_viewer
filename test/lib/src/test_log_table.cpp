@@ -54,7 +54,6 @@ TEST_CASE("Initialize a LogTable with given LogData and ColumnLayout", "[log_tab
     logConfiguration.columns.push_back(
         {.header = "Header2", .keys = {"key2"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    const TestLogConfiguration testLogConfiguration;
     ColumnLayout manager(logConfiguration.columns);
 
     // Initialize LogTable with the data and configuration
@@ -103,7 +102,6 @@ TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_t
     logConfiguration.columns.push_back(
         {.header = "Header1", .keys = {"key1"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    const TestLogConfiguration testLogConfiguration;
     ColumnLayout manager(logConfiguration.columns);
 
     // Initialize LogTable with the initial data and configuration
@@ -174,7 +172,6 @@ TEST_CASE("LogTable::Reset preserves the column layout", "[log_table]")
     logConfiguration.columns.push_back(
         {.header = "CustomB", .keys = {"key2"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    const TestLogConfiguration testLogConfiguration;
     ColumnLayout manager(logConfiguration.columns);
 
     loglib::LogTable logTable = test_common_lib::TableFromData(std::move(logData), std::move(manager));
@@ -503,7 +500,6 @@ TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][a
     cfg.columns.push_back(
         {.header = "beta", .keys = {"beta"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(dataA), std::move(mgr));
@@ -692,7 +688,6 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -794,7 +789,6 @@ TEST_CASE(
     }
     cfg.columns.push_back(std::move(wide));
 
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -882,7 +876,6 @@ TEST_CASE(
     }
     cfg.columns.push_back(std::move(untouched));
 
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1333,7 +1326,6 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1376,7 +1368,6 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1451,7 +1442,6 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1493,7 +1483,6 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1550,7 +1539,6 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1653,7 +1641,6 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1700,7 +1687,6 @@ TEST_CASE("Appending data -- snapshot-enum keys are seeded against the merged Ke
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1740,7 +1726,6 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1789,7 +1774,6 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
          .levelMapping = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1913,7 +1897,6 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -1953,7 +1936,6 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -2077,7 +2059,6 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -2118,7 +2099,6 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -2313,7 +2293,6 @@ ColumnLayout MakeUnknownColumnManager(const std::string &key)
     cfg.columns.push_back(
         {.header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
     return mgr;
 }
@@ -2589,7 +2568,6 @@ TEST_CASE(
          .parseFormats = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -2972,7 +2950,6 @@ TEST_CASE(
          .parseFormats = {},
          .levelMapping = {{"PANIC", "Fatal"}, {"NOTICE", "Info"}}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -3111,7 +3088,6 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -3164,7 +3140,6 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -3365,7 +3340,6 @@ TEST_CASE(
          .parseFormats = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout manager(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
@@ -3431,7 +3405,6 @@ TEST_CASE(
          .parseFormats = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout manager(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));
@@ -3497,7 +3470,6 @@ TEST_CASE(
          .parseFormats = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout manager(cfg.columns);
 
     loglib::LogTable table = test_common_lib::TableFromData(std::move(logData), std::move(manager));

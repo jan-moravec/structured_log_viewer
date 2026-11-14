@@ -12,6 +12,7 @@
 #include "loglib/schema/filter_expression.hpp"
 #include "loglib/schema/log_configuration.hpp"
 
+#include <fmt/format.h>
 #include <glaze/glaze.hpp>
 
 #include <array>
@@ -103,6 +104,32 @@ struct ConfigurationDocument
     }
     configuration.source = std::move(document.source);
     return configuration;
+}
+
+/**
+ * @brief Describes a read error of a configuration document. For an unknown or missing key the first line names the
+ * key, because callers often show only that line. The lines after it point at the place in the content.
+ */
+[[nodiscard]] inline std::string DescribeConfigurationError(const glz::error_ctx &error, std::string_view content)
+{
+    if (error.ec == glz::error_code::unknown_key)
+    {
+        std::string key;
+        if (error.count < content.size())
+        {
+            const size_t end = content.find('"', error.count);
+            key =
+                content.substr(error.count, end == std::string_view::npos ? std::string_view::npos : end - error.count);
+        }
+        return fmt::format("unknown key '{}'.\n{}", key, glz::format_error(error, content));
+    }
+    if (error.ec == glz::error_code::missing_key)
+    {
+        return fmt::format(
+            "the required key '{}' is missing.\n{}", error.custom_error_message, glz::format_error(error, content)
+        );
+    }
+    return glz::format_error(error, content);
 }
 
 /** @brief A base for the metas of types whose keys may all be missing. They then keep the default of their member. */

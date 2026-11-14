@@ -65,7 +65,6 @@ LogTable BuildEnumTable(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -110,7 +109,6 @@ LogTable BuildStringTable(
          .levelMapping = {},
          .autoDetect = false}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -148,7 +146,6 @@ LogTable BuildTimeTable(
          .type = ColumnType::Time,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -561,7 +558,6 @@ LogTable BuildSingleColumnTable(
     cfg.columns.push_back(
         {.header = columnKey, .keys = {columnKey}, .printFormat = "{}", .type = type, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -774,7 +770,6 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
@@ -987,7 +982,6 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1075,7 +1069,6 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    const TestLogConfiguration cfgFile;
     ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
