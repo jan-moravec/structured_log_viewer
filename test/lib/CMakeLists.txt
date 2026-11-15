@@ -35,6 +35,7 @@ add_executable(
     "src/test_csv_parser.cpp"
     "src/test_csv_tokenize.cpp"
     "src/test_decompressing_byte_source.cpp"
+    "src/test_documented_exceptions.cpp"
     "src/test_enum_dictionary.cpp"
     "src/test_enum_inference.cpp"
     "src/test_exports.cpp"

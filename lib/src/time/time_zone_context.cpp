@@ -1,4 +1,5 @@
 #include "loglib/time/time_zone_context.hpp"
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/time/internal/timestamp_formatter.hpp"
 
@@ -12,7 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -46,7 +46,7 @@ void InstallTzdata(const std::filesystem::path &tzdataPath)
     std::error_code existsEc;
     if (!std::filesystem::exists(tzdataPath, existsEc) || !std::filesystem::is_directory(tzdataPath))
     {
-        throw std::runtime_error("tzdata directory does not exist: " + internal::PathToUtf8(tzdataPath));
+        throw IoError("tzdata directory does not exist: " + internal::PathToUtf8(tzdataPath));
     }
     date::set_install(tzdataPath.string());
 }
@@ -76,7 +76,7 @@ TimeZoneContext TimeZoneContext::Load(const std::filesystem::path &tzdataPath)
         const date::time_zone *zone = date::current_zone();
         if (zone == nullptr)
         {
-            throw std::runtime_error("current_zone returned null");
+            throw FormatError("current_zone returned null");
         }
         auto impl = std::make_shared<Impl>();
         impl->zone = zone;
@@ -85,7 +85,7 @@ TimeZoneContext TimeZoneContext::Load(const std::filesystem::path &tzdataPath)
     }
     catch (const std::exception &ex)
     {
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format(
                 "failed to resolve the system time zone from '{}': {}", internal::PathToUtf8(tzdataPath), ex.what()
             )
@@ -101,7 +101,7 @@ TimeZoneContext TimeZoneContext::Load(const std::filesystem::path &tzdataPath, s
         const date::time_zone *zone = date::locate_zone(std::string{zoneName});
         if (zone == nullptr)
         {
-            throw std::runtime_error("locate_zone returned null");
+            throw FormatError("locate_zone returned null");
         }
         auto impl = std::make_shared<Impl>();
         impl->zone = zone;
@@ -110,7 +110,7 @@ TimeZoneContext TimeZoneContext::Load(const std::filesystem::path &tzdataPath, s
     }
     catch (const std::exception &ex)
     {
-        throw std::runtime_error(
+        throw FormatError(
             fmt::format(
                 "timezone '{}' is unavailable in '{}': {}", zoneName, internal::PathToUtf8(tzdataPath), ex.what()
             )

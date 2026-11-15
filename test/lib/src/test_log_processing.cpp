@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
@@ -56,7 +57,7 @@ std::vector<std::string> ConvertTimeColumns(LogData &logData, const LogConfigura
 TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_processing]")
 {
     const auto invalidPath = std::filesystem::path("non_existent_path");
-    CHECK_THROWS_AS(TimeZoneContext::Load(invalidPath), std::runtime_error);
+    CHECK_THROWS_AS(TimeZoneContext::Load(invalidPath), IoError);
 }
 
 TEST_CASE("TimeZoneContext::Load accepts the staged tzdata directory", "[log_processing]")
@@ -822,7 +823,7 @@ TEST_CASE("TimeZoneContext::LocalMillisecondsToUtc handles DST transitions", "[l
 TEST_CASE("TimeZoneContext::Load throws for an unavailable zone", "[log_processing]")
 {
     InitializeTimezoneData();
-    CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), std::runtime_error);
+    CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), FormatError);
 }
 
 TEST_CASE(

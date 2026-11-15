@@ -103,7 +103,7 @@ public:
     void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
     /**
-     * @brief Sets a field by key name. Throws if the key is not in keys.
+     * @brief Sets a field by key name. The key must already be in keys: intern it with GetOrInsert first.
      *
      * Slow, meant for tests and debugging.
      */

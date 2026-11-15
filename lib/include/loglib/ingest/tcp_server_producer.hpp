@@ -47,7 +47,7 @@ public:
     /**
      * @brief Settings for encrypted connections. Leave Options::tls empty for plain TCP.
      *
-     * In a build without LOGLIB_NETWORK_TLS, giving any TLS settings makes the constructor throw std::runtime_error.
+     * In a build without LOGLIB_NETWORK_TLS, giving any TLS settings makes the constructor throw IoError.
      */
     struct TlsOptions
     {
@@ -122,7 +122,7 @@ public:
     /**
      * @brief Binds the port, sets up TLS if requested, and starts the I/O thread.
      *
-     * Throws std::system_error if binding or listening fails, and std::runtime_error for TLS problems such as missing
+     * Throws std::system_error if binding or listening fails, and IoError for TLS problems such as missing
      * files or a build without TLS.
      */
     explicit TcpServerProducer(Options options);

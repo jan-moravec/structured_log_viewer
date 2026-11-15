@@ -87,15 +87,15 @@ public:
     /**
      * @brief Loads time zone data from a folder and selects the zone the computer is set to.
      *
-     * The folder must exist and hold IANA time zone data. Throws std::runtime_error if the path is invalid or the zone
-     * cannot be found.
+     * The folder must exist and hold IANA time zone data. Throws IoError if the folder does not exist and FormatError
+     * if the zone cannot be found.
      */
     [[nodiscard]] static TimeZoneContext Load(const std::filesystem::path &tzdataPath);
 
     /**
      * @brief Loads time zone data from a folder and selects a zone by its IANA name, such as Europe/Berlin.
      *
-     * Throws std::runtime_error if the path is invalid or the zone is not available.
+     * Throws IoError if the folder does not exist and FormatError if the zone is not available.
      */
     [[nodiscard]] static TimeZoneContext Load(const std::filesystem::path &tzdataPath, std::string_view zoneName);
 

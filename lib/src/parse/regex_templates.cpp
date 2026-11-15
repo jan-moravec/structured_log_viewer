@@ -1,6 +1,7 @@
 #include "loglib/parse/regex_templates.hpp"
 
 #include "loglib/core/ascii_case.hpp"
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/parse/internal/embedded_regex_templates.hpp"
@@ -46,7 +47,7 @@ RegexTemplate ParseEmbeddedOrThrow(const internal::EmbeddedRegexTemplate &entry)
     }
     catch (const std::exception &ex)
     {
-        throw std::runtime_error(
+        throw FormatError(
             std::string("Built-in regex template '") + std::string(entry.source) + "' failed to parse: " + ex.what()
         );
     }
@@ -243,9 +244,7 @@ RegexTemplate ParseRegexTemplate(std::string_view content)
     const auto error = glz::read<OPTS>(parsed, content);
     if (error)
     {
-        throw std::runtime_error(
-            "Failed to parse regex template JSON: " + glz::format_error(error, std::string(content))
-        );
+        throw FormatError("Invalid regex template JSON: " + glz::format_error(error, std::string(content)));
     }
     return parsed;
 }
@@ -258,7 +257,7 @@ std::string SerializeRegexTemplate(const RegexTemplate &tmpl)
     const auto error = glz::write<OPTS>(tmpl, json);
     if (error)
     {
-        throw std::runtime_error("Failed to serialise regex template JSON: " + glz::format_error(error));
+        throw FormatError("Failed to serialise regex template JSON: " + glz::format_error(error));
     }
     return json;
 }

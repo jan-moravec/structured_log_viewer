@@ -2,8 +2,9 @@
  * @brief Glaze read and write options shared by every JSON file the library reads or writes.
  *
  * Configuration, regex template, theme and session bundle files are written with indentation so people can read them.
- * Regex template and theme files ignore unknown keys when reading, and configuration files reject them. The schema,
- * parse, support and output modules all use these options, which is why the header is in core.
+ * Every reader rejects unknown keys. A key that is missing keeps the default of its member, except in configuration
+ * files, where the types say which keys are required. The schema, parse, support and output modules all use these
+ * options, which is why the header is in core.
  *
  * This is part of the core module.
  */
@@ -17,10 +18,9 @@ namespace loglib::internal
 {
 
 /**
- * @brief The JSON options used for the library's JSON files.
+ * @brief The JSON options used for regex template and theme files.
  *
- * Output is indented with 4 spaces. Unknown fields are ignored on reading, which also lets a failed source rebind be
- * non-fatal.
+ * Output is indented with 4 spaces. Unknown keys are errors, and a missing key keeps the default of its member.
  */
 struct LogConfigOpts : glz::opts
 {
@@ -29,7 +29,7 @@ struct LogConfigOpts : glz::opts
 // MSVC requires designated initializers to follow the declaration order of the members.
 // null_terminated is off because the readers take a string_view, which has no terminator, and Glaze would read one byte
 // past its end.
-constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unknown_keys = false, .prettify = true}};
+constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unknown_keys = true, .prettify = true}};
 
 /**
  * @brief The JSON options for configuration files and the configuration inside a session bundle.

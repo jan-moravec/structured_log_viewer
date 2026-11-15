@@ -8,7 +8,6 @@
 #include <limits>
 #include <memory>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -306,12 +305,7 @@ LogValue LogLine::GetValue(const KeyIndex &keys, std::string_view key) const
 void LogLine::SetValue(const KeyIndex &keys, std::string_view key, const LogValue &value)
 {
     const KeyId id = keys.Find(key);
-    if (id == INVALID_KEY_ID)
-    {
-        throw std::runtime_error(
-            "LogLine::SetValue(string): key '" + std::string(key) + "' is not registered in the KeyIndex"
-        );
-    }
+    assert(id != INVALID_KEY_ID && "SetValue by name needs a key that is already in the KeyIndex");
     SetValue(id, value);
 }
 

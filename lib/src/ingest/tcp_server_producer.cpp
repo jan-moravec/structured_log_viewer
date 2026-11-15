@@ -1,4 +1,5 @@
 #include "loglib/ingest/tcp_server_producer.hpp"
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 
 #include "loglib/ingest/internal/queued_producer_state.hpp"
@@ -328,7 +329,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
     ctx.use_certificate_chain_file(internal::PathToUtf8(tls.certificateChain), ec);
     if (ec)
     {
-        throw std::runtime_error(
+        throw IoError(
             "TcpServerProducer: failed to load certificate chain '" + internal::PathToUtf8(tls.certificateChain) +
             "': " + ec.message()
         );
@@ -336,7 +337,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
     ctx.use_private_key_file(internal::PathToUtf8(tls.privateKey), asio::ssl::context::pem, ec);
     if (ec)
     {
-        throw std::runtime_error(
+        throw IoError(
             "TcpServerProducer: failed to load private key '" + internal::PathToUtf8(tls.privateKey) +
             "': " + ec.message()
         );
@@ -347,7 +348,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
         ctx.load_verify_file(internal::PathToUtf8(tls.caBundle), ec);
         if (ec)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "TcpServerProducer: failed to load CA bundle '" + internal::PathToUtf8(tls.caBundle) +
                 "': " + ec.message()
             );
@@ -377,7 +378,7 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
 #ifdef LOGLIB_HAS_TLS
         mSslContext.emplace(BuildSslContext(*mOptions.tls));
 #else
-        throw std::runtime_error("TcpServerProducer: TLS support is not built in (rebuild with LOGLIB_NETWORK_TLS=ON)");
+        throw IoError("TcpServerProducer: TLS support is not built in (rebuild with LOGLIB_NETWORK_TLS=ON)");
 #endif
     }
 

@@ -1,11 +1,12 @@
 #include "loglib/output/exports/export_sink.hpp"
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/file_busy_retry.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 
+#include <cassert>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -140,9 +141,7 @@ FileSink::FileSink(std::filesystem::path destination)
 {
     if (mFile == nullptr)
     {
-        throw std::runtime_error(
-            "Failed to open '" + internal::PathToUtf8(mTempPath) + "' for writing: " + DescribeErrno(errno)
-        );
+        throw IoError("Failed to open '" + internal::PathToUtf8(mTempPath) + "' for writing: " + DescribeErrno(errno));
     }
 }
 
@@ -166,10 +165,7 @@ FileSink::~FileSink()
 
 void FileSink::Write(std::string_view bytes)
 {
-    if (mFile == nullptr)
-    {
-        throw std::runtime_error("FileSink::Write on a closed sink");
-    }
+    assert(mFile != nullptr && "FileSink::Write needs a sink that has not finished or failed");
     if (bytes.empty())
     {
         return;
@@ -178,7 +174,7 @@ void FileSink::Write(std::string_view bytes)
     if (written != bytes.size())
     {
         const std::string reason = DescribeErrno(errno);
-        throw std::runtime_error("Failed to write '" + internal::PathToUtf8(mTempPath) + "': " + reason);
+        throw IoError("Failed to write '" + internal::PathToUtf8(mTempPath) + "': " + reason);
     }
 }
 
@@ -188,10 +184,7 @@ void FileSink::Finish()
     {
         return;
     }
-    if (mFile == nullptr)
-    {
-        throw std::runtime_error("FileSink::Finish on a closed sink");
-    }
+    assert(mFile != nullptr && "FileSink::Finish needs a sink that has not failed");
     // Check both: network shares and deferred-write filesystems
     // only surface I/O errors at flush / close time.
     if (std::fflush(mFile) != 0)
@@ -201,14 +194,14 @@ void FileSink::Finish()
         // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
         (void)std::fclose(mFile);
         mFile = nullptr;
-        throw std::runtime_error("Failed to flush '" + internal::PathToUtf8(mTempPath) + "': " + reason);
+        throw IoError("Failed to flush '" + internal::PathToUtf8(mTempPath) + "': " + reason);
     }
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     if (std::fclose(mFile) != 0)
     {
         const std::string reason = DescribeErrno(errno);
         mFile = nullptr;
-        throw std::runtime_error("Failed to close '" + internal::PathToUtf8(mTempPath) + "': " + reason);
+        throw IoError("Failed to close '" + internal::PathToUtf8(mTempPath) + "': " + reason);
     }
     mFile = nullptr;
 
@@ -228,7 +221,7 @@ void FileSink::Finish()
             {
                 std::error_code cleanupEc;
                 std::filesystem::remove(mTempPath, cleanupEc);
-                throw std::runtime_error(
+                throw IoError(
                     "Failed to move '" + internal::PathToUtf8(mTempPath) + "' to '" +
                     internal::PathToUtf8(mDestination) + "': " + copyEc.message()
                 );
@@ -240,7 +233,7 @@ void FileSink::Finish()
         {
             std::error_code cleanupEc;
             std::filesystem::remove(mTempPath, cleanupEc);
-            throw std::runtime_error(
+            throw IoError(
                 "Failed to rename '" + internal::PathToUtf8(mTempPath) + "' to '" + internal::PathToUtf8(mDestination) +
                 "': " + ec.message()
             );
@@ -252,18 +245,12 @@ void FileSink::Finish()
 StreamSink::StreamSink(std::FILE *file)
     : mFile(file)
 {
-    if (mFile == nullptr)
-    {
-        throw std::runtime_error("StreamSink requires an open FILE");
-    }
+    assert(mFile != nullptr && "StreamSink needs an open FILE");
 }
 
 void StreamSink::Write(std::string_view bytes)
 {
-    if (mFinished || mFile == nullptr)
-    {
-        throw std::runtime_error("StreamSink::Write on a closed sink");
-    }
+    assert(!mFinished && "StreamSink::Write needs a sink that has not finished");
     while (!bytes.empty())
     {
         PrepareStreamIo();
@@ -287,7 +274,7 @@ void StreamSink::Write(std::string_view bytes)
             bytes.remove_prefix(written);
             continue;
         }
-        throw std::runtime_error("Failed to write to stream: " + DescribeErrno(status.err));
+        throw IoError("Failed to write to stream: " + DescribeErrno(status.err));
     }
 }
 
@@ -297,10 +284,6 @@ void StreamSink::Finish()
     {
         return;
     }
-    if (mFile == nullptr)
-    {
-        throw std::runtime_error("StreamSink::Finish on a closed sink");
-    }
     PrepareStreamIo();
     if (std::fflush(mFile) != 0)
     {
@@ -309,7 +292,7 @@ void StreamSink::Finish()
         {
             throw BrokenPipe();
         }
-        throw std::runtime_error("Failed to flush stream: " + DescribeErrno(status.err));
+        throw IoError("Failed to flush stream: " + DescribeErrno(status.err));
     }
     mFinished = true;
 }

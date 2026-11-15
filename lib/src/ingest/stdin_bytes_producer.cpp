@@ -1,5 +1,6 @@
 #include "loglib/ingest/stdin_bytes_producer.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/ingest/internal/line_bytes_queue.hpp"
 
 #include <algorithm>
@@ -74,7 +75,7 @@ NativeHandle DuplicateStdin()
     auto *const stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
     {
-        throw std::runtime_error("StdinBytesProducer: GetStdHandle(STD_INPUT_HANDLE) failed");
+        throw IoError("StdinBytesProducer: GetStdHandle(STD_INPUT_HANDLE) failed");
     }
     HANDLE dup = nullptr;
     auto *const currentProc = ::GetCurrentProcess();
@@ -88,14 +89,14 @@ NativeHandle DuplicateStdin()
             DUPLICATE_SAME_ACCESS
         ) == 0)
     {
-        throw std::runtime_error("StdinBytesProducer: DuplicateHandle(stdin) failed");
+        throw IoError("StdinBytesProducer: DuplicateHandle(stdin) failed");
     }
     return dup;
 #else
     const int dup = ::dup(STDIN_FILENO);
     if (dup < 0)
     {
-        throw std::runtime_error("StdinBytesProducer: dup(STDIN_FILENO) failed");
+        throw IoError("StdinBytesProducer: dup(STDIN_FILENO) failed");
     }
     return dup;
 #endif
@@ -156,7 +157,7 @@ void MakeSelfPipe(int fds[2])
 {
     if (::pipe(fds) != 0)
     {
-        throw std::runtime_error("StdinBytesProducer: pipe() (wake) failed");
+        throw IoError("StdinBytesProducer: pipe() (wake) failed");
     }
     // `fcntl` is a POSIX variadic API; the cppcoreguidelines
     // vararg check has no non-vararg alternative here. NOLINTs are
@@ -192,7 +193,7 @@ public:
     {
         if (!IsValidNative(mHandle))
         {
-            throw std::runtime_error("StdinBytesProducer: invalid native handle");
+            throw IoError("StdinBytesProducer: invalid native handle");
         }
 #ifndef _WIN32
         // Self-pipe wake FDs are set up before the worker starts.

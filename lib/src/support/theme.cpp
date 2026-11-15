@@ -1,12 +1,12 @@
 #include "loglib/support/theme.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/support/internal/theme_glaze_meta.hpp"
 
 #include <glaze/glaze.hpp>
 
-#include <stdexcept>
 #include <string>
 
 namespace loglib
@@ -39,15 +39,13 @@ LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContras
 
 Theme ParseTheme(std::string_view content)
 {
-    // `error_on_unknown_keys=false` lets new schema fields roll
-    // forward without breaking older themes.
     constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
     Theme parsed;
     const auto error = glz::read<OPTS>(parsed, content);
     if (error)
     {
-        throw std::runtime_error("Failed to parse theme JSON: " + glz::format_error(error, std::string(content)));
+        throw FormatError("Invalid theme JSON: " + glz::format_error(error, std::string(content)));
     }
     return parsed;
 }
@@ -60,7 +58,7 @@ std::string SerializeTheme(const Theme &theme)
     const auto error = glz::write<OPTS>(theme, json);
     if (error)
     {
-        throw std::runtime_error("Failed to serialise theme JSON: " + glz::format_error(error));
+        throw FormatError("Failed to serialise theme JSON: " + glz::format_error(error));
     }
     return json;
 }

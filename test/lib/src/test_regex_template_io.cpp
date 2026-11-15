@@ -1,3 +1,4 @@
+#include <loglib/core/error.hpp>
 #include <loglib/parse/regex_templates.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -60,18 +61,16 @@ TEST_CASE("ContinuationMode name / parse helpers round-trip", "[regex_templates]
 
 TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_templates][io]")
 {
-    // Backward compatibility: pre-schema JSON files must still
-    // parse, with new fields defaulted to documented values
-    // (autoDetect=true, priority=USER_TEMPLATE_DEFAULT_PRIORITY,
-    // description="").
-    constexpr std::string_view K_LEGACY_JSON = R"({
-        "name": "Legacy template",
+    // Optional fields take the defaults documented on the members: autoDetect=true,
+    // priority=USER_TEMPLATE_DEFAULT_PRIORITY and an empty description.
+    constexpr std::string_view K_MINIMAL_JSON = R"({
+        "name": "Minimal template",
         "pattern": "^(?<msg>.*)$",
         "sampleLines": ["one line"]
     })";
 
-    const RegexTemplate parsed = ParseRegexTemplate(K_LEGACY_JSON);
-    CHECK(parsed.name == "Legacy template");
+    const RegexTemplate parsed = ParseRegexTemplate(K_MINIMAL_JSON);
+    CHECK(parsed.name == "Minimal template");
     CHECK(parsed.pattern == "^(?<msg>.*)$");
     REQUIRE(parsed.sampleLines.size() == 1);
     CHECK(parsed.sampleLines[0] == "one line");
@@ -82,37 +81,30 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
     CHECK(parsed.headerAnchor.empty());
 }
 
-TEST_CASE("RegexTemplate JSON parse tolerates unknown keys", "[regex_templates][io]")
+TEST_CASE("RegexTemplate JSON parse rejects an unknown key and names it", "[regex_templates][io]")
 {
-    // `error_on_unknown_keys=false` is shared with
-    // `LogConfiguration` / `Theme`. Future schema additions in
-    // newer builds shouldn't stop older builds from loading. The
-    // legacy `attribution` key (renamed to `description` mid-
-    // cycle) is the closest real-world example: pre-rename user
-    // JSONs in the wild must still load -- they just lose that
-    // one field's text.
-    constexpr std::string_view K_FORWARD_JSON = R"({
-        "name": "Forward template",
+    constexpr std::string_view K_UNKNOWN_KEY_JSON = R"({
+        "name": "Unknown key template",
         "pattern": "^(?<msg>.*)$",
         "sampleLines": ["x"],
-        "futureField": {"someNested": [1, 2, 3]},
-        "attribution": "legacy citation that should be ignored, not crash"
+        "futureField": {"someNested": [1, 2, 3]}
     })";
 
-    const RegexTemplate parsed = ParseRegexTemplate(K_FORWARD_JSON);
-    CHECK(parsed.name == "Forward template");
-    // Legacy `attribution` is silently dropped; `description`
-    // defaults to empty string.
-    CHECK(parsed.description.empty());
+    try
+    {
+        (void)ParseRegexTemplate(K_UNKNOWN_KEY_JSON);
+        FAIL("ParseRegexTemplate accepted an unknown key");
+    }
+    catch (const FormatError &error)
+    {
+        CHECK_THAT(std::string(error.what()), Catch::Matchers::ContainsSubstring("futureField"));
+    }
 }
 
-TEST_CASE("RegexTemplate JSON parse throws on malformed input", "[regex_templates][io]")
+TEST_CASE("RegexTemplate JSON parse throws FormatError on malformed input", "[regex_templates][io]")
 {
-    // Missing trailing brace -> glaze surfaces a parse error,
-    // which we wrap in a `runtime_error` so callers don't need
-    // a glaze dependency to catch it.
     constexpr std::string_view K_BROKEN_JSON = R"({"name": "broken")";
-    CHECK_THROWS_AS(ParseRegexTemplate(K_BROKEN_JSON), std::runtime_error);
+    CHECK_THROWS_AS(ParseRegexTemplate(K_BROKEN_JSON), FormatError);
 }
 
 TEST_CASE("SetExtraRegexTemplates exposes user entries to FindTemplateByPattern", "[regex_templates][io]")
