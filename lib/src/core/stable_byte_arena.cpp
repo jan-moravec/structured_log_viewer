@@ -1,8 +1,8 @@
 #include "loglib/core/internal/stable_byte_arena.hpp"
+#include "loglib/core/error.hpp"
 
 #include <algorithm>
 #include <cstring>
-#include <stdexcept>
 
 namespace loglib::internal
 {
@@ -12,7 +12,7 @@ void StableByteArena::PublishSlot(uint64_t slot, const char *bytes)
     const auto pageIndex = static_cast<size_t>(slot / PAGE_SLOTS);
     if (pageIndex >= TOP_PAGES)
     {
-        throw std::length_error("StableByteArena: logical space exhausted");
+        throw LimitError("StableByteArena: logical space exhausted");
     }
     Page *page = mTop[pageIndex].load(std::memory_order_relaxed);
     if (page == nullptr)

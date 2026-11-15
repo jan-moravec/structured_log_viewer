@@ -1,4 +1,5 @@
 #include "loglib/core/key_index.hpp"
+#include "loglib/core/error.hpp"
 
 #include "loglib/core/transparent_string_hash.hpp"
 
@@ -12,7 +13,6 @@
 #include <deque>
 #include <mutex>
 #include <shared_mutex>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -91,7 +91,7 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
     // row stores a key id in 24 bits, so ids stop at MAX_ROW_KEY_ID.
     if (mImpl->reverse.size() > MAX_ROW_KEY_ID)
     {
-        throw std::length_error("A log can hold at most 16777216 distinct keys.");
+        throw LimitError("A log can hold at most 16777216 distinct keys.");
     }
     const auto id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);

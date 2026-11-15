@@ -28,7 +28,10 @@ using KeyId = uint32_t;
 
 inline constexpr KeyId INVALID_KEY_ID = std::numeric_limits<KeyId>::max();
 
-/** @brief The largest key id a row can store: a field keeps its key in 24 bits. GetOrInsert throws beyond it. */
+/**
+ * @brief The largest key id a row can store. A field keeps its key in 24 bits, and GetOrInsert throws LimitError past
+ * this id.
+ */
 inline constexpr KeyId MAX_ROW_KEY_ID = 0xFFFFFFU;
 
 /**

@@ -101,8 +101,8 @@ public:
      * @brief Starts the worker thread.
      *
      * The last retentionLines complete lines of the file are queued first, and tailing continues from where they ended.
-     * It throws if the file cannot be opened at the start. A path that goes missing later, during a rotation, is
-     * handled inside and never thrown.
+     * It throws std::system_error if the file cannot be opened at the start. A path that goes missing later, during a
+     * rotation, is handled inside and never thrown.
      */
     TailingBytesProducer(std::filesystem::path path, size_t retentionLines);
     TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options);
