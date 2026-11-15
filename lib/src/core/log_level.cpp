@@ -19,19 +19,13 @@ struct LevelAlias
     LogLevel level;
 };
 
-/// Built-in alias table. Compared case-insensitively; ordering is
-/// informational only. Aliases for `Unknown` are omitted because
-/// `ParseLevelName` already returns `std::nullopt` on no match.
-///
-/// Notes:
-///   - Single-letter aliases (`t`/`d`/`v`/`i`/`w`/`e`/`f`) cover
-///     Android, glog, and many embedded loggers. False positives are
-///     guarded by `IsLogLevelKey` upstream.
-///   - `v`/`vrb`/`verbose` map to `Debug` for backwards compatibility,
-///     even though Serilog/Android treat Verbose as below Debug.
-///   - Numeric levels (Bunyan/Pino, syslog) are omitted: conventions
-///     disagree, and numeric JSON arrives as `Int64` and never reaches
-///     the dictionary. Use per-column `levelMapping` instead.
+/**
+ * The built-in alias table, compared without regard to case. Aliases for Unknown are left out, because ParseLevelName
+ * already returns no value when nothing matches. Single-letter aliases cover Android, glog and many embedded loggers.
+ * Callers guard against false positives by checking the column name. Verbose maps to Trace, as in Serilog and Android.
+ * Numeric levels of Bunyan, Pino and syslog are left out, because the conventions disagree and numeric JSON never
+ * reaches the dictionary. Use a per-column levelMapping for them.
+ */
 constexpr std::array<LevelAlias, 37> BUILTIN_ALIASES = {{
     // Trace
     {.alias = "trace", .level = LogLevel::Trace},
@@ -40,13 +34,13 @@ constexpr std::array<LevelAlias, 37> BUILTIN_ALIASES = {{
     {.alias = "finer", .level = LogLevel::Trace},
     {.alias = "finest", .level = LogLevel::Trace},
     {.alias = "silly", .level = LogLevel::Trace},
+    {.alias = "verbose", .level = LogLevel::Trace},
+    {.alias = "vrb", .level = LogLevel::Trace},
+    {.alias = "v", .level = LogLevel::Trace},
     // Debug
     {.alias = "debug", .level = LogLevel::Debug},
     {.alias = "dbg", .level = LogLevel::Debug},
     {.alias = "d", .level = LogLevel::Debug},
-    {.alias = "verbose", .level = LogLevel::Debug},
-    {.alias = "vrb", .level = LogLevel::Debug},
-    {.alias = "v", .level = LogLevel::Debug},
     {.alias = "fine", .level = LogLevel::Debug},
     // Info
     {.alias = "info", .level = LogLevel::Info},
