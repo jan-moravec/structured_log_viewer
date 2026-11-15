@@ -242,7 +242,7 @@ void ConfigurationDiagnosticsDialog::Refresh()
         return;
     }
 
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     const auto wasSorting = mTable->isSortingEnabled();
     mTable->setSortingEnabled(false);
     mTable->clearContents();
@@ -350,7 +350,7 @@ void ConfigurationDiagnosticsDialog::Refresh()
 
 int ConfigurationDiagnosticsDialog::MismatchedColumnCount(const LogModel &model)
 {
-    const auto &columns = model.Configuration().columns;
+    const auto &columns = model.Layout().Columns();
     int mismatched = 0;
     for (int i = 0; std::cmp_less(i, columns.size()); ++i)
     {

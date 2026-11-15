@@ -6,6 +6,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -56,8 +57,8 @@ LogTable TableOfValues(const std::vector<LogValue> &values, const std::string &p
             .parseFormats = {},
         }
     );
-    LogConfigurationManager manager;
-    manager.SetConfiguration(std::move(configuration));
+    ColumnLayout manager;
+    manager.SetColumns(std::move(configuration).columns);
     return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 

@@ -475,7 +475,7 @@ int CompareRows(
     {
         return 0;
     }
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     if (columnIndex >= columns.size())
     {
         return 0;
@@ -912,7 +912,7 @@ std::optional<std::vector<size_t>> SortByKeys(
     const LogTable &table, std::span<const size_t> logRows, size_t columnIndex, bool ascending, PermutationWindow window
 )
 {
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     if (columnIndex >= columns.size())
     {
         return std::nullopt;
@@ -954,7 +954,7 @@ std::vector<size_t> SortPermutationByColumn(
         return permutation;
     }
 
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     const bool columnInRange = columnIndex < columns.size();
     const bool isEnum = columnInRange && columns[columnIndex].type == ColumnType::Enumeration;
     const bool isLevel = columnInRange && columns[columnIndex].type == ColumnType::Level;

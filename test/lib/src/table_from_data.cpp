@@ -72,10 +72,10 @@ void AppendData(loglib::LogTable &table, loglib::LogData data)
     (void)table.AppendBatch(std::move(batch));
 }
 
-loglib::LogTable TableFromData(loglib::LogData data, loglib::LogConfigurationManager configuration)
+loglib::LogTable TableFromData(loglib::LogData data, loglib::ColumnLayout configuration)
 {
     loglib::LogTable table;
-    table.Configuration() = std::move(configuration);
+    table.Layout() = std::move(configuration);
     AppendData(table, std::move(data));
     loglib::FinishLoading(table);
     return table;

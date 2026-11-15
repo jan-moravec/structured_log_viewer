@@ -280,7 +280,7 @@ TEST_CASE("slp query reads a session bundle", "[cli][e2e][sources]")
     const auto bundlePath = ScratchRoot() / "two_lines.slvbundle";
     {
         loglib::LogTable table = ParseFixtureTable();
-        loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundlePath);
+        loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundlePath);
     }
 
     const auto result =

@@ -129,5 +129,6 @@ Supported headers are `LOGLIB_PUBLIC_HEADERS` in [`lib/CMakeLists.txt`](CMakeLis
 
 - Timezone type: `TimeZoneContext`. `Load` throws `std::runtime_error` on invalid tzdata or zone.
 - `FileLineSource` hides the mapping backend behind an incomplete type and an out-of-line destructor.
-- Configuration groups: `Column` / `ColumnType`, `Source` / `SourceLocator`, `Sort` / `SessionView`, `AnchorEntry`, `HighlightRule`. JSON remains flat on `LogConfiguration`.
+- Schema module: `ColumnLayout` holds the columns of a table and the operations on them. `SessionView` holds the filter, the sort, the highlight rules and the anchors of a session, and every part of it finds its column by keys. `LogConfiguration` is the content of a configuration file: `columns`, `view` and `source`. `LoadConfiguration`, `ParseConfiguration`, `SaveConfiguration` and `SerializeConfiguration` read and write it, and a session bundle stores the same JSON.
+- Configuration file: JSON with a required `version`, which is 1. Unknown keys are errors that name the key and the file. A column is written with its `type` only when the user chose it. See [the format](../CONTRIBUTING.md#configuration-file).
 - Table collaborators: `EnumInference`, `ColumnTypeHealth`, and `internal::RefreshColumnKeyIds`. `LogTable` remains the row facade.

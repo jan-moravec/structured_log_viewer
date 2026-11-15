@@ -9,7 +9,7 @@
 #pragma once
 
 #include "loglib/core/key_index.hpp"
-#include "loglib/schema/log_configuration.hpp"
+#include "loglib/schema/column_layout.hpp"
 
 #include <string>
 #include <string_view>
@@ -24,9 +24,7 @@ namespace loglib::internal
  * The cache belongs to LogTable, and this function only fills it. Each inner list follows the order of Column::keys,
  * with INVALID_KEY_ID for a key that is not interned yet. The old content of cache is replaced.
  */
-void RefreshColumnKeyIds(
-    std::vector<std::vector<KeyId>> &cache, const LogConfiguration &configuration, const KeyIndex &keys
-);
+void RefreshColumnKeyIds(std::vector<std::vector<KeyId>> &cache, const ColumnLayout &layout, const KeyIndex &keys);
 
 /**
  * @brief Looks up the key ids again only for columns that use one of the new keys.
@@ -36,7 +34,7 @@ void RefreshColumnKeyIds(
  */
 void RefreshColumnKeyIdsForKeys(
     std::vector<std::vector<KeyId>> &cache,
-    const LogConfiguration &configuration,
+    const ColumnLayout &layout,
     const KeyIndex &keys,
     const std::vector<std::string> &newKeys
 );

@@ -17,6 +17,7 @@
 #include <loglib/query/leaf_rule_compile.hpp>
 #include <loglib/query/log_compare.hpp>
 #include <loglib/query/log_filter.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
@@ -108,12 +109,9 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
         configuration.columns.push_back(MakeColumn("spaced", ColumnType::String, "{}"));
     }
 
-    // A configuration that went through the manager is the one the application has, with its columns normalized.
-    const TestLogConfiguration configurationFile("benchmark_table_configuration.json");
-    configurationFile.Write(configuration);
-    LogConfigurationManager manager;
-    manager.Load(configurationFile.GetFilePath());
-    result->table = std::make_unique<LogTable>(manager.Configuration());
+    // The layout sanitizes the print formats, as it does for the application.
+    const ColumnLayout manager(configuration.columns);
+    result->table = std::make_unique<LogTable>(manager);
     LogTable &table = *result->table;
     table.SetDisplayTimeZone(ProcessDefaultTimeZone());
     table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
@@ -243,11 +241,8 @@ SharedMixed MakeSharedStreamMessages(const Tier &tier)
         result->rows = rows;
         LogConfiguration configuration;
         configuration.columns.push_back(MakeColumn("message", ColumnType::String, "{}"));
-        const TestLogConfiguration configurationFile("benchmark_table_stream_configuration.json");
-        configurationFile.Write(configuration);
-        LogConfigurationManager manager;
-        manager.Load(configurationFile.GetFilePath());
-        result->table = std::make_unique<LogTable>(manager.Configuration());
+        const ColumnLayout manager(configuration.columns);
+        result->table = std::make_unique<LogTable>(manager);
         LogTable &table = *result->table;
         auto owned = std::make_unique<StreamLineSource>(std::filesystem::path("stream messages"), nullptr);
         StreamLineSource &source = *owned;
@@ -404,7 +399,7 @@ void RegisterRegexFilter(const Tier &tier, const SharedMixed &table, const char 
             rule.filterString = pattern;
             expression.node = FilterExpression::Leaf{rule};
             const CompiledFilterExpression compiled =
-                CompileExpression(expression, logTable.Configuration().Configuration().columns, &logTable);
+                CompileExpression(expression, logTable.Layout().Columns(), &logTable);
             std::size_t accepted = 0;
             for (const auto _ : state)
             {
@@ -444,7 +439,7 @@ void RegisterLeafFilter(
             FilterExpression expression;
             expression.node = FilterExpression::Leaf{rule};
             const CompiledFilterExpression compiled =
-                CompileExpression(expression, logTable.Configuration().Configuration().columns, &logTable);
+                CompileExpression(expression, logTable.Layout().Columns(), &logTable);
             std::size_t accepted = 0;
             for (const auto _ : state)
             {

@@ -204,7 +204,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
 
     const auto row = static_cast<size_t>(sourceRow);
     const auto &table = model.Table();
-    const auto &configuration = model.Configuration();
+    const auto &layout = model.Layout();
     const auto &lines = table.Data().Lines();
     // Belt-and-braces against future divergence between `rowCount()`
     // and `Lines().size()`.
@@ -215,10 +215,10 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     }
 
     const auto &line = lines[row];
-    content.fields.reserve(static_cast<int>(configuration.columns.size()));
-    for (size_t col = 0; col < configuration.columns.size(); ++col)
+    content.fields.reserve(static_cast<int>(layout.Columns().size()));
+    for (size_t col = 0; col < layout.Columns().size(); ++col)
     {
-        const QString header = QString::fromStdString(configuration.columns[col].header);
+        const QString header = QString::fromStdString(layout.Columns()[col].header);
         const QString value = QString::fromStdString(table.GetFormattedValue(row, col));
         content.fields.emplace_back(header, value);
     }
@@ -244,7 +244,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     content.formattedJson = FormatRawLineForDisplay(rawLineBytes);
 
     QString summary = RecordDetailWidget::tr("Row %1").arg(sourceRow + 1);
-    if (const int timeCol = loglib::FirstTimeColumnIndex(configuration); timeCol >= 0)
+    if (const int timeCol = loglib::FirstTimeColumnIndex(layout); timeCol >= 0)
     {
         const QString timeText = QString::fromStdString(table.GetFormattedValue(row, static_cast<size_t>(timeCol)));
         if (!timeText.isEmpty())

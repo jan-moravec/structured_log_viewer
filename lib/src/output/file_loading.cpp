@@ -87,13 +87,15 @@ LoadResult LoadFile(const std::filesystem::path &file, LoadOptions options)
     result.table.SetDefaultSourceTimeZone(options.defaultSourceTimeZone);
     if (options.configuration)
     {
-        result.table.Configuration().SetConfiguration(std::move(*options.configuration));
+        result.table.Layout().SetColumns(std::move(options.configuration->columns));
+        result.view = std::move(options.configuration->view);
     }
     else if (opened.bundle)
     {
-        result.table.Configuration().SetConfiguration(opened.bundle->configuration);
+        result.table.Layout().SetColumns(opened.bundle->configuration.columns);
+        result.view = opened.bundle->configuration.view;
     }
-    result.warnings = result.table.Configuration().TakeWarnings();
+    result.warnings = result.table.Layout().TakeWarnings();
 
     // The rows of a bundle are normalized JSON, however many there are.
     std::unique_ptr<LogParser> parser;

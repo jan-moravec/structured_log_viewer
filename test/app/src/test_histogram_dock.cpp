@@ -770,8 +770,7 @@ private slots:
         QVERIFY2(it != filters.end(), "sentinel filter ID must be installed");
         QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
         QCOMPARE(
-            it->second.columnKeys,
-            window.Model()->Configuration().columns[static_cast<size_t>(hm->TimeColumnIndex())].keys
+            it->second.columnKeys, window.Model()->Layout().Columns()[static_cast<size_t>(hm->TimeColumnIndex())].keys
         );
         QVERIFY(it->second.filterBegin.has_value());
         QVERIFY(it->second.filterEnd.has_value());

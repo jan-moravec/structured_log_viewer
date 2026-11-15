@@ -21,6 +21,7 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/query/log_compare.hpp>
 #include <loglib/query/log_filter.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -91,12 +92,9 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
          .parseFormats = {},
          .levelMapping = {}}
     );
-    const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    const ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     const std::vector<std::string> values = {"info", "warn", "error", "debug"};
@@ -155,12 +153,9 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
          .parseFormats = {},
          .levelMapping = {}}
     );
-    const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    const ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     // All six canonical aliases so the LevelRankCache covers the
@@ -213,12 +208,9 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
          .parseFormats = {},
          .levelMapping = {}}
     );
-    const TestLogConfiguration cfgFile;
-    cfgFile.Write(cfg);
-    LogConfigurationManager mgr;
-    mgr.Load(cfgFile.GetFilePath());
+    const ColumnLayout mgr(cfg.columns);
 
-    loglib::LogTable table(mgr.Configuration());
+    loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
     // Pool: a handful of canned messages so the matcher sees both
@@ -305,7 +297,7 @@ std::unique_ptr<TableInput> MakeLevelInput(const char *fileName)
     input->owned = std::make_unique<LargeTable>(BuildLargeLevelTable(*input->fixture, ROW_COUNT));
     LogTable &table = input->Table();
     if (table.RowCount() != ROW_COUNT || table.Keys().Find("level") == INVALID_KEY_ID ||
-        table.Configuration().Configuration().columns[0].type != ColumnType::Level)
+        table.Layout().Columns()[0].type != ColumnType::Level)
     {
         throw std::runtime_error("the level table was not built");
     }
@@ -330,7 +322,7 @@ std::unique_ptr<TableInput> MakeStringInput(const char *fileName)
     const LogTable &table, size_t columnIndex, const std::vector<std::string> &selectedOwned
 )
 {
-    const KeyId key = table.Keys().Find(table.Configuration().Configuration().columns[columnIndex].keys.front());
+    const KeyId key = table.Keys().Find(table.Layout().Columns()[columnIndex].keys.front());
     const EnumDictionary *dict = table.EnumDictionaries().Find(key);
     std::vector<std::string_view> views;
     views.reserve(selectedOwned.size());

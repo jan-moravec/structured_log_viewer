@@ -957,7 +957,7 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
     }
     if (role == Qt::ToolTipRole)
     {
-        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        const auto &columns = mLogTable.Layout().Columns();
         const QStringList titles = (static_cast<size_t>(section) < mColumnFilterDetails.size())
                                        ? mColumnFilterDetails[static_cast<size_t>(section)]
                                        : QStringList{};
@@ -1042,7 +1042,7 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::ColumnType newType, 
     // Snapshot the pre-edit pair so the transition classification
     // below is correct, and so `SetColumnTypePair` is the only
     // observer to see the atomic write.
-    const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+    const auto &columnsBefore = mLogTable.Layout().Columns();
     const auto previousType = columnsBefore[static_cast<size_t>(columnIndex)].type;
     const bool previousAutoDetect = columnsBefore[static_cast<size_t>(columnIndex)].autoDetect;
 
@@ -1051,7 +1051,7 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::ColumnType newType, 
         return;
     }
 
-    mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
+    mLogTable.Layout().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
     mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
 
     // Invalidate here too (not just in `NotifyColumnEdited`) so
@@ -1068,7 +1068,7 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::ColumnType newType, 
 
     // Read back the *effective* type -- the encode/rescan above may
     // route to a different terminal type than `newType`.
-    const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
+    const auto &columnsAfter = mLogTable.Layout().Columns();
     const auto effectiveType = columnsAfter[static_cast<size_t>(columnIndex)].type;
     using Type = loglib::ColumnType;
     const bool wasEnumLike = previousType == Type::Enumeration || previousType == Type::Level;
@@ -1210,7 +1210,7 @@ void LogModel::RefreshColumnHealth()
 
 int LogModel::ComputeFirstLevelColumnIndex() const noexcept
 {
-    const auto &columns = Configuration().columns;
+    const auto &columns = Layout().Columns();
     for (size_t i = 0; i < columns.size(); ++i)
     {
         if (columns[i].type == loglib::ColumnType::Level)
@@ -1906,14 +1906,14 @@ const loglib::LogData &LogModel::Data() const
     return mLogTable.Data();
 }
 
-const loglib::LogConfiguration &LogModel::Configuration() const
+const loglib::ColumnLayout &LogModel::Layout() const
 {
-    return mLogTable.Configuration().Configuration();
+    return mLogTable.Layout();
 }
 
-loglib::LogConfigurationManager &LogModel::ConfigurationManager()
+loglib::ColumnLayout &LogModel::MutableLayout()
 {
-    return mLogTable.Configuration();
+    return mLogTable.Layout();
 }
 
 QtStreamingLogSink *LogModel::Sink()
@@ -2025,7 +2025,7 @@ void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
     {
         return;
     }
-    const int timeCol = loglib::FirstTimeColumnIndex(Configuration());
+    const int timeCol = loglib::FirstTimeColumnIndex(Layout());
     if (timeCol < 0)
     {
         return;
@@ -2143,7 +2143,7 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 
 void LogModel::NotifyConfigurationReplaced()
 {
-    // `LogConfigurationManager::Load` rewrites the configuration
+    // Replacing the columns of the layout
     // without emitting any model signal. Re-sync the per-column
     // caches before the reset so mid-reset queries see consistent
     // state. The row store is unchanged here.

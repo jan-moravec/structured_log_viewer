@@ -193,14 +193,12 @@ struct SyncInput
 struct EnumInput
 {
     std::unique_ptr<TestStructuredLogFile> file;
-    TestLogConfiguration configFile{"bench_json_enum_config.json"};
     std::shared_ptr<const LogConfiguration> configuration;
 };
 
 // One streaming parse into a fresh LogTable, kept alive so the counters can read the last one after the timed loop.
 struct EnumRun
 {
-    std::unique_ptr<LogConfigurationManager> configManager;
     std::unique_ptr<loglib::LogTable> table;
 };
 
@@ -411,7 +409,6 @@ void RegisterEnumBenchmark()
         );
         InitializeTimezoneData();
         created->configuration = MakeTimestampConfiguration();
-        created->configFile.Write(*created->configuration);
         return created;
     });
     RegisterSmall("Enum auto-detection over 20000 lines", [input](benchmark::State &state) {
@@ -420,9 +417,7 @@ void RegisterEnumBenchmark()
         for (const auto _ : state)
         {
             run.table.reset();
-            run.configManager = std::make_unique<LogConfigurationManager>();
-            run.configManager->Load(fixture.configFile.GetFilePath());
-            run.table = std::make_unique<loglib::LogTable>(run.configManager->Configuration());
+            run.table = std::make_unique<loglib::LogTable>(ColumnLayout(fixture.configuration->columns));
             run.table->SetDisplayTimeZone(ProcessDefaultTimeZone());
             run.table->SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
 
@@ -433,14 +428,14 @@ void RegisterEnumBenchmark()
             StreamSink sink;
             sink.table = run.table.get();
             ParserOptions opts;
-            opts.timeColumns = TimeColumnsOf(*fixture.configuration);
+            opts.timeColumns = TimeColumnsOf(fixture.configuration->columns);
             opts.defaultSourceTimeZone = run.table->DefaultSourceTimeZone();
             JsonParser{}.ParseStreaming(*parseSource, sink, opts);
         }
 
         const loglib::LogTable &table = *run.table;
         const KeyId levelKey = table.Keys().Find("level");
-        const auto &columns = table.Configuration().Configuration().columns;
+        const auto &columns = table.Layout().Columns();
         const auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
             return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
         });

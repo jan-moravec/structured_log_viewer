@@ -152,7 +152,7 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl
     mOkButton->setObjectName(QStringLiteral("okButton"));
     mCancelButton = new QPushButton("Cancel", this);
 
-    for (const auto &column : mModel.Configuration().columns)
+    for (const auto &column : mModel.Layout().Columns())
     {
         mRowComboBox->addItem(QString::fromStdString(column.header));
     }
@@ -276,7 +276,7 @@ void FilterEditor::Load(int row, std::optional<qint64> begin, std::optional<qint
 void FilterEditor::Load(int row, const QStringList &selectedValues)
 {
     mRowComboBox->setCurrentIndex(row);
-    const auto &columns = mModel.Configuration().columns;
+    const auto &columns = mModel.Layout().Columns();
     const bool isLevel = row >= 0 && static_cast<size_t>(row) < columns.size() &&
                          columns[static_cast<size_t>(row)].type == ColumnType::Level;
     if (isLevel)
@@ -365,7 +365,7 @@ void FilterEditor::Load(int row, bool includeTrue, bool includeFalse)
 
 void FilterEditor::SetInitialColumn(int row)
 {
-    const auto &columns = mModel.Configuration().columns;
+    const auto &columns = mModel.Layout().Columns();
     if (row < 0 || static_cast<size_t>(row) >= columns.size())
     {
         return;
@@ -651,12 +651,12 @@ qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
 void FilterEditor::OnOkClicked()
 {
     const int index = mRowComboBox->currentIndex();
-    if (index < 0 || static_cast<size_t>(index) >= mModel.Configuration().columns.size())
+    if (index < 0 || static_cast<size_t>(index) >= mModel.Layout().Columns().size())
     {
         return;
     }
 
-    const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
+    const auto &column = mModel.Layout().Columns()[static_cast<size_t>(index)];
 
     if (column.type == ColumnType::Time)
     {
@@ -781,11 +781,11 @@ void FilterEditor::OnOkClicked()
 
 void FilterEditor::UpdateSelectedColumn(int index)
 {
-    if (index < 0 || static_cast<size_t>(index) >= mModel.Configuration().columns.size())
+    if (index < 0 || static_cast<size_t>(index) >= mModel.Layout().Columns().size())
     {
         return;
     }
-    const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
+    const auto &column = mModel.Layout().Columns()[static_cast<size_t>(index)];
     switch (column.type)
     {
     case ColumnType::Time:
@@ -831,12 +831,12 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
 {
     mEnumValuesModel->clear();
     mEnumSearchEdit->clear();
-    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Layout().Columns().size())
     {
         UpdateEnumSelectionCount();
         return;
     }
-    const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
+    const auto &column = mModel.Layout().Columns()[static_cast<size_t>(columnIndex)];
     if (column.type != ColumnType::Enumeration)
     {
         UpdateEnumSelectionCount();
@@ -887,12 +887,12 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
 {
     mEnumValuesModel->clear();
     mEnumSearchEdit->clear();
-    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Layout().Columns().size())
     {
         UpdateEnumSelectionCount();
         return;
     }
-    const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
+    const auto &column = mModel.Layout().Columns()[static_cast<size_t>(columnIndex)];
     if (column.type != ColumnType::Level)
     {
         UpdateEnumSelectionCount();

@@ -45,7 +45,7 @@ public:
 
 /// Process-wide recent-sessions store. Owned by `main()` and passed
 /// by reference into each `MainWindow`. Per-session JSON files are
-/// written via `LogConfigurationManager::Save(scope=Full)` so an
+/// written via `SaveConfiguration with SaveScope::Full` so an
 /// auto-saved session and a manually-saved one are interchangeable.
 ///
 /// Concurrency:

@@ -1,6 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/schema/internal/log_configuration_glaze_meta.hpp>
+#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
@@ -194,13 +194,7 @@ void TestLogConfiguration::Write(const LogConfiguration &configuration) const
 {
     std::ofstream file(mFsPath);
     ThrowIfNotOpen(file.is_open());
-    std::string json;
-    const auto error = glz::write_json(configuration, json);
-    if (error)
-    {
-        throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
-    }
-    file << json;
+    file << loglib::SerializeConfiguration(configuration, loglib::SaveScope::Full);
 }
 
 const std::string &TestLogFile::GetFilePath() const

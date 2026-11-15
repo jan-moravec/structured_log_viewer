@@ -1122,7 +1122,7 @@ public:
      * @brief Test-only entries to `SaveConfiguration` / `LoadConfiguration`
      * that bypass the file dialog. `scope` defaults to `Full` so
      * existing tests (written against the old single-action save)
-     * keep passing; pass `SaveScope::ColumnsOnly` for the
+     * keep passing; pass `SaveScope::Columns` for the
      * "Save Configuration\u2026" path.
      * @param path The path to use.
      * @param scope The persistence scope.
@@ -2382,14 +2382,20 @@ private:
 
     /**
      * @brief Snapshot `mSimpleLeaves` (ordered by `mSimpleLeafOrder`),
-     * proxy sort, and `mCurrentSource` into the configuration.
+     * the proxy sort and the anchors into the session view.
      * Simple-mode leaves become the top-level `And` children;
      * pre-existing non-Leaf siblings (Advanced-editor output) are
-     * preserved. Bulk callers set `deferSync = true` and mirror
-     * once at the end.
+     * preserved.
      */
-    void MirrorSessionStateToConfiguration();
-    void MirrorSessionStateToConfiguration(LogSession *session);
+    void SyncSessionView();
+    void SyncSessionView(LogSession *session);
+
+    /**
+     * @brief Syncs the view of @p session and returns what a configuration
+     * file holds for it: the model columns, the view, and the source with
+     * any files still queued to open.
+     */
+    [[nodiscard]] loglib::LogConfiguration SnapshotConfiguration(LogSession *session);
 
     /**
      * @brief Shared tail of `OpenLogStream` and `OpenLogStreamForTest`:
@@ -2548,7 +2554,7 @@ private:
      * @brief Gate "Clear All Filters" on
      * `LogConfiguration::expression` (not `mSimpleLeaves`) so an
      * Advanced-only tree still enables the escape hatch. Must run
-     * after `MirrorSessionStateToConfiguration`.
+     * after `SyncSessionView`.
      */
     void SyncClearAllFiltersEnabled();
     void ApplyTableStyleSheet();
@@ -3561,7 +3567,7 @@ private:
      * `mSession->SetCurrentSource()` /
      * `mSession->ResetCurrentSource()`. Mirrored into
      * `LogConfiguration::source` before a `SaveScope::Full` save by
-     * `MirrorSessionStateToConfiguration`.
+     * `SyncSessionView`.
      */
 
     /**

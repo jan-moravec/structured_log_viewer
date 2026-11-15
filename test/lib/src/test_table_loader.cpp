@@ -105,7 +105,7 @@ TEST_CASE("ParseIntoTable loads one file into a typed table", "[table_loader]")
     REQUIRE(table.ColumnCount() == 3);
     // A time column moves to the front, the others follow the file.
     CHECK(HeadersOf(table) == std::vector<std::string>{"timestamp", "level", "n"});
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Time);
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(0, 0)));
     CHECK(table.GetFormattedValue(3, 2) == "3");
 }
@@ -407,7 +407,7 @@ TEST_CASE("A time column the table detects is converted by the parser in the lat
     const auto convertedBatches =
         std::ranges::count_if(sink.converted, [](const auto &keys) { return keys.size() == 1; });
     CHECK(static_cast<size_t>(convertedBatches) > sink.converted.size() / 2);
-    CHECK(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    CHECK(table.Layout().Columns()[0].type == ColumnType::Time);
     for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
     {
         CHECK(std::holds_alternative<TimeStamp>(table.GetValue(row, 0)));
@@ -435,7 +435,7 @@ TEST_CASE(
 
     REQUIRE(outcome.errors.empty());
     REQUIRE(table.RowCount() == 20'000);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    REQUIRE(table.Layout().Columns()[0].type == ColumnType::Time);
     const TimeStamp expected{std::chrono::sys_days{std::chrono::year{2020} / 3 / 1} + std::chrono::hours{10}};
     for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
     {
@@ -488,7 +488,7 @@ TEST_CASE("A large batch of enumeration values is encoded the same as a small on
         }
     }
     REQUIRE(levelColumn < table.ColumnCount());
-    const ColumnType levelType = table.Configuration().Configuration().columns[levelColumn].type;
+    const ColumnType levelType = table.Layout().Columns()[levelColumn].type;
     CHECK((levelType == ColumnType::Enumeration || levelType == ColumnType::Level));
     for (size_t row = 0; row < expected.size(); ++row)
     {
@@ -521,7 +521,7 @@ TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_
     LogTable table;
     LogConfiguration configuration;
     configuration.columns.push_back({.header = "when", .keys = {"ts"}, .printFormat = "{}", .type = ColumnType::Time});
-    table.Configuration().SetConfiguration(configuration);
+    table.Layout().SetColumns(configuration.columns);
 
     const StopSource stopSource;
     const ParserOptions options = ParserOptionsFor(table, stopSource.GetToken());

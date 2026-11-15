@@ -102,7 +102,9 @@ ExitCode RunBundle(
     }
     console.Stage("parse", loaded->table.RowCount(), parseStarted);
 
-    auto session = ApplySessionConfiguration(options.filter, options.view, loaded->table, runtime, BundleOptions::NAME);
+    auto session = ApplySessionConfiguration(
+        options.filter, options.view, loaded->view, loaded->table, runtime, BundleOptions::NAME
+    );
     if (!session)
     {
         return console.Report(session.error());
@@ -119,12 +121,11 @@ ExitCode RunBundle(
     if (options.filteredRows)
     {
         const auto filterStarted = std::chrono::steady_clock::now();
-        const auto compiled = loglib::CompileExpression(
-            session->expression, loaded->table.Configuration().Configuration().columns, &loaded->table
-        );
+        const auto compiled =
+            loglib::CompileExpression(session->expression, loaded->table.Layout().Columns(), &loaded->table);
         filteredRows = loglib::FilterAcceptedRows(loaded->table, compiled);
         console.Stage("filter", filteredRows->size(), filterStarted);
-        configuration.expression = loglib::FilterExpression{};
+        configuration.view.expression = loglib::FilterExpression{};
     }
 
     console.ParseErrors(loaded->parseErrors);

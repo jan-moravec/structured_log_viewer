@@ -160,7 +160,7 @@ namespace
 {
     try
     {
-        loglib::LogConfigurationManager::Save(configuration, path, scope);
+        loglib::SaveConfiguration(configuration, path, scope);
     }
     catch (const std::exception &ex)
     {
@@ -182,10 +182,10 @@ std::string CanonicalSourceLocator(const std::filesystem::path &path)
 
 std::expected<loglib::LogConfiguration, std::string> LoadConfigFile(const std::filesystem::path &path)
 {
-    loglib::LogConfigurationManager manager;
+    loglib::LogConfiguration configuration;
     try
     {
-        manager.Load(path);
+        configuration = loglib::LoadConfiguration(path);
     }
     catch (const std::exception &ex)
     {
@@ -193,7 +193,6 @@ std::expected<loglib::LogConfiguration, std::string> LoadConfigFile(const std::f
             std::format("could not read configuration '{}': {}.", path.string(), FirstSentence(ex.what()))
         );
     }
-    loglib::LogConfiguration configuration = manager.Configuration();
     configuration.source.reset();
     return configuration;
 }
@@ -209,8 +208,7 @@ std::optional<Failure> CheckLoadedFilter(
     {
         return std::nullopt;
     }
-    const std::vector<std::string> problems =
-        loglib::FindFilterProblems(session.expression, table.Configuration().Configuration().columns);
+    const std::vector<std::string> problems = loglib::FindFilterProblems(session.expression, table.Layout().Columns());
     if (problems.empty())
     {
         return std::nullopt;
@@ -222,24 +220,26 @@ std::optional<Failure> CheckLoadedFilter(
 std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     const FilterOptions &filter,
     const ViewOptions &view,
+    const loglib::SessionView &seed,
     const loglib::LogTable &table,
     const RuntimeContext &runtime,
     std::string_view command
 )
 {
     EffectiveSession session;
-    session.configuration = table.Configuration().Configuration();
-    session.configuration.source.reset();
+    session.configuration.columns = table.Layout().Columns();
+    session.configuration.view = seed;
     auto &columns = session.configuration.columns;
 
     // Row selection: flags replace the configuration's expression.
     if (!filter.Active())
     {
-        session.expression = session.configuration.expression;
+        session.expression = session.configuration.view.expression;
     }
     else if (filter.OnlyInvert())
     {
-        session.expression = loglib::FilterExpression{loglib::FilterExpression::Not{session.configuration.expression}};
+        session.expression =
+            loglib::FilterExpression{loglib::FilterExpression::Not{session.configuration.view.expression}};
     }
     else
     {
@@ -262,12 +262,12 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
         session.sort = *parsed;
     }
     else if (
-        const auto &persisted = session.configuration.sort;
-        persisted.columnIndex >= 0 && static_cast<std::size_t>(persisted.columnIndex) < columns.size()
+        const auto &persisted = session.configuration.view.sort;
+        loglib::ResolveLeafColumnByKeys(persisted.columnKeys, columns) >= 0
     )
     {
         session.sort = SortChoice{
-            .columnIndex = static_cast<std::size_t>(persisted.columnIndex),
+            .columnIndex = static_cast<std::size_t>(loglib::ResolveLeafColumnByKeys(persisted.columnKeys, columns)),
             .direction = persisted.descending ? loglib::SortDirection::Descending : loglib::SortDirection::Ascending
         };
     }
@@ -327,18 +327,13 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
         session.visibleColumns = loglib::ColumnProjection(columns).Indices();
     }
 
-    // Persist the sort in the written column order.
-    session.configuration.expression = session.expression;
-    session.configuration.sort = loglib::Sort{};
+    // The sort names its column by keys, so the written column order does not matter.
+    session.configuration.view.expression = session.expression;
+    session.configuration.view.sort = loglib::Sort{};
     if (session.sort)
     {
-        std::size_t written = session.sort->columnIndex;
-        if (!order.empty())
-        {
-            written = static_cast<std::size_t>(std::ranges::find(order, written) - order.begin());
-        }
-        session.configuration.sort.columnIndex = static_cast<int>(written);
-        session.configuration.sort.descending = session.sort->direction == loglib::SortDirection::Descending;
+        session.configuration.view.sort.columnKeys = table.Layout().Columns()[session.sort->columnIndex].keys;
+        session.configuration.view.sort.descending = session.sort->direction == loglib::SortDirection::Descending;
     }
     return session;
 }
@@ -362,7 +357,7 @@ std::optional<Failure> SaveSessionFiles(
     }
     if (targets.columns)
     {
-        if (auto failure = WriteOne(session.configuration, *targets.columns, loglib::SaveScope::ColumnsOnly))
+        if (auto failure = WriteOne(session.configuration, *targets.columns, loglib::SaveScope::Columns))
         {
             return failure;
         }

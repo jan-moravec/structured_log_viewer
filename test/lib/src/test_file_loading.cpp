@@ -76,7 +76,7 @@ struct Snapshot
     for (size_t column = 0; column < table.ColumnCount(); ++column)
     {
         snapshot.headers.push_back(table.GetHeader(column));
-        snapshot.types.push_back(table.Configuration().Configuration().columns[column].type);
+        snapshot.types.push_back(table.Layout().Columns()[column].type);
     }
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
@@ -105,7 +105,7 @@ TEST_CASE("LoadFile loads a plain file and converts the time column", "[file_loa
     REQUIRE(result.table.RowCount() == 30);
     REQUIRE(result.table.ColumnCount() == 4);
     CHECK(result.table.GetHeader(0) == "timestamp");
-    CHECK(result.table.Configuration().Configuration().columns[0].type == ColumnType::Time);
+    CHECK(result.table.Layout().Columns()[0].type == ColumnType::Time);
     CHECK(std::holds_alternative<TimeStamp>(result.table.GetValue(0, 0)));
     CHECK(result.table.Data().Lines().front().Source()->Path() == path);
 }
@@ -235,7 +235,9 @@ TEST_CASE("Only the bundle extension makes a file a bundle", "[file_loading][bun
     {
         const LoadResult original = LoadFile(dir.Write("log.jsonl", content));
         const auto bundlePath = dir.Path() / "session.slvbundle";
-        WriteSessionBundle(original.table, original.table.Configuration().Configuration(), bundlePath);
+        WriteSessionBundle(
+            original.table, loglib::LogConfiguration{.columns = original.table.Layout().Columns()}, bundlePath
+        );
 
         const LoadResult loaded = LoadFile(bundlePath);
         REQUIRE(loaded.bundle.has_value());
@@ -269,7 +271,10 @@ TEST_CASE("Only the bundle extension makes a file a bundle", "[file_loading][bun
         const LoadResult original = LoadFile(dir.Write("log.jsonl", content));
         const auto bundlePath = dir.Path() / "empty.slvbundle";
         WriteSessionBundle(
-            original.table, original.table.Configuration().Configuration(), std::span<const std::size_t>{}, bundlePath
+            original.table,
+            loglib::LogConfiguration{.columns = original.table.Layout().Columns()},
+            std::span<const std::size_t>{},
+            bundlePath
         );
         const LoadResult loaded = LoadFile(bundlePath);
         CHECK(loaded.table.RowCount() == 0);

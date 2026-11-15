@@ -211,7 +211,10 @@ void RegisterBundleWrite(const Tier &tier, const SharedExportTable &table)
             const auto writeOnce = [&] {
                 const TempFile destination;
                 WriteSessionBundle(
-                    fixture.Table(), fixture.Table().Configuration().Configuration(), destination.Path(), options
+                    fixture.Table(),
+                    LogConfiguration{.columns = fixture.Table().Layout().Columns()},
+                    destination.Path(),
+                    options
                 );
                 bytes = std::filesystem::file_size(destination.Path());
             };

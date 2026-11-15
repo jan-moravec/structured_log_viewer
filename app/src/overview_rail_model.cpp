@@ -592,10 +592,10 @@ int OverviewRailModel::ComputeLevelColumnIndex() const noexcept
     {
         return -1;
     }
-    const auto &config = mSourceModel->Configuration();
-    for (std::size_t i = 0; i < config.columns.size(); ++i)
+    const auto &columns = mSourceModel->Layout().Columns();
+    for (std::size_t i = 0; i < columns.size(); ++i)
     {
-        if (config.columns[i].type == loglib::ColumnType::Level)
+        if (columns[i].type == loglib::ColumnType::Level)
         {
             return static_cast<int>(i);
         }

@@ -9,6 +9,7 @@
 #include <loglib/parse/internal/streaming_parse_loop.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/time/internal/timestamp_promotion.hpp>
 
@@ -856,7 +857,7 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     configuration->columns.push_back(timeColumn);
 
     loglib::ParserOptions options;
-    options.timeColumns = TimeColumnsOf(*configuration);
+    options.timeColumns = TimeColumnsOf(configuration->columns);
     options.threads = 1;
 
     CollectingSink sink;

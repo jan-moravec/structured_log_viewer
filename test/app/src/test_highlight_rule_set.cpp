@@ -144,7 +144,7 @@ private slots:
         std::vector<Rule> ruleSet;
         ruleSet.push_back(MakeContainsRule("warn-hit", "level", "warn"));
         ruleSet.push_back(MakeContainsRule("bogus", "does-not-exist", "warn"));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         QCOMPARE(rules.InactiveCount(), 1u);
         QVERIFY(rules.HasActiveRules());
@@ -182,7 +182,7 @@ private slots:
         std::vector<Rule> ruleSet;
         ruleSet.push_back(MakeContainsRule("catch-all", "level", "n"));
         ruleSet.push_back(MakeContainsRule("warn-only", "level", "warn"));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         // "info" contains 'n' -> catch-all (index 0).
         // "warn" contains 'n' AND "warn" -> warn-only wins (index 1).
@@ -205,7 +205,7 @@ private slots:
         StreamJsonPathInto(model, seed.Path());
         std::vector<Rule> ruleSet;
         ruleSet.push_back(MakeContainsRule("warn-hit", "level", "warn"));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
 
         // Second batch. The `MainWindow` tail-update hook isn't
@@ -242,7 +242,7 @@ private slots:
         StreamJsonPathInto(model, fixture.Path());
         std::vector<Rule> ruleSet;
         ruleSet.push_back(MakeContainsRule("warn-hit", "level", "warn"));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
         QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
         QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
@@ -276,7 +276,7 @@ private slots:
         // applying a saved configuration to an empty session.
         std::vector<Rule> preLoad;
         preLoad.push_back(MakeContainsRule("service-hit", "service", "billing"));
-        rules.SetRules(std::move(preLoad), model.Configuration().columns, /*table=*/nullptr);
+        rules.SetRules(std::move(preLoad), model.Layout().Columns(), /*table=*/nullptr);
         QCOMPARE(rules.InactiveCount(), 1u);
         QVERIFY(!rules.HasActiveRules());
 
@@ -292,7 +292,7 @@ private slots:
             stream << R"({"level": "info", "service": "billing", "msg": "hit2"})" << '\n';
         }
         StreamJsonPathInto(model, grown);
-        rules.RebindColumns(model.Configuration().columns, &model.Table());
+        rules.RebindColumns(model.Layout().Columns(), &model.Table());
 
         QCOMPARE(rules.InactiveCount(), 0u);
         QVERIFY(rules.HasActiveRules());
@@ -319,7 +319,7 @@ private slots:
         StreamJsonPathInto(model, fixture.Path());
         std::vector<Rule> ruleSet;
         ruleSet.push_back(MakeContainsRule("warn-hit", "level", "warn"));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         QVERIFY(rules.HasActiveRules());
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
@@ -362,7 +362,7 @@ private slots:
         boolRule.filterValues = {"true"};
         std::vector<Rule> ruleSet;
         ruleSet.push_back(std::move(boolRule));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         QVERIFY(rules.HasActiveRules());
         QCOMPARE(rules.InactiveCount(), 0u);
@@ -401,7 +401,7 @@ private slots:
             r.filterString = std::string{};
             ruleSet.push_back(std::move(r));
         }
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         // Contains / Regex / Wildcard rejected up-front. Exactly
         // compiled, so the set has one active rule -- but no row in
@@ -446,7 +446,7 @@ private slots:
         r.filterString = std::string{};
         std::vector<Rule> ruleSet;
         ruleSet.push_back(std::move(r));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         QCOMPARE(rules.InactiveCount(), 0u);
         QVERIFY(rules.HasActiveRules());
@@ -494,7 +494,7 @@ private slots:
         std::vector<Rule> ruleSet;
         ruleSet.push_back(std::move(minOnly));
         ruleSet.push_back(std::move(empty));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
 
         QCOMPARE(rules.InactiveCount(), 1u);
         QVERIFY(rules.HasActiveRules());
@@ -519,12 +519,12 @@ private slots:
 
         std::vector<Rule> ruleSet;
         ruleSet.push_back(MakeContainsRule("warn-hit", "level", "warn"));
-        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
         const int levelBefore = rules.ResolvedColumnsForTest().front();
         QVERIFY(levelBefore >= 0);
 
         // Move the level column to the last visible index.
-        const int columnCount = static_cast<int>(model.Configuration().columns.size());
+        const int columnCount = static_cast<int>(model.Layout().Columns().size());
         QVERIFY(columnCount >= 2);
         const int lastIndex = columnCount - 1;
         if (levelBefore != lastIndex)
@@ -532,7 +532,7 @@ private slots:
             const bool moved = model.MoveColumn(levelBefore, lastIndex);
             QVERIFY(moved);
         }
-        rules.RebindColumns(model.Configuration().columns, &model.Table());
+        rules.RebindColumns(model.Layout().Columns(), &model.Table());
         const int levelAfter = rules.ResolvedColumnsForTest().front();
         QVERIFY(levelAfter >= 0);
 

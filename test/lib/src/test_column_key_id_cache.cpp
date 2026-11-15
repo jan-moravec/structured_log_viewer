@@ -1,4 +1,5 @@
 #include <loglib/core/key_index.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/column_key_id_cache.hpp>
 
@@ -33,7 +34,7 @@ TEST_CASE("RefreshColumnKeyIds records INVALID_KEY_ID for interned-missing keys"
     const KeyId msgId = keys.GetOrInsert("msg");
 
     std::vector<std::vector<KeyId>> cache;
-    internal::RefreshColumnKeyIds(cache, configuration, keys);
+    internal::RefreshColumnKeyIds(cache, ColumnLayout(configuration.columns), keys);
 
     REQUIRE(cache.size() == 2);
     REQUIRE(cache[0].size() == 2);
@@ -56,7 +57,7 @@ TEST_CASE(
     const KeyId bId = keys.GetOrInsert("b");
 
     std::vector<std::vector<KeyId>> cache{{aId}, {INVALID_KEY_ID}, {INVALID_KEY_ID}};
-    internal::RefreshColumnKeyIdsForKeys(cache, configuration, keys, {"b"});
+    internal::RefreshColumnKeyIdsForKeys(cache, ColumnLayout(configuration.columns), keys, {"b"});
     REQUIRE(cache.size() == 2);
     CHECK(cache[0] == std::vector<KeyId>{aId});
     CHECK(cache[1] == std::vector<KeyId>{bId});

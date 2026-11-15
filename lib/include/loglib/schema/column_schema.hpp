@@ -19,8 +19,8 @@ namespace loglib
 /**
  * @brief The type of a column. It decides how the column is detected, shown, sorted and filtered.
  *
- * Automatic detection looks at a column only if its type is Any and its autoDetect flag is set. In the saved JSON the
- * keys are written in lowerCamelCase.
+ * Automatic detection looks at a column only if its type is Any and its autoDetect flag is set. In a saved file the
+ * keys are written in lowerCamelCase, and a type is written only for a column whose autoDetect flag is off.
  *
  * - Any: the starting type of a new column, and the type of columns the detector could not classify. With autoDetect
  *   off, it means the user wants the column treated as text. It sorts and filters as a string.
@@ -60,7 +60,8 @@ struct Column
 
     /**
      * @brief How values are shown. For times it is a time format, and for numbers and booleans a fmt format string.
-     * Strings ignore it.
+     * Strings ignore it. The default is empty, which a ColumnLayout replaces by {} or, for a Time column, by the
+     * default time format.
      */
     std::string printFormat;
 
@@ -68,16 +69,17 @@ struct Column
      * @brief The column type. New columns start as Any, which makes them candidates for detection.
      *
      * Turning a column into a Time column is permanent until the table is reset. A column detected as an enumeration
-     * can be demoted when it overflows, but only while autoDetect is on.
+     * can be demoted when it overflows, but only while autoDetect is on. A configuration file holds the type only when
+     * autoDetect is off, so a detected type stays with the table and is detected again after a load.
      */
     ColumnType type = ColumnType::Any;
 
-    /** @brief The time formats to try, in order, for a Time column. */
+    /** @brief The time formats to try, in order, for a Time column. The default is none. */
     std::vector<std::string> parseFormats;
 
     /**
      * @brief Whether a view shows the column. A hidden column stays in the table, so sorting and filtering still use
-     * its data. A saved configuration without this field loads as visible.
+     * its data. The default is visible.
      */
     bool visible = true;
 
@@ -85,14 +87,15 @@ struct Column
      * @brief Extra level names for a Level column, as pairs of an alias and a level name.
      *
      * An alias matches the text of a value without regard to case, and the level name must be one of the LogLevel
-     * names such as Info or Warn. These pairs are added to the built-in aliases. Other columns ignore them.
+     * names such as Info or Warn. These pairs are added to the built-in aliases. Other columns ignore them. The default
+     * is none.
      */
     std::vector<std::pair<std::string, std::string>> levelMapping;
 
     /**
      * @brief True when the detector owns the column: it classifies Any columns and demotes enumerations that overflow.
-     * False when the user fixed the type, and then it never changes by itself. A saved configuration without this
-     * field loads as true.
+     * False when the user fixed the type, and then it never changes by itself. The default is true. A file written
+     * without a type for a column loads it with this flag on.
      */
     bool autoDetect = true;
 };

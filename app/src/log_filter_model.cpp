@@ -302,7 +302,7 @@ void LogFilterModel::ApplySortPermutation()
     {
         return;
     }
-    const auto &columns = mLogModel->Configuration().columns;
+    const auto &columns = mLogModel->Layout().Columns();
     if (static_cast<size_t>(mSortColumn) >= columns.size())
     {
         return;
@@ -360,7 +360,7 @@ bool LogFilterModel::LessThanSourceRows(int leftSource, int rightSource) const
     {
         return leftSource < rightSource;
     }
-    const auto &columns = mLogModel->Configuration().columns;
+    const auto &columns = mLogModel->Layout().Columns();
     if (mSortColumn < 0 || static_cast<size_t>(mSortColumn) >= columns.size())
     {
         return leftSource < rightSource;
@@ -1165,7 +1165,7 @@ void LogFilterModel::ForEachMatchingRow(
     // row into view but leaves the user with no idea what matched
     // (zero-width section). Source of truth is `Column::visible`.
     // No-op when `mLogModel` is null (tests without a config).
-    const auto *columnsForVisibility = mLogModel != nullptr ? &mLogModel->Configuration().columns : nullptr;
+    const auto *columnsForVisibility = mLogModel != nullptr ? &mLogModel->Layout().Columns() : nullptr;
     auto isColumnHidden = [columnsForVisibility](int column) {
         if (columnsForVisibility == nullptr)
         {

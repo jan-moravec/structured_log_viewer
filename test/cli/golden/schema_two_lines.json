@@ -6,7 +6,7 @@
         "ts"
       ],
       "type": "time",
-      "autoDetect": true,
+      "autoDetect": false,
       "visible": true,
       "printFormat": "%F %H:%M:%S",
       "parseFormats": [

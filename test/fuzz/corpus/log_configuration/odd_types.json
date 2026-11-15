@@ -1,1 +1,1 @@
-{"columns":[{"header":"a","keys":["a"],"type":"time","printFormat":"%F"}],"filters":[{"type":"x"}],"highlightRules":[{}],"sort":[1,2,3]}
+{"version":1,"columns":[{"header":"a","keys":["a"],"type":"time","printFormat":"%F"}],"view":{"highlightRules":[{}],"expression":{"kind":"and","children":[]}}}

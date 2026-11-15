@@ -160,7 +160,7 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
     {
         const loglib::LoadResult loaded = loglib::LoadFile(logapp::QStringToFsPath(jsonlPath));
         const loglib::LogTable &table = loaded.table;
-        loglib::LogConfiguration configuration = table.Configuration().Configuration();
+        loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
         if (configuration.columns.empty())
         {
             return {};
@@ -170,7 +170,7 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
         rule.columnKeys = configuration.columns.front().keys;
         rule.filterString = filterToken.toStdString();
         rule.matchType = loglib::LeafRule::Match::Contains;
-        configuration.expression = loglib::MakeAnd({loglib::MakeLeaf(std::move(rule))});
+        configuration.view.expression = loglib::MakeAnd({loglib::MakeLeaf(std::move(rule))});
         loglib::WriteSessionBundle(table, configuration, logapp::QStringToFsPath(path));
         return path;
     }
@@ -341,7 +341,7 @@ void AddContainsFilter(MainWindow &window, const QString &token)
     {
         return visible;
     }
-    for (const auto &column : model->Configuration().columns)
+    for (const auto &column : model->Layout().Columns())
     {
         visible.push_back(column.visible);
     }
@@ -2749,7 +2749,7 @@ private slots:
         const QStringList originLeafStrings = SimpleLeafFilterStrings(*sessionA);
         const bool originHasBundleFilter =
             originLeafStrings.contains(QStringLiteral("bundle-only-token")) ||
-            ExpressionContainsFilterString(originModel->Configuration().expression, "bundle-only-token");
+            ExpressionContainsFilterString(sessionA->View().expression, "bundle-only-token");
         QVERIFY2(
             originHasBundleFilter,
             qPrintable(QStringLiteral(
@@ -2757,7 +2757,7 @@ private slots:
                            "simpleLeaves=[%1] matchAll=%2 dropped=%3 rows=%4"
             )
                            .arg(originLeafStrings.join(QLatin1Char(',')))
-                           .arg(loglib::IsMatchAll(originModel->Configuration().expression))
+                           .arg(loglib::IsMatchAll(sessionA->View().expression))
                            .arg(window.LastDroppedFilterCountForTest())
                            .arg(originModel->rowCount()))
         );
@@ -2882,9 +2882,9 @@ private slots:
         QVERIFY(!sessionA->IsFiltersDirty());
         QCOMPARE(sessionA->CloseDecision(), SessionCloseDecision::Prompt);
         QCOMPARE(sessionA->Highlights()->Rules(), committedA);
-        QCOMPARE(sessionA->Model()->Configuration().highlightRules, committedA);
+        QCOMPARE(sessionA->View().highlightRules, committedA);
         QCOMPARE(sessionB->Highlights()->Rules(), committedB);
-        QCOMPARE(sessionB->Model()->Configuration().highlightRules, committedB);
+        QCOMPARE(sessionB->View().highlightRules, committedB);
         QVERIFY(!editor->IsDirty());
         QCOMPARE(editor->CaptureDraft().localRules, committedB);
 

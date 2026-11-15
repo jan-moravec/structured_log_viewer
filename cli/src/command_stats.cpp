@@ -546,7 +546,7 @@ struct TimeHistogram
     ColumnReport report;
     report.sources = SourceNames(input);
     report.rowCount = rows.size();
-    report.column = table.Configuration().Configuration().columns[columnIndex].header;
+    report.column = table.Layout().Columns()[columnIndex].header;
     report.cardinality = counts.size();
     for (auto &[value, count] : ranked)
     {
@@ -636,7 +636,8 @@ ExitCode RunStats(
 
     loglib::LogTable &table = loaded->table;
     console.Stage("parse", table.RowCount(), parseStarted);
-    auto session = ApplySessionConfiguration(options.filter, ViewOptions{}, table, runtime, StatsOptions::NAME);
+    const ViewOptions noView;
+    auto session = ApplySessionConfiguration(options.filter, noView, loaded->view, table, runtime, StatsOptions::NAME);
     if (!session)
     {
         return console.Report(session.error());
@@ -647,8 +648,7 @@ ExitCode RunStats(
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled =
-        loglib::CompileExpression(session->expression, table.Configuration().Configuration().columns, &table);
+    const auto compiled = loglib::CompileExpression(session->expression, table.Layout().Columns(), &table);
     const std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     console.Stage("filter", rows.size(), filterStarted);
     const StageOnExit reportStage(console, "report", rows.size());
@@ -658,7 +658,7 @@ ExitCode RunStats(
         return exitCode;
     }
 
-    const auto &columns = table.Configuration().Configuration().columns;
+    const auto &columns = table.Layout().Columns();
     const int levelColumn = FirstColumnOfType(columns, loglib::ColumnType::Level);
 
     switch (options.by)

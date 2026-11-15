@@ -1,38 +1,61 @@
 /**
- * @brief Saved sort and filter state of a session.
+ * @brief What a user was looking at in one session: filter, sort, highlight rules and anchors.
  *
- * SessionView holds the filter expression and the sort that were active, so reopening a log can restore what the user
- * was looking at. Sort refers to a column by its position in the configuration.
+ * SessionView collects the parts of a configuration that belong to a session and not to the column layout of a table.
+ * The GUI session owns one and slp builds one from its flags and its configuration file. Every part finds its column by
+ * keys, so moving a column never changes it.
  *
- * This is part of the schema module.
+ * This is part of the schema module. LogConfiguration saves a SessionView in a configuration file.
  */
 #pragma once
 
+#include "loglib/schema/anchor_entry.hpp"
 #include "loglib/schema/filter_expression.hpp"
+#include "loglib/schema/highlight_rule.hpp"
+
+#include <string>
+#include <vector>
 
 namespace loglib
 {
 
 /**
- * @brief The saved sort. A column index of -1 means no sort. Other values index LogConfiguration::columns, and
- * LogConfigurationManager::MoveColumn keeps them up to date.
+ * @brief The saved sort. The column is named by its keys, found the way filter leaves find theirs, so a column move
+ * needs no update. Empty keys mean no sort. Use ResolveLeafColumnByKeys to get the column index.
  */
 struct Sort
 {
-    int columnIndex = -1;
+    /** @brief The keys of the sorted column. Empty means no sort. */
+    std::vector<std::string> columnKeys;
+
+    /** @brief True to sort from the largest value to the smallest. */
     bool descending = false;
 };
 
-/**
- * @brief The filter and the sort of a session as one value.
- *
- * LogConfiguration stores the two as separate members to keep its JSON flat. Build a SessionView when a caller wants to
- * handle them together.
- */
+/** @brief The filter, sort, highlight rules and anchors of a session. */
 struct SessionView
 {
+    /**
+     * @brief The filter. The default is an empty And, which accepts every row, so a new session shows everything.
+     * Leaves find their column by LeafRule::columnKeys and not by position, so moving a column does not change the
+     * filter.
+     */
     FilterExpression expression;
+
+    /** @brief The sort. By default there is none. */
     Sort sort;
+
+    /**
+     * @brief The highlight rules. Order matters, because the last matching rule wins. Rules are compiled against the
+     * table, because a leaf needs the column type and the enumeration dictionary.
+     */
+    std::vector<HighlightRule> highlightRules;
+
+    /**
+     * @brief The anchors. They are written sorted by locator and line id so saved files differ little, and may be in
+     * any order when read.
+     */
+    std::vector<AnchorEntry> anchors;
 };
 
 } // namespace loglib

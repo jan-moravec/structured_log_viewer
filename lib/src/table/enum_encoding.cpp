@@ -4,6 +4,7 @@
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
+#include "loglib/schema/column_layout.hpp"
 #include "loglib/schema/log_configuration.hpp"
 
 #include <oneapi/tbb/parallel_for.h>
@@ -245,24 +246,24 @@ bool EnumInference::EncodeColumnRangeAsEnum(
     return EncodeColumnRange(data, keyIds, rowBegin, rowEnd, health);
 }
 
-void EnumInference::PromoteColumnToEnum(LogData &data, LogConfigurationManager &configuration, size_t columnIndex)
+void EnumInference::PromoteColumnToEnum(LogData &data, ColumnLayout &layout, size_t columnIndex)
 {
-    if (columnIndex >= configuration.Configuration().columns.size())
+    if (columnIndex >= layout.Columns().size())
     {
         return;
     }
     {
-        const auto &snapshot = configuration.Configuration().columns[columnIndex];
+        const auto &snapshot = layout.Columns()[columnIndex];
         if (snapshot.type == ColumnType::Enumeration || snapshot.type == ColumnType::Level)
         {
             return;
         }
     }
 
-    const std::vector<std::string> columnKeys = configuration.Configuration().columns[columnIndex].keys;
-    const std::string headerKey = configuration.Configuration().columns[columnIndex].header;
+    const std::vector<std::string> columnKeys = layout.Columns()[columnIndex].keys;
+    const std::string headerKey = layout.Columns()[columnIndex].header;
 
-    configuration.SetColumnType(columnIndex, ColumnType::Enumeration);
+    layout.SetColumnType(columnIndex, ColumnType::Enumeration);
     KeyId canonicalKey = INVALID_KEY_ID;
     {
         std::optional<KeyId> canonical;
@@ -289,30 +290,26 @@ void EnumInference::PromoteColumnToEnum(LogData &data, LogConfigurationManager &
     }
 
     EnumColumnHealth &health = mColumnHealth[canonicalKey];
-    if (!EncodeColumnRangeAsEnum(
-            data, configuration.Configuration().columns[columnIndex], 0U, data.Lines().size(), health
-        ))
+    if (!EncodeColumnRangeAsEnum(data, layout.Columns()[columnIndex], 0U, data.Lines().size(), health))
     {
-        DemoteColumnFromEnum(data, configuration, columnIndex);
+        DemoteColumnFromEnum(data, layout, columnIndex);
         return;
     }
     if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, ENUM_HEALTH_MIN_SAMPLES))
     {
-        DemoteColumnFromEnum(data, configuration, columnIndex);
+        DemoteColumnFromEnum(data, layout, columnIndex);
         return;
     }
 
     if (std::ranges::any_of(columnKeys, IsLogLevelKey))
     {
-        MaybePromoteToLevel(data, configuration, columnIndex);
+        MaybePromoteToLevel(data, layout, columnIndex);
     }
 }
 
-void EnumInference::DemoteColumnFromEnum(
-    LogData &data, LogConfigurationManager &configuration, size_t columnIndex, bool recordForBatch
-)
+void EnumInference::DemoteColumnFromEnum(LogData &data, ColumnLayout &layout, size_t columnIndex, bool recordForBatch)
 {
-    const auto &columns = configuration.Configuration().columns;
+    const auto &columns = layout.Columns();
     if (columnIndex >= columns.size())
     {
         return;
@@ -394,7 +391,7 @@ void EnumInference::DemoteColumnFromEnum(
         mDictionaries.Erase(keyIds.front());
     }
 
-    configuration.SetColumnType(columnIndex, ColumnType::String);
+    layout.SetColumnType(columnIndex, ColumnType::String);
 
     if (!keyIds.empty())
     {

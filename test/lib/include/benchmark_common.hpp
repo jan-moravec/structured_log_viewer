@@ -25,6 +25,7 @@
 #include <loglib/output/file_loading.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
 #include <loglib/table/log_table.hpp>
@@ -403,7 +404,7 @@ using ParserStreamFn =
 
 /**
  * Results of one end-to-end streaming run. The timed window covers
- * configuration load + LogTable construction + mmap + ParseStreaming
+ * LogTable construction + mmap + ParseStreaming
  * + ~LogTable. Sink stats and row count are copied out before the inner
  * scope closes so the caller can inspect them after the timer stops.
  */
@@ -425,7 +426,6 @@ struct StreamingRunResult
 };
 
 inline StreamingRunResult RunStreamingFlow(
-    const std::filesystem::path &configPath,
     const std::filesystem::path &logPath,
     std::shared_ptr<const loglib::LogConfiguration> configuration,
     const ParserStreamFn &parserStream,
@@ -438,9 +438,7 @@ inline StreamingRunResult RunStreamingFlow(
 
     const auto start = std::chrono::steady_clock::now();
     {
-        loglib::LogConfigurationManager configManager;
-        configManager.Load(configPath.string());
-        loglib::LogTable table(configManager.Configuration());
+        loglib::LogTable table{loglib::ColumnLayout(configuration->columns)};
         // The benchmarks measure parsing in the machine's zone, as the application does.
         table.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
         table.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());
@@ -458,7 +456,7 @@ inline StreamingRunResult RunStreamingFlow(
         sink.table = &table;
 
         loglib::ParserOptions opts;
-        opts.timeColumns = loglib::TimeColumnsOf(*configuration);
+        opts.timeColumns = loglib::TimeColumnsOf(configuration->columns);
         opts.defaultSourceTimeZone = table.DefaultSourceTimeZone();
 
         parserStream(*parseSource, sink, opts);
@@ -490,7 +488,9 @@ inline StreamingRunResult RunStreamingFlow(
 inline std::shared_ptr<const loglib::LogConfiguration> DetectedConfiguration(const std::string &path)
 {
     const loglib::LoadResult loaded = loglib::LoadFile(path);
-    return std::make_shared<loglib::LogConfiguration>(loaded.table.Configuration().Configuration());
+    auto configuration = std::make_shared<loglib::LogConfiguration>();
+    configuration->columns = loaded.table.Layout().Columns();
+    return configuration;
 }
 
 /**
@@ -509,7 +509,6 @@ struct StreamingFixture
 struct StreamingInput
 {
     StreamingFixture fixture;
-    TestLogConfiguration configFile;
     std::shared_ptr<const loglib::LogConfiguration> configuration;
     std::size_t bytes = 0;
     std::size_t rows = 0;
@@ -542,23 +541,19 @@ inline void RegisterStreaming(
             InitializeTimezoneData();
             input->configuration = declaredConfiguration ? DetectedConfiguration(input->fixture.logFile->GetFilePath())
                                                          : MakeTimestampConfiguration();
-            input->configFile.Write(*input->configuration);
             return input;
         },
         [parseLoopOnly](StreamingInput &input, benchmark::State &state, bool first) {
-            const std::filesystem::path configPath = input.configFile.GetFilePath();
             const std::filesystem::path logPath = input.fixture.logFile->GetFilePath();
             if (first)
             {
-                input.probe = RunStreamingFlow(
-                    configPath, logPath, input.configuration, input.fixture.parser, /*captureMemory=*/true
-                );
+                input.probe =
+                    RunStreamingFlow(logPath, input.configuration, input.fixture.parser, /*captureMemory=*/true);
             }
             std::size_t rows = input.probe.rowCount;
             for (const auto _ : state)
             {
-                const StreamingRunResult run =
-                    RunStreamingFlow(configPath, logPath, input.configuration, input.fixture.parser);
+                const StreamingRunResult run = RunStreamingFlow(logPath, input.configuration, input.fixture.parser);
                 rows = run.rowCount;
                 if (parseLoopOnly)
                 {

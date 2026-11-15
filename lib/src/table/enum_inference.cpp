@@ -4,6 +4,7 @@
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
+#include "loglib/schema/column_layout.hpp"
 #include "loglib/schema/log_configuration.hpp"
 
 #include <fmt/format.h>
@@ -301,10 +302,10 @@ void EnumInference::EraseHealthAndLevelCache(KeyId canonical)
     mLevelRankCache.erase(canonical);
 }
 
-void EnumInference::RefreshSnapshot(LogData &data, const LogConfigurationManager &configuration)
+void EnumInference::RefreshSnapshot(LogData &data, const ColumnLayout &layout)
 {
     mLevelRankCache.clear();
-    const auto &columns = configuration.Configuration().columns;
+    const auto &columns = layout.Columns();
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
@@ -331,21 +332,21 @@ void EnumInference::RefreshSnapshot(LogData &data, const LogConfigurationManager
         }
         if (column.type == ColumnType::Level)
         {
-            RefreshLevelRankCache(data, configuration.Configuration(), columnIndex);
+            RefreshLevelRankCache(data, layout, columnIndex);
         }
     }
 }
 
 void EnumInference::RunPassForAppendBatch(
     LogData &data,
-    LogConfigurationManager &configuration,
+    ColumnLayout &layout,
     const std::vector<std::vector<KeyId>> &columnKeyIds,
     size_t oldLineCount,
     std::optional<size_t> &firstBackfilled,
     std::optional<size_t> &lastBackfilled
 )
 {
-    const auto &columns = configuration.Configuration().columns;
+    const auto &columns = layout.Columns();
     const size_t totalRows = data.Lines().size();
     if (totalRows == 0 || oldLineCount >= totalRows)
     {
@@ -405,14 +406,14 @@ void EnumInference::RunPassForAppendBatch(
             {
                 if (column.autoDetect)
                 {
-                    DemoteColumnFromEnum(data, configuration, columnIndex);
+                    DemoteColumnFromEnum(data, layout, columnIndex);
                     recordBackfill(columnIndex);
                 }
                 continue;
             }
             if (column.autoDetect && health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, ENUM_HEALTH_MIN_SAMPLES))
             {
-                DemoteColumnFromEnum(data, configuration, columnIndex);
+                DemoteColumnFromEnum(data, layout, columnIndex);
                 recordBackfill(columnIndex);
                 continue;
             }
@@ -422,13 +423,13 @@ void EnumInference::RunPassForAppendBatch(
                 const size_t newDictSize = (dictAfter != nullptr) ? dictAfter->Size() : 0;
                 if (newDictSize > oldDictSize && std::ranges::any_of(column.keys, IsLogLevelKey))
                 {
-                    MaybePromoteToLevel(data, configuration, columnIndex);
+                    MaybePromoteToLevel(data, layout, columnIndex);
                 }
             }
             const auto &columnAfterMaybe = columns[columnIndex];
             if (columnAfterMaybe.type == ColumnType::Level)
             {
-                RefreshLevelRankCache(data, configuration.Configuration(), columnIndex);
+                RefreshLevelRankCache(data, layout, columnIndex);
             }
             continue;
         }
@@ -462,13 +463,13 @@ void EnumInference::RunPassForAppendBatch(
             ObserveRow(tracker, data.Lines()[row], resolvedKeys);
             if (tracker.killed)
             {
-                configuration.SetColumnType(columnIndex, ColumnType::String);
+                layout.SetColumnType(columnIndex, ColumnType::String);
                 mTrackers.erase(trackerIt);
                 break;
             }
             if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= promotionMinRows)
             {
-                PromoteColumnToEnum(data, configuration, columnIndex);
+                PromoteColumnToEnum(data, layout, columnIndex);
                 mTrackers.erase(trackerIt);
                 recordBackfill(columnIndex);
                 break;
@@ -484,7 +485,7 @@ void EnumInference::RunPassForAppendBatch(
             }
             if (tracker.size == 0)
             {
-                configuration.SetColumnType(
+                layout.SetColumnType(
                     columnIndex,
                     RouteNoStringBail(
                         tracker.intObservations,
@@ -501,7 +502,7 @@ void EnumInference::RunPassForAppendBatch(
                                      ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.presenceCount);
             if (highCardinality)
             {
-                configuration.SetColumnType(columnIndex, ColumnType::String);
+                layout.SetColumnType(columnIndex, ColumnType::String);
                 mTrackers.erase(trackerIt);
                 break;
             }
@@ -510,13 +511,10 @@ void EnumInference::RunPassForAppendBatch(
 }
 
 ColumnType EnumInference::RescanColumn(
-    LogData &data,
-    LogConfigurationManager &configuration,
-    const std::vector<std::vector<KeyId>> &columnKeyIds,
-    size_t columnIndex
+    LogData &data, ColumnLayout &layout, const std::vector<std::vector<KeyId>> &columnKeyIds, size_t columnIndex
 )
 {
-    const auto &columns = configuration.Configuration().columns;
+    const auto &columns = layout.Columns();
     if (columnIndex >= columns.size())
     {
         return ColumnType::Any;
@@ -563,31 +561,31 @@ ColumnType EnumInference::RescanColumn(
 
     if (tracker.killed)
     {
-        configuration.SetColumnType(columnIndex, ColumnType::String);
+        layout.SetColumnType(columnIndex, ColumnType::String);
     }
     else if (
         tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= 2 &&
         ValuesRepeatOrAreLevels(tracker, columns[columnIndex])
     )
     {
-        PromoteColumnToEnum(data, configuration, columnIndex);
+        PromoteColumnToEnum(data, layout, columnIndex);
     }
     else if (tracker.size == 0 && tracker.presenceCount > 0)
     {
-        configuration.SetColumnType(
+        layout.SetColumnType(
             columnIndex,
             RouteNoStringBail(
                 tracker.intObservations, tracker.uintObservations, tracker.doubleObservations, tracker.boolObservations
             )
         );
     }
-    return configuration.Configuration().columns[columnIndex].type;
+    return layout.Columns()[columnIndex].type;
 }
 
-bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configuration)
+bool EnumInference::Finalize(LogData &data, ColumnLayout &layout)
 {
     bool promoted = false;
-    const auto &columns = configuration.Configuration().columns;
+    const auto &columns = layout.Columns();
     if (!mTrackers.empty())
     {
         for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
@@ -610,19 +608,19 @@ bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configurati
             const EnumCandidateTracker &tracker = trackerIt->second;
             if (tracker.killed)
             {
-                configuration.SetColumnType(columnIndex, ColumnType::String);
+                layout.SetColumnType(columnIndex, ColumnType::String);
                 continue;
             }
             if (tracker.size > 0 && tracker.size <= mValueCap && tracker.presenceCount >= 2 &&
                 ValuesRepeatOrAreLevels(tracker, column))
             {
-                PromoteColumnToEnum(data, configuration, columnIndex);
+                PromoteColumnToEnum(data, layout, columnIndex);
                 promoted = true;
                 continue;
             }
             if (tracker.size == 0 && tracker.presenceCount > 0)
             {
-                configuration.SetColumnType(
+                layout.SetColumnType(
                     columnIndex,
                     RouteNoStringBail(
                         tracker.intObservations,
@@ -637,7 +635,7 @@ bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configurati
     }
 
     {
-        const auto &columnsForDemote = configuration.Configuration().columns;
+        const auto &columnsForDemote = layout.Columns();
         for (size_t columnIndex = 0; columnIndex < columnsForDemote.size(); ++columnIndex)
         {
             const auto &column = columnsForDemote[columnIndex];
@@ -663,7 +661,7 @@ bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configurati
             }
             if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, /*minSamples=*/1U))
             {
-                DemoteColumnFromEnum(data, configuration, columnIndex, /*recordForBatch=*/false);
+                DemoteColumnFromEnum(data, layout, columnIndex, /*recordForBatch=*/false);
                 continue;
             }
             // A streamed load promotes after a few rows, so a column of all-distinct values reaches here as an
@@ -674,7 +672,7 @@ bool EnumInference::Finalize(LogData &data, LogConfigurationManager &configurati
                 const size_t presentCells = health.totalSlots - health.longValueSlots - health.wrongTypeSlots;
                 if (dictionary != nullptr && presentCells >= 2 && dictionary->Size() == presentCells)
                 {
-                    DemoteColumnFromEnum(data, configuration, columnIndex, /*recordForBatch=*/false);
+                    DemoteColumnFromEnum(data, layout, columnIndex, /*recordForBatch=*/false);
                 }
             }
         }

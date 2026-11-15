@@ -9,6 +9,7 @@
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
+#include <loglib/schema/session_view.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <cstdint>
@@ -33,6 +34,8 @@ class Console;
 struct LoadedTable
 {
     loglib::LogTable table;
+    /** @brief The view that `--config` or a bundle seeded. It is the default when neither did. */
+    loglib::SessionView view;
     std::vector<loglib::ParseError> parseErrors;
     /** @brief How many parse errors all sources had. A source stores only its first ones in parseErrors. */
     std::uint64_t parseErrorCount = 0;

@@ -17,6 +17,7 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -166,12 +167,12 @@ TEST_CASE("TimeColumnsOf keeps only Time columns, in order", "[explicit_time_inp
     configuration.columns.push_back(number);
     configuration.columns.push_back(TimeColumn("second", "%FT%T"));
 
-    const std::vector<Column> columns = TimeColumnsOf(configuration);
+    const std::vector<Column> columns = TimeColumnsOf(configuration.columns);
     REQUIRE(columns.size() == 2);
     CHECK(columns[0].header == "first");
     CHECK(columns[1].header == "second");
     CHECK(columns[1].parseFormats == std::vector<std::string>{"%FT%T"});
-    CHECK(TimeColumnsOf(LogConfiguration{}).empty());
+    CHECK(TimeColumnsOf(ColumnLayout{}).empty());
 }
 
 TEST_CASE("Two tables in one process format the same timestamp in their own display zones", "[explicit_time_inputs]")
@@ -196,10 +197,10 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
             LogMap{{"ts", TimeStamp{std::chrono::microseconds{Micros(2026, 1, 15, 12, 0, 0)}}}}, keys, *sourcePtr, 0
         );
         LogData data(std::move(source), std::move(lines), std::move(keys));
-        LogConfigurationManager manager;
+        ColumnLayout manager;
         LogConfiguration configuration;
         configuration.columns.push_back(TimeColumn("ts", "%F %T"));
-        manager.SetConfiguration(std::move(configuration));
+        manager.SetColumns(std::move(configuration).columns);
         return test_common_lib::TableFromData(std::move(data), std::move(manager));
     };
 
@@ -432,12 +433,11 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
     LogConfiguration configuration;
     configuration.source = saved;
     const TestLogFile configFile("explicit_time_source.json");
-    LogConfigurationManager::Save(configuration, configFile.GetFilePath(), SaveScope::Full);
+    SaveConfiguration(configuration, configFile.GetFilePath(), SaveScope::Full);
 
-    LogConfigurationManager loaded;
-    loaded.Load(configFile.GetFilePath());
-    REQUIRE(loaded.Configuration().source.has_value());
-    const Source &restored = *loaded.Configuration().source;
+    const LogConfiguration loaded = LoadConfiguration(configFile.GetFilePath());
+    REQUIRE(loaded.source.has_value());
+    const Source &restored = *loaded.source;
     CHECK(restored.regexContinuationMode == ContinuationMode::Indented);
     CHECK(restored.regexHeaderAnchor.empty());
     CHECK_FALSE(FindTemplateByPattern(restored.regexPattern).has_value());
@@ -476,13 +476,16 @@ TEST_CASE("Detection of a multi-line template reports its continuation settings"
 
 TEST_CASE("A print format that no value accepts is replaced on load and never throws", "[explicit_time_inputs]")
 {
-    LogConfigurationManager manager;
-    manager.LoadFromString(R"({"columns":[
+    ColumnLayout manager;
+    manager.SetColumns(
+        loglib::ParseConfiguration(R"({"version":1,"columns":[
         {"header":"latency","keys":["latency"],"printFormat":"{:q}","type":"any","parseFormats":[],"visible":true},
         {"header":"ok","keys":["ok"],"printFormat":"{:.1f}","type":"any","parseFormats":[],"visible":true}
-    ]})");
+    ]})")
+            .columns
+    );
 
-    const auto &columns = manager.Configuration().columns;
+    const auto &columns = manager.Columns();
     REQUIRE(columns.size() == 2);
     CHECK(columns[0].printFormat == "{}");
     CHECK(columns[1].printFormat == "{:.1f}");
@@ -496,7 +499,7 @@ TEST_CASE("A print format that no value accepts is replaced on load and never th
     SECTION("A format set on a column later is checked too")
     {
         manager.SetColumnPrintFormat(1, "{:q}");
-        CHECK(manager.Configuration().columns[1].printFormat == "{}");
+        CHECK(manager.Columns()[1].printFormat == "{}");
         CHECK(manager.TakeWarnings().size() == 1);
     }
 
@@ -513,7 +516,7 @@ TEST_CASE("A print format that no value accepts is replaced on load and never th
         lines.emplace_back(LogMap{{"ok", 1.5}}, keys, *sourcePtr, 0);
         LogData data(std::move(source), std::move(lines), std::move(keys));
         loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
-        REQUIRE(table.Configuration().Configuration().columns[1].printFormat == "{:d}");
+        REQUIRE(table.Layout().Columns()[1].printFormat == "{:d}");
         // The "ok" column is the second one, but the table finds cells by key, so ask for its index.
         CHECK_NOTHROW(table.GetFormattedValue(0, 1));
         CHECK(table.GetFormattedValue(0, 1) == "1.5");
@@ -524,16 +527,16 @@ TEST_CASE(
     "A Time column with a print format that does not print gets the default and a warning", "[explicit_time_inputs]"
 )
 {
-    const char *const json = R"({"columns":[
+    const char *const json = R"({"version":1,"columns":[
         {"header":"when","keys":["when"],"printFormat":"bad","type":"time","parseFormats":[],"visible":true},
         {"header":"fine","keys":["fine"],"printFormat":"%H:%M","type":"time","parseFormats":[],"visible":true}
     ]})";
 
-    LogConfigurationManager manager;
+    ColumnLayout manager;
     manager.SetTimeFormatCheck([](const std::string &format) { return format != "bad"; });
-    manager.LoadFromString(json);
+    manager.SetColumns(loglib::ParseConfiguration(json).columns);
 
-    const auto &columns = manager.Configuration().columns;
+    const auto &columns = manager.Columns();
     REQUIRE(columns.size() == 2);
     CHECK(columns[0].printFormat == "%F %H:%M:%S");
     CHECK(columns[1].printFormat == "%H:%M");
@@ -547,24 +550,24 @@ TEST_CASE(
     SECTION("A format set on the column later is checked too")
     {
         manager.SetColumnPrintFormat(1, "bad");
-        CHECK(manager.Configuration().columns[1].printFormat == "%F %H:%M:%S");
+        CHECK(manager.Columns()[1].printFormat == "%F %H:%M:%S");
         CHECK(manager.TakeWarnings().size() == 1);
     }
 
     SECTION("Without a check the formats are left alone")
     {
-        LogConfigurationManager unchecked;
-        unchecked.LoadFromString(json);
-        CHECK(unchecked.Configuration().columns[0].printFormat == "bad");
+        ColumnLayout unchecked;
+        unchecked.SetColumns(loglib::ParseConfiguration(json).columns);
+        CHECK(unchecked.Columns()[0].printFormat == "bad");
         CHECK(unchecked.TakeWarnings().empty());
     }
 
     SECTION("A table installs the check that FormatLogValue applies, and keeps formats that print")
     {
         loglib::LogTable table;
-        table.Configuration().LoadFromString(json);
-        CHECK(table.Configuration().Configuration().columns[1].printFormat == "%H:%M");
-        CHECK(table.Configuration().TakeWarnings().empty());
+        table.Layout().SetColumns(loglib::ParseConfiguration(json).columns);
+        CHECK(table.Layout().Columns()[1].printFormat == "%H:%M");
+        CHECK(table.Layout().TakeWarnings().empty());
     }
 }
 
@@ -707,7 +710,7 @@ TEST_CASE(
         .type = ColumnType::Time,
         .parseFormats = {"%b %e %H:%M:%S"},
     });
-    LogTable table(configuration);
+    LogTable table(ColumnLayout(configuration.columns));
     table.SetClock([&stream] { return stream.now; });
     StreamLineSource *sourcePtr = source.get();
     table.BeginStreaming(std::move(source));

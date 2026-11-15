@@ -92,7 +92,7 @@ constexpr std::size_t MAX_ENUM_VALUES_LISTED = 64;
     const loglib::LogTable &table, std::size_t columnIndex, std::uint64_t sampleLimit
 )
 {
-    const loglib::Column &column = table.Configuration().Configuration().columns[columnIndex];
+    const loglib::Column &column = table.Layout().Columns()[columnIndex];
     SchemaColumn described{
         .header = column.header,
         .keys = column.keys,

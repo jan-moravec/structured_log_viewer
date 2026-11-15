@@ -103,20 +103,21 @@ bool TimeFormatPrints(const std::string &format)
 LogTable::LogTable()
     : mEnum(std::make_unique<EnumInference>())
 {
-    mConfiguration.SetTimeFormatCheck(TimeFormatPrints);
+    mLayout.SetTimeFormatCheck(TimeFormatPrints);
 }
 
-LogTable::LogTable(LogConfiguration configuration)
-    : mEnum(std::make_unique<EnumInference>())
+LogTable::LogTable(ColumnLayout layout)
+    : mLayout(std::move(layout)), mEnum(std::make_unique<EnumInference>())
 {
-    mConfiguration.SetTimeFormatCheck(TimeFormatPrints);
-    mConfiguration.SetConfiguration(std::move(configuration));
+    mLayout.SetTimeFormatCheck(TimeFormatPrints);
+    // Checks the Time formats, which the layout could not check before it had the check.
+    mLayout.SetColumns(std::vector<Column>(mLayout.Columns()));
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape)
 LogTable::LogTable(LogTable &&other) noexcept
     : mData(std::move(other.mData)),
-      mConfiguration(std::move(other.mConfiguration)),
+      mLayout(std::move(other.mLayout)),
       mDisplayTimeZone(std::move(other.mDisplayTimeZone)),
       mDefaultSourceTimeZone(std::move(other.mDefaultSourceTimeZone)),
       mReferenceTime(other.mReferenceTime),
@@ -137,7 +138,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
         return *this;
     }
     mData = std::move(other.mData);
-    mConfiguration = std::move(other.mConfiguration);
+    mLayout = std::move(other.mLayout);
     mDisplayTimeZone = std::move(other.mDisplayTimeZone);
     mDefaultSourceTimeZone = std::move(other.mDefaultSourceTimeZone);
     mReferenceTime = other.mReferenceTime;
@@ -160,13 +161,13 @@ void LogTable::Reset()
     mTableConvertedTimeKeys.clear();
     mEnum->Clear();
     RefreshColumnKeyIds();
-    mEnum->RefreshSnapshot(mData, mConfiguration);
+    mEnum->RefreshSnapshot(mData, mLayout);
 }
 
 void LogTable::OnConfigurationReloaded()
 {
     RefreshColumnKeyIds();
-    mEnum->RefreshSnapshot(mData, mConfiguration);
+    mEnum->RefreshSnapshot(mData, mLayout);
 }
 
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
@@ -190,7 +191,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 
     RewireSourceRegistries();
     mTableConvertedTimeKeys.clear();
-    mEnum->RefreshSnapshot(mData, mConfiguration);
+    mEnum->RefreshSnapshot(mData, mLayout);
     RefreshColumnKeyIds();
 }
 
@@ -230,7 +231,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     result.errors = std::move(batch.errors);
     batch.errors.clear();
 
-    const size_t oldColumnCount = mConfiguration.Configuration().columns.size();
+    const size_t oldColumnCount = mLayout.Columns().size();
     const size_t oldRowCount = mData.Lines().size();
 
     // Only Enumeration and Level columns with a dictionary are recorded, so a table without them pays one pass over the
@@ -238,7 +239,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     std::vector<EnumColumnSnapshot> &enumSnapshot = mEnumSnapshot;
     enumSnapshot.clear();
     {
-        const auto &columnsBefore = mConfiguration.Configuration().columns;
+        const auto &columnsBefore = mLayout.Columns();
         for (size_t columnIndex = 0; columnIndex < columnsBefore.size(); ++columnIndex)
         {
             const Column &column = columnsBefore[columnIndex];
@@ -280,7 +281,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 
     if (!batch.newKeys.empty())
     {
-        mConfiguration.AppendKeys(batch.newKeys);
+        mLayout.AppendKeys(batch.newKeys);
     }
 
     const size_t oldLineCount = mData.Lines().size();
@@ -295,7 +296,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &columns = mLayout.Columns();
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
@@ -376,10 +377,10 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
         }
     }
 
-    mEnum->RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
+    mEnum->RunPassForAppendBatch(mData, mLayout, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
 
     result.rowsAdded = mData.Lines().size() - oldRowCount;
-    result.columnsAdded = mConfiguration.Configuration().columns.size() - oldColumnCount;
+    result.columnsAdded = mLayout.Columns().size() - oldColumnCount;
     if (firstBackfilled.has_value())
     {
         result.backfilledColumns = std::make_pair(*firstBackfilled, *lastBackfilled);
@@ -398,7 +399,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     {
         demotedValues = mEnum->TakeDemotedLevelValues();
     }
-    const auto &columnsAfter = mConfiguration.Configuration().columns;
+    const auto &columnsAfter = mLayout.Columns();
 
     // Columns that were enumerations before the batch, in index order. Dictionaries stay at their address until they
     // are erased, so the recorded pointer is looked up again only when the batch demoted a column.
@@ -489,8 +490,7 @@ LogTable::AppendBatchPreview LogTable::PreviewAppend(const RowBatch &batch) cons
 {
     AppendBatchPreview preview;
     preview.newRowCount = mData.Lines().size() + batch.lines.size();
-    preview.newColumnCount =
-        mConfiguration.Configuration().columns.size() + mConfiguration.CountAppendableKeys(batch.newKeys);
+    preview.newColumnCount = mLayout.Columns().size() + mLayout.CountAppendableKeys(batch.newKeys);
     return preview;
 }
 
@@ -500,7 +500,7 @@ void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
     {
         return;
     }
-    mConfiguration.MoveColumn(srcIndex, destIndex);
+    mLayout.MoveColumn(srcIndex, destIndex);
     internal::MoveColumnKeyIds(mColumnKeyIds, srcIndex, destIndex);
 }
 
@@ -518,12 +518,12 @@ void LogTable::ReserveLineOffsets(size_t count)
 
 std::string LogTable::GetHeader(size_t column) const
 {
-    return mConfiguration.Configuration().columns[column].header;
+    return mLayout.Columns()[column].header;
 }
 
 size_t LogTable::ColumnCount() const
 {
-    return mConfiguration.Configuration().columns.size();
+    return mLayout.Columns().size();
 }
 
 LogValue LogTable::GetValue(size_t row, size_t column) const
@@ -576,7 +576,7 @@ std::string LogTable::GetFormattedValue(size_t row, size_t column) const
     {
         return "";
     }
-    const std::string &printFormat = mConfiguration.Configuration().columns.at(column).printFormat;
+    const std::string &printFormat = mLayout.Columns().at(column).printFormat;
     const auto &line = mData.Lines()[row];
     for (const KeyId id : mColumnKeyIds[column])
     {
@@ -599,7 +599,7 @@ std::string_view LogTable::GetValueOrFormatted(size_t row, size_t column, std::s
     {
         return {};
     }
-    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &columns = mLayout.Columns();
     const auto &line = mData.Lines()[row];
     for (const KeyId id : mColumnKeyIds[column])
     {
@@ -755,24 +755,24 @@ std::chrono::system_clock::time_point LogTable::ReferenceTime() const noexcept
     return mReferenceTime;
 }
 
-const LogConfigurationManager &LogTable::Configuration() const
+const ColumnLayout &LogTable::Layout() const
 {
-    return mConfiguration;
+    return mLayout;
 }
 
-LogConfigurationManager &LogTable::Configuration()
+ColumnLayout &LogTable::Layout()
 {
-    return mConfiguration;
+    return mLayout;
 }
 
 void LogTable::RefreshColumnKeyIds()
 {
-    internal::RefreshColumnKeyIds(mColumnKeyIds, mConfiguration.Configuration(), mData.Keys());
+    internal::RefreshColumnKeyIds(mColumnKeyIds, mLayout, mData.Keys());
 }
 
 void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys)
 {
-    internal::RefreshColumnKeyIdsForKeys(mColumnKeyIds, mConfiguration.Configuration(), mData.Keys(), newKeys);
+    internal::RefreshColumnKeyIdsForKeys(mColumnKeyIds, mLayout, mData.Keys(), newKeys);
 }
 
 void LogTable::RewireSourceRegistries()
@@ -834,7 +834,7 @@ std::optional<EnumValueId> LogTable::GetEnumValueId(size_t row, size_t column) c
 
 LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const noexcept
 {
-    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &columns = mLayout.Columns();
     if (columnIndex >= columns.size())
     {
         return {};
@@ -854,7 +854,7 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
 
 LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex) const
 {
-    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &columns = mLayout.Columns();
     if (columnIndex >= columns.size())
     {
         return {};
@@ -864,7 +864,7 @@ LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex)
 
 ColumnType LogTable::RescanColumnForAutoDetection(size_t columnIndex)
 {
-    return mEnum->RescanColumn(mData, mConfiguration, mColumnKeyIds, columnIndex);
+    return mEnum->RescanColumn(mData, mLayout, mColumnKeyIds, columnIndex);
 }
 
 LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
@@ -874,7 +874,7 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
 
     std::vector<ColumnType> typesBefore;
     {
-        const auto &columnsBefore = mConfiguration.Configuration().columns;
+        const auto &columnsBefore = mLayout.Columns();
         typesBefore.reserve(columnsBefore.size());
         for (const Column &column : columnsBefore)
         {
@@ -882,12 +882,12 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
         }
     }
 
-    result.promotedToEnumeration = mEnum->Finalize(mData, mConfiguration);
+    result.promotedToEnumeration = mEnum->Finalize(mData, mLayout);
     const std::vector<KeyId> levelBubbleKeys = mEnum->TakePendingLevelBubbleKeys();
     result.errors = mEnum->TakePendingErrors();
 
     auto demotedValues = mEnum->TakeDemotedLevelValues();
-    const auto &columnsAfter = mConfiguration.Configuration().columns;
+    const auto &columnsAfter = mLayout.Columns();
     for (size_t columnIndex = 0; columnIndex < typesBefore.size() && columnIndex < columnsAfter.size(); ++columnIndex)
     {
         const ColumnType before = typesBefore[columnIndex];
@@ -925,14 +925,12 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
 
 void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousType)
 {
-    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &columns = mLayout.Columns();
     if (columnIndex >= columns.size())
     {
         return;
     }
-    const auto snapshot = [this, columnIndex]() -> Column {
-        return mConfiguration.Configuration().columns[columnIndex];
-    };
+    const auto snapshot = [this, columnIndex] -> Column { return mLayout.Columns()[columnIndex]; };
 
     {
         const auto col = snapshot();
@@ -955,15 +953,15 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     {
         if (column.printFormat.empty())
         {
-            mConfiguration.SetColumnPrintFormat(columnIndex, "%F %H:%M:%S");
+            mLayout.SetColumnPrintFormat(columnIndex, "%F %H:%M:%S");
         }
         if (column.parseFormats.empty())
         {
-            mConfiguration.SetColumnParseFormats(columnIndex, DefaultTimeParseFormats());
+            mLayout.SetColumnParseFormats(columnIndex, DefaultTimeParseFormats());
         }
         BackfillTimestampColumn(
             mData.Keys(),
-            mConfiguration.Configuration().columns[columnIndex],
+            mLayout.Columns()[columnIndex],
             std::span<LogLine>(mData.Lines()),
             mDefaultSourceTimeZone,
             mReferenceTime,
@@ -974,7 +972,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     case ColumnType::Enumeration:
     case ColumnType::Level:
     {
-        mEnum->RefreshSnapshot(mData, mConfiguration);
+        mEnum->RefreshSnapshot(mData, mLayout);
         RefreshColumnKeyIds();
         if (column.keys.empty())
         {
@@ -991,16 +989,14 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             health = EnumColumnHealth{};
         }
-        if (!mEnum->EncodeColumnRangeAsEnum(
-                mData, mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health
-            ))
+        if (!mEnum->EncodeColumnRangeAsEnum(mData, mLayout.Columns()[columnIndex], 0U, mData.Lines().size(), health))
         {
-            mEnum->DemoteColumnFromEnum(mData, mConfiguration, columnIndex, /*recordForBatch=*/false);
+            mEnum->DemoteColumnFromEnum(mData, mLayout, columnIndex, /*recordForBatch=*/false);
             return;
         }
         if (column.type == ColumnType::Level)
         {
-            mEnum->RefreshLevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
+            mEnum->RefreshLevelRankCache(mData, mLayout, columnIndex);
         }
         break;
     }
@@ -1013,8 +1009,8 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     {
         if (previousType == ColumnType::Time)
         {
-            mConfiguration.SetColumnPrintFormat(columnIndex, "{}");
-            mConfiguration.SetColumnParseFormats(columnIndex, {});
+            mLayout.SetColumnPrintFormat(columnIndex, "{}");
+            mLayout.SetColumnParseFormats(columnIndex, {});
         }
 
         if (column.keys.empty())
@@ -1029,9 +1025,9 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         if (mEnum->Dictionaries().Find(canonical) != nullptr)
         {
             const auto targetType = column.type;
-            mConfiguration.SetColumnType(columnIndex, ColumnType::Enumeration);
-            mEnum->DemoteColumnFromEnum(mData, mConfiguration, columnIndex, /*recordForBatch=*/false);
-            mConfiguration.SetColumnType(columnIndex, targetType);
+            mLayout.SetColumnType(columnIndex, ColumnType::Enumeration);
+            mEnum->DemoteColumnFromEnum(mData, mLayout, columnIndex, /*recordForBatch=*/false);
+            mLayout.SetColumnType(columnIndex, targetType);
         }
         mEnum->EraseHealthAndLevelCache(canonical);
         break;
@@ -1042,7 +1038,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
 std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &placement) const
 {
     const size_t from = placement.column;
-    if (from >= mConfiguration.Configuration().columns.size())
+    if (from >= mLayout.Columns().size())
     {
         return std::nullopt;
     }
@@ -1055,7 +1051,7 @@ std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &plac
         }
         return ColumnMove{.from = from, .to = 0};
     case ColumnPlacement::Kind::LevelToCanonicalSlot:
-        if (!ShouldBubbleLevelColumn(mConfiguration.Configuration(), from))
+        if (!ShouldBubbleLevelColumn(mLayout, from))
         {
             return std::nullopt;
         }
@@ -1086,7 +1082,7 @@ int LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
     {
         return -1;
     }
-    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &columns = mLayout.Columns();
     const auto &keys = mData.Keys();
     for (size_t i = 0; i < columns.size(); ++i)
     {
@@ -1113,7 +1109,7 @@ std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex)
 
 std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t columnIndex) const noexcept
 {
-    const auto *ranks = mEnum->LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
+    const auto *ranks = mEnum->LevelRankCache(mData, mLayout, columnIndex);
     if (ranks == nullptr)
     {
         return std::nullopt;
@@ -1132,7 +1128,7 @@ std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t colum
 
 const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const noexcept
 {
-    return mEnum->LevelRankCache(mData, mConfiguration.Configuration(), columnIndex);
+    return mEnum->LevelRankCache(mData, mLayout, columnIndex);
 }
 
 std::string LogTable::FormatLogValue(const std::string &format, const LogValue &value) const

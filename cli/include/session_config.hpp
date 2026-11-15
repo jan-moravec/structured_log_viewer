@@ -72,7 +72,7 @@ struct EffectiveSession
  *  3. Individual flags: `--filter`, `--since`, `--until`, `--min-level`,
  *     `--invert`, `--sort`, `--columns`, and `--all-columns`.
  *
- * This step starts from the table's seeded configuration. Any row
+ * This step starts from the table's columns and the seeded view. Any row
  * flag replaces the configuration's expression; `--invert` alone negates
  * it. `--sort` replaces the configuration's sort. `--all-columns` or
  * `--columns` replaces column visibility, and `--columns` also moves the
@@ -80,7 +80,8 @@ struct EffectiveSession
  *
  * @param filter Row flags.
  * @param view Sort and column flags.
- * @param table Loaded table whose configuration holds layers 1 and 2.
+ * @param seed The view that layers 1 and 2 produced, as LoadedTable::view holds it.
+ * @param table Loaded table whose columns hold layers 1 and 2.
  * @param runtime Process context for time zone resolution.
  * @param command Subcommand name for error lines.
  * @return The merged session, or a usage failure.
@@ -107,6 +108,7 @@ struct EffectiveSession
 [[nodiscard]] std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     const FilterOptions &filter,
     const ViewOptions &view,
+    const loglib::SessionView &seed,
     const loglib::LogTable &table,
     const RuntimeContext &runtime,
     std::string_view command
@@ -119,7 +121,7 @@ struct EffectiveSession
  * user-facing locators from `input.sources`: the primary path, not
  * rotated siblings, and the compressed file, not its decompressed
  * copy. Standard input is omitted. When no locator remains the
- * `source` is empty. The columns file gets `SaveScope::ColumnsOnly`.
+ * `source` is empty. The columns file gets `SaveScope::Columns`.
  *
  * @param targets Files to write.
  * @param input Sources the user named.

@@ -8,10 +8,8 @@
 #include "loglib/core/log_line.hpp"
 #include "loglib/output/internal/normalized_json_row.hpp"
 #include "loglib/output/internal/ordered_chunks.hpp"
-#include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/table/log_table.hpp"
 
-#include <glaze/glaze.hpp>
 #include <zstd.h>
 
 #include <algorithm>
@@ -551,16 +549,16 @@ void RemapAnchors(
     const SessionBundleWriteOptions &options
 )
 {
-    if (configuration.anchors.empty())
+    if (configuration.view.anchors.empty())
     {
         return;
     }
-    AnchorWantedSet wanted = BuildAnchorWantedSet(configuration.anchors);
+    AnchorWantedSet wanted = BuildAnchorWantedSet(configuration.view.anchors);
     PopulateAnchorMatches(wanted, lines, options);
 
     std::vector<AnchorEntry> remapped;
-    remapped.reserve(configuration.anchors.size());
-    for (const auto &anchor : configuration.anchors)
+    remapped.reserve(configuration.view.anchors.size());
+    for (const auto &anchor : configuration.view.anchors)
     {
         const AnchorLookupKey lookup{.locator = anchor.locator, .lineId = anchor.lineId};
         const auto it = wanted.find(lookup);
@@ -573,7 +571,7 @@ void RemapAnchors(
         copy.lineId = it->second.row;
         remapped.push_back(std::move(copy));
     }
-    configuration.anchors = std::move(remapped);
+    configuration.view.anchors = std::move(remapped);
 }
 
 // Parse format matching the bundle's normalized UTC timestamps.
@@ -597,17 +595,6 @@ void NormalizeTimeColumnParseFormats(LogConfiguration &configuration)
             column.parseFormats.insert(column.parseFormats.begin(), std::string(BUNDLE_TIME_PARSE_FORMAT));
         }
     }
-}
-
-std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
-{
-    std::string json;
-    const auto error = glz::write_json(configuration, json);
-    if (error)
-    {
-        throw IoError("Session bundle: failed to serialize configuration: " + glz::format_error(error, json));
-    }
-    return json;
 }
 
 void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesystem::path &destination)
@@ -698,7 +685,7 @@ void WriteBundle(
         .regexPattern = {},
     };
 
-    const std::string configJson = SerializeCompactConfiguration(embedded);
+    const std::string configJson = SerializeConfiguration(embedded, SaveScope::Full, ConfigurationLayout::Compact);
     const std::string metadata =
         R"({"__slv_bundle__":{"formatVersion":)" + std::to_string(SESSION_BUNDLE_FORMAT_VERSION) + R"(,"rowCount":)" +
         std::to_string(static_cast<std::uint64_t>(lines.Size())) + R"(,"configuration":)" + configJson + "}}\n";

@@ -260,7 +260,7 @@ void LogSessionView::ApplyColumnVisibility()
     {
         return;
     }
-    const auto &columns = model->Configuration().columns;
+    const auto &columns = model->Layout().Columns();
     const std::size_t end = std::min(columns.size(), static_cast<std::size_t>(std::max(0, header->count())));
     for (std::size_t i = 0; i < end; ++i)
     {
@@ -442,7 +442,7 @@ void LogSessionView::PromptGotoTimestamp()
         return;
     }
 
-    const int timeCol = loglib::FirstTimeColumnIndex(model->Configuration());
+    const int timeCol = loglib::FirstTimeColumnIndex(model->Layout());
     if (timeCol < 0)
     {
         emit statusMessageRequested(tr("This log has no timestamp column."));
@@ -486,8 +486,8 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
         emit statusMessageRequested(tr("No log loaded."));
         return;
     }
-    const auto &config = model->Configuration();
-    const int timeCol = loglib::FirstTimeColumnIndex(config);
+    const auto &layout = model->Layout();
+    const int timeCol = loglib::FirstTimeColumnIndex(layout);
     if (timeCol < 0)
     {
         emit statusMessageRequested(tr("This log has no timestamp column."));
@@ -499,7 +499,7 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
     mLastGotoTimestampInput = input;
 
     const std::optional<GotoTimestampParse> parsed =
-        ParseGotoTimestampInput(input, config.columns[static_cast<std::size_t>(timeCol)].parseFormats, now);
+        ParseGotoTimestampInput(input, layout.Columns()[static_cast<std::size_t>(timeCol)].parseFormats, now);
     if (!parsed.has_value())
     {
         emit statusMessageRequested(tr("Could not parse timestamp."));

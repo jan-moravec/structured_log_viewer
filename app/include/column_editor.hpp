@@ -17,7 +17,7 @@ class QLineEdit;
 /// `autoDetect`, and `visible` fields. `keys` are shown read-only
 /// (owned by the parser). The type combo folds `Type::Any +
 /// autoDetect` into a single "Auto-detect" entry at the top. On
-/// accept, writes through `LogConfigurationManager` and refreshes
+/// accept, writes through `ColumnLayout` and refreshes
 /// the diagnostics health cache.
 class ColumnEditor : public QDialog
 {

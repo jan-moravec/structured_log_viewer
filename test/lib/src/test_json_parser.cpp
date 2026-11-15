@@ -11,6 +11,7 @@
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
+#include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -917,7 +918,7 @@ TEST_CASE(
     configuration->columns.push_back(std::move(timestampColumn));
 
     ParserOptions opts;
-    opts.timeColumns = TimeColumnsOf(*configuration);
+    opts.timeColumns = TimeColumnsOf(configuration->columns);
 
     const JsonParser parser;
     const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);
@@ -982,7 +983,7 @@ TEST_CASE(
     configuration->columns.push_back(std::move(timestampColumn));
 
     ParserOptions opts;
-    opts.timeColumns = TimeColumnsOf(*configuration);
+    opts.timeColumns = TimeColumnsOf(configuration->columns);
 
     const JsonParser parser;
     const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);

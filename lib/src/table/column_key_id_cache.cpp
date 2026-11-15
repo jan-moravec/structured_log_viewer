@@ -8,11 +8,9 @@
 namespace loglib::internal
 {
 
-void RefreshColumnKeyIds(
-    std::vector<std::vector<KeyId>> &cache, const LogConfiguration &configuration, const KeyIndex &keys
-)
+void RefreshColumnKeyIds(std::vector<std::vector<KeyId>> &cache, const ColumnLayout &layout, const KeyIndex &keys)
 {
-    const auto &columns = configuration.columns;
+    const auto &columns = layout.Columns();
     cache.clear();
     cache.reserve(columns.size());
     for (const auto &column : columns)
@@ -29,7 +27,7 @@ void RefreshColumnKeyIds(
 
 void RefreshColumnKeyIdsForKeys(
     std::vector<std::vector<KeyId>> &cache,
-    const LogConfiguration &configuration,
+    const ColumnLayout &layout,
     const KeyIndex &keys,
     const std::vector<std::string> &newKeys
 )
@@ -46,7 +44,7 @@ void RefreshColumnKeyIdsForKeys(
         newKeySet.emplace(key);
     }
 
-    const auto &columns = configuration.columns;
+    const auto &columns = layout.Columns();
     cache.resize(columns.size());
 
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)

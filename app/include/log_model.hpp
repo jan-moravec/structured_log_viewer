@@ -210,8 +210,8 @@ public:
     const loglib::LogTable &Table() const;
     loglib::LogTable &Table();
     const loglib::LogData &Data() const;
-    const loglib::LogConfiguration &Configuration() const;
-    loglib::LogConfigurationManager &ConfigurationManager();
+    const loglib::ColumnLayout &Layout() const;
+    loglib::ColumnLayout &MutableLayout();
 
     /// GUI-side bridging sink owned by the model.
     QtStreamingLogSink *Sink();
@@ -495,12 +495,12 @@ private:
     /// matching Qt column-move signals.
     void ApplyPlacementsWithSignals(const std::vector<loglib::ColumnPlacement> &placements);
 
-    /// Per-column health cache, parallel to `Configuration().columns`.
+    /// Per-column health cache, parallel to `Layout().Columns()`.
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
 
     /// Per-column active-filter titles, parallel to
-    /// `Configuration().columns`. Written only by
+    /// `Layout().Columns()`. Written only by
     /// `SetColumnFilterDetails`; empty entry = no filter.
     std::vector<QStringList> mColumnFilterDetails;
 

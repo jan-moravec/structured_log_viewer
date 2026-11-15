@@ -259,7 +259,7 @@ void ColumnsManagerDialog::Refresh()
     {
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     mUpdatingProgrammatically = true;
     mTable->clearContents();
     mTable->setRowCount(static_cast<int>(columns.size()));
@@ -276,7 +276,7 @@ void ColumnsManagerDialog::RefreshRange(int firstColumn, int lastColumn)
     {
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     const int rowCount = static_cast<int>(columns.size());
     if (mTable->rowCount() != rowCount)
     {
@@ -305,7 +305,7 @@ void ColumnsManagerDialog::RebuildRow(int row)
     {
         return;
     }
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (row < 0 || std::cmp_greater_equal(row, columns.size()))
     {
         return;
@@ -335,7 +335,7 @@ void ColumnsManagerDialog::OnItemChanged(QTableWidgetItem *item)
         return;
     }
     const int row = item->row();
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = mModel->Layout().Columns();
     if (row < 0 || std::cmp_greater_equal(row, columns.size()))
     {
         return;
@@ -350,7 +350,7 @@ void ColumnsManagerDialog::OnItemChanged(QTableWidgetItem *item)
     }
     else
     {
-        mModel->ConfigurationManager().SetColumnVisible(static_cast<size_t>(row), visible);
+        mModel->MutableLayout().SetColumnVisible(static_cast<size_t>(row), visible);
     }
 }
 
@@ -406,7 +406,7 @@ void ColumnsManagerDialog::MoveSelectedDown()
         return;
     }
     const int row = CurrentRow();
-    const int total = static_cast<int>(mModel->Configuration().columns.size());
+    const int total = static_cast<int>(mModel->Layout().Columns().size());
     if (row < 0 || row >= total - 1)
     {
         return;

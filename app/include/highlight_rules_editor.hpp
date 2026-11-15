@@ -35,7 +35,7 @@ class ThemeControl;
 /// Owned lazily by `MainWindow`. Edits happen on a local copy;
 /// Save emits `rulesSaved(...)` and `MainWindow` mirrors the
 /// vector into both the runtime `HighlightRuleSet` and
-/// `LogConfigurationManager`. Delete-on-close is off. Tab switches
+/// the session view. Delete-on-close is off. Tab switches
 /// capture the buffer into the originating session's
 /// `HighlightRulesEditorDraft` and restore it on rebind without
 /// committing. Closing the editor window still prompts when dirty.

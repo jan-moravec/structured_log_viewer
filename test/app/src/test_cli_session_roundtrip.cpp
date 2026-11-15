@@ -90,11 +90,11 @@ struct CliResult
     return args;
 }
 
-[[nodiscard]] int ColumnByHeader(const loglib::LogConfiguration &configuration, std::string_view header)
+[[nodiscard]] int ColumnByHeader(const std::vector<loglib::Column> &columns, std::string_view header)
 {
-    for (std::size_t i = 0; i < configuration.columns.size(); ++i)
+    for (std::size_t i = 0; i < columns.size(); ++i)
     {
-        if (configuration.columns[i].header == header)
+        if (columns[i].header == header)
         {
             return static_cast<int>(i);
         }
@@ -209,7 +209,7 @@ private slots:
         QCOMPARE(mWindow->Filters().begin()->second.columnKeys, (std::vector<std::string>{"msg"}));
 
         auto *model = mWindow->Model();
-        const int msgColumn = ColumnByHeader(model->Configuration(), "msg");
+        const int msgColumn = ColumnByHeader(model->Layout().Columns(), "msg");
         QVERIFY(msgColumn >= 0);
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
@@ -222,14 +222,12 @@ private slots:
         QCOMPARE(MessageColumn(*tableView->model(), msgColumn), cliMessages);
     }
 
-    // slp --save-columns -> GUI Load restores the column layout and the
-    // highlight rules and leaves filter and sort at their defaults.
-    void TestSaveColumnsRestoresLayoutAndRulesOnly()
+    // slp --save-columns -> GUI Load restores the column layout and leaves
+    // the filter, sort and highlight rules at their defaults.
+    void TestSaveColumnsRestoresLayoutOnly()
     {
         const QString seedPath = WriteSeed(/*pinMsgToString=*/false, /*withRule=*/true);
-        loglib::LogConfigurationManager seedManager;
-        seedManager.Load(seedPath.toStdString());
-        const loglib::LogConfiguration &seed = seedManager.Configuration();
+        const loglib::LogConfiguration seed = loglib::LoadConfiguration(seedPath.toStdString());
 
         const QString columns = mDir.filePath(QStringLiteral("cli_columns.json"));
         const auto cli = RunSlp(QueryArgs(
@@ -252,24 +250,23 @@ private slots:
         mWindow->LoadConfigurationFromPathForTest(columns);
         QCoreApplication::processEvents();
 
-        const loglib::LogConfiguration &loaded = mWindow->Model()->Configuration();
+        const loglib::LogConfiguration loaded = mWindow->activeSession()->BuildConfiguration(std::nullopt);
         QCOMPARE(loaded.columns.size(), seed.columns.size());
         QCOMPARE(loaded.columns[0].header, std::string("msg"));
         QCOMPARE(loaded.columns[1].header, std::string("level"));
         QVERIFY(loaded.columns[0].visible);
         QVERIFY(loaded.columns[1].visible);
         QVERIFY(!loaded.columns.back().visible);
-        QCOMPARE(loaded.highlightRules.size(), static_cast<std::size_t>(1));
-        QCOMPARE(loaded.highlightRules[0].name, std::string("errors"));
+        QVERIFY(loaded.view.highlightRules.empty());
 
         QVERIFY(mWindow->Filters().empty());
-        QCOMPARE(loaded.sort.columnIndex, -1);
+        QVERIFY(loaded.view.sort.columnKeys.empty());
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
 
         // Streaming afterwards shows every row in source order.
         QVERIFY(StreamLogIntoModel());
-        const int msgColumn = ColumnByHeader(loaded, "msg");
+        const int msgColumn = ColumnByHeader(loaded.columns, "msg");
         QVERIFY(msgColumn >= 0);
         QCOMPARE(
             MessageColumn(*tableView->model(), msgColumn),
@@ -284,7 +281,7 @@ private slots:
     {
         QVERIFY(StreamLogIntoModel());
         auto *model = mWindow->Model();
-        const int msgColumn = ColumnByHeader(model->Configuration(), "msg");
+        const int msgColumn = ColumnByHeader(model->Layout().Columns(), "msg");
         QVERIFY(msgColumn >= 0);
 
         QMetaObject::invokeMethod(
@@ -322,15 +319,13 @@ private slots:
     {
         const QString seedPath = WriteSeed(/*pinMsgToString=*/true, /*withRule=*/true);
         QVERIFY(!seedPath.isEmpty());
-        loglib::LogConfigurationManager seedManager;
-        seedManager.Load(seedPath.toStdString());
-        loglib::LogConfiguration seed = seedManager.Configuration();
+        loglib::LogConfiguration seed = loglib::LoadConfiguration(seedPath.toStdString());
         // Anchor the second source row by its canonical source locator.
-        seed.anchors = {
+        seed.view.anchors = {
             {.locator = logapp::CanonicalLocator(mLogPath).toStdString(), .lineId = 1, .colorIndex = 0, .note = "kept"}
         };
         const QString anchoredSeed = mDir.filePath(QStringLiteral("anchored_seed.json"));
-        loglib::LogConfigurationManager::Save(seed, anchoredSeed.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(seed, anchoredSeed.toStdString(), loglib::SaveScope::Full);
 
         const QString bundle = mDir.filePath(QStringLiteral("cli.slvbundle"));
         QStringList args{
@@ -365,22 +360,22 @@ private slots:
         // Non-destructive: the filtered-out row is still loaded.
         QCOMPARE(model->rowCount(), 4);
 
-        const loglib::LogConfiguration &loaded = model->Configuration();
+        const loglib::LogConfiguration loaded = mWindow->activeSession()->BuildConfiguration(std::nullopt);
         QCOMPARE(loaded.columns[0].header, std::string("msg"));
         QCOMPARE(loaded.columns[1].header, std::string("level"));
         QVERIFY(loaded.columns[0].visible);
         QVERIFY(loaded.columns[1].visible);
         QVERIFY(!loaded.columns.back().visible);
 
-        QCOMPARE(loaded.highlightRules.size(), static_cast<std::size_t>(1));
-        QCOMPARE(loaded.highlightRules[0].name, std::string("errors"));
+        QCOMPARE(loaded.view.highlightRules.size(), static_cast<std::size_t>(1));
+        QCOMPARE(loaded.view.highlightRules[0].name, std::string("errors"));
 
         QCOMPARE(mWindow->Filters().size(), static_cast<std::size_t>(1));
         QCOMPARE(mWindow->Filters().begin()->second.columnKeys, (std::vector<std::string>{"msg"}));
 
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
-        const int msgColumn = ColumnByHeader(loaded, "msg");
+        const int msgColumn = ColumnByHeader(loaded.columns, "msg");
         QVERIFY(msgColumn >= 0);
         const QHeaderView *header = tableView->horizontalHeader();
         QVERIFY(header->isSortIndicatorShown());
@@ -391,7 +386,7 @@ private slots:
             (QStringList{QStringLiteral("delta"), QStringLiteral("charlie"), QStringLiteral("alpha")})
         );
 
-        QCOMPARE(loaded.anchors.size(), static_cast<std::size_t>(1));
+        QCOMPARE(loaded.view.anchors.size(), static_cast<std::size_t>(1));
         QVERIFY(mWindow->Anchors() != nullptr);
         QCOMPARE(mWindow->Anchors()->Count(), 1);
         QVERIFY(model->AnchorSlotForRow(1).has_value());
@@ -414,12 +409,10 @@ private:
             qWarning() << probe.err;
             return {};
         }
-        loglib::LogConfigurationManager manager;
-        manager.Load(probePath.toStdString());
-        loglib::LogConfiguration seed = manager.Configuration();
+        loglib::LogConfiguration seed = loglib::LoadConfiguration(probePath.toStdString());
         if (pinMsgToString)
         {
-            const int msg = ColumnByHeader(seed, "msg");
+            const int msg = ColumnByHeader(seed.columns, "msg");
             seed.columns[static_cast<std::size_t>(msg)].type = loglib::ColumnType::String;
             seed.columns[static_cast<std::size_t>(msg)].autoDetect = false;
         }
@@ -431,10 +424,10 @@ private:
             rule.type = loglib::HighlightRule::Type::Enumeration;
             rule.filterValues = {"Error"};
             rule.backgroundIndex = 1;
-            seed.highlightRules.push_back(rule);
+            seed.view.highlightRules.push_back(rule);
         }
         const QString seedPath = mDir.filePath(QStringLiteral("seed.json"));
-        loglib::LogConfigurationManager::Save(seed, seedPath.toStdString(), loglib::SaveScope::Full);
+        loglib::SaveConfiguration(seed, seedPath.toStdString(), loglib::SaveScope::Full);
         return seedPath;
     }
 

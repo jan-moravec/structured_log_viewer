@@ -1,9 +1,9 @@
 /**
  * @brief Glaze read and write options shared by every JSON file the library reads or writes.
  *
- * Configuration, regex template, theme and session bundle files are written with indentation so people can read them,
- * and unknown keys are ignored when reading. The schema, parse, support and output modules all use these options, which
- * is why the header is in core.
+ * Configuration, regex template, theme and session bundle files are written with indentation so people can read them.
+ * Regex template and theme files ignore unknown keys when reading, and configuration files reject them. The schema,
+ * parse, support and output modules all use these options, which is why the header is in core.
  *
  * This is part of the core module.
  */
@@ -30,5 +30,27 @@ struct LogConfigOpts : glz::opts
 // null_terminated is off because the readers take a string_view, which has no terminator, and Glaze would read one byte
 // past its end.
 constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unknown_keys = false, .prettify = true}};
+
+/**
+ * @brief The JSON options for configuration files and the configuration inside a session bundle.
+ *
+ * Unknown keys are errors. A key is required only where a type says so, through its requires_key function, so a missing
+ * optional key keeps the default of its member. Output is indented.
+ */
+constexpr LogConfigOpts MakeConfigurationOpts(bool prettify)
+{
+    LogConfigOpts opts{};
+    opts.null_terminated = false;
+    opts.error_on_unknown_keys = true;
+    opts.error_on_missing_keys = true;
+    opts.prettify = prettify;
+    return opts;
+}
+
+/** @brief The options for configuration files, with indented output. */
+constexpr LogConfigOpts CONFIGURATION_OPTS = MakeConfigurationOpts(true);
+
+/** @brief The same rules as CONFIGURATION_OPTS, with the output on one line. */
+constexpr LogConfigOpts CONFIGURATION_COMPACT_OPTS = MakeConfigurationOpts(false);
 
 } // namespace loglib::internal
