@@ -5108,6 +5108,44 @@ private slots:
         QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("99")));
     }
 
+    // A print format that no value accepts is replaced by the library when a configuration loads. The GUI shows that
+    // as one error without a line, titled with the configuration file.
+    void TestConfigurationWithBadPrintFormatShowsOneWarning()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(dock != nullptr);
+        dock->ResetSessionState();
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath(QStringLiteral("bad_format.json"));
+        WriteBinaryForTest(configPath, QByteArrayLiteral(R"({"version":1,"columns":[
+        {"header":"latency","keys":["latency"],"printFormat":"{:q}","type":"any","parseFormats":[],"visible":true},
+        {"header":"ok","keys":["ok"],"printFormat":"{:.1f}","type":"any","parseFormats":[],"visible":true}
+    ]})"));
+
+        mWindow->LoadConfigurationFromPathForTest(configPath);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(dock->Count(), 1);
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QStringList texts;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            texts.append(list->item(i)->text());
+        }
+        const QString all = texts.join(QChar::fromLatin1('\n'));
+        QVERIFY2(all.contains(QStringLiteral("bad_format.json")), qPrintable(all));
+        QVERIFY2(all.contains(QStringLiteral("{:q}")), qPrintable(all));
+
+        // Applying the same file again as a lone configuration shows its warning too.
+        dock->ResetSessionState();
+        QVERIFY(mWindow->TryLoadAsConfigurationForTest(configPath));
+        QCoreApplication::processEvents();
+        QCOMPARE(dock->Count(), 1);
+    }
+
     void TestGotoLineFilteredOutRowSurfacesSpecificHint()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();

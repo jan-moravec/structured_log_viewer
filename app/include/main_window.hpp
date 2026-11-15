@@ -1594,8 +1594,11 @@ private slots:
      * @param uuid Session UUID to pin after a successful load.
      * @param parsed Configuration to apply; consumed.
      * @param informIfNonFile Whether non-file sources show a dialog.
+     * @param configPath The file the configuration was read from, named in any configuration warning.
      */
-    void OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile);
+    void OpenParsedSession(
+        const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile, const QString &configPath
+    );
 
     /**
      * @brief Shared tail of `RestoreLastSessionFromPath` and
@@ -2513,9 +2516,20 @@ private:
      * configuration, and rebuilds filters. Returns false (with a
      * warning dialog) if the apply step throws.
      * @param parsed The `parsed` value.
+     * @param configPath The file the configuration was read from, named in any configuration warning.
      * @return The result described above.
      */
-    bool ApplyLoadedConfiguration(loglib::LogConfiguration parsed);
+    bool ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const QString &configPath);
+
+    /**
+     * @brief Shows the warnings the library kept while it applied a configuration to a session's columns.
+     * @param session Session whose column layout was just replaced.
+     * @param configPath The file the configuration came from, named in the title.
+     *
+     * A print format the library replaced with the default is reported here as an error without a line, in the parse
+     * error dock. Nothing is shown when there are no warnings.
+     */
+    void ShowConfigurationWarnings(LogSession *session, const QString &configPath);
 
     /**
      * @brief Re-validate every saved filter against the freshly-loaded

@@ -3515,7 +3515,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    OpenParsedSession(uuid, std::move(parsed), /*informIfNonFile=*/true);
+    OpenParsedSession(uuid, std::move(parsed), /*informIfNonFile=*/true, jsonPath);
 }
 
 void MainWindow::OpenSessionFromJson(const QString &uuid, const QString &jsonPath, bool informIfNonFile)
@@ -3535,7 +3535,7 @@ void MainWindow::OpenSessionFromJson(const QString &uuid, const QString &jsonPat
         return;
     }
 
-    OpenParsedSession(uuid, std::move(parsed), informIfNonFile);
+    OpenParsedSession(uuid, std::move(parsed), informIfNonFile, jsonPath);
 }
 
 QString MainWindow::RestoreHostedTabFromJson(const QString &uuid, const QString &jsonPath)
@@ -3560,7 +3560,7 @@ QString MainWindow::RestoreHostedTabFromJson(const QString &uuid, const QString 
     }
 
     mSession->SetPendingApplySortFromConfig(true);
-    if (!ApplyLoadedConfiguration(std::move(parsed)))
+    if (!ApplyLoadedConfiguration(std::move(parsed), jsonPath))
     {
         mSession->SetPendingApplySortFromConfig(false);
         return {};
@@ -3579,7 +3579,9 @@ QString MainWindow::RestoreHostedTabFromJson(const QString &uuid, const QString 
     return {};
 }
 
-void MainWindow::OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile)
+void MainWindow::OpenParsedSession(
+    const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile, const QString &configPath
+)
 {
     // Preserve a busy active tab when opening a recent session. When the active tab
     // was already empty, we still route through `NewSession` to
@@ -3602,7 +3604,7 @@ void MainWindow::OpenParsedSession(const QString &uuid, loglib::LogConfiguration
 
     // Apply failure surfaces a `QMessageBox`; bail without queueing
     // files so the view is at least empty rather than mixed.
-    if (!ApplyLoadedConfiguration(std::move(parsed)))
+    if (!ApplyLoadedConfiguration(std::move(parsed), configPath))
     {
         mSession->SetPendingApplySortFromConfig(false);
         return;
@@ -3841,6 +3843,7 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         mModel->MutableLayout().SetColumns(std::move(loaded.columns));
+        ShowConfigurationWarnings(mSession, file);
         mSession->MutableView() = std::move(loaded.view);
         // Session boundary: drop the previous session's recents
         // pin so a later AutoSave cannot rewrite an unrelated
@@ -5122,6 +5125,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         }
 
         model->MutableLayout().SetColumns(std::move(embedded.columns));
+        ShowConfigurationWarnings(origin, origin->DecompressionOriginalPath());
         origin->MutableView() = std::move(embedded.view);
         model->NotifyConfigurationReplaced();
         origin->SetPendingApplySortFromConfig(true);
@@ -9886,10 +9890,24 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         QMessageBox::warning(this, "Error Parsing Configuration", e.what());
         return false;
     }
-    return ApplyLoadedConfiguration(std::move(parsed));
+    return ApplyLoadedConfiguration(std::move(parsed), path);
 }
 
-bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
+void MainWindow::ShowConfigurationWarnings(LogSession *session, const QString &configPath)
+{
+    if (session == nullptr || session->Model() == nullptr)
+    {
+        return;
+    }
+    const std::vector<std::string> warnings = session->Model()->MutableLayout().TakeWarnings();
+    if (warnings.empty())
+    {
+        return;
+    }
+    ShowParseErrors(tr("Configuration warnings: %1").arg(QFileInfo(configPath).fileName()), warnings, session);
+}
+
+bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const QString &configPath)
 {
     try
     {
@@ -9951,6 +9969,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         UpdateStreamToolbarVisibility();
         UpdateStreamingStatus();
         mModel->MutableLayout().SetColumns(std::move(parsed.columns));
+        ShowConfigurationWarnings(mSession, configPath);
         mSession->MutableView() = std::move(parsed.view);
         // Replacing the columns does not emit a model signal; the
         // reset re-initialises the header section count and the
