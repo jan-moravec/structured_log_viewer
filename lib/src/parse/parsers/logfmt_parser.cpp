@@ -713,13 +713,13 @@ LogfmtParser::LogfmtParser(bool multiline) noexcept
 {
 }
 
-void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void LogfmtParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     LogfmtLineDecoder decoder(mMultiline);
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
-void LogfmtParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void LogfmtParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;

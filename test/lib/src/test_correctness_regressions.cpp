@@ -97,7 +97,7 @@ std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std:
     CoalescingFileSink sink(source);
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 
     std::vector<std::string> raw;
     raw.reserve(sink.lines.size());
@@ -272,7 +272,7 @@ TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser]
                                                 "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
     );
     CollectingSink sink;
-    JsonParser{}.ParseStreaming(source, sink, ParserOptions{});
+    JsonParser{}.Parse(source, sink, ParserOptions{});
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 6);
@@ -320,7 +320,7 @@ TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
 
     StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>("\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n"));
     CollectingSink sink;
-    LogfmtParser{}.ParseStreaming(source, sink, ParserOptions{});
+    LogfmtParser{}.Parse(source, sink, ParserOptions{});
     CHECK(sink.lines.size() == 2);
     CHECK(sink.keys.Find("\xEF\xBB\xBFts") == INVALID_KEY_ID);
 }
@@ -467,7 +467,7 @@ TEST_CASE("The stream loop drops an oversized line and resumes after it", "[stre
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 1);
@@ -487,7 +487,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 
     CHECK(sink.lines.size() == 2);
     CHECK(source.RawLine(1).size() <= 2 * options.maxLineBytes);

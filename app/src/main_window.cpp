@@ -4766,7 +4766,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
                              const loglib::StopToken &stopToken
                          ) mutable {
         options.stopToken = stopToken;
-        parser->ParseStreaming(*fileSourcePtr, *sink, options);
+        parser->Parse(*fileSourcePtr, *sink, options);
     };
 
     if (isFirstFileInSession)

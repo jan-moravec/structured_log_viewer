@@ -48,11 +48,11 @@ namespace bench
 namespace
 {
 
-// JsonParser::ParseStreaming adapter for RegisterStreaming. A free function rather than a ParserStreamFn global
+// JsonParser::Parse adapter for RegisterStreaming. A free function rather than a ParserStreamFn global
 // to avoid bugprone-throwing-static-initialization (the std::function ctor is not noexcept).
 void JsonStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    JsonParser{}.ParseStreaming(source, sink, options);
+    JsonParser{}.Parse(source, sink, options);
 }
 
 constexpr std::size_t SMALL_FILE_RECORDS = 10'000;
@@ -430,7 +430,7 @@ void RegisterEnumBenchmark()
             ParserOptions opts;
             opts.timeColumns = TimeColumnsOf(fixture.configuration->columns);
             opts.defaultSourceTimeZone = run.table->DefaultSourceTimeZone();
-            JsonParser{}.ParseStreaming(*parseSource, sink, opts);
+            JsonParser{}.Parse(*parseSource, sink, opts);
         }
 
         const loglib::LogTable &table = *run.table;
@@ -535,7 +535,7 @@ void RegisterCancellationBenchmark()
                 LatencySink sink;
                 ParserOptions opts;
                 opts.stopToken = sink.stop.GetToken();
-                parser.ParseStreaming(source, sink, opts);
+                parser.Parse(source, sink, opts);
                 if (!sink.cancelled || sink.requestedAt.time_since_epoch().count() == 0)
                 {
                     return -1.0;

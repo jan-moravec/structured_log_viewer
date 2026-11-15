@@ -38,7 +38,7 @@ std::size_t ParseLineCount(const std::filesystem::path &path)
     auto source = std::make_unique<FileLineSource>(path);
     FileLineSource &sourceRef = *source;
     internal::BufferingSink sink(std::move(source));
-    LogfmtParser{}.ParseStreaming(sourceRef, sink, ParserOptions{});
+    LogfmtParser{}.Parse(sourceRef, sink, ParserOptions{});
     return sink.TakeData().Lines().size();
 }
 

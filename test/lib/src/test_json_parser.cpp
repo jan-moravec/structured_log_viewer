@@ -44,7 +44,7 @@ loglib::ParseResult ParseWithSink(
 {
     loglib::FileLineSource *sourcePtr = source.get();
     loglib::internal::BufferingSink sink(std::move(source));
-    loglib::JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
+    loglib::JsonParser{}.Parse(*sourcePtr, sink, options);
     loglib::LogData data = sink.TakeData();
     std::vector<loglib::ParseError> errors = sink.TakeErrors();
     return loglib::ParseResult{.data = std::move(data), .errors = std::move(errors)};
@@ -1256,8 +1256,7 @@ struct CollectingStreamSink final : loglib::LogParseSink
 } // namespace
 
 TEST_CASE(
-    "JsonParser::ParseStreaming(StreamLineSource&) emits LogLines tagged with the source",
-    "[json_parser][stream_line_source]"
+    "JsonParser::Parse(StreamLineSource&) emits LogLines tagged with the source", "[json_parser][stream_line_source]"
 )
 {
     using namespace loglib;
@@ -1273,7 +1272,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const JsonParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     CHECK_FALSE(sink.finishedCancelled);
@@ -1316,7 +1315,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "JsonParser::ParseStreaming(StreamLineSource&) reports per-line errors with absolute line numbers",
+    "JsonParser::Parse(StreamLineSource&) reports per-line errors with absolute line numbers",
     "[json_parser][stream_line_source]"
 )
 {
@@ -1332,7 +1331,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const JsonParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
 

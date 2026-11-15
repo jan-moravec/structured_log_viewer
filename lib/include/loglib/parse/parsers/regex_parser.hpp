@@ -31,7 +31,7 @@ class StreamLineSource;
  *
  * The pattern is not read from the file, as a CSV header is. It comes from the constructor, together with the way
  * continuation lines are joined. An empty pattern is allowed only for detection probes, which go through the registry
- * of templates. Calling ParseStreaming without a pattern reports one parse error.
+ * of templates. Calling Parse without a pattern reports one parse error.
  *
  * The compiled pattern is shared by all worker threads, and each thread has its own match data. Match and depth limits
  * contain patterns that backtrack too much. A line that goes over a limit becomes a parse error and parsing goes on.
@@ -53,12 +53,12 @@ public:
     /**
      * @brief Creates a parser for a pattern.
      *
-     * An empty pattern is accepted, for detection probes, and makes ParseStreaming report one error.
+     * An empty pattern is accepted, for detection probes, and makes Parse report one error.
      *
      * @param pattern The PCRE2 pattern, with named groups written as (?<Name>...).
      * @param continuationMode How lines after the first line of a record are recognized.
      * @param headerAnchor The pattern that recognizes the first line of a record when continuationMode is
-     * UntilNextHeader. If empty, the main pattern is used. It must compile, or ParseStreaming reports one error.
+     * UntilNextHeader. If empty, the main pattern is used. It must compile, or Parse reports one error.
      */
     explicit RegexParser(
         std::string pattern, ContinuationMode continuationMode = ContinuationMode::None, std::string headerAnchor = {}
@@ -76,10 +76,10 @@ public:
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /** @brief Parses a static file with the pattern given to the constructor. */
-    void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /** @brief Parses a live stream with the pattern given to the constructor. */
-    void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
 private:
     std::string mPattern;
@@ -109,7 +109,7 @@ private:
  * @brief Checks a pattern without parsing anything, so a dialog can report errors early.
  *
  * It returns true if the pattern is not empty, compiles, and has at least one named group written as (?<Name>...).
- * Otherwise errorOut gets a message worded like the one ParseStreaming gives. The compiled pattern is thrown away at
+ * Otherwise errorOut gets a message worded like the one Parse gives. The compiled pattern is thrown away at
  * once, so this is a cheap check and not a setup for parsing.
  */
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);

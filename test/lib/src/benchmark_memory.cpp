@@ -94,7 +94,7 @@ std::unique_ptr<MemoryInput> LoadStreamInput(std::size_t rows, const std::string
     input->streamed->BeginStreaming(std::move(source));
     StreamSink sink;
     sink.table = input->streamed.get();
-    loglib::JsonParser{}.ParseStreaming(*parseSource, sink);
+    loglib::JsonParser{}.Parse(*parseSource, sink);
     if (input->streamed->RowCount() != rows)
     {
         throw std::runtime_error("the generated stream did not load");

@@ -607,7 +607,7 @@ RegexParser::RegexParser(std::string pattern, ContinuationMode continuationMode,
 {
 }
 
-void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void RegexParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::string &pattern = mPattern;
     if (pattern.empty())
@@ -657,7 +657,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
     internal::RunStreamingParseLoop(source, decoder, sink, options, columnKeys);
 }
 
-void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void RegexParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     // An empty pattern fails with the same error as the streaming overload.
     const std::string &pattern = mPattern;

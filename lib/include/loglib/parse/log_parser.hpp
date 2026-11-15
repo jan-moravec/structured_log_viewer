@@ -36,9 +36,9 @@ inline constexpr std::size_t PROBE_BYTES_BUDGET = 16 * 1024;
 /**
  * @brief Base class of the log format parsers.
  *
- * A new format implements IsValidBytes and both ParseStreaming overloads. IsValid for a path is not virtual. It reads
+ * A new format implements IsValidBytes and both Parse overloads. IsValid for a path is not virtual. It reads
  * the head of the file and calls IsValidBytes. To load a whole file into a table, see LoadFile. The application calls
- * ParseStreaming directly.
+ * Parse directly.
  */
 class LogParser
 {
@@ -64,13 +64,13 @@ public:
      * @brief Parses a static file and sends the result to the sink. Rows refer to source, and their line ids are
      * zero-based line numbers of the file.
      */
-    virtual void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
+    virtual void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /**
      * @brief Parses a live stream until it ends or options.stopToken fires. Rows refer to source, and their line ids
      * are the ones AppendLine assigned, starting at 1.
      */
-    virtual void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
+    virtual void Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 };
 
 /**

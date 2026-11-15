@@ -88,7 +88,7 @@ namespace
     options.stopToken = stopToken;
     options.threads = 1;
     loglib::LogParseSink &sink = *model.Sink();
-    loglib::JsonParser{}.ParseStreaming(*parseSource, sink, options);
+    loglib::JsonParser{}.Parse(*parseSource, sink, options);
 
     const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     if (!finished)

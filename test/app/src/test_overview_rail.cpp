@@ -121,7 +121,7 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     loglib::ParserOptions options;
     options.stopToken = stopToken;
     options.threads = 1;
-    loglib::JsonParser{}.ParseStreaming(*parseSource, *model.Sink(), options);
+    loglib::JsonParser{}.Parse(*parseSource, *model.Sink(), options);
 
     const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     QVERIFY2(finished, "streamingFinished must arrive within the timeout");

@@ -80,7 +80,7 @@ private:
     KeyIndex mKeys;
 };
 
-/// Runs `ParseStreaming` on a worker and waits up to @p deadline for
+/// Runs `Parse` on a worker and waits up to @p deadline for
 /// completion before joining it.
 void RunStreaming(
     const loglib::LogParser &parser,
@@ -90,7 +90,7 @@ void RunStreaming(
     std::chrono::milliseconds deadline
 )
 {
-    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(source, sink, std::move(options)); });
     static_cast<void>(test_common::WaitUntil([&] { return sink.finished.load(std::memory_order_acquire); }, deadline));
     if (worker.joinable())
     {
@@ -352,7 +352,7 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     options.stopToken = stopSource.GetToken();
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(30000));
     const auto startedAt = std::chrono::steady_clock::now();
-    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(source, sink, std::move(options)); });
 
     static_cast<void>(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }, 15s));
     CHECK(sink.started.load());
@@ -392,7 +392,7 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     // to keep the test snappy while still comfortably longer
     // than the chunk-arrival latency of the first release.
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(200));
-    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(source, sink, std::move(options)); });
 
     static_cast<void>(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }, 15s));
     CHECK(sink.started.load());
@@ -434,7 +434,7 @@ TEST_CASE("AutoDetectParser waits for a delayed sender before detecting", "[Auto
     loglib::StopSource stopSource;
     options.stopToken = stopSource.GetToken();
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, SHORT_PEEK_TIMEOUT);
-    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(source, sink, std::move(options)); });
 
     REQUIRE(test_common::WaitUntil([&] { return raw->WaitCalls() >= IDLE_WAIT_CALLS; }));
     CHECK_FALSE(sink.started.load());
@@ -464,7 +464,7 @@ TEST_CASE("AutoDetectParser stop ends an idle peek", "[AutoDetectParser]")
     loglib::StopSource stopSource;
     options.stopToken = stopSource.GetToken();
     const AutoDetectParser parser;
-    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(source, sink, std::move(options)); });
 
     // The worker is in the peek once it has called WaitForBytes.
     REQUIRE(test_common::WaitUntil([&] { return raw->WaitCalls() >= 1; }));

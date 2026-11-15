@@ -449,7 +449,7 @@ private:
         options.threads = 1;
         loglib::LogParseSink &sink = *model->Sink();
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*parseSource, sink, options);
+        parser.Parse(*parseSource, sink, options);
         if (finishedSpy.count() == 0 && !finishedSpy.wait(60000))
         {
             return false;

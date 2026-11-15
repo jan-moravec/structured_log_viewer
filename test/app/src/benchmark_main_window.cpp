@@ -118,7 +118,7 @@ RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
         loglib::ParserOptions options;
         options.stopToken = std::move(token);
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *sink, options);
+        parser.Parse(*fileSourcePtr, *sink, options);
     });
 
     RunResult result;
@@ -614,7 +614,7 @@ private:
                 loglib::ParserOptions options;
                 options.stopToken = std::move(token);
                 const loglib::JsonParser parser;
-                parser.ParseStreaming(*fileSourcePtr, *sink, options);
+                parser.Parse(*fileSourcePtr, *sink, options);
             }
         );
         const bool finished = finishedSpy.wait(180'000);

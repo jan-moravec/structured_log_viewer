@@ -880,7 +880,7 @@ ExitCode RunTail(
     watcher.Attach(producer);
 
     loglib::ParserOptions parserOptions = MakeParserOptions(global, options.input, table, stop.GetToken());
-    parser.value()->ParseStreaming(*rawSource, sink, std::move(parserOptions));
+    parser.value()->Parse(*rawSource, sink, std::move(parserOptions));
     sink.Finish();
 
     // A source never slows its writer, so it drops the oldest data when the parser falls behind, and it drops lines

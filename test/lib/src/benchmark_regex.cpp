@@ -68,7 +68,7 @@ StreamingFixture MakeTemplateFixture(
         ),
         .parser = [pattern, continuation, headerAnchor](
                       FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                  ) { RegexParser{pattern, continuation, headerAnchor}.ParseStreaming(source, sink, options); },
+                  ) { RegexParser{pattern, continuation, headerAnchor}.Parse(source, sink, options); },
     };
 }
 
@@ -227,9 +227,7 @@ StreamingFixture MakePythonTracebackFixture(
         ),
         .parser =
             [guard, &extra](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.ParseStreaming(
-                    source, sink, options
-                );
+                RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.Parse(source, sink, options);
             },
         .keepAlive = guard,
     };
@@ -320,7 +318,7 @@ void RegisterRegexBenchmarks()
             ),
             .parser = [pattern,
                        headerAnchor](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{pattern, ContinuationMode::Indented, headerAnchor}.ParseStreaming(source, sink, options);
+                RegexParser{pattern, ContinuationMode::Indented, headerAnchor}.Parse(source, sink, options);
             },
         };
     });

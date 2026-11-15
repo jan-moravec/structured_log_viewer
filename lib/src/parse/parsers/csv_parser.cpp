@@ -498,13 +498,13 @@ bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
     return false;
 }
 
-void CsvParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void CsvParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     CsvLineDecoder decoder;
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
-void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void CsvParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;

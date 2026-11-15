@@ -768,13 +768,13 @@ static_assert(
 
 } // namespace
 
-void JsonParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void JsonParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     JsonLineDecoder decoder;
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
-void JsonParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void JsonParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;

@@ -41,13 +41,13 @@ public:
      * @brief Parses a static file. Every row refers to source and has the zero-based line number of the file as its
      * id.
      */
-    void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
      * @brief Parses a live stream. Every line from the producer is stored with AppendLine, and the row refers to
      * source with the id AppendLine returned, counting from 1.
      */
-    void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 };
 
 } // namespace loglib

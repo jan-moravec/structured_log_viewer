@@ -123,16 +123,16 @@ bool AutoDetectParser::IsValidBytes(std::string_view /*sniffBuffer*/) const
     return true;
 }
 
-void AutoDetectParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void AutoDetectParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     // Static files are detected from their head bytes, which are read once.
     const DetectedFormat detected = DetectFormatForPath(source.Path());
     const std::unique_ptr<LogParser> resolved =
         MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
-    resolved->ParseStreaming(source, sink, std::move(options));
+    resolved->Parse(source, sink, std::move(options));
 }
 
-void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void AutoDetectParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)
@@ -140,7 +140,7 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
         // No producer -- fall through to Json's streaming loop so
         // the sink still honours its `OnStarted` / terminal-batch
         // contract (see `RunStreamingParseLoop`).
-        JsonParser().ParseStreaming(source, sink, std::move(options));
+        JsonParser().Parse(source, sink, std::move(options));
         return;
     }
 
@@ -153,7 +153,7 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
     {
         // Stop, timeout, or EOF may leave no bytes to detect.
         // Delegate to JSON so the normal sink lifecycle still runs.
-        JsonParser().ParseStreaming(source, sink, std::move(options));
+        JsonParser().Parse(source, sink, std::move(options));
         return;
     }
 
@@ -161,7 +161,7 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
     const std::unique_ptr<LogParser> resolved =
         MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
     source.UnreadBytes(std::move(combined));
-    resolved->ParseStreaming(source, sink, std::move(options));
+    resolved->Parse(source, sink, std::move(options));
 }
 
 } // namespace loglib

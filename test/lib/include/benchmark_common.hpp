@@ -396,15 +396,15 @@ inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguratio
 
 /**
  * Parser-agnostic streaming entry point: matches the static
- * ParseStreaming overload shared by every parser, so benchmarks can plug
- * in JsonParser::ParseStreaming, LogfmtParser::ParseStreaming, etc.
+ * Parse overload shared by every parser, so benchmarks can plug
+ * in JsonParser::Parse, LogfmtParser::Parse, etc.
  */
 using ParserStreamFn =
     std::function<void(loglib::FileLineSource &, loglib::LogParseSink &, const loglib::ParserOptions &)>;
 
 /**
  * Results of one end-to-end streaming run. The timed window covers
- * LogTable construction + mmap + ParseStreaming
+ * LogTable construction + mmap + Parse
  * + ~LogTable. Sink stats and row count are copied out before the inner
  * scope closes so the caller can inspect them after the timer stops.
  */

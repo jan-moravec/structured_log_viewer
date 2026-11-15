@@ -88,8 +88,8 @@ The line offsets of a file travel in the batch and are added to the FileLineSour
 
 ### Which thread does what
 
-- **Static file.** The caller of ParseStreaming for a FileLineSource runs a TBB pipeline and waits in it. One stage cuts the file into batches in order, many workers decode batches in parallel, and a last in-order stage shifts line ids to their file positions, copies text into the arena, joins continuation lines, coalesces batches and calls the sink. TBB runs that last stage on whichever thread of its pool is free, one call at a time and in file order, so a sink must not assume that OnBatch runs on the calling thread. OnStarted and OnFinished, and the batch that holds the final record of the file, are sent from the calling thread after the pipeline has drained.
-- **Live stream.** The thread that calls ParseStreaming for a StreamLineSource does all the work: it reads bytes, decodes lines, stores them in the source and calls the sink. One thread, so the sink is called on that thread.
+- **Static file.** The caller of Parse for a FileLineSource runs a TBB pipeline and waits in it. One stage cuts the file into batches in order, many workers decode batches in parallel, and a last in-order stage shifts line ids to their file positions, copies text into the arena, joins continuation lines, coalesces batches and calls the sink. TBB runs that last stage on whichever thread of its pool is free, one call at a time and in file order, so a sink must not assume that OnBatch runs on the calling thread. OnStarted and OnFinished, and the batch that holds the final record of the file, are sent from the calling thread after the pipeline has drained.
+- **Live stream.** The thread that calls Parse for a StreamLineSource does all the work: it reads bytes, decodes lines, stores them in the source and calls the sink. One thread, so the sink is called on that thread.
 - **Consumer.** The sink is the consumer, or hands each batch to one. A GUI sink queues batches and appends them on the GUI thread. LogTable is not thread-safe, so only one thread may append to it and read it at a time.
 
 ### What a line id means

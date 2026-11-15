@@ -131,7 +131,7 @@ void ParseAsFile(
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
     options.threads = threads;
-    parser.ParseStreaming(*sink.fileSource, sink, options);
+    parser.Parse(*sink.fileSource, sink, options);
 }
 
 /** Runs a parser over bytes as a stream, delivered in chunks, and keeps the sink for inspection. */
@@ -145,7 +145,7 @@ void ParseAsStream(
 {
     sink.streamSource =
         std::make_unique<StreamLineSource>("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, chunkSize));
-    parser.ParseStreaming(*sink.streamSource, sink, options);
+    parser.Parse(*sink.streamSource, sink, options);
 }
 
 } // namespace
@@ -349,7 +349,7 @@ constexpr const char *TIME_LINES = "{\"ts\":\"2026-01-15 12:00:00\"}\n{\"ts\":\"
         options.timeColumns = TimeColumnsOf(table.Layout());
     }
     AppendingSink sink(table);
-    JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
+    JsonParser{}.Parse(*sourcePtr, sink, options);
 
     REQUIRE(table.RowCount() == 2);
     REQUIRE(table.ColumnCount() >= 1);
@@ -379,7 +379,7 @@ TEST_CASE("Every batch lists the time keys the parser converted", "[batch_contra
     {
         RecordingSink sink;
         auto source = MemorySource(bytes, "batch_contract_time_keys.jsonl");
-        JsonParser{}.ParseStreaming(*source, sink, options);
+        JsonParser{}.Parse(*source, sink, options);
         REQUIRE_FALSE(sink.batches.empty());
         const KeyId ts = sink.Keys().Find("ts");
         const KeyId when = sink.Keys().Find("when");
@@ -837,7 +837,7 @@ struct TableText
     AppendingSink sink(table);
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
-    parser.ParseStreaming(*sourcePtr, sink, options);
+    parser.Parse(*sourcePtr, sink, options);
     static_cast<void>(table.FinalizeAutoDetection());
     return DescribeTable(table);
 }
@@ -850,7 +850,7 @@ struct TableText
     LogTable table;
     table.BeginStreaming(std::move(source));
     AppendingSink sink(table);
-    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{});
+    parser.Parse(*sourcePtr, sink, ParserOptions{});
     static_cast<void>(table.FinalizeAutoDetection());
     return DescribeTable(table);
 }
@@ -1051,7 +1051,7 @@ struct TableFacts
     options.threads = threads;
     options.batchSizeBytes = batchSizeBytes;
     AppendingSink sink(table);
-    parser.ParseStreaming(*sourcePtr, sink, options);
+    parser.Parse(*sourcePtr, sink, options);
 
     TableFacts facts;
     const std::size_t columns = table.ColumnCount();
@@ -1746,7 +1746,7 @@ TEST_CASE("A producer that throws while streaming still finishes the sink once",
         sink.streamSource =
             std::make_unique<StreamLineSource>("memory.log", std::make_unique<ThrowingProducer>(bytes, failAt, chunk));
 
-        CHECK_THROWS_AS(JsonParser{}.ParseStreaming(*sink.streamSource, sink, ParserOptions{}), std::runtime_error);
+        CHECK_THROWS_AS(JsonParser{}.Parse(*sink.streamSource, sink, ParserOptions{}), std::runtime_error);
         CHECK(sink.started == 1);
         CHECK(sink.finished == 1);
         // Every complete line read before the failure reached the sink, and nothing after it.

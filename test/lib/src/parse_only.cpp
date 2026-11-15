@@ -133,7 +133,7 @@ ParseResult ParseSource(const LogParser &parser, std::unique_ptr<FileLineSource>
     FileLineSource *sourceRaw = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
 
-    parser.ParseStreaming(*sourceRaw, sink, ParserOptions{});
+    parser.Parse(*sourceRaw, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
     std::vector<ParseError> errors = sink.TakeErrors();
