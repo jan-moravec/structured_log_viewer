@@ -298,7 +298,10 @@ void RegisterSessionBundleBenchmarks()
             const TableFixture &fixture = table->Get();
             const TempBundlePath bundlePath;
             WriteSessionBundle(
-                fixture.Table(), fixture.Table().Configuration().Configuration(), bundlePath.Path(), WriteOptions()
+                fixture.Table(),
+                LogConfiguration{.columns = fixture.Table().Layout().Columns()},
+                bundlePath.Path(),
+                WriteOptions()
             );
             DecompressingByteSource::Options options;
             options.discardFirstLine = true;
