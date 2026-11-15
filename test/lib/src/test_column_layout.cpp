@@ -116,7 +116,11 @@ TEST_CASE("AppendKeys with no keys should not modify configuration", "[ColumnLay
 {
     LogConfiguration logConfiguration;
     const Column defaultColumn = {
-        .header = "test", .keys = {"test"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}
+        .header = "test",
+        .keys = {"test"},
+        .printFormat = "{}",
+        .type = ColumnType::Any,
+        .parseFormats = {},
     };
     logConfiguration.columns.push_back(defaultColumn);
     ColumnLayout manager(logConfiguration.columns);
@@ -151,7 +155,7 @@ TEST_CASE(
         return std::ranges::find_if(columns, [header](const auto &c) { return c.header == header; });
     };
 
-    auto checkType = [&](std::string_view header, ColumnType expected) {
+    const auto checkType = [&](std::string_view header, ColumnType expected) {
         const auto it = findColumn(header);
         REQUIRE(it != columns.end());
         CHECK(it->type == expected);
@@ -257,13 +261,13 @@ TEST_CASE("Cache: a column whose `keys` differs from `header` is matched by key"
     // Cache keys on `column.keys`, not `column.header`: AppendKeys must
     // skip keys already listed under any column's `keys`.
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back(
-        {.header = "display",
-         .keys = {"raw_key", "alias"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
-    );
+    logConfiguration.columns.push_back({
+        .header = "display",
+        .keys = {"raw_key", "alias"},
+        .printFormat = "{}",
+        .type = ColumnType::Any,
+        .parseFormats = {},
+    });
     ColumnLayout manager(logConfiguration.columns);
 
     manager.AppendKeys({"display", "raw_key", "alias", "fresh"});
@@ -527,65 +531,66 @@ TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
     // sync with the header docstring.
     using Expected = std::pair<std::string_view, LogLevel>;
     constexpr std::array<Expected, 52> CASES = {
-        {// Trace
-         {"trace", LogLevel::Trace},
-         {"TRACE", LogLevel::Trace},
-         {"trc", LogLevel::Trace},
-         {"Trc", LogLevel::Trace},
-         {"t", LogLevel::Trace},
-         {"T", LogLevel::Trace},
-         {"finer", LogLevel::Trace},
-         {"Finer", LogLevel::Trace},
-         {"finest", LogLevel::Trace},
-         {"FINEST", LogLevel::Trace},
-         {"silly", LogLevel::Trace},
-         {"Silly", LogLevel::Trace},
-         // Debug
-         {"debug", LogLevel::Debug},
-         {"dbg", LogLevel::Debug},
-         {"d", LogLevel::Debug},
-         {"D", LogLevel::Debug},
-         {"verbose", LogLevel::Debug},
-         {"vrb", LogLevel::Debug},
-         {"VRB", LogLevel::Debug},
-         {"v", LogLevel::Debug},
-         {"V", LogLevel::Debug},
-         {"fine", LogLevel::Debug},
-         {"Fine", LogLevel::Debug},
-         // Info
-         {"info", LogLevel::Info},
-         {"inf", LogLevel::Info},
-         {"INF", LogLevel::Info},
-         {"i", LogLevel::Info},
-         {"I", LogLevel::Info},
-         {"Information", LogLevel::Info},
-         {"informational", LogLevel::Info},
-         {"notice", LogLevel::Info},
-         // Warn
-         {"warn", LogLevel::Warn},
-         {"WARNING", LogLevel::Warn},
-         {"wrn", LogLevel::Warn},
-         {"WRN", LogLevel::Warn},
-         {"w", LogLevel::Warn},
-         {"W", LogLevel::Warn},
-         // Error
-         {"error", LogLevel::Error},
-         {"ERR", LogLevel::Error},
-         {"severe", LogLevel::Error},
-         {"e", LogLevel::Error},
-         {"E", LogLevel::Error},
-         // Fatal
-         {"fatal", LogLevel::Fatal},
-         {"critical", LogLevel::Fatal},
-         {"crit", LogLevel::Fatal},
-         {"emerg", LogLevel::Fatal},
-         {"ftl", LogLevel::Fatal},
-         {"FTL", LogLevel::Fatal},
-         {"f", LogLevel::Fatal},
-         {"F", LogLevel::Fatal},
-         {"fault", LogLevel::Fatal},
-         {"Fault", LogLevel::Fatal}
-        }
+        {
+            // Trace
+            {"trace", LogLevel::Trace},
+            {"TRACE", LogLevel::Trace},
+            {"trc", LogLevel::Trace},
+            {"Trc", LogLevel::Trace},
+            {"t", LogLevel::Trace},
+            {"T", LogLevel::Trace},
+            {"finer", LogLevel::Trace},
+            {"Finer", LogLevel::Trace},
+            {"finest", LogLevel::Trace},
+            {"FINEST", LogLevel::Trace},
+            {"silly", LogLevel::Trace},
+            {"Silly", LogLevel::Trace},
+            // Debug
+            {"debug", LogLevel::Debug},
+            {"dbg", LogLevel::Debug},
+            {"d", LogLevel::Debug},
+            {"D", LogLevel::Debug},
+            {"verbose", LogLevel::Debug},
+            {"vrb", LogLevel::Debug},
+            {"VRB", LogLevel::Debug},
+            {"v", LogLevel::Debug},
+            {"V", LogLevel::Debug},
+            {"fine", LogLevel::Debug},
+            {"Fine", LogLevel::Debug},
+            // Info
+            {"info", LogLevel::Info},
+            {"inf", LogLevel::Info},
+            {"INF", LogLevel::Info},
+            {"i", LogLevel::Info},
+            {"I", LogLevel::Info},
+            {"Information", LogLevel::Info},
+            {"informational", LogLevel::Info},
+            {"notice", LogLevel::Info},
+            // Warn
+            {"warn", LogLevel::Warn},
+            {"WARNING", LogLevel::Warn},
+            {"wrn", LogLevel::Warn},
+            {"WRN", LogLevel::Warn},
+            {"w", LogLevel::Warn},
+            {"W", LogLevel::Warn},
+            // Error
+            {"error", LogLevel::Error},
+            {"ERR", LogLevel::Error},
+            {"severe", LogLevel::Error},
+            {"e", LogLevel::Error},
+            {"E", LogLevel::Error},
+            // Fatal
+            {"fatal", LogLevel::Fatal},
+            {"critical", LogLevel::Fatal},
+            {"crit", LogLevel::Fatal},
+            {"emerg", LogLevel::Fatal},
+            {"ftl", LogLevel::Fatal},
+            {"FTL", LogLevel::Fatal},
+            {"f", LogLevel::Fatal},
+            {"F", LogLevel::Fatal},
+            {"fault", LogLevel::Fatal},
+            {"Fault", LogLevel::Fatal},
+        },
     };
     for (const auto &[input, expected] : CASES)
     {
