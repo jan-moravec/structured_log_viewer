@@ -68,7 +68,7 @@ LogTable BuildSingleColumnTable(
          .type = type,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -337,7 +337,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
@@ -383,7 +383,7 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
@@ -429,7 +429,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
@@ -507,7 +507,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
@@ -602,7 +602,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -645,7 +645,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));

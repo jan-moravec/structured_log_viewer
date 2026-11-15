@@ -37,13 +37,20 @@ constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unk
  * Unknown keys are errors. A key is required only where a type says so, through its requires_key function, so a missing
  * optional key keeps the default of its member. Output is indented.
  */
-constexpr LogConfigOpts CONFIGURATION_OPTS{
-    {.null_terminated = false, .error_on_unknown_keys = true, .prettify = true, .error_on_missing_keys = true}
-};
+constexpr LogConfigOpts MakeConfigurationOpts(bool prettify)
+{
+    LogConfigOpts opts{};
+    opts.null_terminated = false;
+    opts.error_on_unknown_keys = true;
+    opts.error_on_missing_keys = true;
+    opts.prettify = prettify;
+    return opts;
+}
+
+/** @brief The options for configuration files, with indented output. */
+constexpr LogConfigOpts CONFIGURATION_OPTS = MakeConfigurationOpts(true);
 
 /** @brief The same rules as CONFIGURATION_OPTS, with the output on one line. */
-constexpr LogConfigOpts CONFIGURATION_COMPACT_OPTS{
-    {.null_terminated = false, .error_on_unknown_keys = true, .prettify = false, .error_on_missing_keys = true}
-};
+constexpr LogConfigOpts CONFIGURATION_COMPACT_OPTS = MakeConfigurationOpts(false);
 
 } // namespace loglib::internal

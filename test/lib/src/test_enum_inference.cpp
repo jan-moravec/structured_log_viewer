@@ -128,7 +128,7 @@ TEST_CASE("EnumInference encodes a pinned Enumeration column as DictRef", "[enum
             .autoDetect = false,
         }
     );
-    ColumnLayout manager(configuration.columns);
+    const ColumnLayout manager(configuration.columns);
 
     EnumInference inference;
     inference.RefreshSnapshot(data, manager);

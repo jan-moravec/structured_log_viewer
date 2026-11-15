@@ -200,7 +200,7 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
         ColumnLayout manager;
         LogConfiguration configuration;
         configuration.columns.push_back(TimeColumn("ts", "%F %T"));
-        manager.SetColumns((std::move(configuration)).columns);
+        manager.SetColumns(std::move(configuration).columns);
         return test_common_lib::TableFromData(std::move(data), std::move(manager));
     };
 

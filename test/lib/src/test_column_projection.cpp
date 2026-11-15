@@ -88,7 +88,7 @@ loglib::LogTable BuildSparseTable()
     config.columns.push_back(MakeColumn("C", "c"));
 
     ColumnLayout manager;
-    manager.SetColumns((std::move(config)).columns);
+    manager.SetColumns(std::move(config).columns);
     return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 
@@ -161,7 +161,7 @@ TEST_CASE("column_projection: reorder then project follows display order", "[col
     config.columns.push_back(MakeColumn("C", "c", true));
 
     ColumnLayout manager;
-    manager.SetColumns((std::move(config)).columns);
+    manager.SetColumns(std::move(config).columns);
     REQUIRE(ColumnProjection(manager).Indices() == std::vector<std::size_t>{0, 2});
 
     manager.MoveColumn(2, 0);
@@ -178,7 +178,7 @@ TEST_CASE("column_projection: SetColumnVisible is the hide/show source", "[colum
     config.columns.push_back(MakeColumn("B", "b"));
 
     ColumnLayout manager;
-    manager.SetColumns((std::move(config)).columns);
+    manager.SetColumns(std::move(config).columns);
     manager.SetColumnVisible(1, false);
     REQUIRE(ColumnProjection(manager).Indices() == std::vector<std::size_t>{0});
 

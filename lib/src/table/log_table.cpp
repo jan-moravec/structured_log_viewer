@@ -107,9 +107,8 @@ LogTable::LogTable()
 }
 
 LogTable::LogTable(ColumnLayout layout)
-    : mEnum(std::make_unique<EnumInference>())
+    : mLayout(std::move(layout)), mEnum(std::make_unique<EnumInference>())
 {
-    mLayout = std::move(layout);
     mLayout.SetTimeFormatCheck(TimeFormatPrints);
     // Checks the Time formats, which the layout could not check before it had the check.
     mLayout.SetColumns(std::vector<Column>(mLayout.Columns()));
@@ -931,7 +930,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
     {
         return;
     }
-    const auto snapshot = [this, columnIndex]() -> Column { return mLayout.Columns()[columnIndex]; };
+    const auto snapshot = [this, columnIndex] -> Column { return mLayout.Columns()[columnIndex]; };
 
     {
         const auto col = snapshot();

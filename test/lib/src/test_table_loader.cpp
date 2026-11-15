@@ -521,7 +521,7 @@ TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_
     LogTable table;
     LogConfiguration configuration;
     configuration.columns.push_back({.header = "when", .keys = {"ts"}, .printFormat = "{}", .type = ColumnType::Time});
-    table.Layout().SetColumns((configuration).columns);
+    table.Layout().SetColumns(configuration.columns);
 
     const StopSource stopSource;
     const ParserOptions options = ParserOptionsFor(table, stopSource.GetToken());

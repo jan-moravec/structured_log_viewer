@@ -636,8 +636,8 @@ ExitCode RunStats(
 
     loglib::LogTable &table = loaded->table;
     console.Stage("parse", table.RowCount(), parseStarted);
-    auto session =
-        ApplySessionConfiguration(options.filter, ViewOptions{}, loaded->view, table, runtime, StatsOptions::NAME);
+    const ViewOptions noView;
+    auto session = ApplySessionConfiguration(options.filter, noView, loaded->view, table, runtime, StatsOptions::NAME);
     if (!session)
     {
         return console.Report(session.error());

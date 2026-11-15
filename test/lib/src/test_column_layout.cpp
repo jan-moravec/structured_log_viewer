@@ -526,66 +526,67 @@ TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
     // each new short-form/library-specific entry. Keeps the table in
     // sync with the header docstring.
     using Expected = std::pair<std::string_view, LogLevel>;
-    constexpr std::array<Expected, 52> CASES = {{
-        // Trace
-        {"trace", LogLevel::Trace},
-        {"TRACE", LogLevel::Trace},
-        {"trc", LogLevel::Trace},
-        {"Trc", LogLevel::Trace},
-        {"t", LogLevel::Trace},
-        {"T", LogLevel::Trace},
-        {"finer", LogLevel::Trace},
-        {"Finer", LogLevel::Trace},
-        {"finest", LogLevel::Trace},
-        {"FINEST", LogLevel::Trace},
-        {"silly", LogLevel::Trace},
-        {"Silly", LogLevel::Trace},
-        // Debug
-        {"debug", LogLevel::Debug},
-        {"dbg", LogLevel::Debug},
-        {"d", LogLevel::Debug},
-        {"D", LogLevel::Debug},
-        {"verbose", LogLevel::Debug},
-        {"vrb", LogLevel::Debug},
-        {"VRB", LogLevel::Debug},
-        {"v", LogLevel::Debug},
-        {"V", LogLevel::Debug},
-        {"fine", LogLevel::Debug},
-        {"Fine", LogLevel::Debug},
-        // Info
-        {"info", LogLevel::Info},
-        {"inf", LogLevel::Info},
-        {"INF", LogLevel::Info},
-        {"i", LogLevel::Info},
-        {"I", LogLevel::Info},
-        {"Information", LogLevel::Info},
-        {"informational", LogLevel::Info},
-        {"notice", LogLevel::Info},
-        // Warn
-        {"warn", LogLevel::Warn},
-        {"WARNING", LogLevel::Warn},
-        {"wrn", LogLevel::Warn},
-        {"WRN", LogLevel::Warn},
-        {"w", LogLevel::Warn},
-        {"W", LogLevel::Warn},
-        // Error
-        {"error", LogLevel::Error},
-        {"ERR", LogLevel::Error},
-        {"severe", LogLevel::Error},
-        {"e", LogLevel::Error},
-        {"E", LogLevel::Error},
-        // Fatal
-        {"fatal", LogLevel::Fatal},
-        {"critical", LogLevel::Fatal},
-        {"crit", LogLevel::Fatal},
-        {"emerg", LogLevel::Fatal},
-        {"ftl", LogLevel::Fatal},
-        {"FTL", LogLevel::Fatal},
-        {"f", LogLevel::Fatal},
-        {"F", LogLevel::Fatal},
-        {"fault", LogLevel::Fatal},
-        {"Fault", LogLevel::Fatal},
-    }};
+    constexpr std::array<Expected, 52> CASES = {
+        {// Trace
+         {"trace", LogLevel::Trace},
+         {"TRACE", LogLevel::Trace},
+         {"trc", LogLevel::Trace},
+         {"Trc", LogLevel::Trace},
+         {"t", LogLevel::Trace},
+         {"T", LogLevel::Trace},
+         {"finer", LogLevel::Trace},
+         {"Finer", LogLevel::Trace},
+         {"finest", LogLevel::Trace},
+         {"FINEST", LogLevel::Trace},
+         {"silly", LogLevel::Trace},
+         {"Silly", LogLevel::Trace},
+         // Debug
+         {"debug", LogLevel::Debug},
+         {"dbg", LogLevel::Debug},
+         {"d", LogLevel::Debug},
+         {"D", LogLevel::Debug},
+         {"verbose", LogLevel::Debug},
+         {"vrb", LogLevel::Debug},
+         {"VRB", LogLevel::Debug},
+         {"v", LogLevel::Debug},
+         {"V", LogLevel::Debug},
+         {"fine", LogLevel::Debug},
+         {"Fine", LogLevel::Debug},
+         // Info
+         {"info", LogLevel::Info},
+         {"inf", LogLevel::Info},
+         {"INF", LogLevel::Info},
+         {"i", LogLevel::Info},
+         {"I", LogLevel::Info},
+         {"Information", LogLevel::Info},
+         {"informational", LogLevel::Info},
+         {"notice", LogLevel::Info},
+         // Warn
+         {"warn", LogLevel::Warn},
+         {"WARNING", LogLevel::Warn},
+         {"wrn", LogLevel::Warn},
+         {"WRN", LogLevel::Warn},
+         {"w", LogLevel::Warn},
+         {"W", LogLevel::Warn},
+         // Error
+         {"error", LogLevel::Error},
+         {"ERR", LogLevel::Error},
+         {"severe", LogLevel::Error},
+         {"e", LogLevel::Error},
+         {"E", LogLevel::Error},
+         // Fatal
+         {"fatal", LogLevel::Fatal},
+         {"critical", LogLevel::Fatal},
+         {"crit", LogLevel::Fatal},
+         {"emerg", LogLevel::Fatal},
+         {"ftl", LogLevel::Fatal},
+         {"FTL", LogLevel::Fatal},
+         {"f", LogLevel::Fatal},
+         {"F", LogLevel::Fatal},
+         {"fault", LogLevel::Fatal},
+         {"Fault", LogLevel::Fatal}
+        }
+    };
     for (const auto &[input, expected] : CASES)
     {
         CAPTURE(input);

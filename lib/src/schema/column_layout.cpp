@@ -26,10 +26,8 @@ std::string ToLower(const std::string &str)
 // Common JSON and structured-log timestamp field names. The bare name t is left out because it gives false positives.
 bool IsTimestampKey(const std::string &key)
 {
-    static const std::vector<std::string> TIMESTAMP_KEYS = {
-        "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
-    };
-    return std::ranges::any_of(TIMESTAMP_KEYS, [lowerKey = ToLower(key)](const std::string &value) {
+    static const std::vector<std::string> KEYS = {"timestamp", "time", "ts", "@timestamp", "datetime", "created_at"};
+    return std::ranges::any_of(KEYS, [lowerKey = ToLower(key)](const std::string &value) {
         return (lowerKey == value);
     });
 }
@@ -244,7 +242,7 @@ void ColumnLayout::MoveColumn(size_t srcIndex, size_t destIndex)
         return;
     }
     using Diff = std::vector<Column>::difference_type;
-    auto begin = mColumns.begin();
+    const auto begin = mColumns.begin();
     if (srcIndex > destIndex)
     {
         std::rotate(

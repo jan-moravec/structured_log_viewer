@@ -110,7 +110,7 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
     }
 
     // The layout sanitizes the print formats, as it does for the application.
-    ColumnLayout manager(configuration.columns);
+    const ColumnLayout manager(configuration.columns);
     result->table = std::make_unique<LogTable>(manager);
     LogTable &table = *result->table;
     table.SetDisplayTimeZone(ProcessDefaultTimeZone());
@@ -241,7 +241,7 @@ SharedMixed MakeSharedStreamMessages(const Tier &tier)
         result->rows = rows;
         LogConfiguration configuration;
         configuration.columns.push_back(MakeColumn("message", ColumnType::String, "{}"));
-        ColumnLayout manager(configuration.columns);
+        const ColumnLayout manager(configuration.columns);
         result->table = std::make_unique<LogTable>(manager);
         LogTable &table = *result->table;
         auto owned = std::make_unique<StreamLineSource>(std::filesystem::path("stream messages"), nullptr);

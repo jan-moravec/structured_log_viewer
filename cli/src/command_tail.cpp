@@ -483,9 +483,9 @@ private:
         {
             return &*mSession;
         }
-        auto resolved = ApplySessionConfiguration(
-            mSessionFilter, mOptions->view, loglib::SessionView{}, *mTable, *mRuntime, TailOptions::NAME
-        );
+        const loglib::SessionView noSeed;
+        auto resolved =
+            ApplySessionConfiguration(mSessionFilter, mOptions->view, noSeed, *mTable, *mRuntime, TailOptions::NAME);
         if (!resolved)
         {
             mSessionError = std::move(resolved.error());

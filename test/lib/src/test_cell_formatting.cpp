@@ -58,7 +58,7 @@ LogTable TableOfValues(const std::vector<LogValue> &values, const std::string &p
         }
     );
     ColumnLayout manager;
-    manager.SetColumns((std::move(configuration)).columns);
+    manager.SetColumns(std::move(configuration).columns);
     return test_common_lib::TableFromData(std::move(data), std::move(manager));
 }
 

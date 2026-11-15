@@ -82,7 +82,7 @@ struct ConfigurationDocument
 }
 
 /** @brief The configuration that a document describes. The caller has checked the version. */
-[[nodiscard]] inline LogConfiguration MakeConfiguration(ConfigurationDocument &&document)
+[[nodiscard]] inline LogConfiguration MakeConfiguration(ConfigurationDocument document)
 {
     LogConfiguration configuration;
     configuration.columns.reserve(document.columns.size());
@@ -135,7 +135,8 @@ struct ConfigurationDocument
 /** @brief A base for the metas of types whose keys may all be missing. They then keep the default of their member. */
 struct AllKeysOptional
 {
-    static constexpr bool requires_key(std::string_view, bool) // NOLINT(readability-identifier-naming)
+    static constexpr bool
+    requires_key(std::string_view /*key*/, bool /*nullable*/) // NOLINT(readability-identifier-naming)
     {
         return false;
     }
@@ -236,7 +237,7 @@ template <> struct glz::meta<loglib::Source> : loglib::internal::AllKeysOptional
 template <> struct glz::meta<loglib::internal::ColumnDocument>
 {
     using T = loglib::internal::ColumnDocument;
-    static constexpr bool requires_key(std::string_view key, bool)
+    static constexpr bool requires_key(std::string_view key, bool /*nullable*/)
     {
         return key == "header" || key == "keys";
     }
@@ -262,7 +263,7 @@ template <> struct glz::meta<loglib::internal::ColumnDocument>
 template <> struct glz::meta<loglib::internal::ConfigurationDocument>
 {
     using T = loglib::internal::ConfigurationDocument;
-    static constexpr bool requires_key(std::string_view key, bool)
+    static constexpr bool requires_key(std::string_view key, bool /*nullable*/)
     {
         return key == "version" || key == "columns";
     }

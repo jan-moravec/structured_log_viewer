@@ -65,7 +65,7 @@ LogTable BuildEnumTable(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -109,7 +109,7 @@ LogTable BuildStringTable(
          .levelMapping = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -146,7 +146,7 @@ LogTable BuildTimeTable(
          .type = ColumnType::Time,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -558,7 +558,7 @@ LogTable BuildSingleColumnTable(
     cfg.columns.push_back(
         {.header = columnKey, .keys = {columnKey}, .printFormat = "{}", .type = type, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -770,7 +770,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -982,7 +982,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 
@@ -1069,7 +1069,7 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
 

@@ -340,7 +340,7 @@ constexpr const char *TIME_LINES = "{\"ts\":\"2026-01-15 12:00:00\"}\n{\"ts\":\"
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.Layout().SetColumns((TimeConfiguration()).columns);
+    table.Layout().SetColumns(TimeConfiguration().columns);
     table.BeginStreaming(std::move(source));
 
     ParserOptions options;

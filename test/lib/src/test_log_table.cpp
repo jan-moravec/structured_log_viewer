@@ -688,7 +688,7 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -789,7 +789,7 @@ TEST_CASE(
     }
     cfg.columns.push_back(std::move(wide));
 
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -876,7 +876,7 @@ TEST_CASE(
     }
     cfg.columns.push_back(std::move(untouched));
 
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1326,7 +1326,7 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1368,7 +1368,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     // Small cap pins the boundary behaviour without bulk-filling.
@@ -1442,7 +1442,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1483,7 +1483,7 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     constexpr uint16_t TEST_CAP = 4;
@@ -1539,7 +1539,7 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1641,7 +1641,7 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1687,7 +1687,7 @@ TEST_CASE("Appending data -- snapshot-enum keys are seeded against the merged Ke
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
 
@@ -1726,7 +1726,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
     cfg.columns.push_back(
         {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1774,7 +1774,7 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
          .levelMapping = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1897,7 +1897,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -1936,7 +1936,7 @@ TEST_CASE(
     cfg.columns.push_back(
         {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -2059,7 +2059,7 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -2099,7 +2099,7 @@ TEST_CASE(
          .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -2568,7 +2568,7 @@ TEST_CASE(
          .parseFormats = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -2950,7 +2950,7 @@ TEST_CASE(
          .parseFormats = {},
          .levelMapping = {{"PANIC", "Fatal"}, {"NOTICE", "Info"}}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -3088,7 +3088,7 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -3140,7 +3140,7 @@ TEST_CASE(
          .levelMapping = {},
          .autoDetect = false}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));

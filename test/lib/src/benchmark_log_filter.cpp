@@ -92,7 +92,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std:
          .parseFormats = {},
          .levelMapping = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -153,7 +153,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
          .parseFormats = {},
          .levelMapping = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -208,7 +208,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
          .parseFormats = {},
          .levelMapping = {}}
     );
-    ColumnLayout mgr(cfg.columns);
+    const ColumnLayout mgr(cfg.columns);
 
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
