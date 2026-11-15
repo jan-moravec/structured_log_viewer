@@ -26,9 +26,9 @@ namespace loglib::exports
 namespace
 {
 
-// Portable, thread-safe errno formatting. `strerror` is not
+// Portable, thread-safe errno formatting. strerror is not
 // thread-safe on some libc's and is deprecated on MSVC (C4996);
-// the `_s` / `_r` variants are the canonical replacements.
+// the _s / _r variants are the canonical replacements.
 std::string DescribeErrno(int err)
 {
     constexpr size_t BUF_SIZE = 256;
@@ -40,14 +40,14 @@ std::string DescribeErrno(int err)
     }
     return {buf};
 #else
-    // Two `strerror_r` shapes exist: the XSI variant returns
-    // `int` (0 on success, writes into `buf`); the GNU variant
-    // (glibc default) returns `char *` that may or may not point
-    // at `buf`. Dispatch on the return type via a generic lambda
+    // Two strerror_r shapes exist: the XSI variant returns
+    // int (0 on success, writes into buf); the GNU variant
+    // (glibc default) returns char * that may or may not point
+    // at buf. Dispatch on the return type via a generic lambda
     // (a template) so both branches are only *instantiated* for
     // the shape that actually returns the matching type; a plain
-    // `if constexpr` in a non-template context would parse-check
-    // both branches and reject `result != nullptr` on XSI.
+    // if constexpr in a non-template context would parse-check
+    // both branches and reject result != nullptr on XSI.
     auto describe = [&buf](auto result) -> std::string {
         if constexpr (std::is_pointer_v<decltype(result)>)
         {
@@ -66,7 +66,7 @@ std::string DescribeErrno(int err)
 #endif
 }
 
-// MSVC deprecates plain `fopen`; the `_wfopen_s` overload is
+// MSVC deprecates plain fopen; the _wfopen_s overload is
 // what keeps Unicode filenames intact on Windows.
 std::FILE *OpenForWriteBinary(const std::filesystem::path &path)
 {
@@ -119,10 +119,10 @@ StreamIoStatus CaptureStreamIoStatus(std::FILE *file)
     return status;
 }
 
-// POSIX: a failed `fwrite` / `fflush` sets the stream error indicator
-// and `errno` to `EPIPE`. Windows `WriteFile` reports
-// `ERROR_BROKEN_PIPE` or `ERROR_NO_DATA`; the CRT usually also sets
-// `errno` to `EPIPE`.
+// POSIX: a failed fwrite / fflush sets the stream error indicator
+// and errno to EPIPE. Windows WriteFile reports
+// ERROR_BROKEN_PIPE or ERROR_NO_DATA; the CRT usually also sets
+// errno to EPIPE.
 bool IsBrokenPipe(const StreamIoStatus &status)
 {
 #ifdef _WIN32

@@ -24,32 +24,31 @@ namespace
 
 using SortRank = std::int64_t;
 
-/// Numbered suffix N has rank `NUMBERED_RANK_BASE - N`.
+/** Numbered suffix N has rank NUMBERED_RANK_BASE - N. */
 constexpr SortRank NUMBERED_RANK_BASE = 1'000'000'000LL;
 
-/// Largest numbered suffix that still produces a positive rank.
+/** Largest numbered suffix that still produces a positive rank. */
 constexpr std::int64_t MAX_ACCEPTED_NUMBERED_SUFFIX = NUMBERED_RANK_BASE - 1;
 
-/// Bounds the synchronous directory scan. Results may be truncated.
+/** Bounds the synchronous directory scan. Results may be truncated. */
 constexpr std::size_t MAX_ENUMERATED_DIRECTORY_ENTRIES = 4096;
 
-/// Match case-insensitively on Windows/macOS and sensitively elsewhere.
+/** Match case-insensitively on Windows/macOS and sensitively elsewhere. */
 constexpr auto REGEX_CASE_FLAGS = std::regex::ECMAScript
 #if defined(_WIN32) || defined(__APPLE__)
                                   | std::regex::icase
 #endif
     ;
 
-/// Converts without locale-dependent narrowing; path matching uses UTF-8.
+/** Converts without locale-dependent narrowing; path matching uses UTF-8. */
 [[nodiscard]] std::string PathToUtf8(const std::filesystem::path &p)
 {
-    // `char8_t` and `char` differ in type, not byte representation.
+    // char8_t and char differ in type, not byte representation.
     const std::u8string u8 = p.u8string();
     return {reinterpret_cast<const char *>(u8.data()), u8.size()};
 }
 
-/// Lowercases ASCII bytes without altering multibyte UTF-8 sequences.
-/// This is not Unicode case folding.
+/** Lowercases ASCII bytes without altering multibyte UTF-8 sequences. This is not Unicode case folding. */
 std::string ToLower(std::string s)
 {
     constexpr unsigned char ASCII_UPPER_BOUND = 0x80;
@@ -64,7 +63,7 @@ std::string ToLower(std::string s)
     return s;
 }
 
-/// Escapes @p literal for an ECMAScript regular expression.
+/** Escapes literal for an ECMAScript regular expression. */
 std::string EscapeForRegex(std::string_view literal)
 {
     std::string escaped;
@@ -96,13 +95,13 @@ std::string EscapeForRegex(std::string_view literal)
     return escaped;
 }
 
-/// Broad bounds applied before exact calendar validation.
+/** Broad bounds applied before exact calendar validation. */
 constexpr int MIN_YEAR = 1900;
 constexpr int MAX_YEAR = 9999;
 constexpr unsigned MAX_MONTH = 12;
 constexpr unsigned MAX_DAY = 31;
 
-/// Returns days since 1970-01-01, or `nullopt` for an invalid date.
+/** Returns days since 1970-01-01, or nullopt for an invalid date. */
 std::optional<SortRank> DaysSinceEpoch(int year, unsigned month, unsigned day)
 {
     if (year < MIN_YEAR || year > MAX_YEAR || month < 1 || month > MAX_MONTH || day < 1 || day > MAX_DAY)
@@ -125,7 +124,7 @@ struct Candidate
     SortRank sortRank;
 };
 
-/// Compile once per scan because `std::regex` construction is expensive.
+/** Compile once per scan because std::regex construction is expensive. */
 struct SiblingMatchers
 {
     std::regex numbered;
@@ -203,8 +202,7 @@ std::optional<Candidate> ClassifySibling(const std::filesystem::path &siblingPat
     return std::nullopt;
 }
 
-/// Splits the filename into `(stem, extension-without-dot)`.
-/// Leading-dot names are treated as extensionless.
+/** Splits the filename into (stem, extension-without-dot). Leading-dot names are treated as extensionless. */
 std::pair<std::string, std::string> SplitStemExt(const std::filesystem::path &primary)
 {
     const std::string filename = PathToUtf8(primary.filename());
@@ -216,8 +214,7 @@ std::pair<std::string, std::string> SplitStemExt(const std::filesystem::path &pr
     return {filename.substr(0, dot), filename.substr(dot + 1)};
 }
 
-/// Derives a same-directory primary from a recognized rotated filename.
-/// The derived path need not exist.
+/** Derives a same-directory primary from a recognized rotated filename. The derived path need not exist. */
 std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem::path &path)
 {
     const std::string filename = PathToUtf8(path.filename());
@@ -227,7 +224,7 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
     }
 
     static constexpr auto DERIVE_REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize | REGEX_CASE_FLAGS;
-    // Apply the same numbered-suffix range as `ClassifySibling`.
+    // Apply the same numbered-suffix range as ClassifySibling.
     static const std::regex NUMBERED_TAILING(R"(^(.+?)\.([0-9]+)(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS);
     static const std::regex DATED_TAILING(
         R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
@@ -257,11 +254,11 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
     {
         return path.parent_path() / (m[1].str() + "." + m[2].str());
     }
-    // A bare `<primary>.<codec>` is not a recognized rotation form.
+    // A bare <primary>.<codec> is not a recognized rotation form.
     return std::nullopt;
 }
 
-/// The accepted codecs must match `BuildMatchers`' compression suffix.
+/** The accepted codecs must match BuildMatchers' compression suffix. */
 bool IsRecognisedCodecExt(std::string_view ext)
 {
     if (ext.empty())

@@ -29,12 +29,12 @@ bool TagMatchesType(CompactTag tag, ColumnType declaredType) noexcept
     case Type::Number:
         return tag == Tag::Int64 || tag == Tag::Uint64 || tag == Tag::Double;
     case Type::Time:
-        // `Timestamp` is the natural tag; epoch integers ride the
+        // Timestamp is the natural tag; epoch integers ride the
         // same comparator so they also count as matching.
         return tag == Tag::Timestamp || tag == Tag::Int64 || tag == Tag::Uint64;
     case Type::Enumeration:
     case Type::Level:
-        // Only `DictRef` matches. Unencoded `OwnedString` slots are
+        // Only DictRef matches. Unencoded OwnedString slots are
         // the over-cap values the diagnostic surfaces.
         return tag == Tag::DictRef;
     }

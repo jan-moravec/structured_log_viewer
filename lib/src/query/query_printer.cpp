@@ -38,23 +38,25 @@ namespace
 
 using namespace internal::query;
 
-/// Range accepted by the pretty printer -- outside `[0, 9999]`
-/// there's no plain ISO spelling in this grammar, so the printer
-/// falls back to the `epoch_micros:N` marker.
+/**
+ * Range accepted by the pretty printer -- outside [0, 9999] there's no plain ISO spelling in this grammar, so the
+ * printer falls back to the epoch_micros:N marker.
+ */
 constexpr int ISO_YEAR_MAX = 9999;
 
-/// `days_from_civil` / `civil_from_days` epoch constant from Howard
-/// Hinnant's date algorithms (days between 0000-03-01 and the UNIX
-/// epoch 1970-01-01).
+/**
+ * days_from_civil / civil_from_days epoch constant from Howard Hinnant's date algorithms (days between 0000-03-01 and
+ * the UNIX epoch 1970-01-01).
+ */
 constexpr std::int64_t CIVIL_DAYS_EPOCH_OFFSET = 719468;
 
-/// Scratch buffer for `std::to_chars(double)`: 64 bytes fits every
-/// shortest-form output with slack.
+/** Scratch buffer for std::to_chars(double): 64 bytes fits every shortest-form output with slack. */
 constexpr std::size_t NUMBER_TO_CHARS_BUFFER_SIZE = 64;
 
-/// True iff @p text needs quoting to survive the round-trip
-/// (starts with a non-ident char, contains operator chars, or
-/// happens to be a reserved keyword).
+/**
+ * True iff text needs quoting to survive the round-trip (starts with a non-ident char, contains operator chars, or
+ * happens to be a reserved keyword).
+ */
 [[nodiscard]] bool NeedsQuoting(std::string_view text) noexcept
 {
     if (text.empty())
@@ -117,8 +119,7 @@ constexpr std::size_t NUMBER_TO_CHARS_BUFFER_SIZE = 64;
     return NeedsQuoting(text) ? QuoteString(text) : std::string(text);
 }
 
-/// Emit a numeric bound with round-trip precision (via
-/// `std::to_chars`, locale-free).
+/** Emit a numeric bound with round-trip precision (via std::to_chars, locale-free). */
 [[nodiscard]] std::string FormatNumber(double value)
 {
     std::array<char, NUMBER_TO_CHARS_BUFFER_SIZE> buffer{};
@@ -130,7 +131,7 @@ constexpr std::size_t NUMBER_TO_CHARS_BUFFER_SIZE = 64;
     return {buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data())};
 }
 
-/// Calendar fields for a day count relative to the UNIX epoch.
+/** Calendar fields for a day count relative to the UNIX epoch. */
 struct CivilDate
 {
     std::int64_t year = 0;
@@ -138,9 +139,10 @@ struct CivilDate
     unsigned day = 1;
 };
 
-/// `civil_from_days` (Howard Hinnant's date algorithms): exact
-/// inverse of the `days_from_civil` arithmetic used above, valid
-/// across the whole `int64_t` range including negative days.
+/**
+ * civil_from_days (Howard Hinnant's date algorithms): exact inverse of the days_from_civil arithmetic used above, valid
+ * across the whole int64_t range including negative days.
+ */
 [[nodiscard]] CivilDate CivilFromDays(std::int64_t z) noexcept
 {
     z += CIVIL_DAYS_EPOCH_OFFSET;
@@ -152,7 +154,7 @@ struct CivilDate
     const std::uint64_t doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100)); // [0, 365]
     const std::uint64_t mp = ((5 * doy) + 2) / 153;                          // [0, 11]
     const auto d = static_cast<unsigned>(doy - (((153 * mp) + 2) / 5) + 1);  // [1, 31]
-    // Shift `mp` (March-based) back to a January-based month.
+    // Shift mp (March-based) back to a January-based month.
     // Signed arithmetic; the canonical unsigned-wrap form works but
     // is subtle.
     const auto marchBased = static_cast<int>(mp);
@@ -160,23 +162,21 @@ struct CivilDate
     return CivilDate{.year = y + (m <= 2 ? 1 : 0), .month = m, .day = d};
 }
 
-/// Render epoch microseconds as `YYYY-MM-DDTHH:MM:SS.uuuuuuZ`.
-/// Uses the same civil-date arithmetic as `ParseIsoTimestamp` so
-/// the two are exact inverses on every platform, including
-/// pre-epoch values (MSVC `gmtime_s` returns `EINVAL` below
-/// 1969-12-31T12:00:00Z, hence the manual arithmetic).
-///
-/// Years outside `[0, 9999]` (no plain ISO spelling in this
-/// grammar) fall back to an `epoch_micros:<n>` marker. That
-/// marker is deliberately not re-parseable, so a corrupt/synthetic
-/// far-out bound is visible instead of silently mis-rendered.
+/**
+ * Render epoch microseconds as YYYY-MM-DDTHH:MM:SS.uuuuuuZ. Uses the same civil-date arithmetic as ParseIsoTimestamp so
+ * the two are exact inverses on every platform, including pre-epoch values (MSVC gmtime_s returns EINVAL below
+ * 1969-12-31T12:00:00Z, hence the manual arithmetic).
+ *
+ * Years outside [0, 9999] (no plain ISO spelling in this grammar) fall back to an epoch_micros:<n> marker. That marker
+ * is deliberately not re-parseable, so a corrupt/synthetic far-out bound is visible instead of silently mis-rendered.
+ */
 [[nodiscard]] std::string FormatTimestampMicros(std::int64_t micros)
 {
     // C++ integer division truncates towards zero, so negative
-    // `micros` with a non-zero remainder need to borrow a whole
-    // second (otherwise `-500'000` renders as
-    // `1970-01-01T00:00:00.500000Z` instead of the correct
-    // `1969-12-31T23:59:59.500000Z`.
+    // micros with a non-zero remainder need to borrow a whole
+    // second (otherwise -500'000 renders as
+    // 1970-01-01T00:00:00.500000Z instead of the correct
+    // 1969-12-31T23:59:59.500000Z.
     std::int64_t totalSeconds = micros / MICROS_PER_SECOND;
     std::int64_t microRemainder = micros % MICROS_PER_SECOND;
     if (microRemainder < 0)
@@ -206,9 +206,9 @@ struct CivilDate
     const auto minute = static_cast<int>((secondOfDay % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
     const auto second = static_cast<int>(secondOfDay % SECONDS_PER_MINUTE);
 
-    // `std::format` avoids the C-varargs `snprintf` (silences
+    // std::format avoids the C-varargs snprintf (silences
     // cppcoreguidelines-pro-type-vararg) and hard-caps the buffer
-    // to whatever `[0, ISO_YEAR_MAX]` produces.
+    // to whatever [0, ISO_YEAR_MAX] produces.
     return std::format(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
         static_cast<int>(date.year),
@@ -234,8 +234,10 @@ enum class Precedence : std::uint8_t
 
 void AppendExpression(const FilterExpression &expr, Precedence parent, std::string &out);
 
-/// Emit one leaf. Barewords for common cases; quoted forms when
-/// the payload would collide with a keyword / operator / number.
+/**
+ * Emit one leaf. Barewords for common cases; quoted forms when the payload would collide with a keyword / operator /
+ * number.
+ */
 void AppendLeaf(const LeafRule &rule, std::string &out)
 {
     const std::string columnText = rule.columnKeys.empty() ? std::string() : FormatIdent(rule.columnKeys.front());
@@ -255,7 +257,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         case LeafRule::Match::Exactly:
             out.push_back('=');
             // Always quoted so the round-trip stays unambiguous
-            // vs. numeric / boolean `=` literals.
+            // vs. numeric / boolean = literals.
             out.append(QuoteString(value));
             break;
         case LeafRule::Match::RegularExpression:
@@ -283,8 +285,8 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
     }
     case LeafRule::Type::Number:
     {
-        // Single value -> `=N`; one-sided -> `>=N` / `<=N`;
-        // both sides -> `IN [min..max]`.
+        // Single value -> =N; one-sided -> >=N / <=N;
+        // both sides -> IN [min..max].
         const bool hasMin = rule.filterMinValue.has_value();
         const bool hasMax = rule.filterMaxValue.has_value();
         if (hasMin && hasMax && *rule.filterMinValue == *rule.filterMaxValue)
@@ -348,7 +350,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
     }
     case LeafRule::Type::Boolean:
     {
-        // Collapse to `=true` / `=false` / `IN [true, false]`.
+        // Collapse to =true / =false / IN [true, false].
         bool hasTrue = false;
         bool hasFalse = false;
         for (const std::string &v : rule.filterValues)
@@ -401,7 +403,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
     }
 }
 
-// `AppendAnd` / `AppendOr` / `AppendNot` / `AppendExpression` form
+// AppendAnd / AppendOr / AppendNot / AppendExpression form
 // a mutually-recursive AST walker; misc-no-recursion is silenced on
 // each entry point so the visitor lambda specialisations don't get
 // individually flagged.
@@ -411,8 +413,8 @@ void AppendAnd(const FilterExpression::And &node, Precedence parent, std::string
     if (node.children.empty())
     {
         // Empty And = match-all. The top-level case renders as the
-        // empty string in `FormatExpression`; a nested empty And is
-        // not in the grammar, so emit `*` as a debug placeholder.
+        // empty string in FormatExpression; a nested empty And is
+        // not in the grammar, so emit * as a debug placeholder.
         out.append("*");
         return;
     }
@@ -514,12 +516,9 @@ std::string FormatExpression(const FilterExpression &expression)
     {
         return {};
     }
-    // Peel single-child `And` wrappers at the root:
-    // `MirrorSessionStateToConfiguration` / `ApplyAdvancedFilterResult`
-    // wrap Advanced-only subtrees in `And([X])` to keep the "top-level
-    // Leaf children live in `mSimpleLeaves`" invariant. Unwrapping keeps
-    // the editor round-trip visibly stable. Stops before producing
-    // match-all so nested empty `And` still hits the placeholder path.
+    // Peel single-child And wrappers at the root. A caller that keeps simple leaves apart from advanced subtrees wraps
+    // the advanced part in And([X]), and unwrapping it keeps the printed text stable across a round trip. Stop before
+    // producing match-all, so a nested empty And still reaches the placeholder path.
     const FilterExpression *effective = &expression;
     while (true)
     {

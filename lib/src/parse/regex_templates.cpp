@@ -34,11 +34,11 @@ namespace loglib
 namespace
 {
 
-/// Parse one embedded JSON blob into a `RegexTemplate`. Throws
-/// `std::runtime_error` on parse failure with the source filename
-/// in the diagnostic. Caller treats the throw as "drop this entry
-/// but keep going" so one malformed shipped file can't wedge
-/// auto-detection for the rest of the catalog.
+/**
+ * Parses one embedded JSON blob into a RegexTemplate. Throws FormatError on a parse failure, with the source file name
+ * in the message. The caller drops that entry and keeps going, so one malformed shipped file cannot stop auto-detection
+ * for the rest of the catalog.
+ */
 RegexTemplate ParseEmbeddedOrThrow(const internal::EmbeddedRegexTemplate &entry)
 {
     try
@@ -53,25 +53,26 @@ RegexTemplate ParseEmbeddedOrThrow(const internal::EmbeddedRegexTemplate &entry)
     }
 }
 
-/// The merged probe registry: built-ins first (sorted by
-/// `priority`), then user extras (also sorted by `priority`).
-/// The two-tier order is deliberate — a careless user priority
-/// can never steal a probe match from a shipped template. Within
-/// each tier the sort matches "lower probes first".
+/**
+ * The merged probe registry: built-ins first (sorted by priority), then user extras (also sorted by priority). The
+ * two-tier order is deliberate — a careless user priority can never steal a probe match from a shipped template. Within
+ * each tier the sort matches "lower probes first".
+ */
 struct MergedRegistry
 {
     std::vector<RegexTemplate> builtins;
     std::vector<RegexTemplate> extras;
-    /// Stable, owning flattened view — built-ins then extras, in
-    /// probe order. A `shared_ptr` to *this* lets readers pin the
-    /// storage for a whole iteration even while a writer prepares
-    /// a fresh `MergedRegistry`.
+    /**
+     * Stable, owning flattened view — built-ins then extras, in probe order. A shared_ptr to *this* lets readers pin
+     * the storage for a whole iteration even while a writer prepares a fresh MergedRegistry.
+     */
     std::vector<RegexTemplate> ordered;
 };
 
-/// Monotonic generation counter bumped on every registry rebuild.
-/// Readers in `parsers/regex_parser.cpp` use this to invalidate
-/// their compiled cache without taking a mutex on the hot path.
+/**
+ * Monotonic generation counter bumped on every registry rebuild. Readers in parsers/regex_parser.cpp use this to
+ * invalidate their compiled cache without taking a mutex on the hot path.
+ */
 std::atomic<uint64_t> &GenerationCounter()
 {
     static std::atomic<uint64_t> counter{0};
@@ -84,29 +85,31 @@ std::shared_mutex &RegistryMutex()
     return m;
 }
 
-/// Lazily built on first read and rebuilt whenever
-/// `SetExtraRegexTemplates` swaps in a new extras set. Protected
-/// by `RegistryMutex()`. Held via `shared_ptr` so a reader that
-/// took a copy under the read lock is unaffected by a later
-/// rebuild.
+/**
+ * Lazily built on first read and rebuilt whenever SetExtraRegexTemplates swaps in a new extras set. Protected by
+ * RegistryMutex(). Held via shared_ptr so a reader that took a copy under the read lock is unaffected by a later
+ * rebuild.
+ */
 std::shared_ptr<const MergedRegistry> &SharedRegistrySlot()
 {
     static std::shared_ptr<const MergedRegistry> slot;
     return slot;
 }
 
-/// Snapshot of extras registered via `SetExtraRegexTemplates`.
-/// Protected by `RegistryMutex()`. Copied into the next
-/// `MergedRegistry` build.
+/**
+ * Snapshot of extras registered via SetExtraRegexTemplates. Protected by RegistryMutex(). Copied into the next
+ * MergedRegistry build.
+ */
 std::vector<RegexTemplate> &ExtrasSlot()
 {
     static std::vector<RegexTemplate> v;
     return v;
 }
 
-/// Build (or rebuild) the merged registry from the embedded
-/// catalog + the current extras. Caller must hold a unique lock on
-/// `RegistryMutex()`.
+/**
+ * Build (or rebuild) the merged registry from the embedded catalog + the current extras. Caller must hold a unique lock
+ * on RegistryMutex().
+ */
 std::shared_ptr<const MergedRegistry> RebuildLocked()
 {
     auto fresh = std::make_shared<MergedRegistry>();
@@ -121,7 +124,7 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
         {
             // Programmer error in the shipped catalog. Skip and
             // keep auto-detect working for the rest; the CI sweep
-            // in `test_regex_templates.cpp` catches this before it
+            // in test_regex_templates.cpp catches this before it
             // can reach a user. Deliberately silent — the process
             // has no logging sink at this static-init phase and
             // the surviving templates are more useful than
@@ -266,15 +269,15 @@ std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
 {
     // Pin the initial snapshot for the process lifetime so the
     // returned span stays valid across subsequent
-    // `SetExtraRegexTemplates` calls (which rebuild the merged
+    // SetExtraRegexTemplates calls (which rebuild the merged
     // registry but never touch the built-in slice this captures).
     static const std::vector<RegexTemplate> *cached = nullptr;
     static std::once_flag cacheOnce;
-    // `CurrentRegistry()` can throw on OOM (vector reallocation
-    // inside `RebuildLocked`). The public contract is noexcept —
+    // CurrentRegistry() can throw on OOM (vector reallocation
+    // inside RebuildLocked). The public contract is noexcept —
     // callers rely on it during static init — so swallow the
     // (vanishingly unlikely) failure and return an empty span
-    // rather than propagate a `bad_alloc` past the boundary.
+    // rather than propagate a bad_alloc past the boundary.
     try
     {
         std::call_once(cacheOnce, []() {
@@ -343,7 +346,7 @@ std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern)
 {
     // Copy the matched entry out of the snapshot so the caller
     // can outlive it without a concurrent
-    // `SetExtraRegexTemplates` invalidating a raw pointer.
+    // SetExtraRegexTemplates invalidating a raw pointer.
     // See the header doc for the trade-off.
     const auto snap = CurrentRegistry();
     if (!snap)
@@ -451,9 +454,9 @@ std::shared_ptr<const std::vector<RegexTemplate>> MergedRegexTemplates()
     {
         return nullptr;
     }
-    // Hand out a `shared_ptr` aliased to the `ordered` vector so
+    // Hand out a shared_ptr aliased to the ordered vector so
     // the snapshot's refcount keeps storage alive for the caller
-    // without exposing the `MergedRegistry` type.
+    // without exposing the MergedRegistry type.
     return {snap, &snap->ordered};
 }
 

@@ -10,7 +10,7 @@ void BytesProducer::SetRotationCallback(const std::function<void()> & /*callback
 
 void BytesProducer::SetStatusCallback(const std::function<void(SourceStatus)> & /*callback*/)
 {
-    // No-op: producers that never become unavailable stay `Running`.
+    // No-op: producers that never become unavailable stay Running.
 }
 
 size_t BytesProducer::DroppedByteCount() const noexcept

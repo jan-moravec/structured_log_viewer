@@ -42,11 +42,11 @@ bool IsStdinInteractive() noexcept
 namespace
 {
 
-/// Wait for stdin to become readable, or until @p deadline
-/// elapses. Returns true when at least one byte is available
-/// (or EOF is observable, which `read`/`ReadFile` will report on
-/// the next call). Returns false on timeout / hard error, in
-/// which case the caller should stop peeking.
+/**
+ * Wait for stdin to become readable, or until deadline elapses. Returns true when at least one byte is available (or
+ * EOF is observable, which read/ReadFile will report on the next call). Returns false on timeout / hard error, in which
+ * case the caller should stop peeking.
+ */
 bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
 {
 #ifdef _WIN32
@@ -55,10 +55,10 @@ bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
     {
         return false;
     }
-    // `PeekNamedPipe` is the only non-blocking readiness probe
+    // PeekNamedPipe is the only non-blocking readiness probe
     // that works on anonymous pipes. It also correctly reports EOF
     // (returns 0 with ERROR_BROKEN_PIPE), in which case the
-    // subsequent `ReadFile` returns 0 too -- treated as done.
+    // subsequent ReadFile returns 0 too -- treated as done.
     // For redirected regular files, reads never
     // block, so the peek-then-sleep loop degenerates into
     // pure reads.
@@ -75,10 +75,10 @@ bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
         if (ok == 0)
         {
             // Not a pipe (regular file / unknown): fall through
-            // and let `ReadFile` handle it -- on a real file it
+            // and let ReadFile handle it -- on a real file it
             // returns immediately, and on the interactive path
             // the caller was supposed to bail via
-            // `IsStdinInteractive`.
+            // IsStdinInteractive.
             return true;
         }
         if (available > 0)

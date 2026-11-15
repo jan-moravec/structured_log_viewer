@@ -41,7 +41,7 @@
 
 namespace
 {
-// `ssize_t` is POSIX-only; alias to a portable signed type so the I/O
+// ssize_t is POSIX-only; alias to a portable signed type so the I/O
 // helpers below have a single signature on all platforms.
 using SsizeType = std::int64_t;
 } // namespace
@@ -53,8 +53,8 @@ namespace
 {
 
 #ifdef _WIN32
-// `INVALID_HANDLE_VALUE` is a reinterpret_cast and not a constant
-// expression in MSVC's C++23 mode (C2131); use a plain `const` global.
+// INVALID_HANDLE_VALUE is a reinterpret_cast and not a constant
+// expression in MSVC's C++23 mode (C2131); use a plain const global.
 const internal::NativeFileHandle INVALID_HANDLE = INVALID_HANDLE_VALUE;
 #else
 constexpr internal::NativeFileHandle INVALID_HANDLE = -1;
@@ -330,7 +330,7 @@ private:
     std::atomic<size_t> mDroppedByteCount{0};
 
     // Separate mutex so we never call user callbacks while holding the
-    // busy `mMutex`.
+    // busy mMutex.
     mutable std::mutex mCallbackMutex;
     std::function<void()> mRotationCallback;
     std::function<void(SourceStatus)> mStatusCallback;
@@ -402,13 +402,13 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
     mIdentityAtOpen = FromOpenHandle(mHandle);
 
     // Pre-fill runs from the worker's prologue (not here) so a multi-GB
-    // backwards-newline scan never blocks the GUI thread. `Read` returns
-    // 0 until pre-fill lands bytes; the parser parks on `WaitForBytes`.
+    // backwards-newline scan never blocks the GUI thread. Read returns
+    // 0 until pre-fill lands bytes; the parser parks on WaitForBytes.
 
     // Watch the parent directory: Linux inotify / macOS FSEvents work at
     // directory granularity; the listener filters by basename. The
-    // `current_path()` fallback below covers pathological inputs where
-    // `weakly_canonical` declined (symlink loop, OOM, FS rejection).
+    // current_path() fallback below covers pathological inputs where
+    // weakly_canonical declined (symlink loop, OOM, FS rejection).
     if (!mOptions.disableNativeWatcher)
     {
         try
@@ -529,14 +529,14 @@ void TailingBytesProducerImpl::SetRotationCallback(const std::function<void()> &
 
 void TailingBytesProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
-    // Mirror `TcpServerProducer` / `UdpServerProducer`: snapshot the
+    // Mirror TcpServerProducer / UdpServerProducer: snapshot the
     // last-reported status under the lock and replay it once outside
-    // so a GUI consumer that subscribes after a `Waiting` transition
+    // so a GUI consumer that subscribes after a Waiting transition
     // (e.g. file went missing before the model wired the callback)
     // immediately sees the live state instead of an inconsistent
-    // implicit `Running` baseline. Edge-triggered firing inside
-    // `FireStatusCallbackIfChanged` is unaffected because we do not
-    // touch `mLastReportedStatus` here.
+    // implicit Running baseline. Edge-triggered firing inside
+    // FireStatusCallbackIfChanged is unaffected because we do not
+    // touch mLastReportedStatus here.
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
@@ -735,8 +735,8 @@ void TailingBytesProducerImpl::Prefill()
     // tail's partial-line state.
     mReadOffset = fileSize;
 
-    // Wake any consumer parked on `WaitForBytes` so they don't sleep
-    // until `pollInterval` after pre-fill data lands.
+    // Wake any consumer parked on WaitForBytes so they don't sleep
+    // until pollInterval after pre-fill data lands.
     mCv.notify_all();
 }
 

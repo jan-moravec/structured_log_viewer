@@ -101,10 +101,10 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
 
     StartReceive();
     mWorker = std::thread([this] {
-        // `run()` returns when no work is left; we keep work alive by
-        // re-arming the receive in the completion handler. On `Stop()`
+        // run() returns when no work is left; we keep work alive by
+        // re-arming the receive in the completion handler. On Stop()
         // we close the socket (cancels in-flight ops) and call
-        // `mIoContext.stop()` to break out cleanly.
+        // mIoContext.stop() to break out cleanly.
         try
         {
             mIoContext.run();
@@ -130,7 +130,7 @@ UdpServerProducerImpl::~UdpServerProducerImpl()
     }
 }
 
-// `asio::io_context::stop()` may throw in rare error paths; `noexcept` matches
+// asio::io_context::stop() may throw in rare error paths; noexcept matches
 // producer contract; the catch block below is the safety net.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 void UdpServerProducerImpl::Stop() noexcept
@@ -141,12 +141,12 @@ void UdpServerProducerImpl::Stop() noexcept
     }
 
     // Close the socket from the worker thread to avoid races between
-    // the running `async_receive_from` and the destructor. The close
-    // cancels the in-flight receive with `operation_aborted`; the
-    // completion handler observes `mStopRequested` and does not
+    // the running async_receive_from and the destructor. The close
+    // cancels the in-flight receive with operation_aborted; the
+    // completion handler observes mStopRequested and does not
     // re-arm, so the io_context's work count drops to zero and
-    // `run()` returns naturally. We deliberately do NOT call
-    // `mIoContext.stop()` -- that would abandon the posted close
+    // run() returns naturally. We deliberately do NOT call
+    // mIoContext.stop() -- that would abandon the posted close
     // handler and leave the close-on-destruct fallback to clean up.
     try
     {
@@ -157,7 +157,7 @@ void UdpServerProducerImpl::Stop() noexcept
     }
     catch (...)
     {
-        // `asio::post` can theoretically throw on allocator failure;
+        // asio::post can theoretically throw on allocator failure;
         // hard-stop as the safety net so the producer always terminates.
         mIoContext.stop();
     }
@@ -238,7 +238,7 @@ void UdpServerProducerImpl::AppendDatagramLocked(const char *data, size_t size)
         return;
     }
     // Normalise the trailing newline first so the line-aware
-    // back-pressure path inside `LineBytesQueue::Append` always sees
+    // back-pressure path inside LineBytesQueue::Append always sees
     // a complete-line payload (the framing contract the parser
     // expects). The synthetic newline goes through a stack buffer
     // when the datagram is large enough to need it; for the common
@@ -265,7 +265,7 @@ namespace loglib
 {
 
 UdpServerProducer::UdpServerProducer(Options options)
-    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio win_thread false positive under MSVC headers.
     : mImpl(std::make_unique<internal::UdpServerProducerImpl>(std::move(options)))
 {
 }

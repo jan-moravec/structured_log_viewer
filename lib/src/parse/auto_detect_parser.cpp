@@ -65,7 +65,7 @@ std::string DrainPeek(
                 deadline = std::chrono::steady_clock::now() + peekTimeout;
             }
             peek.append(chunk.data(), got);
-            // Early exit: `TryDetectFormatFromBytes` only returns a
+            // Early exit: TryDetectFormatFromBytes only returns a
             // value when a probe actually claimed the buffer. Once
             // it commits, reading further bytes cannot reverse the
             // verdict, so hand off to the resolved parser without
@@ -90,9 +90,9 @@ std::string DrainPeek(
             {
                 break;
             }
-            // Clamp `WaitForBytes` at whatever's left of the
+            // Clamp WaitForBytes at whatever's left of the
             // deadline so we don't overshoot by up to
-            // `PEEK_WAIT_INTERVAL`. `duration_cast` truncates
+            // PEEK_WAIT_INTERVAL. duration_cast truncates
             // toward zero; guard against a zero-duration park
             // by breaking out instead.
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*deadline - now);
@@ -138,8 +138,8 @@ void AutoDetectParser::Parse(StreamLineSource &source, LogParseSink &sink, Parse
     if (producer == nullptr)
     {
         // No producer -- fall through to Json's streaming loop so
-        // the sink still honours its `OnStarted` / terminal-batch
-        // contract (see `RunStreamingParseLoop`).
+        // the sink still honours its OnStarted / terminal-batch
+        // contract (see RunStreamingParseLoop).
         JsonParser().Parse(source, sink, std::move(options));
         return;
     }

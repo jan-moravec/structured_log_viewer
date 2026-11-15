@@ -113,7 +113,7 @@ namespace
 /**
  * @brief Returns whether @p text ends in an ISO 8601 UTC designator.
  *
- * The ISO fast path for `%FT%T` and `%F %T` accepts a trailing `Z`
+ * The ISO fast path for %FT%T and %F %T accepts a trailing Z
  * although those formats have no zone specifier.
  */
 [[nodiscard]] bool EndsWithUtcDesignator(std::string_view text) noexcept

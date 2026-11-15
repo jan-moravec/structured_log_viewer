@@ -118,8 +118,8 @@ KeyId KeyIndex::Find(std::string_view key) const
 
 std::string_view KeyIndex::KeyOf(KeyId id) const
 {
-    // Shared lock excludes `GetOrInsert`'s `emplace_back` from racing with
-    // `operator[]`. The returned view remains valid after release because
+    // Shared lock excludes GetOrInsert's emplace_back from racing with
+    // operator[]. The returned view remains valid after release because
     // deque element addresses are stable across inserts.
     const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
     return mImpl->reverse[id];
@@ -151,7 +151,7 @@ size_t KeyIndex::EstimatedMemoryBytes() const
     }
     {
         const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
-        // `std::deque` typically uses fixed-size chunks; approximate by the
+        // std::deque typically uses fixed-size chunks; approximate by the
         // string objects' size. The chunk-pointer map overhead is negligible
         // relative to the strings themselves for any realistic key count.
         bytes += mImpl->reverse.size() * sizeof(std::string);

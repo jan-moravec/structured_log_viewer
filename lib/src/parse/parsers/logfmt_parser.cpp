@@ -150,7 +150,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
         }
         ++i; // consume '='
 
-        // Empty value: `key=` followed by whitespace or EOL is null.
+        // Empty value: key= followed by whitespace or EOL is null.
         if (i >= end || isSpace(static_cast<unsigned char>(data[i])) || data[i] == '\n')
         {
             LogfmtField field;
@@ -235,7 +235,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
                             break;
                         default:
                             // Unknown escape: pass both bytes through
-                            // (matches Go's `unquoteBytes` fallback).
+                            // (matches Go's unquoteBytes fallback).
                             quotedScratch.push_back('\\');
                             quotedScratch.push_back(next);
                             break;
@@ -316,10 +316,10 @@ void ParseLogfmtLine(
 
         if (field.valueWasQuoted)
         {
-            // `unescapedFromQuoted` -> bytes are in `quotedScratch`
+            // unescapedFromQuoted -> bytes are in quotedScratch
             // (which the next field overwrites), so copy into the
             // arena. Otherwise the view aliases the source (mmap or
-            // streaming carry buffer) and `MakeStringCompact` picks
+            // streaming carry buffer) and MakeStringCompact picks
             // the right tag.
             if (field.unescapedFromQuoted)
             {
@@ -434,8 +434,8 @@ void DecodeLogfmtBatch(
             line.remove_prefix(UTF8_BOM.size());
         }
 
-        // `RawLine` subtracts 1 (the '\n'); for an unterminated last
-        // line push `fileSize + 1` so we don't lose the final char.
+        // RawLine subtracts 1 (the '\n'); for an unterminated last
+        // line push fileSize + 1 so we don't lose the final char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
 
@@ -528,7 +528,7 @@ void DecodeLogfmtBatch(
             }
             if (values.empty())
             {
-                // No `key=value` pairs -> not a logfmt record;
+                // No key=value pairs -> not a logfmt record;
                 // surface it so the caller sees why the row is empty.
                 parsed.errors.push_back(
                     internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = "Not a logfmt record."}
@@ -634,8 +634,8 @@ public:
             bool unterminated = false;
             KeyId lastSourceOrderKey = INVALID_KEY_ID;
             // Streaming bytes aren't in any mmap, so passing
-            // `fileBegin/fileSize=0` forces the `OwnedString` arena
-            // copy in `MakeStringCompact`.
+            // fileBegin/fileSize=0 forces the OwnedString arena
+            // copy in MakeStringCompact.
             ParseLogfmtLine(
                 line,
                 keys,
@@ -692,7 +692,7 @@ static_assert(
 
 bool LogfmtParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    // Callers cap `sniffBuffer` at `PROBE_BYTES_BUDGET`, so the
+    // Callers cap sniffBuffer at PROBE_BYTES_BUDGET, so the
     // cursor bound is sufficient.
     size_t cursor = 0;
     while (cursor < sniffBuffer.size())

@@ -66,9 +66,7 @@ void CloseNative(NativeHandle h) noexcept
 #endif
 }
 
-/// Duplicate the process's stdin so `Stop()` can close the copy
-/// without affecting the parent process's view of FD 0. Throws
-/// `std::runtime_error` on failure.
+/** Duplicates standard input, so Stop can close the copy without touching the process's own handle. Throws IoError. */
 NativeHandle DuplicateStdin()
 {
 #ifdef _WIN32
@@ -102,9 +100,8 @@ NativeHandle DuplicateStdin()
 #endif
 }
 
-/// Blocking read from @p handle into @p buffer. Returns bytes
-/// read, 0 on clean EOF, or -1 on hard error (peer closed after
-/// `Stop()`, invalid handle, etc.). Retries `EINTR` on POSIX.
+/** Reads from the handle into the buffer, and blocks. Returns the bytes read, 0 at the end of input, or -1 on an error.
+ */
 long long ReadNative(NativeHandle handle, char *buffer, std::size_t size)
 {
 #ifdef _WIN32
@@ -112,7 +109,7 @@ long long ReadNative(NativeHandle handle, char *buffer, std::size_t size)
     if (::ReadFile(handle, buffer, static_cast<DWORD>(size), &got, nullptr) == 0)
     {
         const DWORD err = ::GetLastError();
-        // `Stop()` closed the dup out from under us; treat as EOF.
+        // Stop() closed the dup out from under us; treat as EOF.
         if (err == ERROR_BROKEN_PIPE || err == ERROR_INVALID_HANDLE || err == ERROR_OPERATION_ABORTED)
         {
             return 0;
@@ -132,7 +129,7 @@ long long ReadNative(NativeHandle handle, char *buffer, std::size_t size)
         {
             continue;
         }
-        // `Stop()` closed the dup: `read` returns -1 with EBADF.
+        // Stop() closed the dup: read returns -1 with EBADF.
         // Treat as EOF for consumers.
         if (errno == EBADF)
         {
@@ -144,22 +141,18 @@ long long ReadNative(NativeHandle handle, char *buffer, std::size_t size)
 }
 
 #ifndef _WIN32
-/// POSIX self-pipe: pair of FDs used to wake the worker's blocking
-/// `poll` without closing the input FD out from under a concurrent
-/// `read`. Setting both ends `FD_CLOEXEC` avoids leaks across a
-/// possible future `fork`+`exec`; setting the write end
-/// `O_NONBLOCK` lets `Stop()` post a wake without ever blocking on
-/// a full pipe buffer.
-///
-/// Throws `std::runtime_error` on failure so the ctor never leaves
-/// the impl half-initialised.
+/**
+ * Makes the self-pipe, a pair of descriptors that wakes the worker's blocking poll without closing the input out from
+ * under a concurrent read. Both ends close on exec, and the write end does not block, so Stop never waits on a full
+ * pipe. Throws IoError, so the constructor never leaves the object half built.
+ */
 void MakeSelfPipe(int fds[2])
 {
     if (::pipe(fds) != 0)
     {
         throw IoError("StdinBytesProducer: pipe() (wake) failed");
     }
-    // `fcntl` is a POSIX variadic API; the cppcoreguidelines
+    // fcntl is a POSIX variadic API; the cppcoreguidelines
     // vararg check has no non-vararg alternative here. NOLINTs are
     // per-call to keep the intent obvious at each site.
     const int readFlags = ::fcntl(fds[0], F_GETFD, 0); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
@@ -197,10 +190,10 @@ public:
         }
 #ifndef _WIN32
         // Self-pipe wake FDs are set up before the worker starts.
-        // `Stop()` writes a byte to `mWakeWrite` to unblock the
-        // worker's `poll`; the input FD is only closed once the
+        // Stop() writes a byte to mWakeWrite to unblock the
+        // worker's poll; the input FD is only closed once the
         // worker has fully exited, side-stepping the POSIX data
-        // race between a concurrent `close(fd)` and `read(fd)`
+        // race between a concurrent close(fd) and read(fd)
         // that TSan (correctly) flags on the FD table.
         int wakeFds[2] = {-1, -1};
         MakeSelfPipe(wakeFds);
@@ -238,18 +231,18 @@ public:
         if (!mStopRequested.compare_exchange_strong(expected, true))
         {
             // Another thread already won the CAS and is (or has been)
-            // driving the cancel/join sequence. `std::thread::join`
+            // driving the cancel/join sequence. std::thread::join
             // itself is not safe from multiple threads -- a second
-            // `join()` on the same underlying handle is UB -- so we
-            // must NOT touch `mWorker` here. Instead park on the
-            // `mStopFinished` latch: the winner sets it under
-            // `mStopFinishedLock` after `mWorker.join()` returns.
+            // join() on the same underlying handle is UB -- so we
+            // must NOT touch mWorker here. Instead park on the
+            // mStopFinished latch: the winner sets it under
+            // mStopFinishedLock after mWorker.join() returns.
             //
-            // Re-entrant call from the worker thread itself (`Stop()`
-            // invoked from within `WorkerMain`, e.g. via a chained
+            // Re-entrant call from the worker thread itself (Stop()
+            // invoked from within WorkerMain, e.g. via a chained
             // owner destructor) never reaches the latch: it would
             // self-deadlock. Return immediately in that case; the
-            // winner will observe `mStopFinished` once the worker
+            // winner will observe mStopFinished once the worker
             // function actually returns.
             if (std::this_thread::get_id() == mWorker.get_id())
             {
@@ -260,23 +253,23 @@ public:
             return;
         }
 
-        // Unblock the worker so it can observe `mStopRequested`
-        // and return. Publish `mClosed` first so any concurrent
-        // `WaitForBytes` observes it on the next wake.
+        // Unblock the worker so it can observe mStopRequested
+        // and return. Publish mClosed first so any concurrent
+        // WaitForBytes observes it on the next wake.
         //
-        // Windows: `CloseHandle` while another thread is inside
-        // `ReadFile` on that handle is undefined behavior (the
-        // reader may hang forever); use `CancelIoEx` to abort
+        // Windows: CloseHandle while another thread is inside
+        // ReadFile on that handle is undefined behavior (the
+        // reader may hang forever); use CancelIoEx to abort
         // the pending IO, join the worker, then close.
         //
-        // POSIX: `close(fd)` while another thread is inside
-        // `read(fd)` is a documented data race on the FD table
+        // POSIX: close(fd) while another thread is inside
+        // read(fd) is a documented data race on the FD table
         // (TSan flags it, and the kernel is only guaranteed to
         // unblock the read on modern Linux -- not on macOS, BSD,
         // or older kernels). Wake the worker through a self-pipe
-        // instead: it polls `[mHandle, mWakeRead]` between reads,
+        // instead: it polls [mHandle, mWakeRead] between reads,
         // observes the wake byte, drops out of the loop, and
-        // returns cleanly; `close(mHandle)` runs only after the
+        // returns cleanly; close(mHandle) runs only after the
         // worker has joined.
 #ifdef _WIN32
         NativeHandle handleSnapshot = INVALID_NATIVE;
@@ -296,12 +289,12 @@ public:
         }
 #else
         // Post a wake byte through the self-pipe. Retry on
-        // `EINTR`; `EAGAIN` means the wake byte is already
+        // EINTR; EAGAIN means the wake byte is already
         // buffered and the worker will observe it on its next
-        // `poll`. Any other error means the pipe is unusable;
-        // fall through -- `mStopRequested` is already set, so
+        // poll. Any other error means the pipe is unusable;
+        // fall through -- mStopRequested is already set, so
         // the worker will still exit on its next iteration once
-        // the current `read` unblocks.
+        // the current read unblocks.
         for (;;)
         {
             const char b = 0;
@@ -320,15 +313,15 @@ public:
         mCv.notify_all();
 
 #ifdef _WIN32
-        // Race guard: `CancelIoEx` above only cancels
+        // Race guard: CancelIoEx above only cancels
         // *currently pending* IO. If the worker snapshotted
-        // `mHandle` but has not yet entered `ReadFile` by the
+        // mHandle but has not yet entered ReadFile by the
         // time we reached this point, that first cancel is a
-        // no-op and the worker's next `ReadFile` would block
-        // indefinitely. Loop `WaitForSingleObject` with a short
+        // no-op and the worker's next ReadFile would block
+        // indefinitely. Loop WaitForSingleObject with a short
         // interval and re-cancel on each miss until the worker
-        // exits. Both `CancelIoEx` and `CancelSynchronousIo`
-        // are idempotent, so re-issuing is safe. `Sleep(0)` /
+        // exits. Both CancelIoEx and CancelSynchronousIo
+        // are idempotent, so re-issuing is safe. Sleep(0) /
         // short waits keep the busy loop off a spin.
         if (mWorker.joinable() && std::this_thread::get_id() != mWorker.get_id())
         {
@@ -347,8 +340,8 @@ public:
                 }
                 // Belt-and-braces: target the worker thread's
                 // pending synchronous IO directly. Covers any
-                // fresh `ReadFile` issued after the last
-                // `CancelIoEx`.
+                // fresh ReadFile issued after the last
+                // CancelIoEx.
                 ::CancelSynchronousIo(threadHandle);
             }
             mWorker.join();
@@ -361,7 +354,7 @@ public:
 #endif
 
         // Safe to close now: the worker has exited so no in-flight
-        // `ReadFile` / `read` remains on this handle.
+        // ReadFile / read remains on this handle.
         {
             const std::scoped_lock lock(mLock);
             const NativeHandle h = mHandle;
@@ -381,7 +374,7 @@ public:
         }
 #endif
 
-        // Release any peer `Stop()` calls that CAS-lost above and are
+        // Release any peer Stop() calls that CAS-lost above and are
         // parked on the latch. Publish *after* the join + handle close
         // so a peer's post-return observation sees a fully quiesced
         // producer.
@@ -423,8 +416,8 @@ private:
                 break;
             }
             // Double-check after snapshotting the handle to close
-            // the race with `Stop()`: if Stop set `mStopRequested`
-            // + fired `CancelIoEx` before we entered `ReadNative`,
+            // the race with Stop(): if Stop set mStopRequested
+            // + fired CancelIoEx before we entered ReadNative,
             // the cancel would be a no-op and the blocking read
             // would hang. Stop() also retries the cancel from a
             // wait-loop, but bailing out here avoids the pending
@@ -436,8 +429,8 @@ private:
 #ifndef _WIN32
             // Wait for the input FD or the self-pipe wake FD to
             // become readable. On wake we exit cleanly; the read
-            // FD is only ever closed after `join()`, so no
-            // concurrent `close(fd)` races the `read(fd)` below.
+            // FD is only ever closed after join(), so no
+            // concurrent close(fd) races the read(fd) below.
             struct ::pollfd pfds[2];
             pfds[0].fd = handle;
             pfds[0].events = POLLIN;
@@ -487,8 +480,8 @@ private:
     std::condition_variable mCv;
     NativeHandle mHandle = INVALID_NATIVE;
 #ifndef _WIN32
-    // POSIX self-pipe used to wake the worker's `poll` without
-    // closing the input FD from a concurrent thread. See `Stop()`
+    // POSIX self-pipe used to wake the worker's poll without
+    // closing the input FD from a concurrent thread. See Stop()
     // for the full rationale.
     int mWakeRead = -1;
     int mWakeWrite = -1;
@@ -498,10 +491,10 @@ private:
     std::atomic<std::size_t> mDropped{0};
     std::atomic<bool> mClosed{false};
     std::atomic<bool> mStopRequested{false};
-    // Signalled by the CAS-winning `Stop()` call after `mWorker.join()`
-    // returns (and, on Windows, after the deferred `CloseHandle`).
-    // CAS-losing peers park on `mStopFinishedCv` until then instead of
-    // touching `mWorker` themselves -- `std::thread::join` is not
+    // Signalled by the CAS-winning Stop() call after mWorker.join()
+    // returns (and, on Windows, after the deferred CloseHandle).
+    // CAS-losing peers park on mStopFinishedCv until then instead of
+    // touching mWorker themselves -- std::thread::join is not
     // callable from multiple threads.
     std::mutex mStopFinishedLock;
     std::condition_variable mStopFinishedCv;
@@ -570,9 +563,9 @@ std::unique_ptr<StdinBytesProducer> StdinBytesProducerTestAccess::Create(
     void *opaqueHandle, StdinBytesProducer::Options options
 )
 {
-    // Route through the private `FromRawTag` ctor. `make_unique`
+    // Route through the private FromRawTag ctor. make_unique
     // cannot see the private ctor even from a friend, so we go
-    // via `new` and adopt the raw pointer into `unique_ptr`.
+    // via new and adopt the raw pointer into unique_ptr.
     return std::unique_ptr<StdinBytesProducer>(
         new StdinBytesProducer(StdinBytesProducer::FromRawTag{}, opaqueHandle, std::move(options))
     );
