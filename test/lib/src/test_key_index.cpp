@@ -1,3 +1,5 @@
+#include "parse_only.hpp"
+
 #include <loglib/core/key_index.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -99,7 +101,7 @@ TEST_CASE("KeyIndex SortedKeys returns a sorted, deduplicated snapshot", "[key_i
     static_cast<void>(index.GetOrInsert("alpha")); // duplicate insert
     static_cast<void>(index.GetOrInsert("bravo"));
 
-    const std::vector<std::string> sorted = index.SortedKeys();
+    const std::vector<std::string> sorted = SortedKeys(index);
     REQUIRE(sorted.size() == 4);
     CHECK(sorted == std::vector<std::string>{"alpha", "bravo", "charlie", "delta"});
 }

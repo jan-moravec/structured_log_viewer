@@ -176,17 +176,6 @@ LocalOffsetWindow TimeZoneContext::OffsetWindowAt(std::int64_t localMicroseconds
     }
 }
 
-std::int64_t TimeZoneContext::ToLocalMilliseconds(TimeStamp timeStamp) const
-{
-    if (mImpl->zone == nullptr)
-    {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(timeStamp.time_since_epoch()).count();
-    }
-    const auto zonedTime = date::zoned_time{mImpl->zone, timeStamp};
-    const auto localTime = zonedTime.get_local_time();
-    return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.time_since_epoch()).count();
-}
-
 std::int64_t TimeZoneContext::UtcMicrosecondsToLocalMilliseconds(std::int64_t microseconds) const
 {
     const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{

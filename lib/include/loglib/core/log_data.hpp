@@ -83,9 +83,6 @@ public:
     const KeyIndex &Keys() const;
     KeyIndex &Keys();
 
-    /** @brief The registered keys in sorted order. Builds a new list, so keep it off hot paths. */
-    std::vector<std::string> SortedKeys() const;
-
     /**
      * @brief Appends a parsed batch of rows.
      *

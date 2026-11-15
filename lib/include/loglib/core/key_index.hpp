@@ -61,9 +61,6 @@ public:
 
     [[nodiscard]] size_t Size() const noexcept;
 
-    /** @brief All keys in sorted order. Takes the index's lock and builds a new list, so keep it off hot paths. */
-    [[nodiscard]] std::vector<std::string> SortedKeys() const;
-
     /** @brief Approximate heap bytes used by the index. For the memory benchmark. */
     [[nodiscard]] size_t EstimatedMemoryBytes() const;
 

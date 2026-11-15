@@ -878,7 +878,7 @@ TEST_CASE("exports: sink write failures propagate from every format", "[exports]
         }
         catch (const loglib::OperationCancelled &)
         {
-            FAIL("format " << loglib::exports::LabelFor(format) << " wrongly surfaced OperationCancelled");
+            FAIL("format " << loglib::exports::ExtensionFor(format) << " wrongly surfaced OperationCancelled");
         }
         catch (const std::runtime_error &)
         {
@@ -972,7 +972,7 @@ TEST_CASE(
 
     for (const ExportFormat format : {ExportFormat::JsonLines, ExportFormat::Csv, ExportFormat::Markdown})
     {
-        INFO("format " << loglib::exports::LabelFor(format));
+        INFO("format " << loglib::exports::ExtensionFor(format));
         std::string expected;
         for (std::size_t start = 0; start < rows.size(); start += PIECE_ROWS)
         {
@@ -1072,16 +1072,12 @@ TEST_CASE("exports: FileSink atomically renames the temp file on Finish", "[expo
     REQUIRE(ReadFile(destination) == std::string("hello world\n"));
 }
 
-TEST_CASE("exports: ExtensionFor and LabelFor cover every format", "[exports]")
+TEST_CASE("exports: ExtensionFor covers every format", "[exports]")
 {
     REQUIRE(std::string_view(loglib::exports::ExtensionFor(ExportFormat::JsonLines)) == "jsonl");
     REQUIRE(std::string_view(loglib::exports::ExtensionFor(ExportFormat::Csv)) == "csv");
     REQUIRE(std::string_view(loglib::exports::ExtensionFor(ExportFormat::Snapshot)) == "log");
     REQUIRE(std::string_view(loglib::exports::ExtensionFor(ExportFormat::Markdown)) == "md");
-    REQUIRE(std::string_view(loglib::exports::LabelFor(ExportFormat::JsonLines)) == "JSON Lines");
-    REQUIRE(std::string_view(loglib::exports::LabelFor(ExportFormat::Csv)) == "CSV");
-    REQUIRE(std::string_view(loglib::exports::LabelFor(ExportFormat::Snapshot)) == "Source snapshot");
-    REQUIRE(std::string_view(loglib::exports::LabelFor(ExportFormat::Markdown)) == "Markdown table");
 }
 
 namespace
@@ -1169,7 +1165,8 @@ TEST_CASE(
         for (const std::size_t limit : {std::size_t{0}, std::size_t{1}, counting.total / 2, counting.total - 1})
         {
             INFO(
-                "format " << loglib::exports::LabelFor(format) << ", fails after " << limit << " of " << counting.total
+                "format " << loglib::exports::ExtensionFor(format) << ", fails after " << limit << " of "
+                          << counting.total
             );
             FailAfterBytesSink sink(limit);
             CHECK_THROWS_AS(exporter->Run(src, sink, loglib::StopToken{}), std::runtime_error);

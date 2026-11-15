@@ -126,11 +126,6 @@ KeyIndex &LogData::Keys()
     return mKeys;
 }
 
-std::vector<std::string> LogData::SortedKeys() const
-{
-    return mKeys.SortedKeys();
-}
-
 void LogData::AppendBatch(
     std::vector<LogLine> lines,
     const std::vector<uint64_t> &lineOffsets,

@@ -19,6 +19,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace loglib
@@ -87,5 +88,11 @@ private:
  * Throws std::runtime_error if the file cannot be read, is empty, or no parser recognizes it.
  */
 [[nodiscard]] ParseResult ParseFile(const std::filesystem::path &file);
+
+/** @brief The keys of an index in sorted order. */
+[[nodiscard]] std::vector<std::string> SortedKeys(const KeyIndex &keys);
+
+/** @brief The keys of a parsed log in sorted order. */
+[[nodiscard]] std::vector<std::string> SortedKeys(const LogData &data);
 
 } // namespace loglib

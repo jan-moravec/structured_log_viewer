@@ -129,9 +129,6 @@ public:
      */
     [[nodiscard]] LocalOffsetWindow OffsetWindowAt(std::int64_t localMicroseconds) const;
 
-    /** @brief Converts a UTC time to local milliseconds since the epoch. */
-    [[nodiscard]] std::int64_t ToLocalMilliseconds(TimeStamp timeStamp) const;
-
     /** @brief Converts UTC microseconds since the epoch to local milliseconds. */
     [[nodiscard]] std::int64_t UtcMicrosecondsToLocalMilliseconds(std::int64_t microseconds) const;
 

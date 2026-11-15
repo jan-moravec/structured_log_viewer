@@ -43,7 +43,7 @@ struct KeyIndex::Impl
     std::atomic<size_t> size{0};
 
     /**
-     * Guards the reverse list against KeyOf and SortedKeys while a key is added. The strings do not move, but indexing
+     * Guards the reverse list against KeyOf while a key is added. The strings do not move, but indexing
      * a deque reads its block map, which an append can reallocate.
      */
     mutable std::shared_mutex reverseMutex;
@@ -128,14 +128,6 @@ std::string_view KeyIndex::KeyOf(KeyId id) const
 size_t KeyIndex::Size() const noexcept
 {
     return mImpl->size.load(std::memory_order_acquire);
-}
-
-std::vector<std::string> KeyIndex::SortedKeys() const
-{
-    const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
-    std::vector<std::string> result(mImpl->reverse.begin(), mImpl->reverse.end());
-    std::ranges::sort(result);
-    return result;
 }
 
 size_t KeyIndex::EstimatedMemoryBytes() const

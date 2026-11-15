@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "log_value_helpers.hpp"
 
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>

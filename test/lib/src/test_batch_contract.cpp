@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "parse_only.hpp"
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -485,7 +486,7 @@ namespace
 {
     const KeyIndex &keys = sink.Keys();
     std::vector<std::pair<std::string, KeyId>> ordered;
-    for (const std::string &key : keys.SortedKeys())
+    for (const std::string &key : SortedKeys(keys))
     {
         ordered.emplace_back(key, keys.Find(key));
     }

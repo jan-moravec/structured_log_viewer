@@ -173,12 +173,4 @@ bool TryParseSyslogRfc3164Timestamp(
     std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
 );
 
-/**
- * @brief Parses with date::parse and an arbitrary format. It succeeds only if the format uses all of the text. The
- * scratch buffers are reused across calls.
- */
-bool TryParseGenericTimestamp(
-    std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
-);
-
 } // namespace loglib

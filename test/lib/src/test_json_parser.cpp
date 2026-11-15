@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "log_value_helpers.hpp"
 #include "parse_only.hpp"
 
 #include <loglib/core/bytes_producer.hpp>
@@ -56,7 +57,7 @@ TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[jso
     using namespace loglib;
 
     const ParserOptions defaults;
-    CHECK_FALSE(defaults.stopToken.StopPossible());
+    CHECK_FALSE(defaults.stopToken.StopRequested());
     CHECK(defaults.timeColumns.empty());
     CHECK_FALSE(defaults.referenceTime.has_value());
 
@@ -291,8 +292,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")));
-        REQUIRE(result.data.SortedKeys().size() == 1);
-        CHECK(result.data.SortedKeys()[0] == "key");
+        REQUIRE(SortedKeys(result.data).size() == 1);
+        CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
         CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":null})");
@@ -316,8 +317,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
             loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) ==
             std::string_view{"value"}
         );
-        REQUIRE(result.data.SortedKeys().size() == 1);
-        CHECK(result.data.SortedKeys()[0] == "key");
+        REQUIRE(SortedKeys(result.data).size() == 1);
+        CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
         CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":"value"})");
@@ -335,8 +336,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == LARGE_UINT);
-        REQUIRE(result.data.SortedKeys().size() == 1);
-        CHECK(result.data.SortedKeys()[0] == "key");
+        REQUIRE(SortedKeys(result.data).size() == 1);
+        CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
         CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":10000000000000000000})");
@@ -354,8 +355,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<int64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == -12);
-        REQUIRE(result.data.SortedKeys().size() == 1);
-        CHECK(result.data.SortedKeys()[0] == "key");
+        REQUIRE(SortedKeys(result.data).size() == 1);
+        CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
         CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":-12})");
@@ -373,8 +374,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<double>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == Catch::Approx(3.14));
-        REQUIRE(result.data.SortedKeys().size() == 1);
-        CHECK(result.data.SortedKeys()[0] == "key");
+        REQUIRE(SortedKeys(result.data).size() == 1);
+        CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
         CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":3.14})");
@@ -392,8 +393,8 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         REQUIRE(result.errors.empty());
         CHECK(result.data.Lines().size() == 1);
         CHECK(std::get<bool>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == true);
-        REQUIRE(result.data.SortedKeys().size() == 1);
-        CHECK(result.data.SortedKeys()[0] == "key");
+        REQUIRE(SortedKeys(result.data).size() == 1);
+        CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
         CHECK(result.data.FrontFileSource()->Path() == "memory.log");
         CHECK(result.data.FrontFileSource()->RawLine(0) == R"({"key":true})");
@@ -426,7 +427,7 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
     CHECK(std::get<int64_t>(values.at("integer")) == -12);
     CHECK(std::get<double>(values.at("double")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values.at("boolean")) == true);
-    const auto sortedKeys1 = result.data.SortedKeys();
+    const auto sortedKeys1 = SortedKeys(result.data);
     REQUIRE(sortedKeys1.size() == 6);
     CHECK(sortedKeys1[0] == "boolean");
     CHECK(sortedKeys1[1] == "double");
@@ -485,7 +486,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(std::get<double>(values2.at("3")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values2.at("4")) == true);
 
-    const auto sortedKeys2 = result.data.SortedKeys();
+    const auto sortedKeys2 = SortedKeys(result.data);
     REQUIRE(sortedKeys2.size() == 6);
     CHECK(sortedKeys2[0] == "1");
     CHECK(sortedKeys2[1] == "2");
@@ -515,7 +516,7 @@ TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
     CHECK(
         loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
     );
-    const auto sortedKeys = result.data.SortedKeys();
+    const auto sortedKeys = SortedKeys(result.data);
     REQUIRE(sortedKeys.size() == 2);
     CHECK(sortedKeys[0] == "key1");
     CHECK(sortedKeys[1] == "key2");
@@ -576,7 +577,7 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     CHECK(
         loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
     );
-    const auto sortedKeys = result.data.SortedKeys();
+    const auto sortedKeys = SortedKeys(result.data);
     REQUIRE(sortedKeys.size() == 2);
     CHECK(sortedKeys[0] == "key1");
     CHECK(sortedKeys[1] == "key2");
@@ -605,7 +606,7 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
         )
     );
     CHECK(result.errors.size() == 2);
-    REQUIRE(result.data.SortedKeys().size() == 2);
+    REQUIRE(SortedKeys(result.data).size() == 2);
     CHECK(
         loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
     );
@@ -669,8 +670,8 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     REQUIRE(multiResult.errors.empty());
     REQUIRE(singleResult.data.Lines().size() == multiResult.data.Lines().size());
 
-    const auto singleKeys = singleResult.data.SortedKeys();
-    const auto multiKeys = multiResult.data.SortedKeys();
+    const auto singleKeys = SortedKeys(singleResult.data);
+    const auto multiKeys = SortedKeys(multiResult.data);
     REQUIRE(singleKeys == multiKeys);
 
     // Walk both line vectors in lockstep. Each line stores values sorted by KeyId, but the
@@ -741,7 +742,7 @@ TEST_CASE(
     CHECK(cachedCalls <= static_cast<std::size_t>(THREADS) * 5);
 
     // Sanity: at least the keys themselves were registered exactly once per unique key.
-    CHECK(cachedResult.data.SortedKeys().size() == 5);
+    CHECK(SortedKeys(cachedResult.data).size() == 5);
 }
 
 #endif // LOGLIB_KEY_INDEX_INSTRUMENTATION

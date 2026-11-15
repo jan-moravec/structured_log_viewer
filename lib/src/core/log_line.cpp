@@ -27,32 +27,6 @@ std::optional<std::string_view> AsStringView(const LogValue &value)
     return std::nullopt;
 }
 
-bool HoldsString(const LogValue &value)
-{
-    return std::holds_alternative<std::string_view>(value) || std::holds_alternative<std::string>(value);
-}
-
-LogValue ToOwnedLogValue(const LogValue &value)
-{
-    if (const auto *view = std::get_if<std::string_view>(&value))
-    {
-        return std::string(*view);
-    }
-    return value;
-}
-
-bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
-{
-    // `string_view` and `string` count as the same kind for equality.
-    const auto lhsString = AsStringView(lhs);
-    const auto rhsString = AsStringView(rhs);
-    if (lhsString.has_value() || rhsString.has_value())
-    {
-        return lhsString.has_value() && rhsString.has_value() && *lhsString == *rhsString;
-    }
-    return lhs == rhs;
-}
-
 std::optional<int64_t> AsEpochMicroseconds(const LogValue &value)
 {
     // Slot acceptance set must stay in lockstep with

@@ -8,6 +8,7 @@
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
+#include <loglib/time/internal/generic_timestamp_parsing.hpp>
 #include <loglib/time/time_zone_context.hpp>
 #include <loglib/time/timestamp_parsing.hpp>
 #include <loglib/time/user_timestamp.hpp>
@@ -686,7 +687,8 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 
     for (const auto &originalTimestamp : testTimestamps)
     {
-        const int64_t localMilliseconds = ProcessDefaultTimeZone().ToLocalMilliseconds(originalTimestamp);
+        const int64_t localMilliseconds =
+            UtcMicrosecondsToLocalMilliseconds(originalTimestamp.time_since_epoch().count());
         const TimeStamp convertedTimestamp = LocalMillisecondsSinceEpochToTimeStamp(localMilliseconds);
 
         const int64_t originalMs =

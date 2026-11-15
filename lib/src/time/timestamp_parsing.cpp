@@ -1,4 +1,5 @@
 #include "loglib/time/timestamp_parsing.hpp"
+#include "loglib/time/internal/generic_timestamp_parsing.hpp"
 
 #include "loglib/time/user_timestamp.hpp"
 
