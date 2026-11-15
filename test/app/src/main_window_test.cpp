@@ -5216,6 +5216,43 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    // A network session whose producer queue is tiny cannot keep every byte. The status bar then says how many bytes
+    // were dropped, and its tooltip says why.
+    void TestNetworkSessionShowsDroppedBytes()
+    {
+        NetworkStreamDialog::Config cfg;
+        cfg.protocol = NetworkStreamDialog::Protocol::Tcp;
+        cfg.format = NetworkStreamDialog::Format::Json;
+        cfg.bindAddress = QStringLiteral("127.0.0.1");
+        cfg.port = 0;
+        mWindow->StartNetworkStreamForTest(cfg, /*maxQueueBytes=*/64);
+
+        auto *label = mWindow->findChild<QLabel *>(QStringLiteral("streamingStatusLabel"));
+        QVERIFY(label != nullptr);
+        QVERIFY(!label->text().contains(QStringLiteral("bytes dropped")));
+
+        const QRegularExpressionMatch portMatch =
+            QRegularExpression(QStringLiteral(R"(:(\d+)$)")).match(mWindow->StreamingFileNameForTest());
+        QVERIFY2(portMatch.hasMatch(), qPrintable(mWindow->StreamingFileNameForTest()));
+        const auto port = static_cast<uint16_t>(portMatch.captured(1).toUInt());
+
+        std::string blob;
+        while (blob.size() < 256 * 1024)
+        {
+            blob += "{\"msg\": \"a line that is long enough to overflow the tiny queue\"}\n";
+        }
+        test_common::TcpLogClient client("127.0.0.1", port);
+        QVERIFY(test_common::WaitUntil([&] {
+            client.SendRaw(blob);
+            QCoreApplication::processEvents();
+            return label->text().contains(QStringLiteral("bytes dropped"));
+        }));
+        QVERIFY(label->toolTip().contains(QStringLiteral("more slowly")));
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
     void TestGotoLineFilteredOutRowSurfacesSpecificHint()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();

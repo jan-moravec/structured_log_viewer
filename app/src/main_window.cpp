@@ -2586,6 +2586,12 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
         tooltip += QLatin1Char('\n');
         tooltip += tr("%n parse error(s)", nullptr, static_cast<int>(snapshot.errorCount));
     }
+    if (const std::size_t dropped = NetworkDroppedBytes(session); dropped > 0)
+    {
+        tooltip += QLatin1Char('\n');
+        tooltip += tr("%1 bytes dropped. %2")
+                       .arg(QLocale::system().toString(static_cast<qlonglong>(dropped)), NetworkDropExplanation());
+    }
     mTabWidget->setTabToolTip(index, tooltip);
 
     // QTabBar exposes visible tab text to accessibility; Qt has no per-tab name setter.
@@ -7199,6 +7205,22 @@ void MainWindow::PostStatusMessage(LogSession *origin, const QString &message, i
     statusBar()->showMessage(message, timeoutMs);
 }
 
+QString MainWindow::NetworkDropExplanation()
+{
+    return tr("The network stream was read more slowly than the sender wrote, so the oldest bytes were dropped.");
+}
+
+std::size_t MainWindow::NetworkDroppedBytes(const LogSession *session)
+{
+    if (session == nullptr || !session->CurrentSource().has_value() ||
+        session->CurrentSource()->kind != loglib::Source::Kind::NetworkStream || session->Model() == nullptr)
+    {
+        return 0;
+    }
+    const loglib::StreamLineSource *stream = session->Model()->Table().Data().BackStreamSource();
+    return stream != nullptr ? stream->DroppedByteCount() : 0;
+}
+
 void MainWindow::UpdateStreamingStatus()
 {
     if (!IsSessionActive())
@@ -7251,6 +7273,18 @@ void MainWindow::UpdateStreamingStatus()
         {
             text += tr(", %1 dropped while paused").arg(loc.toString(dropped));
         }
+    }
+
+    // TCP and UDP drop the oldest bytes when the reader falls behind. The count stays until the session ends.
+    const std::size_t networkDropped = IsLiveTailSession() ? NetworkDroppedBytes(mSession) : 0;
+    if (networkDropped > 0)
+    {
+        text += tr(", %1 bytes dropped").arg(loc.toString(static_cast<qlonglong>(networkDropped)));
+        mStatusLabel->setToolTip(NetworkDropExplanation());
+    }
+    else
+    {
+        mStatusLabel->setToolTip(QString{});
     }
 
     if (IsLiveTailSession() && mSession->LiveTailElapsedTimer().isValid())

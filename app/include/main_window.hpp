@@ -1632,6 +1632,13 @@ private slots:
      */
     void StartNetworkStream(const NetworkStreamDialog::Config &cfg, std::optional<std::size_t> maxQueueBytes);
     /**
+     * @brief Bytes the network producer of @p session dropped because the GUI read slower than the sender wrote.
+     * @return Zero for a session that is not a network session.
+     */
+    [[nodiscard]] static std::size_t NetworkDroppedBytes(const LogSession *session);
+    /** @brief Explains a non-zero drop count to the user. */
+    [[nodiscard]] static QString NetworkDropExplanation();
+    /**
      * @brief "Save Configuration\u2026" -- writes the portable
      * columns-only slice.
      */
