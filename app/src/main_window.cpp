@@ -4337,7 +4337,6 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode, const
     // Reset in parallel with `SetPendingOpenFiles` above; the error
     // buckets drain at the same seams under different titles.
     mSession->ClearPendingOpenErrors();
-    mSession->ClearPendingDecompressionErrors();
     if (!applyEmbeddedBundlePath.isEmpty())
     {
         mSession->SetApplyEmbeddedBundleConfigForPath(applyEmbeddedBundlePath);
@@ -4513,14 +4512,6 @@ void MainWindow::OnStreamingFinished(LogSession *origin, StreamingResult result)
         ShowParseErrors(tr("Error Opening File"), origin->MutablePendingOpenErrors(), origin);
     }
     origin->MutablePendingOpenErrors().clear();
-    // Decompression errors under their own title (see the
-    // `LogSession::MutablePendingDecompressionErrors` doc). User cancels never land
-    // here -- they surface as a toast in `OnDecompressionFinished`.
-    if (!origin->MutablePendingDecompressionErrors().empty())
-    {
-        ShowParseErrors(tr("Error Decompressing File"), origin->MutablePendingDecompressionErrors(), origin);
-    }
-    origin->MutablePendingDecompressionErrors().clear();
     origin->ClearStreamingFileName();
     // Keep `origin->MutableCurrentSource()` on Success / Cancelled (rows are
     // still present, descriptor still describes them); drop it
@@ -4566,44 +4557,13 @@ void MainWindow::StreamNextPendingFile(LogSession *origin)
     {
         return;
     }
-    // Iterative queue drain: each iteration hands off async work
-    // (returning to await the corresponding finished slot) or
-    // records a synchronous open failure and continues. The loop
-    // replaces a prior recursion pattern that was stack-unbounded
-    // on drops with many failing files.
-    while (!origin->MutablePendingOpenFiles().isEmpty())
+    // Every file opens on the worker through OpenFileSource. The finished slot
+    // re-enters this function after the parse hand-off (success) or after
+    // recording the error (failure).
+    if (!origin->MutablePendingOpenFiles().isEmpty())
     {
-        const QString file = origin->MutablePendingOpenFiles().takeFirst();
-
-        // Content-based codec sniff (single source of truth for the
-        // codec table). Uncompressed / empty / unreadable paths
-        // return `None` and take the fast path below; genuine open
-        // failures surface via `FileLineSource`'s ctor further down.
-        //
-        // Runs on the GUI thread. 6 bytes off a local disk is
-        // sub-millisecond, but a stalled network share can block.
-        // `FileLineSource`'s open below has the same property, so this
-        // isn't the tightest link -- if remote I/O becomes a
-        // supported use-case, fold both into the async worker.
-        // Preserve non-ASCII Windows paths during codec detection and open.
-        const std::filesystem::path filePath = logapp::QStringToFsPath(file);
-        const auto codec = loglib::DecompressingByteSource::SniffCodec(filePath);
-        if (codec != loglib::DecompressingByteSource::Codec::None)
-        {
-            // Compressed: dispatch async so the GUI stays responsive.
-            // The finished slot re-enters this function after the
-            // parse hand-off (success) or after pushing the error
-            // and continuing (failure).
-            BeginAsyncDecompression(origin, file, codec);
-            return;
-        }
-
-        // Uncompressed fast path. On sync error (`false` return),
-        // continue draining the queue.
-        if (ContinueOpenAfterPrepared(origin, file, filePath, nullptr))
-        {
-            return;
-        }
+        BeginAsyncOpen(origin, origin->MutablePendingOpenFiles().takeFirst());
+        return;
     }
 
     // Queue drained without a session ever arming: surface errors
@@ -4621,20 +4581,10 @@ void MainWindow::StreamNextPendingFile(LogSession *origin)
             ShowParseErrors(tr("Error Opening File"), origin->MutablePendingOpenErrors(), origin);
             origin->MutablePendingOpenErrors().clear();
         }
-        if (!origin->MutablePendingDecompressionErrors().empty())
-        {
-            ShowParseErrors(tr("Error Decompressing File"), origin->MutablePendingDecompressionErrors(), origin);
-            origin->MutablePendingDecompressionErrors().clear();
-        }
     }
 }
 
-bool MainWindow::ContinueOpenAfterPrepared(
-    LogSession *origin,
-    const QString &originalPath,
-    const std::filesystem::path &effectivePath,
-    std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
-)
+bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &originalPath, loglib::OpenedFile opened)
 {
     if (origin == nullptr)
     {
@@ -4646,49 +4596,10 @@ bool MainWindow::ContinueOpenAfterPrepared(
         return false;
     }
     const bool originIsActive = origin == mSession;
+    const std::filesystem::path effectivePath = opened.effectivePath;
 
-    // Open on the GUI thread so any I/O failure surfaces alongside
-    // the queue drain rather than through the async future.
-    std::unique_ptr<loglib::FileLineSource> fileSource;
-    try
-    {
-        fileSource = std::make_unique<loglib::FileLineSource>(effectivePath, logapp::QStringToFsPath(originalPath));
-    }
-    catch (const std::exception &e)
-    {
-        // Route the failure to the bucket that matches the cause:
-        //   - No anchor           -> "Error Opening File"
-        //   - Anchor (decompress) -> "Error Decompressing File"
-        // A decompressed-temp mmap failure is rare (transient FS
-        // pressure, AV) but labelling it as a plain open error
-        // would misdirect a user who handed us a `.gz`.
-        const std::string msg = std::string("Failed to open '") + originalPath.toStdString() + "': " + e.what();
-        if (decompressionAnchor)
-        {
-            origin->MutablePendingDecompressionErrors().push_back(msg);
-        }
-        else
-        {
-            origin->MutablePendingOpenErrors().push_back(msg);
-        }
-        // `decompressionAnchor` goes out of scope on return, dropping
-        // the last reference to the `DecompressingByteSource` which
-        // deletes the temp file.
-        //
-        // Return `false` so the caller continues draining the queue.
-        return false;
-    }
-
-    // Bind the anchor to this specific FileLineSource: on destruction, mmap
-    // unmaps first (declaration order in FileLineSource), then the anchor's
-    // dtor unlinks the temp file -- the Windows-safe order. A
-    // session-scoped vector clear could yank a temp file out from
-    // under still-live mmaps. See `AttachLifetimeAnchor` for the
-    // ordering contract.
-    if (decompressionAnchor)
-    {
-        fileSource->AttachLifetimeAnchor(std::move(decompressionAnchor));
-    }
+    // The source keeps the unpacked temporary copy alive for as long as its rows exist.
+    std::unique_ptr<loglib::FileLineSource> fileSource = std::move(opened.source);
 
     const bool isFirstFileInSession = !origin->IsSessionActive();
 
@@ -4781,9 +4692,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     return true;
 }
 
-void MainWindow::BeginAsyncDecompression(
-    LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
-)
+void MainWindow::BeginAsyncOpen(LogSession *origin, const QString &originalPath)
 {
     if (origin == nullptr)
     {
@@ -4804,11 +4713,6 @@ void MainWindow::BeginAsyncDecompression(
     origin->MutableDecompressionTotalBytesIn().storeRelaxed(sizeEc ? 0 : static_cast<qint64>(compressedSize));
 
     origin->SetDecompressionOriginalPath(originalPath);
-    // Pass the string_view size explicitly: `CodecName` currently
-    // returns views over string literals, but NUL-termination is
-    // not part of the string_view contract.
-    const std::string_view codecName = loglib::CodecName(codec);
-    origin->SetDecompressionCodecName(QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())));
     origin->SetDecompressionStartedAt(std::chrono::steady_clock::now());
     // See `LogSession::IsDecompressionInFlight`: guards the
     // finished slot against stale callout events dispatched between
@@ -4831,8 +4735,7 @@ void MainWindow::BeginAsyncDecompression(
     if (mDecompressionProgressDialog)
     {
         mDecompressionProgressDialog->setLabelText(
-            tr("Decompressing %1 (%2)\nPreparing…")
-                .arg(QFileInfo(originalPath).fileName(), origin->DecompressionCodecName())
+            tr("Opening %1\nPreparing…").arg(QFileInfo(originalPath).fileName())
         );
     }
 
@@ -4844,9 +4747,6 @@ void MainWindow::BeginAsyncDecompression(
     auto *sharedBytesIn = &origin->MutableDecompressionBytesIn();
     auto *sharedTotal = &origin->MutableDecompressionTotalBytesIn();
 
-    // Bundle metadata stripping requires both the extension and zstd.
-    const bool isSessionBundle =
-        IsSessionBundlePath(originalPath) && codec == loglib::DecompressingByteSource::Codec::Zstd;
     // Convert on the GUI thread via `QStringToFsPath` so non-ASCII
     // bundle names survive the hop into the worker (see the
     // `file_size` note above).
@@ -4857,16 +4757,29 @@ void MainWindow::BeginAsyncDecompression(
     // false positive on `QtConcurrent::run`, which stores any escaped
     // exception into the returned `QFuture`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker,bugprone-exception-escape)
-    auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
+    auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
         auto progressCb = [sharedBytesIn, sharedTotal](const loglib::DecompressingByteSource::Progress &p) {
             // Relaxed: the GUI only needs a recent-enough snapshot.
             sharedBytesIn->storeRelaxed(static_cast<qint64>(p.bytesIn));
             sharedTotal->storeRelaxed(static_cast<qint64>(p.totalBytesIn));
         };
-        loglib::DecompressingByteSource::Options options;
-        options.discardFirstLine = isSessionBundle;
-        return std::make_shared<loglib::DecompressingByteSource>(input, std::move(progressCb), stopToken, options);
+        LogSession::OpenResult result;
+        try
+        {
+            result.file = std::make_shared<loglib::OpenedFile>(loglib::OpenFileSource(
+                input, loglib::OpenFileOptions{.progress = std::move(progressCb), .stopToken = stopToken}
+            ));
+        }
+        catch (const loglib::OperationCancelled &)
+        {
+            result.cancelled = true;
+        }
+        catch (const std::exception &e)
+        {
+            result.error = e.what();
+        }
+        return result;
     });
 
     // Own our own watcher: `LogModel::mStreamingWatcher` asserts
@@ -4897,7 +4810,7 @@ void MainWindow::ShowDecompressionProgress()
         if (!mDecompressionProgressDialog)
         {
             mDecompressionProgressDialog = new QProgressDialog(this);
-            mDecompressionProgressDialog->setWindowTitle(tr("Decompressing"));
+            mDecompressionProgressDialog->setWindowTitle(tr("Opening"));
             mDecompressionProgressDialog->setWindowModality(Qt::NonModal);
             mDecompressionProgressDialog->setMinimumDuration(DECOMPRESSION_DIALOG_DEFER_MS);
             mDecompressionProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
@@ -4940,16 +4853,14 @@ void MainWindow::UpdateDecompressionProgressUi()
         const qint64 bytesIn = session->DecompressionBytesIn().loadRelaxed();
         const qint64 total = session->DecompressionTotalBytesIn().loadRelaxed();
         const QString displayName = QFileInfo(session->DecompressionOriginalPath()).fileName();
-        const QString header = session->DecompressionCodecName().isEmpty()
-                                   ? tr("Decompressing %1").arg(displayName)
-                                   : tr("Decompressing %1 (%2)").arg(displayName, session->DecompressionCodecName());
+        const QString header = tr("Opening %1").arg(displayName);
         int pct = -1;
         QString label;
         if (total > 0)
         {
             pct = static_cast<int>((PROGRESS_PERCENT_MAX * bytesIn) / total);
             pct = std::min(pct, PROGRESS_PERCENT_MAX);
-            label = tr("%1\n%2 / %3 compressed bytes read")
+            label = tr("%1\n%2 / %3 read")
                         .arg(
                             header,
                             HumanBytes(static_cast<std::size_t>(bytesIn)),
@@ -4991,9 +4902,7 @@ void MainWindow::UpdateDecompressionProgressUi()
     const qint64 total = mSession->DecompressionTotalBytesIn().loadRelaxed();
     const std::uint64_t generation = mSession->DecompressionGeneration();
     const QString displayName = QFileInfo(mSession->DecompressionOriginalPath()).fileName();
-    const QString header = mSession->DecompressionCodecName().isEmpty()
-                               ? tr("Decompressing %1").arg(displayName)
-                               : tr("Decompressing %1 (%2)").arg(displayName, mSession->DecompressionCodecName());
+    const QString header = tr("Opening %1").arg(displayName);
     if (total > 0)
     {
         const int pct = static_cast<int>((PROGRESS_PERCENT_MAX * bytesIn) / total);
@@ -5004,7 +4913,7 @@ void MainWindow::UpdateDecompressionProgressUi()
             return;
         }
         mDecompressionProgressDialog->setLabelText(
-            tr("%1\n%2 / %3 compressed bytes read")
+            tr("%1\n%2 / %3 read")
                 .arg(header, HumanBytes(static_cast<std::size_t>(bytesIn)), HumanBytes(static_cast<std::size_t>(total)))
         );
     }
@@ -5057,7 +4966,6 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
     if (watcher == nullptr)
     {
         origin->ClearDecompressionScratchPaths();
-        origin->MutablePendingDecompressionErrors().clear();
         if (originView != nullptr)
         {
             originView->HideOperationProgress();
@@ -5073,7 +4981,6 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
     origin->MutableDecompressionStopSource().RequestStop();
     origin->DrainDecompressionWatcher();
     origin->ClearDecompressionScratchPaths();
-    origin->MutablePendingDecompressionErrors().clear();
     if (originView != nullptr)
     {
         originView->HideOperationProgress();
@@ -5143,44 +5050,13 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         return;
     }
 
-    std::shared_ptr<loglib::DecompressingByteSource> dbs;
-    std::optional<loglib::SessionBundleMetadata> bundleMetadata;
-    QString errorEntry;
-    bool cancelled = false;
-    try
-    {
-        dbs = watcher->result();
-    }
-    catch (const loglib::OperationCancelled &)
-    {
-        cancelled = true;
-    }
-    catch (const std::exception &e)
-    {
-        errorEntry = tr("Failed to decompress '%1': %2")
-                         .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
-    }
-    catch (...)
-    {
-        errorEntry = tr("Failed to decompress '%1': unknown error").arg(origin->DecompressionOriginalPath());
-    }
-    // Report malformed metadata as a bundle error, not a codec error.
-    if (errorEntry.isEmpty() && !cancelled && dbs && IsSessionBundlePath(origin->DecompressionOriginalPath()))
-    {
-        try
-        {
-            bundleMetadata.emplace(loglib::ParseSessionBundleMetadata(dbs->DiscardedFirstLine()));
-        }
-        catch (const loglib::FormatError &e)
-        {
-            errorEntry = tr("'%1' is not a valid session bundle: %2")
-                             .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
-        }
-    }
+    LogSession::OpenResult result = watcher->result();
+    std::shared_ptr<loglib::OpenedFile> opened = std::move(result.file);
+    const bool cancelled = result.cancelled;
+    const QString errorEntry = QString::fromStdString(result.error);
 
-    // Detach the future so a follow-up decompression re-arms
-    // cleanly; ownership of the shared_ptr has already moved to `dbs`.
-    watcher->setFuture(QFuture<LogSession::DecompressionByteSourcePtr>{});
+    // Detach the future so a follow-up open re-arms cleanly.
+    watcher->setFuture(QFuture<LogSession::OpenResult>{});
 
     if (cancelled)
     {
@@ -5190,7 +5066,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         // opens. Background origins queue the toast until selected.
         PostStatusMessage(
             origin,
-            tr("Decompression cancelled: %1").arg(QFileInfo(origin->DecompressionOriginalPath()).fileName()),
+            tr("Opening cancelled: %1").arg(QFileInfo(origin->DecompressionOriginalPath()).fileName()),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         origin->ClearDecompressionScratchPaths();
@@ -5205,18 +5081,18 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     if (!errorEntry.isEmpty())
     {
         origin->ClearApplyEmbeddedBundleConfig();
-        origin->MutablePendingDecompressionErrors().push_back(errorEntry.toStdString());
-        // Clear scratch fields BEFORE draining -- a compressed
-        // follow-up would re-enter `BeginAsyncDecompression` and
+        origin->MutablePendingOpenErrors().push_back(errorEntry.toStdString());
+        // Clear scratch fields BEFORE draining -- a follow-up
+        // would re-enter `BeginAsyncOpen` and
         // repopulate them; clearing after that would wipe the new
         // file's metadata. The success branch below doesn't need
         // the pre-clear because a parse worker is armed and the
         // follow-up waits for `OnStreamingFinished`.
         origin->ClearDecompressionScratchPaths();
         StreamNextPendingFile(origin);
-        // Chain-terminal decompression failure: drains
-        // `origin->MutablePendingDecompressionErrors()` under the `Error
-        // Decompressing File` title. Without this call the batch
+        // Chain-terminal open failure: drains
+        // `origin->MutablePendingOpenErrors()` under the `Error
+        // Opening File` title. Without this call the batch
         // (including THIS entry) would sit until the next
         // destructive session boundary silently cleared it.
         FinalizeAfterDecompressionIfChainTerminal(origin);
@@ -5227,9 +5103,10 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     const bool armedForThisFile = origin->ShouldApplyEmbeddedBundleConfig() &&
                                   origin->ApplyEmbeddedBundleConfigForPath() == origin->DecompressionOriginalPath();
     const bool sessionStillFresh = !origin->MutableCurrentSource().has_value();
-    if (bundleMetadata.has_value() && armedForThisFile && sessionStillFresh && model != nullptr)
+    const bool isBundle = opened && opened->bundle.has_value();
+    if (isBundle && armedForThisFile && sessionStillFresh && model != nullptr)
     {
-        loglib::LogConfiguration embedded = std::move(bundleMetadata->configuration);
+        loglib::LogConfiguration embedded = std::move(opened->bundle->configuration);
         const std::string dedupKey = logapp::CanonicalLocator(origin->DecompressionOriginalPath()).toStdString();
         // Anchors use the same canonical locator as source deduplication.
         for (auto &anchor : embedded.view.anchors)
@@ -5284,7 +5161,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         }
     }
     // This bundle has consumed its intent even if the session was busy.
-    if (bundleMetadata.has_value() && armedForThisFile)
+    if (isBundle && armedForThisFile)
     {
         origin->ClearApplyEmbeddedBundleConfig();
     }
@@ -5292,29 +5169,25 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     // Success. Emit the "Decompressed X -> Y in Zs" toast before
     // the parse-status label overwrites it; the timeout gives a
     // 5 s window that survives a fast parse start.
-    if (dbs)
+    if (opened && opened->codec != loglib::DecompressingByteSource::Codec::None)
     {
         const auto elapsed = std::chrono::steady_clock::now() - origin->DecompressionStartedAt();
-        // Explicit size (see the matching site in `BeginAsyncDecompression`).
-        const std::string_view codecName = loglib::CodecName(dbs->DetectedCodec());
+        // Explicit size: the view is not guaranteed to be NUL-terminated.
+        const std::string_view codecName = loglib::CodecName(opened->codec);
         const QString msg = tr("Decompressed %1 (%2 \u2192 %3, %4) in %5")
                                 .arg(
                                     QFileInfo(origin->DecompressionOriginalPath()).fileName(),
-                                    HumanBytes(dbs->CompressedSize()),
-                                    HumanBytes(dbs->DecompressedSize()),
+                                    HumanBytes(opened->compressedSize),
+                                    HumanBytes(opened->decompressedSize),
                                     QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())),
                                     HumanDuration(elapsed)
                                 );
         PostStatusMessage(origin, msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
     }
 
-    // Resolve before moving `dbs`; argument evaluation order is not fixed.
-    const std::filesystem::path effectivePath =
-        dbs ? dbs->EffectivePath() : logapp::QStringToFsPath(origin->DecompressionOriginalPath());
-
-    // Transfer temp-file ownership to the mapped `FileLineSource`.
+    // The source inherits ownership of the unpacked temporary copy.
     const bool armedParseWorker =
-        ContinueOpenAfterPrepared(origin, origin->DecompressionOriginalPath(), effectivePath, std::move(dbs));
+        ContinueOpenAfterPrepared(origin, origin->DecompressionOriginalPath(), std::move(*opened));
     // Clear scratch fields BEFORE the follow-up drain (see the
     // error branch above for the ordering rationale).
     origin->ClearDecompressionScratchPaths();
@@ -6179,11 +6052,6 @@ void MainWindow::FinalizeAfterDecompressionIfChainTerminal(LogSession *origin)
         ShowParseErrors(tr("Error Opening File"), origin->MutablePendingOpenErrors(), origin);
         origin->MutablePendingOpenErrors().clear();
     }
-    if (!origin->MutablePendingDecompressionErrors().empty())
-    {
-        ShowParseErrors(tr("Error Decompressing File"), origin->MutablePendingDecompressionErrors(), origin);
-        origin->MutablePendingDecompressionErrors().clear();
-    }
 
     // No session ever armed (all files failed before any parse
     // worker started): `StreamNextPendingFile`'s tail already
@@ -6339,7 +6207,6 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         mSession->SetPendingOpenFiles(std::move(siblingPrefix));
         mSession->ClearPendingOpenErrors();
-        mSession->ClearPendingDecompressionErrors();
         mSession->SetPendingLiveTailPromotion(tailPath, retention);
         // Undo restores the selected path through the live-tail entry point.
         mSession->SetLastRotationExpansion(QStringList{file}, /*wasLiveTail=*/true);

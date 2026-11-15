@@ -1583,22 +1583,18 @@ private slots:
         LogSession session;
         QVERIFY(!session.IsDecompressionInFlight());
         QVERIFY(session.DecompressionOriginalPath().isEmpty());
-        QVERIFY(session.DecompressionCodecName().isEmpty());
 
         session.SetDecompressionInFlight(true);
         session.SetDecompressionOriginalPath(QStringLiteral("logs/app.log.gz"));
-        session.SetDecompressionCodecName(QStringLiteral("gzip"));
         const auto started = std::chrono::steady_clock::now();
         session.SetDecompressionStartedAt(started);
 
         QVERIFY(session.IsDecompressionInFlight());
         QCOMPARE(session.DecompressionOriginalPath(), QStringLiteral("logs/app.log.gz"));
-        QCOMPARE(session.DecompressionCodecName(), QStringLiteral("gzip"));
         QCOMPARE(session.DecompressionStartedAt(), started);
 
         session.ClearDecompressionScratchPaths();
         QVERIFY(session.DecompressionOriginalPath().isEmpty());
-        QVERIFY(session.DecompressionCodecName().isEmpty());
         // The in-flight latch is deliberately NOT touched by the
         // scratch-paths clear. It is cleared separately so the finished
         // slot can distinguish a clean "no worker" state from a
@@ -1686,7 +1682,6 @@ private slots:
         LogSession session;
         QVERIFY(session.PendingOpenFiles().isEmpty());
         QVERIFY(session.PendingOpenErrors().empty());
-        QVERIFY(session.PendingDecompressionErrors().empty());
 
         const QStringList files{QStringLiteral("logs/a.log"), QStringLiteral("logs/b.log")};
         session.SetPendingOpenFiles(files);
@@ -1699,22 +1694,15 @@ private slots:
         QCOMPARE(session.PendingOpenFiles().size(), 1);
 
         session.MutablePendingOpenErrors().emplace_back("Failed to open 'a.log'");
-        session.MutablePendingDecompressionErrors().emplace_back("Failed to decompress 'b.log'");
         QCOMPARE(session.PendingOpenErrors().size(), std::size_t{1});
-        QCOMPARE(session.PendingDecompressionErrors().size(), std::size_t{1});
 
         session.ClearPendingOpenErrors();
         QVERIFY(session.PendingOpenErrors().empty());
-        QVERIFY(!session.PendingDecompressionErrors().empty());
-        session.ClearPendingDecompressionErrors();
-        QVERIFY(session.PendingDecompressionErrors().empty());
 
         session.MutablePendingOpenErrors().emplace_back("Failed to open 'c.log'");
-        session.MutablePendingDecompressionErrors().emplace_back("Failed to decompress 'd.log'");
         session.ClearPendingOpenQueues();
         QVERIFY(session.PendingOpenFiles().isEmpty());
         QVERIFY(session.PendingOpenErrors().empty());
-        QVERIFY(session.PendingDecompressionErrors().empty());
     }
 
     static void TestEnsureWatchersLazilyAllocateAndCacheInstance()

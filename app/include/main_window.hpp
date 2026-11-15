@@ -2195,59 +2195,46 @@ private:
     void StartStreamingOpenQueue(QStringList files, OpenMode mode, const QString &applyEmbeddedBundlePath = QString());
 
     /**
-     * @brief Starts the next queued file or asynchronous decompression.
+     * @brief Starts the next queued file on the open worker.
      *
-     * Open and decompression failures accumulate in separate session-owned
-     * buckets. Compressed inputs resume through `OnDecompressionFinished()`.
+     * Open failures accumulate in a session-owned list. The file resumes through `OnDecompressionFinished()`.
      */
     void StreamNextPendingFile(LogSession *origin);
 
     /**
-     * @brief Dispatch an async `DecompressingByteSource` worker for
-     * @p originalPath after the sniff has decided it is
-     * compressed. Wires up the progress dialog, poll timer, and
-     * watcher; the worker runs on the Qt thread pool. Called
-     * from `StreamNextPendingFile`; the finished slot
-     * (`OnDecompressionFinished`) picks the flow back up on the
-     * GUI thread.
+     * @brief Opens @p originalPath on the Qt thread pool through loglib::OpenFileSource.
+     *
+     * The worker unpacks compressed files and reads session bundles, reporting progress through the session's atomics
+     * and stopping on its stop token. Wires up the progress dialog, poll timer and watcher. The finished slot
+     * (`OnDecompressionFinished`) picks the flow back up on the GUI thread.
      * @param origin Session that owns the queued file.
-     * @param originalPath The `originalPath` value.
-     * @param codec The `codec` value.
+     * @param originalPath The user-facing path of the file.
      */
-    void BeginAsyncDecompression(
-        LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
-    );
+    void BeginAsyncOpen(LogSession *origin, const QString &originalPath);
 
     /**
-     * @brief Continuation of `StreamNextPendingFile` for compressed
-     * inputs: takes ownership of the worker-produced
-     * `DecompressingByteSource`, resumes the parse (or the queue
-     * drain, on failure) on the GUI thread.
+     * @brief Continuation of `StreamNextPendingFile`: takes the file the worker opened, then resumes the parse (or
+     * the queue drain, on failure) on the GUI thread.
      */
     void OnDecompressionFinished();
 
     /**
-     * @brief Completes decompression for a hosted origin session.
-     * @param origin Session whose decompression watcher finished.
+     * @brief Completes the open for a hosted origin session.
+     * @param origin Session whose watcher finished.
      */
     void OnDecompressionFinishedFor(LogSession *origin);
 
     /**
-     * @brief Continues a prepared file open on the GUI thread.
+     * @brief Continues an opened file on the GUI thread.
      * @param origin Session that owns the open queue.
      * @param originalPath The user-facing source path used for labels and persistence.
-     * @param effectivePath The path probed and mapped by the parser.
-     * @param decompressionAnchor Shared ownership that keeps a temporary decompressed file alive.
-     * @return `true` when a parse worker starts; `false` after recording a synchronous open error.
+     * @param opened The file the worker opened. Its source keeps any unpacked temporary copy alive.
+     * @return `true` when a parse worker starts.
      *
-     * The function constructs the log source, detects its format, and begins or
-     * appends streaming. A null anchor denotes an uncompressed input.
+     * The function detects the format of the effective path and begins or appends streaming.
      */
     [[nodiscard]] bool ContinueOpenAfterPrepared(
-        LogSession *origin,
-        const QString &originalPath,
-        const std::filesystem::path &effectivePath,
-        std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
+        LogSession *origin, const QString &originalPath, loglib::OpenedFile opened
     );
 
     /**
@@ -3604,20 +3591,14 @@ private:
     // `LogSession::DisableRotationHistoryOverride`, and
     // `LogSession::LastRotationExpansionOriginalInputs`.
     //
-    // Note: `mPendingOpenErrors` (parse/open errors accumulated
+    // Note: `mPendingOpenErrors` (open errors accumulated
     // during a multi-file drain, drained under
-    // `tr("Error Opening File")`) and `mPendingDecompressionErrors`
-    // (decompression-specific errors drained under
-    // `tr("Error Decompressing File")`) live on `mSession`; see
-    // `LogSession::PendingOpenErrors` /
-    // `LogSession::PendingDecompressionErrors`.
+    // `tr("Error Opening File")`) lives on `mSession`; see
+    // `LogSession::PendingOpenErrors`.
 
     /**
-     * @brief QFutureWatcher for the current async decompression. Owns a
-     * `std::shared_ptr<DecompressingByteSource>`; the shared_ptr
-     * is captured into the subsequent parse callable so the temp
-     * file survives for the whole parse. `nullptr` when no
-     * decompression is in flight.
+     * @brief QFutureWatcher for the current async open. Its result is a
+     * `std::shared_ptr<loglib::OpenedFile>` whose source is handed to the model.
      */
     // The QFutureWatcher lives on `mSession`;
     // see `LogSession::DecompressionWatcherPtr`. The shell still owns
@@ -3652,8 +3633,7 @@ private:
     QPointer<QProgressDialog> mDecompressionProgressDialog;
 
     // Note: `mDecompressionOriginalPath` (user-facing path being
-    // decompressed), `mDecompressionCodecName` (pre-sniffed codec
-    // label rendered by the poll-timer lambda), and
+    // opened) and
     // `mDecompressionStartedAt` (wall-clock start for the completion
     // toast) all live on `mSession`; see
     // `LogSession::DecompressionOriginalPath`.
