@@ -19,6 +19,7 @@
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/internal/log_table_test_access.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
 #include <loglib/time/timestamp_parsing.hpp>
@@ -121,7 +122,7 @@ std::int64_t ParsedTimestampMicros(const std::string &content, const ParserOptio
     auto source = std::make_unique<FileLineSource>(file.GetFilePath());
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
-    JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
+    JsonParser{}.Parse(*sourcePtr, sink, options);
     const LogData data = sink.TakeData();
     REQUIRE(data.Lines().size() >= 1);
     const LogValue value = data.Lines()[0].GetValue(data.Keys(), "ts");
@@ -289,7 +290,7 @@ TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole p
         ParserOptions options;
         options.timeColumns = {TimeColumn("ts", "%b %e %H:%M:%S")};
         options.referenceTime = reference;
-        JsonParser{}.ParseStreaming(*sourcePtr, sink, options);
+        JsonParser{}.Parse(*sourcePtr, sink, options);
         const LogData data = sink.TakeData();
         std::vector<std::int64_t> micros;
         for (const LogLine &line : data.Lines())
@@ -354,7 +355,7 @@ TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's b
         source.UnreadBytes("{\"n\":1}\n");
 
         CollectingSink sink;
-        JsonParser{}.ParseStreaming(source, sink, ParserOptions{});
+        JsonParser{}.Parse(source, sink, ParserOptions{});
         REQUIRE(sink.finished);
         REQUIRE(sink.Errors().empty());
 
@@ -376,8 +377,7 @@ TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's b
         source.UnreadBytes("{\"n\":1}\n");
 
         CollectingSink sink;
-        AutoDetectParser(PROBE_BYTES_BUDGET, std::chrono::milliseconds{0})
-            .ParseStreaming(source, sink, ParserOptions{});
+        AutoDetectParser(PROBE_BYTES_BUDGET, std::chrono::milliseconds{0}).Parse(source, sink, ParserOptions{});
         REQUIRE(sink.finished);
 
         const auto lines = sink.Lines();
@@ -399,7 +399,7 @@ TEST_CASE("The logfmt continuation switch belongs to the parser", "[explicit_tim
     const auto rowCount = [&payload](const LogParser &parser) {
         StreamLineSource source(std::filesystem::path("logfmt.log"), std::make_unique<InMemoryBytesProducer>(payload));
         CollectingSink sink;
-        parser.ParseStreaming(source, sink, ParserOptions{});
+        parser.Parse(source, sink, ParserOptions{});
         REQUIRE(sink.finished);
         return sink.Lines().size();
     };
@@ -445,7 +445,7 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
     const RegexParser parser{restored.regexPattern, restored.regexContinuationMode, restored.regexHeaderAnchor};
     StreamLineSource source(std::filesystem::path("regex.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingSink sink;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
     REQUIRE(sink.finished);
     CHECK(sink.Errors().empty());
     CHECK(sink.Lines().size() == 2);
@@ -680,7 +680,7 @@ TEST_CASE(
     ParserOptions options;
     options.timeColumns = {TimeColumn("ts", "%b %e %H:%M:%S")};
     options.clock = [&stream] { return stream.now; };
-    JsonParser{}.ParseStreaming(*source, sink, options);
+    JsonParser{}.Parse(*source, sink, options);
 
     REQUIRE(sink.batches.size() >= 2);
     const auto lines = sink.Lines();
@@ -711,12 +711,12 @@ TEST_CASE(
         .parseFormats = {"%b %e %H:%M:%S"},
     });
     LogTable table(ColumnLayout(configuration.columns));
-    table.SetClock([&stream] { return stream.now; });
+    loglib::internal::LogTableTestAccess::SetClock(table, [&stream] { return stream.now; });
     StreamLineSource *sourcePtr = source.get();
     table.BeginStreaming(std::move(source));
 
     TableFeedingSink sink(table, stream);
-    JsonParser{}.ParseStreaming(*sourcePtr, sink, ParserOptions{});
+    JsonParser{}.Parse(*sourcePtr, sink, ParserOptions{});
 
     REQUIRE(sink.batches >= 2);
     REQUIRE(table.RowCount() == 2 * CLOCK_TEST_LINES_PER_BATCH);

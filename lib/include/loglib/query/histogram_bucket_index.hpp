@@ -86,16 +86,17 @@ struct LevelBucket
     /** @brief One count per level, indexed by the LogLevel value. Unknown is at index 0, followed by Trace to Fatal. */
     std::array<uint32_t, CANONICAL_LEVEL_COUNT + 1> counts{}; // NOLINT(misc-non-private-member-variables-in-classes)
 
+    /** @brief The sum of the counts of all levels. */
     [[nodiscard]] uint32_t Total() const noexcept;
 };
 
 /**
  * @brief Counts rows per time bucket and per level, for a histogram of log activity.
  *
- * It does not depend on Qt, so a graphical widget and command-line tools can both use it. Bucket i covers the time from
- * Origin plus i widths, and each width is BucketWidth. AddRow grows the bucket list as needed. A timestamp before the
- * origin shifts all buckets once, which is cheap for append-only streams but costly for sources that deliver old rows
- * late.
+ * It does not depend on a user interface library, so a graphical program and command-line tools can both use it. Bucket
+ * i covers the time from Origin plus i widths, and each width is BucketWidth. AddRow grows the bucket list as needed. A
+ * timestamp before the origin shifts all buckets once, which is cheap for append-only streams but costly for sources
+ * that deliver old rows late.
  *
  * A row that would need more than HISTOGRAM_MAX_BUCKETS buckets makes the index switch to the next wider size that
  * covers it, and BucketSize reports the new size. Beyond the widest size the row is counted in the nearest bucket.
@@ -144,16 +145,20 @@ public:
      */
     [[nodiscard]] static TimeStamp TruncateToBucket(TimeStamp ts, HistogramBucketSize size) noexcept;
 
+    /** @brief The current bucket size. It grows when the rows would need more than HISTOGRAM_MAX_BUCKETS buckets. */
     [[nodiscard]] HistogramBucketSize BucketSize() const noexcept
     {
         return mBucketSize;
     }
 
+    /** @brief The current bucket size as a duration. */
     [[nodiscard]] std::chrono::microseconds BucketWidth() const noexcept
     {
         return HistogramBucketWidth(mBucketSize);
     }
 
+    /** @brief The buckets in time order, starting at Origin. The span is valid until the next AddRow, Reset or resize.
+     */
     [[nodiscard]] std::span<const LevelBucket> Buckets() const noexcept
     {
         return {mBuckets.data(), mBuckets.size()};
@@ -165,6 +170,7 @@ public:
         return mOrigin;
     }
 
+    /** @brief True while no row has been added since construction or the last Reset. */
     [[nodiscard]] bool Empty() const noexcept
     {
         return mBuckets.empty();
@@ -195,6 +201,7 @@ public:
     {
         return mBuckets.empty() ? std::nullopt : std::optional<TimeStamp>{mMinTimestamp};
     }
+    /** @brief The latest timestamp added, as described for MinTimestamp. */
     [[nodiscard]] std::optional<TimeStamp> MaxTimestamp() const noexcept
     {
         return mBuckets.empty() ? std::nullopt : std::optional<TimeStamp>{mMaxTimestamp};

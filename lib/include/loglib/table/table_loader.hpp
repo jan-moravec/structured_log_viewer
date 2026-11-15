@@ -1,11 +1,11 @@
 /**
- * @brief Loads parsed sources into a LogTable the way the GUI and slp do.
+ * @brief Loads parsed sources into a LogTable the way the applications do.
  *
  * A parser sends its output to a sink. TableSink is the sink that appends each batch to a LogTable, keeps the parse
  * errors and counts the lines read. ParseIntoTable adds a source to the table and runs a parser over it to the end.
  * ParserOptionsFor gives the parser the table's time columns and zone, so the parser converts timestamps on its own
  * threads. FinishLoading ends type detection after the last source. Together they are the one way to fill a table from
- * a parser without a GUI.
+ * a parser without an application.
  *
  * Threads: ParseIntoTable returns when the parse is done, and nothing else may touch the table until then. For a
  * FileLineSource the sink is called from the last serial stage of the parse pipeline. TBB runs that stage on any

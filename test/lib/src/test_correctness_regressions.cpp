@@ -17,10 +17,10 @@
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
-#include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
@@ -97,7 +97,7 @@ std::vector<std::string> RawLinesOfParse(const std::filesystem::path &path, std:
     CoalescingFileSink sink(source);
     ParserOptions options;
     options.batchSizeBytes = batchSizeBytes;
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 
     std::vector<std::string> raw;
     raw.reserve(sink.lines.size());
@@ -272,7 +272,7 @@ TEST_CASE("Malformed JSON values fail the line in a live stream", "[json_parser]
                                                 "{\"b\":false,\"s\":\"fine\",\"n\":2}\n")
     );
     CollectingSink sink;
-    JsonParser{}.ParseStreaming(source, sink, ParserOptions{});
+    JsonParser{}.Parse(source, sink, ParserOptions{});
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 6);
@@ -320,7 +320,7 @@ TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
 
     StreamLineSource source("<test>", std::make_unique<InMemoryBytesProducer>("\xEF\xBB\xBFts=1 msg=a\nts=2 msg=b\n"));
     CollectingSink sink;
-    LogfmtParser{}.ParseStreaming(source, sink, ParserOptions{});
+    LogfmtParser{}.Parse(source, sink, ParserOptions{});
     CHECK(sink.lines.size() == 2);
     CHECK(sink.keys.Find("\xEF\xBB\xBFts") == INVALID_KEY_ID);
 }
@@ -340,7 +340,7 @@ TEST_CASE("ParseQuery rejects excessive nesting instead of overflowing the stack
     CHECK_FALSE(ParseQuery(notChain + "n>1", TimeZoneContext{}).has_value());
 }
 
-TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule_compile][level]")
+TEST_CASE("A level selection with no matching rows matches nothing", "[filter_compile][level]")
 {
     ParseResult result = ParseText(JsonParser{}, "{\"level\":\"info\"}\n{\"level\":\"warn\"}\n{\"level\":\"info\"}\n");
     const LogTable table = TableOf(std::move(result.data));
@@ -357,7 +357,7 @@ TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule
     CHECK(rowsFor("NOT level IN [Trace]") == 3);
 }
 
-TEST_CASE("FindFilterProblems reports unknown columns and invalid patterns", "[leaf_rule_compile][problems]")
+TEST_CASE("FindFilterProblems reports unknown columns and invalid patterns", "[filter_compile][problems]")
 {
     const std::vector<Column> columns = {Column{.header = "msg", .keys = {"msg"}}};
     const auto problemsFor = [&](const char *query) {
@@ -467,7 +467,7 @@ TEST_CASE("The stream loop drops an oversized line and resumes after it", "[stre
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 
     CHECK(sink.lines.size() == 2);
     REQUIRE(sink.errors.size() == 1);
@@ -487,7 +487,7 @@ TEST_CASE("The stream loop bounds a record's continuation bytes", "[stream][limi
     CollectingSink sink;
     ParserOptions options;
     options.maxLineBytes = 1024;
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 
     CHECK(sink.lines.size() == 2);
     CHECK(source.RawLine(1).size() <= 2 * options.maxLineBytes);

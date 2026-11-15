@@ -2,7 +2,8 @@
  * @brief The exception types the library throws for failed resources and unreadable saved files.
  *
  * Opening, reading and writing files and sockets, decompressing, and reading saved files such as configurations and
- * bundles throw a subclass of Error. Parsing user data never throws, and validating user input returns a result
+ * bundles throw a subclass of Error. Opening a socket or a tailed file throws std::system_error instead, so the caller
+ * keeps the system error code. Parsing user data never throws, and validating user input returns a result
  * instead. OperationCancelled and BrokenPipe are control exceptions and deliberately do not derive from Error, so a
  * handler for Error does not swallow a cancel or a closed pipe. The full rules are in CONTRIBUTING.md, section Error
  * handling.
@@ -37,7 +38,8 @@ public:
     using Error::Error;
 };
 
-/** A configured limit was reached, such as the decompression size cap. */
+/** A limit was reached: a configured one, such as the decompression size cap, or a fixed capacity, such as the number
+ * of distinct keys. */
 class LimitError : public Error
 {
 public:

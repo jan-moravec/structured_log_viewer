@@ -7,7 +7,7 @@
 namespace loglib
 {
 
-// MSVC's `std::deque` default ctor can theoretically throw; `noexcept` is
+// MSVC's std::deque default ctor can theoretically throw; noexcept is
 // the contract our storage relies on.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 EnumDictionary::EnumDictionary(uint16_t cap) noexcept
@@ -65,7 +65,7 @@ std::string_view EnumDictionary::Resolve(EnumValueId id) const noexcept
 
 void EnumDictionary::Clear() noexcept
 {
-    // Index references string_views into `mValues`, so clear it first.
+    // Index references string_views into mValues, so clear it first.
     mIndex.clear();
     mValues.clear();
 }
@@ -87,7 +87,7 @@ const EnumDictionary *EnumDictionaryRegistry::Find(KeyId key) const noexcept
 
 EnumDictionary &EnumDictionaryRegistry::GetOrInsert(KeyId key, uint16_t cap)
 {
-    // `mIndex` covers canonicals + aliases so an alias key returns the
+    // mIndex covers canonicals + aliases so an alias key returns the
     // canonical's dictionary instead of clobbering the alias mapping.
     if (auto it = mIndex.find(key); it != mIndex.end())
     {

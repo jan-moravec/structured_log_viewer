@@ -14,9 +14,10 @@ namespace loglib
 namespace
 {
 
-/// Level -> array index. Debug asserts if the enum grows past the
-/// slot count; release clamps rogue values to `Unknown` (slot 0)
-/// rather than stomping the array.
+/**
+ * Level -> array index. Debug asserts if the enum grows past the slot count; release clamps rogue values to Unknown
+ * (slot 0) rather than stomping the array.
+ */
 constexpr size_t LEVEL_SLOT_COUNT = CANONICAL_LEVEL_COUNT + 1;
 
 constexpr size_t LevelToSlot(LogLevel level) noexcept
@@ -26,10 +27,10 @@ constexpr size_t LevelToSlot(LogLevel level) noexcept
     return raw < LEVEL_SLOT_COUNT ? raw : 0;
 }
 
-/// Floor of `numerator / denominator`. Plain integer division
-/// truncates toward zero, which would put e.g. `-1 us / 1 s` into
-/// bucket 0 rather than bucket -1. Explicit floor keeps bucket
-/// truncation monotonic across the pre-1970 epoch boundary.
+/**
+ * Floor of numerator / denominator. Plain integer division truncates toward zero, which would put e.g. -1 us / 1 s into
+ * bucket 0 rather than bucket -1. Explicit floor keeps bucket truncation monotonic across the pre-1970 epoch boundary.
+ */
 constexpr int64_t FloorDivide(int64_t numerator, int64_t denominator) noexcept
 {
     const int64_t quotient = numerator / denominator;
@@ -74,7 +75,7 @@ std::string_view HistogramBucketSizeLabel(HistogramBucketSize size) noexcept
     }
     // Unreachable given the closed enum. Assert in debug so a new
     // rung without a label is caught by tests; release falls back
-    // to `"?"` rather than aborting the GUI paint.
+    // to "?" rather than aborting the GUI paint.
     assert(false && "HistogramBucketSize rung is missing a label");
     return "?"sv;
 }
@@ -112,8 +113,8 @@ HistogramBucketSize HistogramBucketIndex::AutoBucketSize(TimeStamp min, TimeStam
     {
         const auto size = static_cast<HistogramBucketSize>(rung);
         const auto widthUs = HistogramBucketWidth(size).count();
-        // +1 fencepost: `[min, max]` inclusive spans up to
-        // `ceil((max-min)/width) + 1` buckets in the worst case.
+        // +1 fencepost: [min, max] inclusive spans up to
+        // ceil((max-min)/width) + 1 buckets in the worst case.
         const int64_t bucketCount = (spanUs / widthUs) + 1;
         if (bucketCount <= visibleBucketBudget)
         {
@@ -143,7 +144,7 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
     int64_t widthUs = BucketWidth().count();
     int64_t originUs = mOrigin.time_since_epoch().count();
     int64_t bucketIdx = FloorDivide(tsUs - originUs, widthUs);
-    // Compare without forming `count - bucketIdx`, which a distant row could overflow.
+    // Compare without forming count - bucketIdx, which a distant row could overflow.
     while (bucketIdx >= limit || bucketIdx < static_cast<int64_t>(mBuckets.size()) - limit)
     {
         if (mBucketSize == HistogramBucketSize::OneDay)

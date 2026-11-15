@@ -41,12 +41,6 @@ public:
         return mState != nullptr && mState->load(std::memory_order_acquire);
     }
 
-    /** @brief False for a default-constructed token, which has no source and never stops. */
-    [[nodiscard]] bool StopPossible() const noexcept
-    {
-        return mState != nullptr;
-    }
-
 private:
     friend class StopSource;
 
@@ -92,11 +86,6 @@ public:
     [[nodiscard]] bool StopRequested() const noexcept
     {
         return mState != nullptr && mState->load(std::memory_order_acquire);
-    }
-
-    [[nodiscard]] bool StopPossible() const noexcept
-    {
-        return mState != nullptr;
     }
 
 private:

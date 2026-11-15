@@ -76,7 +76,7 @@ public:
      * @brief Starts the worker thread.
      *
      * The handle of standard input is duplicated first, so reads in the worker cannot race with other code that still
-     * uses standard input. Throws std::runtime_error, with the operating system's message, if duplicating fails.
+     * uses standard input. Throws IoError if duplicating fails.
      */
     StdinBytesProducer();
     explicit StdinBytesProducer(Options options);

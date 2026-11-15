@@ -65,7 +65,7 @@ std::string DrainPeek(
                 deadline = std::chrono::steady_clock::now() + peekTimeout;
             }
             peek.append(chunk.data(), got);
-            // Early exit: `TryDetectFormatFromBytes` only returns a
+            // Early exit: TryDetectFormatFromBytes only returns a
             // value when a probe actually claimed the buffer. Once
             // it commits, reading further bytes cannot reverse the
             // verdict, so hand off to the resolved parser without
@@ -90,9 +90,9 @@ std::string DrainPeek(
             {
                 break;
             }
-            // Clamp `WaitForBytes` at whatever's left of the
+            // Clamp WaitForBytes at whatever's left of the
             // deadline so we don't overshoot by up to
-            // `PEEK_WAIT_INTERVAL`. `duration_cast` truncates
+            // PEEK_WAIT_INTERVAL. duration_cast truncates
             // toward zero; guard against a zero-duration park
             // by breaking out instead.
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*deadline - now);
@@ -123,24 +123,24 @@ bool AutoDetectParser::IsValidBytes(std::string_view /*sniffBuffer*/) const
     return true;
 }
 
-void AutoDetectParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void AutoDetectParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     // Static files are detected from their head bytes, which are read once.
     const DetectedFormat detected = DetectFormatForPath(source.Path());
     const std::unique_ptr<LogParser> resolved =
         MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
-    resolved->ParseStreaming(source, sink, std::move(options));
+    resolved->Parse(source, sink, std::move(options));
 }
 
-void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void AutoDetectParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)
     {
         // No producer -- fall through to Json's streaming loop so
-        // the sink still honours its `OnStarted` / terminal-batch
-        // contract (see `RunStreamingParseLoop`).
-        JsonParser().ParseStreaming(source, sink, std::move(options));
+        // the sink still honours its OnStarted / terminal-batch
+        // contract (see RunStreamingParseLoop).
+        JsonParser().Parse(source, sink, std::move(options));
         return;
     }
 
@@ -153,7 +153,7 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
     {
         // Stop, timeout, or EOF may leave no bytes to detect.
         // Delegate to JSON so the normal sink lifecycle still runs.
-        JsonParser().ParseStreaming(source, sink, std::move(options));
+        JsonParser().Parse(source, sink, std::move(options));
         return;
     }
 
@@ -161,7 +161,7 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
     const std::unique_ptr<LogParser> resolved =
         MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
     source.UnreadBytes(std::move(combined));
-    resolved->ParseStreaming(source, sink, std::move(options));
+    resolved->Parse(source, sink, std::move(options));
 }
 
 } // namespace loglib

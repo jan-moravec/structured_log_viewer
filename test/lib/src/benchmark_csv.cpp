@@ -33,7 +33,7 @@ namespace
 // bugprone-throwing-static-initialization from std::function's ctor).
 void CsvStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    CsvParser{}.ParseStreaming(source, sink, options);
+    CsvParser{}.Parse(source, sink, options);
 }
 
 // Derive the CSV schema by peeking one streamed record on a throwaway

@@ -7,9 +7,9 @@
 
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/query/log_compare.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/query/row_ordering.hpp>
 #include <loglib/table/log_table.hpp>
 

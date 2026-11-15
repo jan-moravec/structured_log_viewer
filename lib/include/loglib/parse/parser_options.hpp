@@ -30,7 +30,7 @@ inline constexpr unsigned int DEFAULT_MAX_PARSE_THREADS = 8;
 inline constexpr std::size_t DEFAULT_PARSE_BATCH_BYTES = std::size_t{1024} * 1024;
 
 /**
- * @brief Options for LogParser::ParseStreaming.
+ * @brief Options for LogParser::Parse.
  *
  * threads and batchSizeBytes tune the parallel static-file pipeline, and zero for either selects the default.
  */

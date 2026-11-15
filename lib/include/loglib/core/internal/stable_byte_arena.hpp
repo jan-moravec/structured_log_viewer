@@ -41,7 +41,7 @@ public:
     ~StableByteArena() = default;
 
     /**
-     * @brief Copies bytes into the arena and returns the offset of the first one. Throws std::length_error when the
+     * @brief Copies bytes into the arena and returns the offset of the first one. Throws LimitError when the
      * address space is used up.
      */
     uint64_t Append(std::string_view bytes);

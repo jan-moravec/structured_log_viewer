@@ -121,7 +121,7 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, K
             return LogValue{std::string{}};
         }
         const std::string_view bytes = source->ResolveOwnedBytes(payload, aux, lineId);
-        // Copy into `std::string` so the caller owns the bytes (stream
+        // Copy into std::string so the caller owns the bytes (stream
         // arenas may be evicted later).
         return LogValue{std::string(bytes)};
     }

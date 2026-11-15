@@ -157,7 +157,7 @@ void ParseCsvLine(
 )
 {
     out.clear();
-    // Exact upper bound: extras land in `outRaggedExtra`, not `out`.
+    // Exact upper bound: extras land in outRaggedExtra, not out.
     out.reserve(columnKeys.size());
     outUnterminated = false;
     outRaggedExtra = 0;
@@ -269,7 +269,7 @@ void DecodeCsvBatch(
         std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
         line = StripCr(line);
 
-        // `RawLine` subtracts 1 for the '\n'; pad by 1 on an unterminated
+        // RawLine subtracts 1 for the '\n'; pad by 1 on an unterminated
         // last line so the final byte isn't lost.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -327,7 +327,7 @@ void DecodeCsvBatch(
                 relativeLineNumber++;
                 continue;
             }
-            // Empty `values` is fine: we still emit a row so row count
+            // Empty values is fine: we still emit a row so row count
             // matches visible source lines.
 
             // LogLine ctor asserts ascending KeyIds; header order may not be.
@@ -441,7 +441,7 @@ static_assert(
 
 bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    // Callers cap `sniffBuffer` at `PROBE_BYTES_BUDGET`, so the
+    // Callers cap sniffBuffer at PROBE_BYTES_BUDGET, so the
     // cursor bounds are sufficient.
     std::string scratch;
     size_t cursor = 0;
@@ -498,13 +498,13 @@ bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
     return false;
 }
 
-void CsvParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void CsvParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     CsvLineDecoder decoder;
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
-void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void CsvParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
@@ -514,11 +514,11 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
     // Eagerly find and parse the header. Outputs:
-    //  * `columnKeys` -- shared `column -> KeyId` table for Stage B.
-    //  * `headerLineOffset` -- exact byte offset Stage B uses to skip
+    //  * columnKeys -- shared column -> KeyId table for Stage B.
+    //  * headerLineOffset -- exact byte offset Stage B uses to skip
     //    the header (handles the case where leading blanks push the
     //    header past batch 0).
-    //  * `headerParseFailed` -- short-circuits the data pipeline so a
+    //  * headerParseFailed -- short-circuits the data pipeline so a
     //    bad header surfaces one error, not one per row.
     std::vector<KeyId> columnKeys;
     std::optional<uint64_t> headerLineOffset;
@@ -564,7 +564,7 @@ void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Parse
 
     // Malformed header: emit one error and skip the data pipeline so
     // we don't bury it under one ragged-row error per data line. Still
-    // route through `BatchCoalescer::Finish` to keep the sink contract.
+    // route through BatchCoalescer::Finish to keep the sink contract.
     if (headerParseFailed)
     {
         sink.OnStarted();

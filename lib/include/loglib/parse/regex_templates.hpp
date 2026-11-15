@@ -110,12 +110,13 @@ struct RegexTemplate
 /**
  * @brief Reads one template from its JSON text. Fields the text leaves out keep their default.
  *
- * Throws std::runtime_error if the text is invalid. The message includes the position of the problem.
+ * Throws FormatError if the text is not valid JSON or has a key the template does not define. The message names the key
+ * or the position of the problem.
  */
 [[nodiscard]] RegexTemplate ParseRegexTemplate(std::string_view content);
 
 /**
- * @brief Writes a template as indented JSON, as saved in a user template file. Throws std::runtime_error if encoding
+ * @brief Writes a template as indented JSON, as saved in a user template file. Throws FormatError if encoding
  * fails.
  */
 [[nodiscard]] std::string SerializeRegexTemplate(const RegexTemplate &tmpl);

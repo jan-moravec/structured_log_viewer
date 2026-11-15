@@ -412,23 +412,6 @@ const char *ExtensionFor(ExportFormat format) noexcept
     return "jsonl";
 }
 
-const char *LabelFor(ExportFormat format) noexcept
-{
-    switch (format)
-    {
-    case ExportFormat::JsonLines:
-        return "JSON Lines";
-    case ExportFormat::Csv:
-        return "CSV";
-    case ExportFormat::Snapshot:
-        return "Source snapshot";
-    case ExportFormat::Markdown:
-        return "Markdown table";
-    }
-    assert(false && "unknown ExportFormat");
-    return "JSON Lines";
-}
-
 std::unique_ptr<RowExporter> MakeExporter(ExportFormat format)
 {
     switch (format)

@@ -271,8 +271,8 @@ std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &fi
 {
     // Copy the matched template out of the snapshot before
     // returning so the caller can outlive it without worrying
-    // about a concurrent `SetExtraRegexTemplates` invalidating a
-    // raw pointer. `RegexTemplate` is a handful of short strings
+    // about a concurrent SetExtraRegexTemplates invalidating a
+    // raw pointer. RegexTemplate is a handful of short strings
     // — the copy cost is negligible next to the file I/O the
     // probe just paid for.
     const std::string head = ReadProbeHead(file, IS_VALID_PROBE_BYTES);
@@ -339,9 +339,9 @@ bool PatternMatchesLine(std::string_view pattern, std::string_view line)
     {
         return false;
     }
-    // `PCRE2_ANCHORED | PCRE2_ENDANCHORED` mirrors the probe loop
-    // (see `MatchesFullyForProbe` above): a partial mid-line
-    // match isn't what a `RegexParser` would emit for this line,
+    // PCRE2_ANCHORED | PCRE2_ENDANCHORED mirrors the probe loop
+    // (see MatchesFullyForProbe above): a partial mid-line
+    // match isn't what a RegexParser would emit for this line,
     // so it should fail the self-test too. The two callers
     // **must** stay in sync — loosen one, loosen the other, or
     // Validate would pass while the probe fails (or vice-versa).

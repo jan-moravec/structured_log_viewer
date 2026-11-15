@@ -45,10 +45,13 @@ public:
      */
     explicit EnumDictRank(const EnumDictionary &dictionary);
 
+    /** @brief The rank of a value id. An id that the ranks do not know gets DictSize, so it sorts last. */
     [[nodiscard]] uint16_t RankOf(EnumValueId id) const noexcept;
 
+    /** @brief The number of values the ranks were built from. */
     [[nodiscard]] uint16_t DictSize() const noexcept;
 
+    /** @brief True if the ranks hold no values. */
     [[nodiscard]] bool Empty() const noexcept
     {
         return mIdToRank.empty();

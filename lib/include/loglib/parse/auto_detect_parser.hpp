@@ -62,11 +62,11 @@ public:
         FormatOptions formatOptions = {}
     ) noexcept;
 
-    /** @brief Always true. The format is chosen in ParseStreaming and not here. */
+    /** @brief Always true. The format is chosen in Parse and not here. */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /** @brief Detects the format from the start of the file and lets the matching parser handle it. */
-    void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
      * @brief Detects the format of a stream and lets the matching parser handle it.
@@ -76,7 +76,7 @@ public:
      * fires. It waits for the first byte without a time limit. If stop or the end of the stream leaves no bytes, the
      * JSON parser runs, so the sink still gets its usual calls.
      */
-    void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
 private:
     std::size_t mPeekBytes;

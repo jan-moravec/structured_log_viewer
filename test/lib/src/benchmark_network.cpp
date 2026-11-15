@@ -163,7 +163,7 @@ double RunOnce(const Payload &payload, Transport transport)
     options.stopToken = stop.GetToken();
     options.timeColumns = TimeColumnsOf(configuration->columns);
     options.defaultSourceTimeZone = table.DefaultSourceTimeZone();
-    std::thread parser([&] { LogfmtParser{}.ParseStreaming(source, sink, options); });
+    std::thread parser([&] { LogfmtParser{}.Parse(source, sink, options); });
 
     // The client connects before the timer starts.
     std::unique_ptr<test_common::TcpLogClient> tcpClient;

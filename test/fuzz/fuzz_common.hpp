@@ -123,7 +123,7 @@ inline void ParseBytes(const LogParser &parser, const std::uint8_t *data, std::s
     ParserOptions options;
     options.threads = 1;
     options.batchSizeBytes = 64;
-    parser.ParseStreaming(*source, sink, std::move(options));
+    parser.Parse(*source, sink, std::move(options));
 
     // A volatile store keeps the optimizer from removing the reads behind the checksum.
     static volatile std::size_t observed = 0;

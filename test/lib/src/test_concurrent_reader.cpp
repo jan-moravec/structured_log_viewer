@@ -122,7 +122,7 @@ TEST_CASE(
     std::thread pipeline([&] {
         try
         {
-            JsonParser{}.ParseStreaming(*sourcePtr, sink, ParserOptions{});
+            JsonParser{}.Parse(*sourcePtr, sink, ParserOptions{});
         }
         catch (...)
         {

@@ -437,7 +437,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     CHECK_FALSE(sink.finishedCancelled);
@@ -490,7 +490,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const LogfmtParser parser(false);
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
@@ -516,7 +516,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
@@ -550,7 +550,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
@@ -580,7 +580,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
@@ -608,7 +608,7 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{});
+    parser.Parse(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
@@ -683,7 +683,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    LogfmtParser{}.ParseStreaming(*sourcePtr, sink, options);
+    LogfmtParser{}.Parse(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -743,7 +743,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    LogfmtParser{}.ParseStreaming(*sourcePtr, sink, options);
+    LogfmtParser{}.Parse(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -794,7 +794,7 @@ TEST_CASE(
     auto fileSource = file.OpenSource();
     FileLineSource *sourcePtr = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
-    parser.ParseStreaming(*sourcePtr, sink, options);
+    parser.Parse(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     REQUIRE(data.Lines().size() == 2);

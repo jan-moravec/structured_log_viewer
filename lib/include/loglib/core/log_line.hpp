@@ -24,6 +24,11 @@
 namespace loglib
 {
 
+namespace internal
+{
+struct MemoryStats;
+} // namespace internal
+
 class LineSource;
 
 /** @brief The physical lines of one multi-line record, first and last included. Both are zero-based line numbers. */
@@ -103,13 +108,6 @@ public:
     void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
     /**
-     * @brief Sets a field by key name. Throws if the key is not in keys.
-     *
-     * Slow, meant for tests and debugging.
-     */
-    void SetValue(const KeyIndex &keys, std::string_view key, const LogValue &value);
-
-    /**
      * @brief The names of the fields of the row, sorted by key id.
      *
      * Slow, meant for tests and debugging. Debug builds assert that every key id is below the size of keys.
@@ -141,14 +139,13 @@ public:
     /** @brief Adds delta to the line id. Used when batch-relative ids become absolute. */
     void ShiftLineId(size_t delta) noexcept;
 
-    /** @brief Heap bytes owned by this row alone. For the memory benchmark. */
-    size_t OwnedMemoryBytes() const;
-
+    /** @brief The number of fields in the row. */
     size_t ValueCount() const noexcept;
 
     /** @brief Adds delta to every OwnedString offset, after the row's strings moved within the source's arena. */
     void RebaseOwnedStringOffsets(uint64_t delta) noexcept;
 
+    /** @brief True if the field for the key is an enumeration cell. */
     bool IsDictRef(KeyId id) const noexcept;
 
     /** @brief The enumeration value id if the field is a DictRef cell, otherwise nullopt. */
@@ -167,6 +164,11 @@ public:
     [[nodiscard]] std::optional<std::string_view> PeekStringView(const loglib::CompactLogValue &slot) const noexcept;
 
 private:
+    friend struct internal::MemoryStats;
+
+    /** @brief Heap bytes owned by this row alone. For the memory benchmark. */
+    size_t OwnedMemoryBytes() const;
+
     /** @brief Replaces the cell for id, or inserts it. May allocate. */
     void SetCompact(KeyId id, loglib::CompactLogValue compact);
 

@@ -3,7 +3,7 @@
  *
  * OpenFileSource turns a path into a FileLineSource that a parser can read. It handles plain files, gzip, bzip2, xz and
  * zstd files, which it unpacks to a temporary copy, and session bundles. LoadFile goes the whole way: it opens the
- * file, detects its format, parses it into a new LogTable the way the GUI and slp do, and finishes type detection.
+ * file, detects its format, parses it into a new LogTable the way the applications do, and finishes type detection.
  *
  * A path is a session bundle when its extension is slvbundle, compared without regard to case. That is the only rule.
  * A bundle must then be a zstd file whose first line is valid bundle metadata, or opening it fails. Any other path is a
@@ -111,7 +111,10 @@ struct LoadResult
 };
 
 /**
- * @brief Opens a file, detects its format and parses it into a new table, as the GUI and slp do.
+ * @brief Opens a file, detects its format and parses it into a new table, as the applications do.
+ *
+ * This is the simplest way to get a table from a path. Use OpenFileSource and a parser directly only to control the
+ * steps in between.
  *
  * Time columns are converted while parsing and type detection is finished before the call returns. The format comes
  * from the head of the file, except for a session bundle, whose rows are always JSON. Throws what OpenFileSource

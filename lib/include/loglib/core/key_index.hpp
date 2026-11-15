@@ -23,12 +23,20 @@
 namespace loglib
 {
 
+namespace internal
+{
+struct MemoryStats;
+} // namespace internal
+
 /** @brief Small integer id for a field key. Ids start at 0, are never reused, and can index arrays kept per key. */
 using KeyId = uint32_t;
 
 inline constexpr KeyId INVALID_KEY_ID = std::numeric_limits<KeyId>::max();
 
-/** @brief The largest key id a row can store: a field keeps its key in 24 bits. GetOrInsert throws beyond it. */
+/**
+ * @brief The largest key id a row can store. A field keeps its key in 24 bits, and GetOrInsert throws LimitError past
+ * this id.
+ */
 inline constexpr KeyId MAX_ROW_KEY_ID = 0xFFFFFFU;
 
 /**
@@ -61,12 +69,6 @@ public:
 
     [[nodiscard]] size_t Size() const noexcept;
 
-    /** @brief All keys in sorted order. Takes the index's lock and builds a new list, so keep it off hot paths. */
-    [[nodiscard]] std::vector<std::string> SortedKeys() const;
-
-    /** @brief Approximate heap bytes used by the index. For the memory benchmark. */
-    [[nodiscard]] size_t EstimatedMemoryBytes() const;
-
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
     /** @brief Test-only call counters compiled in by the unit-test target. */
     static std::atomic<std::size_t> sGetOrInsertCallCount;
@@ -78,6 +80,11 @@ public:
 #endif
 
 private:
+    friend struct internal::MemoryStats;
+
+    /** @brief Approximate heap bytes used by the index. For the memory benchmark. */
+    [[nodiscard]] size_t EstimatedMemoryBytes() const;
+
     struct Impl;
     std::unique_ptr<Impl> mImpl;
 };

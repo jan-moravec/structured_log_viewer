@@ -452,7 +452,7 @@ loglib::StopToken LogModel::AppendStreaming(
         RunParserWorkerWithBoundary(sinkForWorker, [&] {
             const std::unique_ptr<loglib::LogParser> parser = capturedFactory();
             Q_ASSERT(parser);
-            parser->ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
+            parser->Parse(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
         });
     });
 
@@ -539,7 +539,7 @@ loglib::StopToken LogModel::BeginStreaming(
         RunParserWorkerWithBoundary(sinkForWorker, [&] {
             const std::unique_ptr<loglib::LogParser> parser = capturedFactory();
             Q_ASSERT(parser);
-            parser->ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
+            parser->Parse(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
         });
     });
 

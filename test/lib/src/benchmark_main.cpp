@@ -44,7 +44,7 @@ int main(int argc, char **argv)
     bench::RegisterExportBenchmarks();
     bench::RegisterHistogramBucketIndexBenchmarks();
     bench::RegisterJsonBenchmarks();
-    bench::RegisterLogFilterBenchmarks();
+    bench::RegisterRowFilterBenchmarks();
     bench::RegisterLogfmtBenchmarks();
     bench::RegisterMemoryBenchmarks();
     bench::RegisterNetworkBenchmarks();

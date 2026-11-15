@@ -37,7 +37,8 @@ namespace loglib
 namespace internal
 {
 class StableByteArena;
-}
+struct MemoryStats;
+} // namespace internal
 
 /**
  * @brief LineSource for a file that has a fixed size.
@@ -107,7 +108,11 @@ public:
     /** @brief The mapped bytes, or the bytes given to FromBytes. Empty for an empty file. */
     [[nodiscard]] std::span<const char> StableBytes() const noexcept override;
 
-    /** @brief Appends bytes to the owned-string arena, which every line shares. Safe from any thread. */
+    /** @brief Appends bytes to the owned-string arena, which every line shares, and returns their offset. Safe from any
+     * thread. */
+    uint64_t AppendOwnedBytes(std::string_view bytes);
+
+    /** @brief Same as the overload without a line id. A file source ignores the id. */
     uint64_t AppendOwnedBytes(size_t lineId, std::string_view bytes) override;
 
     [[nodiscard]] bool SupportsEviction() const noexcept override;
@@ -152,22 +157,24 @@ public:
      */
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
-    /** @brief Heap bytes held by the line offsets, counting capacity. Used by the memory benchmark. */
-    [[nodiscard]] size_t LineOffsetsMemoryBytes() const noexcept;
-
-    /** @brief Heap bytes reserved by the owned-string arena. */
-    [[nodiscard]] size_t OwnedStringsMemoryBytes() const noexcept;
-
     /**
      * @brief Takes over the memory that rows of this source borrow their fields from. The parser calls it for each
      * batch before the batch's rows reach anyone. Not thread safe: the caller is the serial stage.
      */
     void AdoptFieldArena(FieldArena arena);
 
+private:
+    friend struct internal::MemoryStats;
+
+    /** @brief Heap bytes held by the line offsets, counting capacity. Used by the memory benchmark. */
+    [[nodiscard]] size_t LineOffsetsMemoryBytes() const noexcept;
+
+    /** @brief Heap bytes reserved by the owned-string arena. */
+    [[nodiscard]] size_t OwnedStringsMemoryBytes() const noexcept;
+
     /** @brief Heap bytes of the field arenas this source holds. Used by the memory benchmark. */
     [[nodiscard]] size_t FieldArenasMemoryBytes() const noexcept;
 
-private:
     struct Backing;
     struct InMemoryTag
     {

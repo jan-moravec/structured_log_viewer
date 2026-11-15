@@ -43,7 +43,7 @@ ParseOutcome RunParse(LogTable &table, const LogParser &parser, std::unique_ptr<
         }
     }
     TableSink sink(table);
-    parser.ParseStreaming(sourceRef, sink, std::move(options));
+    parser.Parse(sourceRef, sink, std::move(options));
     return ParseOutcome{
         .errors = sink.TakeErrors(),
         .errorCount = sink.ErrorCount(),

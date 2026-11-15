@@ -41,10 +41,13 @@ public:
      */
     virtual KeyIndex &Keys() = 0;
 
+    /** @brief Called once before the first batch. */
     virtual void OnStarted() = 0;
 
+    /** @brief Takes one batch. The sink owns its rows from here on. */
     virtual void OnBatch(RowBatch batch) = 0;
 
+    /** @brief Called once after the last batch. cancelled is true when a stop was requested. */
     virtual void OnFinished(bool cancelled) = 0;
 
     /**

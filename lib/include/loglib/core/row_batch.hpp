@@ -2,8 +2,8 @@
  * @brief The batch of rows, errors and new keys that a parser hands on.
  *
  * Parsers cut their output into batches. A batch carries the rows, the line offsets of a file, the parse errors and the
- * keys the parser added. The parse module hands each batch to a LogParseSink, the table appends it, and the GUI queues
- * it between threads, so the type lives in core, which all of them may use.
+ * keys the parser added. The parse module hands each batch to a LogParseSink, the table appends it, and an application
+ * can queue it between threads, so the type lives in core, which all of them may use.
  *
  * This is part of the core module.
  */

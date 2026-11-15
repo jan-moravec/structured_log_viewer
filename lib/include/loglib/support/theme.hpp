@@ -35,7 +35,7 @@ enum class ThemeKind : uint8_t
  * @brief How rows of one log level look.
  *
  * Every color is optional, and a missing one is taken from the application's palette. Colors are written as #RRGGBB or
- * #AARRGGBB text, which keeps this header free of any GUI library.
+ * #AARRGGBB text, which keeps this header free of any user interface library.
  */
 struct LevelStyle
 {
@@ -96,7 +96,7 @@ struct ChromeStyle
  */
 struct AppStyle
 {
-    /** @brief The name of a widget style, such as fusion or windows. */
+    /** @brief The name of a user interface style, such as fusion or windows. */
     std::optional<std::string> qtStyle;
     std::optional<std::string> fontFamily;
     std::optional<int> fontSize;
@@ -223,7 +223,7 @@ struct Theme
     friend bool operator==(const Theme &, const Theme &) = default;
 };
 
-/** @brief The number of anchor colors. It is defined here so that tests that do not use Qt can use it. */
+/** @brief The number of anchor colors. It is defined here so that code without a user interface library can use it. */
 inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 
 /**
@@ -242,10 +242,11 @@ inline constexpr std::size_t HIGHLIGHT_PALETTE_SIZE = 16;
  */
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContrast);
 
-/** @brief Reads a theme from JSON. The kind must be light or dark. Throws std::runtime_error on any error. */
+/** @brief Reads a theme from JSON. The kind must be light or dark. Throws FormatError if the text is not valid JSON,
+ * has a key the theme does not define, or has an unknown kind. */
 [[nodiscard]] Theme ParseTheme(std::string_view content);
 
-/** @brief Writes a theme as indented JSON. Throws std::runtime_error if encoding fails. */
+/** @brief Writes a theme as indented JSON. Throws FormatError if encoding fails. */
 [[nodiscard]] std::string SerializeTheme(const Theme &theme);
 
 } // namespace loglib

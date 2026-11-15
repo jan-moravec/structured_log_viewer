@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include "loglib/core/error.hpp"
+
 #include <cstddef>
 #include <cstdio>
 #include <exception>
@@ -24,8 +26,8 @@ namespace loglib::exports
  *
  * Write may buffer, and Finish flushes and completes the output. On success, call Finish once. A sink destroyed without
  * Finish counts as an aborted export and must not leave a partial destination file. Any member may throw
- * std::runtime_error on an I/O error, and StreamSink throws BrokenPipe when the reader has closed its end. A sink must
- * not be used after it threw.
+ * IoError on an I/O error, and StreamSink throws BrokenPipe when the reader has closed its end. After a member threw,
+ * only the destructor may be called. Calling Write or Finish after that, or Write after Finish, is a programming error.
  */
 class ExportSink
 {
@@ -51,7 +53,7 @@ public:
      * @brief Completes the output. Call it once when everything has been written.
      *
      * A FileSink closes its temporary file and renames it onto the destination. A StreamSink flushes the stream it
-     * borrowed and renames nothing. It throws std::runtime_error on failure, and StreamSink throws BrokenPipe when the
+     * borrowed and renames nothing. It throws IoError on failure, and StreamSink throws BrokenPipe when the
      * reader has gone away.
      */
     virtual void Finish() = 0;
@@ -68,7 +70,7 @@ class FileSink final : public ExportSink
 public:
     /**
      * @brief Opens the temporary file for buffered writing. The destination is the path the file gets after a
-     * successful Finish.
+     * successful Finish. Throws IoError if the file cannot be opened.
      */
     explicit FileSink(std::filesystem::path destination);
 
@@ -112,7 +114,7 @@ private:
 /**
  * @brief Thrown when a write reaches a pipe or socket that the reader has closed.
  *
- * It is not a loglib::Error or a std::runtime_error, so a general I/O handler does not report it. Callers that treat a
+ * It does not derive from loglib::Error, so a general I/O handler does not report it. Callers that treat a
  * closed reader as success, as in slp query piped into head, catch it and exit quietly.
  */
 class BrokenPipe : public std::exception
@@ -133,7 +135,8 @@ public:
 class StreamSink final : public ExportSink
 {
 public:
-    /** @brief Borrows an open stream for the lifetime of the sink. The caller keeps ownership. */
+    /** @brief Borrows an open stream for the lifetime of the sink. The caller keeps ownership. The stream must not be
+     * null. */
     explicit StreamSink(std::FILE *file);
 
     /** @brief Leaves the borrowed stream open. */
@@ -148,7 +151,7 @@ public:
 
     /**
      * @brief Flushes the borrowed stream without closing it. Calling it again is harmless. It throws BrokenPipe when
-     * the reader has closed its end, and std::runtime_error for any other flush failure.
+     * the reader has closed its end, and IoError for any other flush failure.
      */
     void Finish() override;
 

@@ -228,7 +228,7 @@ std::vector<double> RunLatencyOnce()
     options.stopToken = stopSource.GetToken();
 
     JsonParser parser;
-    std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(*streamPtr, sink, std::move(options)); });
 
     // Open the file with the C stdio API so we can fflush per line; the C++ std::ofstream flush is buffered by the
     // streambuf even after flush() calls in some implementations. fflush(fp) issues the _write syscall

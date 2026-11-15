@@ -27,11 +27,11 @@ namespace bench
 namespace
 {
 
-// LogfmtParser::ParseStreaming adapter for RegisterStreaming. Free function (rather than a ParserStreamFn
+// LogfmtParser::Parse adapter for RegisterStreaming. Free function (rather than a ParserStreamFn
 // global) to avoid bugprone-throwing-static-initialization from std::function's ctor.
 void LogfmtStream(FileLineSource &source, LogParseSink &sink, const ParserOptions &options)
 {
-    LogfmtParser{}.ParseStreaming(source, sink, options);
+    LogfmtParser{}.Parse(source, sink, options);
 }
 
 } // namespace

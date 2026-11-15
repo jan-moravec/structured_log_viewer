@@ -108,6 +108,7 @@ struct LeafRule
 // NOLINTBEGIN(misc-non-private-member-variables-in-classes,misc-no-recursion)
 struct FilterExpression
 {
+    /** @brief A single rule. */
     struct Leaf
     {
         LeafRule rule;
@@ -115,6 +116,7 @@ struct FilterExpression
         friend bool operator==(const Leaf &, const Leaf &) = default;
     };
 
+    /** @brief Accepts a row when every child does. No children accepts every row. */
     struct And
     {
         std::vector<FilterExpression> children;
@@ -122,6 +124,7 @@ struct FilterExpression
         friend bool operator==(const And &, const And &) = default;
     };
 
+    /** @brief Accepts a row when any child does. No children accepts no row. */
     struct Or
     {
         std::vector<FilterExpression> children;
@@ -186,6 +189,7 @@ struct FilterExpression
     return asAnd != nullptr && asAnd->children.empty();
 }
 
+/** @brief Builders for the node kinds of a FilterExpression, so that callers do not set the variant by hand. */
 [[nodiscard]] inline FilterExpression MakeLeaf(LeafRule rule)
 {
     FilterExpression expr;

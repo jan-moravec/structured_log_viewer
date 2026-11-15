@@ -1,4 +1,5 @@
 #include "loglib/core/key_index.hpp"
+#include "loglib/core/error.hpp"
 
 #include "loglib/core/transparent_string_hash.hpp"
 
@@ -12,7 +13,6 @@
 #include <deque>
 #include <mutex>
 #include <shared_mutex>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -43,7 +43,7 @@ struct KeyIndex::Impl
     std::atomic<size_t> size{0};
 
     /**
-     * Guards the reverse list against KeyOf and SortedKeys while a key is added. The strings do not move, but indexing
+     * Guards the reverse list against KeyOf while a key is added. The strings do not move, but indexing
      * a deque reads its block map, which an append can reallocate.
      */
     mutable std::shared_mutex reverseMutex;
@@ -91,7 +91,7 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
     // row stores a key id in 24 bits, so ids stop at MAX_ROW_KEY_ID.
     if (mImpl->reverse.size() > MAX_ROW_KEY_ID)
     {
-        throw std::length_error("A log can hold at most 16777216 distinct keys.");
+        throw LimitError("A log can hold at most 16777216 distinct keys.");
     }
     const auto id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
@@ -118,8 +118,8 @@ KeyId KeyIndex::Find(std::string_view key) const
 
 std::string_view KeyIndex::KeyOf(KeyId id) const
 {
-    // Shared lock excludes `GetOrInsert`'s `emplace_back` from racing with
-    // `operator[]`. The returned view remains valid after release because
+    // Shared lock excludes GetOrInsert's emplace_back from racing with
+    // operator[]. The returned view remains valid after release because
     // deque element addresses are stable across inserts.
     const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
     return mImpl->reverse[id];
@@ -128,14 +128,6 @@ std::string_view KeyIndex::KeyOf(KeyId id) const
 size_t KeyIndex::Size() const noexcept
 {
     return mImpl->size.load(std::memory_order_acquire);
-}
-
-std::vector<std::string> KeyIndex::SortedKeys() const
-{
-    const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
-    std::vector<std::string> result(mImpl->reverse.begin(), mImpl->reverse.end());
-    std::ranges::sort(result);
-    return result;
 }
 
 size_t KeyIndex::EstimatedMemoryBytes() const
@@ -159,7 +151,7 @@ size_t KeyIndex::EstimatedMemoryBytes() const
     }
     {
         const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
-        // `std::deque` typically uses fixed-size chunks; approximate by the
+        // std::deque typically uses fixed-size chunks; approximate by the
         // string objects' size. The chunk-pointer map overhead is negligible
         // relative to the strings themselves for any realistic key count.
         bytes += mImpl->reverse.size() * sizeof(std::string);

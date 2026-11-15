@@ -53,7 +53,7 @@
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/query/column_projection.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/support/tzdata_search.hpp>
@@ -4766,7 +4766,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
                              const loglib::StopToken &stopToken
                          ) mutable {
         options.stopToken = stopToken;
-        parser->ParseStreaming(*fileSourcePtr, *sink, options);
+        parser->Parse(*fileSourcePtr, *sink, options);
     };
 
     if (isFirstFileInSession)

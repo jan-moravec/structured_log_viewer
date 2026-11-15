@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "parse_only.hpp"
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -37,7 +38,7 @@ TEST_CASE(
     CHECK(std::get<std::string>(data.Lines()[0].GetValue(data.Keys(), "key1")) == "value1");
     CHECK(std::get<int64_t>(data.Lines()[1].GetValue(data.Keys(), "key2")) == 42);
 
-    const auto sortedKeys = data.SortedKeys();
+    const auto sortedKeys = SortedKeys(data);
     REQUIRE(sortedKeys.size() == 2);
     CHECK(sortedKeys[0] == "key1");
     CHECK(sortedKeys[1] == "key2");

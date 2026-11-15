@@ -62,7 +62,7 @@ public:
     {
     };
 
-    static void ParseStreaming(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
+    static void Parse(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
     {
         FileLineSource *sourcePtr = &source;
         const char *fileBegin = source.StableBytes().data();
@@ -230,7 +230,7 @@ public:
     {
     };
 
-    static void ParseStreaming(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
+    static void Parse(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
     {
         FileLineSource *sourcePtr = &source;
         const char *fileBegin = source.StableBytes().data();
@@ -558,7 +558,7 @@ TEST_CASE("Mock parser: single sub-batchSize file does not overshoot fileEnd", "
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -581,7 +581,7 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
 
         CollectingSink sink;
         FileLineSource source(fixture.Path());
-        KeyValueLineParser::ParseStreaming(source, sink, options);
+        KeyValueLineParser::Parse(source, sink, options);
 
         CHECK(sink.startedCount == 1);
         CHECK(sink.finishedCount == 1);
@@ -602,7 +602,7 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
 
         CollectingSink sink;
         FileLineSource source(fixture.Path());
-        KeyValueLineParser::ParseStreaming(source, sink, options);
+        KeyValueLineParser::Parse(source, sink, options);
 
         CHECK(sink.startedCount == 1);
         CHECK(sink.finishedCount == 1);
@@ -638,7 +638,7 @@ TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(!sink.batches.empty());
@@ -666,7 +666,7 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -707,7 +707,7 @@ TEST_CASE("Mock parser: per-line errors propagate through RowBatch::errors", "[m
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -761,7 +761,7 @@ TEST_CASE(
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(!sink.batches.empty());
@@ -822,7 +822,7 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     options.stopToken = sink.stop.GetToken();
 
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE(sink.cancelled);
     const auto latency = sink.finishedAt - sink.requestedAt;
@@ -862,7 +862,7 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     size_t promoted = 0;
     size_t totalLines = 0;
@@ -905,7 +905,7 @@ TEST_CASE(
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
+    MultilineKeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(!sink.batches.empty());
@@ -964,7 +964,7 @@ TEST_CASE(
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
+    MultilineKeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -1014,7 +1014,7 @@ TEST_CASE(
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
+    MultilineKeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -1049,7 +1049,7 @@ TEST_CASE("Mock parser (multiline): final multi-line record commits at EOF", "[m
 
     CollectingSink sink;
     FileLineSource source(fixture.Path());
-    MultilineKeyValueLineParser::ParseStreaming(source, sink, options);
+    MultilineKeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -1114,7 +1114,7 @@ TEST_CASE("Static pipeline limits its own threads and not the process", "[mock_p
 
     ConcurrencyProbeSink sink;
     FileLineSource source(fixture.Path());
-    KeyValueLineParser::ParseStreaming(source, sink, options);
+    KeyValueLineParser::Parse(source, sink, options);
 
     REQUIRE(sink.probed);
     CHECK(sink.insideConcurrency == 1);

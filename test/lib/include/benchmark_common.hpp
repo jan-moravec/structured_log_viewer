@@ -20,6 +20,7 @@
 #include "table_fixture.hpp"
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
+#include <loglib/core/internal/memory_stats.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/output/file_loading.hpp>
@@ -304,7 +305,7 @@ inline StructuralBytesWithEnums ComputeStructuralBytesWithEnums(const loglib::Lo
 {
     StructuralBytesWithEnums result;
     static_cast<StructuralBytes &>(result) = ComputeStructuralBytes(table);
-    result.enumDictionaries = table.EnumDictionaries().EstimatedMemoryBytes();
+    result.enumDictionaries = loglib::internal::MemoryStats::EnumDictionariesBytes(table.EnumDictionaries());
     return result;
 }
 
@@ -396,15 +397,15 @@ inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguratio
 
 /**
  * Parser-agnostic streaming entry point: matches the static
- * ParseStreaming overload shared by every parser, so benchmarks can plug
- * in JsonParser::ParseStreaming, LogfmtParser::ParseStreaming, etc.
+ * Parse overload shared by every parser, so benchmarks can plug
+ * in JsonParser::Parse, LogfmtParser::Parse, etc.
  */
 using ParserStreamFn =
     std::function<void(loglib::FileLineSource &, loglib::LogParseSink &, const loglib::ParserOptions &)>;
 
 /**
  * Results of one end-to-end streaming run. The timed window covers
- * LogTable construction + mmap + ParseStreaming
+ * LogTable construction + mmap + Parse
  * + ~LogTable. Sink stats and row count are copied out before the inner
  * scope closes so the caller can inspect them after the timer stops.
  */

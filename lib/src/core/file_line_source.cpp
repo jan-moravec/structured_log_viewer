@@ -218,10 +218,15 @@ std::span<const char> FileLineSource::StableBytes() const noexcept
     return {mData, mSize};
 }
 
-uint64_t FileLineSource::AppendOwnedBytes(size_t /*lineId*/, std::string_view bytes)
+uint64_t FileLineSource::AppendOwnedBytes(std::string_view bytes)
 {
     // One arena is shared by every line.
     return mOwnedStrings->Append(bytes);
+}
+
+uint64_t FileLineSource::AppendOwnedBytes(size_t /*lineId*/, std::string_view bytes)
+{
+    return AppendOwnedBytes(bytes);
 }
 
 bool FileLineSource::SupportsEviction() const noexcept

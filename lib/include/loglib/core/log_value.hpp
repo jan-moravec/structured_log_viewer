@@ -43,12 +43,8 @@ struct LogValueTrustView
 {
 };
 
+/** @brief The text of a string or string_view value, or nullopt for any other kind. The view points into the value. */
 std::optional<std::string_view> AsStringView(const LogValue &value);
-bool HoldsString(const LogValue &value);
-LogValue ToOwnedLogValue(const LogValue &value);
-
-/** @brief Treats string_view and string alternatives as equal when bytes match. */
-bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs);
 
 /**
  * @brief Returns the value as microseconds since the epoch if it can be a time, otherwise nullopt.

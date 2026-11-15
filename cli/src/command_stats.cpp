@@ -14,9 +14,9 @@
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
 
 #include <algorithm>

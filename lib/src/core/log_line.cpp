@@ -8,7 +8,6 @@
 #include <limits>
 #include <memory>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -28,37 +27,11 @@ std::optional<std::string_view> AsStringView(const LogValue &value)
     return std::nullopt;
 }
 
-bool HoldsString(const LogValue &value)
-{
-    return std::holds_alternative<std::string_view>(value) || std::holds_alternative<std::string>(value);
-}
-
-LogValue ToOwnedLogValue(const LogValue &value)
-{
-    if (const auto *view = std::get_if<std::string_view>(&value))
-    {
-        return std::string(*view);
-    }
-    return value;
-}
-
-bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
-{
-    // `string_view` and `string` count as the same kind for equality.
-    const auto lhsString = AsStringView(lhs);
-    const auto rhsString = AsStringView(rhs);
-    if (lhsString.has_value() || rhsString.has_value())
-    {
-        return lhsString.has_value() && rhsString.has_value() && *lhsString == *rhsString;
-    }
-    return lhs == rhs;
-}
-
 std::optional<int64_t> AsEpochMicroseconds(const LogValue &value)
 {
     // Slot acceptance set must stay in lockstep with
-    // `TimeRangeRowPredicate`: `TimeStamp`, `int64_t`, and `uint64_t`
-    // up to `int64_t::max`. Out-of-range `uint64_t` returns `nullopt`
+    // TimeRangeRowPredicate: TimeStamp, int64_t, and uint64_t
+    // up to int64_t::max. Out-of-range uint64_t returns nullopt
     // rather than wrapping.
     return std::visit(
         [](const auto &alt) -> std::optional<int64_t> {
@@ -156,7 +129,7 @@ loglib::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t lineId
 
 } // namespace
 
-// By-value `sortedValues` lets the parser cheaply move its scratch vector into the line; the body
+// By-value sortedValues lets the parser cheaply move its scratch vector into the line; the body
 // only reads it, but a const-ref signature would force the hot parser path to keep ownership of an
 // already-spent buffer.
 LogLine::LogLine(
@@ -186,7 +159,7 @@ LogLine::LogLine(std::vector<loglib::CompactLogValue> sortedValues, LineSource &
 #endif
     assert(lineId <= CompactLineFields::MAX_SPARE);
     mValues.SetSpare(lineId);
-    // Exact-fit copy keeps each LogLine at `size * 16` bytes.
+    // Exact-fit copy keeps each LogLine at size * 16 bytes.
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
 }
 
@@ -303,18 +276,6 @@ LogValue LogLine::GetValue(const KeyIndex &keys, std::string_view key) const
     return GetValue(id);
 }
 
-void LogLine::SetValue(const KeyIndex &keys, std::string_view key, const LogValue &value)
-{
-    const KeyId id = keys.Find(key);
-    if (id == INVALID_KEY_ID)
-    {
-        throw std::runtime_error(
-            "LogLine::SetValue(string): key '" + std::string(key) + "' is not registered in the KeyIndex"
-        );
-    }
-    SetValue(id, value);
-}
-
 std::vector<std::string> LogLine::GetKeys(const KeyIndex &keys) const
 {
     std::vector<std::string> names;
@@ -343,7 +304,7 @@ LogMap LogLine::Values(const KeyIndex &keys) const
 void LogLine::SetValue(KeyId id, const LogValue &value)
 {
 #ifndef NDEBUG
-    // Untagged setter is for owned values; views need `LogValueTrustView`.
+    // Untagged setter is for owned values; views need LogValueTrustView.
     assert(!std::holds_alternative<std::string_view>(value));
 #endif
     SetValue(id, value, LogValueTrustView{});

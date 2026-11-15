@@ -308,14 +308,14 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
 
   Recognised **value aliases** (case-insensitive):
 
-  - `Trace`: `trace`, `trc`, `t`, `finer`, `finest`, `silly`
-  - `Debug`: `debug`, `dbg`, `d`, `verbose`, `vrb`, `v`, `fine`
+  - `Trace`: `trace`, `trc`, `t`, `finer`, `finest`, `silly`, `verbose`, `vrb`, `v`
+  - `Debug`: `debug`, `dbg`, `d`, `fine`
   - `Info`: `info`, `inf`, `i`, `information`, `informational`, `notice`
   - `Warn`: `warn`, `wrn`, `w`, `warning`
   - `Error`: `error`, `err`, `e`, `severe`
   - `Fatal`: `fatal`, `ftl`, `f`, `critical`, `crit`, `emerg`, `emergency`, `panic`, `alert`, `fault`
 
-  > **Why `verbose` / `vrb` / `v` map to `Debug`, not `Trace`.** The original mapping landed Verbose on Debug; flipping it now would change the canonical level (and the sort key) for any saved configuration relying on the prior behaviour. Serilog and Android treat Verbose as below Debug, but we keep the old mapping for backwards compatibility.
+  > **Why `verbose` / `vrb` / `v` map to `Trace`, not `Debug`.** Serilog and Android treat Verbose as below Debug, and the library has a Trace level.
   >
   > **Numeric levels (Bunyan/Pino `10/20/30/40/50/60`, syslog `0..7`, ...) are *not* built in.** The two conventions disagree, so picking one would silently mis-classify the other. Map them per-column via `levelMapping` (e.g. `[["10","Trace"], ["20","Debug"], ["30","Info"], ["40","Warn"], ["50","Error"], ["60","Fatal"]]`). This only works when the producer emits the value as a JSON string (`"level": "30"`); a numeric JSON value (`"level": 30`) arrives as an integer and never reaches the dictionary.
   >

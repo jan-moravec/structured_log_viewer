@@ -251,7 +251,7 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     }
     joined.append(leadingContinuationBytes);
 
-    const uint64_t offset = source.AppendOwnedBytes(heldLine.LineId(), joined);
+    const uint64_t offset = source.AppendOwnedBytes(joined);
     slot->tag = CompactTag::OwnedString;
     slot->payload = offset;
     slot->aux = static_cast<uint32_t>(joined.size());
@@ -435,7 +435,7 @@ void RunStaticParserPipelineBody(
         // single-threaded.
         if (!parsed.ownedStringsArena.empty())
         {
-            const uint64_t delta = source.AppendOwnedBytes(nextLineNumber, parsed.ownedStringsArena);
+            const uint64_t delta = source.AppendOwnedBytes(parsed.ownedStringsArena);
             for (LogLine &line : parsed.lines)
             {
                 line.RebaseOwnedStringOffsets(delta);

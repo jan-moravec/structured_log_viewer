@@ -8,19 +8,19 @@
 // `RebindColumns` after schema growth, `ClearMatches`, key-based
 // identity survives `MoveColumn`, Boolean / Number predicates,
 // and empty-needle rejection. Also hosts a focused regression
-// test for the shared `CompileExpression` path (`leaf_rule_compile`).
+// test for the shared `CompileExpression` path (`filter_compile`).
 
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
@@ -87,7 +87,7 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     loglib::ParserOptions options;
     options.stopToken = stopToken;
     options.threads = 1;
-    loglib::JsonParser{}.ParseStreaming(*parseSource, *model.Sink(), options);
+    loglib::JsonParser{}.Parse(*parseSource, *model.Sink(), options);
 
     const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
     QVERIFY2(finished, "streamingFinished must arrive within the timeout");

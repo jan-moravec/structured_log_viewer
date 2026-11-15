@@ -8,6 +8,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <iterator>
 #include <memory>
@@ -133,7 +134,7 @@ ParseResult ParseSource(const LogParser &parser, std::unique_ptr<FileLineSource>
     FileLineSource *sourceRaw = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
 
-    parser.ParseStreaming(*sourceRaw, sink, ParserOptions{});
+    parser.Parse(*sourceRaw, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
     std::vector<ParseError> errors = sink.TakeErrors();
@@ -163,5 +164,22 @@ ParseResult ParseFile(const std::filesystem::path &file)
     return ParseFile(*parser, file);
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
+
+std::vector<std::string> SortedKeys(const KeyIndex &keys)
+{
+    std::vector<std::string> sorted;
+    sorted.reserve(keys.Size());
+    for (KeyId id = 0; id < keys.Size(); ++id)
+    {
+        sorted.emplace_back(keys.KeyOf(id));
+    }
+    std::ranges::sort(sorted);
+    return sorted;
+}
+
+std::vector<std::string> SortedKeys(const LogData &data)
+{
+    return SortedKeys(data.Keys());
+}
 
 } // namespace loglib

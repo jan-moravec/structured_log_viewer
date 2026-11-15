@@ -99,11 +99,8 @@ bool MatchLineAndEmit(
     KeyId textOnlyKey
 )
 {
-    // Self-contained contract: callers previously had to clear
-    // `out` and `errorOut` themselves — brittle if any future
-    // caller ever forgets on an error iteration. Clearing here
-    // is a no-op for the current hot paths (both static and
-    // streaming clear locally) but doesn't trust the call site.
+    // Clear the outputs here, so a caller that forgets to clear them between rows cannot leak the previous row's
+    // fields.
     out.clear();
     errorOut.clear();
 
@@ -156,7 +153,7 @@ bool MatchLineAndEmit(
         const PCRE2_SIZE endOff = ovector[(2 * groupIndex) + 1];
         if (startOff == PCRE2_UNSET || endOff == PCRE2_UNSET || endOff < startOff)
         {
-            // Optional groups (e.g. `(?<pid>\d+)?`) that did not
+            // Optional groups (e.g. (?<pid>\d+)?) that did not
             // participate are simply absent from the row; lookups
             // return monostate.
             continue;
@@ -241,12 +238,12 @@ void DecodeRegexBatch(
     const CompiledPattern *headerAnchor
 )
 {
-    (void)keys; // Schema is pre-interned in `columnKeys`.
+    (void)keys; // Schema is pre-interned in columnKeys.
     parsed.batchIndex = batch.batchIndex;
 
     EnsureWorkerMatchData(worker.user, compiled);
 
-    // `columnKeys` follows the schema's group-index sort, so its last
+    // columnKeys follows the schema's group-index sort, so its last
     // entry is the final named group in pattern source order.
     const KeyId continuationTargetKey =
         (continuationMode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID;
@@ -290,7 +287,7 @@ void DecodeRegexBatch(
         std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
         line = StripCr(line);
         // Strip a leading UTF-8 BOM only when this line starts at
-        // file byte 0. Keeps `^...` anchors in user / built-in
+        // file byte 0. Keeps ^... anchors in user / built-in
         // patterns binding after a BOM-prefixed editor save.
         // Stage A emits batches on line boundaries, so only the
         // first line of batch 0 can ever match here.
@@ -300,7 +297,7 @@ void DecodeRegexBatch(
         }
 
         // Pad by 1 on an unterminated last line so the final
-        // byte isn't lost on `FileLineSource::RawLine` round-trips
+        // byte isn't lost on FileLineSource::RawLine round-trips
         // (matches the CSV pipeline).
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1U : 0U);
         parsed.localLineOffsets.push_back(nextOffset);
@@ -409,7 +406,7 @@ void DecodeRegexBatch(
             );
         }
 
-        // `LogLine` requires KeyId order, unlike source-order captures.
+        // LogLine requires KeyId order, unlike source-order captures.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
 
         LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
@@ -501,7 +498,7 @@ public:
         out.clear();
         outOwnedArena.clear();
         // Strip a leading UTF-8 BOM only on the first line of the
-        // stream. The flag latches so a literal `\xEF\xBB\xBF`
+        // stream. The flag latches so a literal \xEF\xBB\xBF
         // inside a later line stays intact.
         if (!mSawFirstLine)
         {
@@ -511,7 +508,7 @@ public:
         if (line.empty())
         {
             // The streaming loop already filters blank lines;
-            // this branch is defensive. `Skip` (no row, no error)
+            // this branch is defensive. Skip (no row, no error)
             // is the right result if it's ever reached.
             return internal::LineDecodeResult::Skip;
         }
@@ -607,7 +604,7 @@ RegexParser::RegexParser(std::string pattern, ContinuationMode continuationMode,
 {
 }
 
-void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void RegexParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::string &pattern = mPattern;
     if (pattern.empty())
@@ -657,7 +654,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
     internal::RunStreamingParseLoop(source, decoder, sink, options, columnKeys);
 }
 
-void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void RegexParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     // An empty pattern fails with the same error as the streaming overload.
     const std::string &pattern = mPattern;
@@ -675,7 +672,7 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
 
     // Compile once on the orchestrator thread; the pipeline
     // shares the compiled code read-only across Stage B workers.
-    // `RunStaticParserPipeline` runs synchronously (joins every
+    // RunStaticParserPipeline runs synchronously (joins every
     // TBB worker before returning) so a stack value captured by
     // reference outlives all concurrent uses — no shared_ptr or
     // heap allocation needed.

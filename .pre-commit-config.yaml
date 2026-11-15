@@ -99,8 +99,8 @@ repos:
         pass_filenames: false
         files: '^(app|test/app|lib)/.*\.(h|hpp|cpp)$'
       - id: loglib-docs
-        name: Check loglib header comments
+        name: Check loglib comments
         language: python
         entry: python scripts/check-loglib-docs.py
         pass_filenames: false
-        files: '^(lib/include/.*\.hpp|scripts/check-loglib-docs\.py)$'
+        files: '^(lib/(include/.*\.hpp|src/.*\.(cpp|hpp))|scripts/check-loglib-docs\.py)$'

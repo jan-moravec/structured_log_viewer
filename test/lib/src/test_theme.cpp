@@ -1,3 +1,4 @@
+#include <loglib/core/error.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/support/theme.hpp>
 
@@ -47,10 +48,10 @@ TEST_CASE("Theme JSON round-trip preserves all fields", "[Theme]")
     CHECK(reloaded.app.fontSize == original.app.fontSize);
 }
 
-TEST_CASE("Theme parses unknown keys without throwing", "[Theme]")
+TEST_CASE("Theme parse rejects an unknown key and names it", "[Theme]")
 {
     constexpr std::string_view JSON = R"({
-        "name": "Forward Compat",
+        "name": "Unknown Key",
         "kind": "light",
         "futureField": 42,
         "levels": { "Info": { "foreground": "#222222" } },
@@ -58,11 +59,15 @@ TEST_CASE("Theme parses unknown keys without throwing", "[Theme]")
         "app": {}
     })";
 
-    const Theme parsed = ParseTheme(JSON);
-    CHECK(parsed.name == "Forward Compat");
-    CHECK(parsed.kind == ThemeKind::Light);
-    REQUIRE(parsed.levels.contains("Info"));
-    CHECK(parsed.levels.at("Info").foreground == "#222222");
+    try
+    {
+        (void)ParseTheme(JSON);
+        FAIL("ParseTheme accepted an unknown key");
+    }
+    catch (const FormatError &error)
+    {
+        CHECK_THAT(std::string(error.what()), Catch::Matchers::ContainsSubstring("futureField"));
+    }
 }
 
 TEST_CASE("Theme parse rejects bad kind value", "[Theme]")
@@ -75,7 +80,7 @@ TEST_CASE("Theme parse rejects bad kind value", "[Theme]")
         "app": {}
     })";
 
-    CHECK_THROWS_AS(ParseTheme(JSON), std::runtime_error);
+    CHECK_THROWS_AS(ParseTheme(JSON), FormatError);
 }
 
 TEST_CASE("StyleForLevel returns default when level missing", "[Theme]")

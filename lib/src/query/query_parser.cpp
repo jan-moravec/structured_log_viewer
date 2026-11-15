@@ -172,7 +172,7 @@ private:
                 continue;
             }
             // Implicit-AND: only if the next token can start an atom.
-            // Terminators (`)` `]` `,` End `OR`) close the chain.
+            // Terminators () ] , End OR) close the chain.
             switch (mLookahead.kind)
             {
             case TokenKind::Ident:
@@ -387,9 +387,9 @@ private:
             return FinishInLeaf(std::move(rule));
         case TokenKind::KwNot:
         {
-            // Sugar for `column NOT IN [...]` -> `NOT (column IN [...])`.
-            // Requires `IN` immediately after `NOT`; anything else is a
-            // parse error so `NOT` at the leaf position stays unambiguous.
+            // Sugar for column NOT IN [...] -> NOT (column IN [...]).
+            // Requires IN immediately after NOT; anything else is a
+            // parse error so NOT at the leaf position stays unambiguous.
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
@@ -510,7 +510,7 @@ private:
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishCompareLeaf(LeafRule rule, const Token &opTok)
     {
-        // `col {>,>=,<,<=} <ISO timestamp | number>`. Type picked
+        // col {>,>=,<,<=} <ISO timestamp | number>. Type picked
         // from the literal shape.
         std::string valueText;
         if (mLookahead.kind == TokenKind::Number || mLookahead.kind == TokenKind::Ident ||
@@ -571,8 +571,8 @@ private:
         else
         {
             rule.type = LeafRule::Type::Number;
-            // Strict `>`/`<` -> use the ULP-adjacent double via
-            // `nextafter` so the inclusive-range predicate still
+            // Strict >/< -> use the ULP-adjacent double via
+            // nextafter so the inclusive-range predicate still
             // expresses "strictly greater / less".
             switch (opTok.kind)
             {
@@ -608,12 +608,12 @@ private:
         {
             return std::unexpected(ok.error());
         }
-        // Two shapes: `[a, b, c]` (Enumeration/Boolean list) or
-        // `[min..max]` (Numeric/Time range). Peek for `..` to
+        // Two shapes: [a, b, c] (Enumeration/Boolean list) or
+        // [min..max] (Numeric/Time range). Peek for .. to
         // pick between them.
         if (mLookahead.kind == TokenKind::DotDot)
         {
-            // `[..max]`
+            // [..max]
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
@@ -638,9 +638,8 @@ private:
         }
         else if (mLookahead.kind == TokenKind::RBracket)
         {
-            // Reject `col in []`: it used to compile to nothing
-            // (silent match-all) and hit the UI with an empty
-            // payload. Surface it as an underlined parse error.
+            // Reject col in []: an empty list would compile to nothing, which matches every row. Report it as a parse
+            // error instead.
             QueryParseError err;
             err.offset = mLookahead.offset;
             err.message = "value list cannot be empty";
@@ -656,7 +655,7 @@ private:
 
         if (mLookahead.kind == TokenKind::DotDot)
         {
-            // `[a..` -> range with a lower bound.
+            // [a.. -> range with a lower bound.
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
@@ -688,7 +687,7 @@ private:
             err.message = "expected ']' to close range";
             return std::unexpected(err);
         }
-        // Reject `col in [..]` for the same reason as `[]`.
+        // Reject col in [..] for the same reason as [].
         if (!firstTok.has_value() && !secondTok.has_value())
         {
             QueryParseError err;
@@ -736,10 +735,10 @@ private:
             err.message = "range upper bound must be a number or ISO timestamp";
             return std::unexpected(err);
         }
-        // Both diagnostics below fire only when `secondTok` was
+        // Both diagnostics below fire only when secondTok was
         // successfully classified (its parsed value populated
-        // `tsMax` / `numMax`), so its offset is always available.
-        // `value_or` keeps clang-tidy's bugprone-unchecked-optional
+        // tsMax / numMax), so its offset is always available.
+        // value_or keeps clang-tidy's bugprone-unchecked-optional
         // -access analysis happy without adding a branch clang can
         // constant-fold away.
         const auto secondOffset = secondTok.has_value() ? secondTok->offset : std::size_t{0};
@@ -788,9 +787,9 @@ private:
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishListLeaf(LeafRule rule, const Token &firstTok)
     {
-        // All-boolean list (`[true, false]`) is the printer's wire
-        // form for `Type::Boolean`; detect that so the round-trip
-        // preserves the type. Mixed lists stay `Enumeration`.
+        // All-boolean list ([true, false]) is the printer's wire
+        // form for Type::Boolean; detect that so the round-trip
+        // preserves the type. Mixed lists stay Enumeration.
         const auto isBoolKind = [](TokenKind k) { return k == TokenKind::True || k == TokenKind::False; };
         bool allBool = isBoolKind(firstTok.kind);
         rule.filterValues.push_back(firstTok.text);
@@ -855,8 +854,8 @@ private:
         else if (rule.filterValues.size() == 1)
         {
             // Single-item list: if the value parses as a number,
-            // demote to `Type::Number` (min==max) so `col IN [42]`
-            // behaves like `col = 42` on numeric columns instead of
+            // demote to Type::Number (min==max) so col IN [42]
+            // behaves like col = 42 on numeric columns instead of
             // silently matching zero rows via the enum fallback.
             // ISO timestamps get the same treatment for symmetry.
             const std::string &only = rule.filterValues.front();

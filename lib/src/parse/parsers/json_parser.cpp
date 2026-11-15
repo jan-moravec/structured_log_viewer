@@ -136,8 +136,8 @@ loglib::CompactLogValue ExtractStringValue(
 {
     // The string_view fast path is only safe when simdjson iterates
     // over the mmap; padded-scratch fallback views dangle on the next
-    // line. `raw_json_token()` / `raw_json()` source-aliasing is pinned
-    // to simdjson v4.6.3 — re-verify on bump (the `[allocations]`
+    // line. raw_json_token() / raw_json() source-aliasing is pinned
+    // to simdjson v4.6.3 — re-verify on bump (the [allocations]
     // benchmark's fast-path fraction is the regression signal).
     if (sourceIsStable)
     {
@@ -156,8 +156,8 @@ loglib::CompactLogValue ExtractStringValue(
     if (!value.get_string().get(stringValue))
     {
         // Padded-scratch fallback: the view aliases the worker's
-        // scratch buffer, so `MakeStringCompact` falls through to the
-        // `OwnedString` arena path.
+        // scratch buffer, so MakeStringCompact falls through to the
+        // OwnedString arena path.
         return MakeStringCompact(stringValue, fileBegin, fileSize, ownedArena);
     }
     return loglib::CompactLogValue::MakeMonostate();
@@ -534,8 +534,8 @@ void DecodeJsonBatch(
             line.remove_suffix(1);
         }
 
-        // `RawLine` subtracts 1 (the '\n'); for an unterminated final
-        // line push `fileSize + 1` so we don't lop off the last char.
+        // RawLine subtracts 1 (the '\n'); for an unterminated final
+        // line push fileSize + 1 so we don't lop off the last char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
 
@@ -616,15 +616,15 @@ void DecodeJsonBatch(
             }
 
             // 0-based intra-batch offset; Stage C shifts by the
-            // running cursor so `FileLineSource::RawLine(LineId())` indexes
-            // `mLineOffsets` correctly. `relativeLineNumber` stays
+            // running cursor so FileLineSource::RawLine(LineId()) indexes
+            // mLineOffsets correctly. relativeLineNumber stays
             // 1-based for human-facing error messages.
             LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 
             // Inline promotion: values are still hot in L1.
-            // `OwnedString` payloads still reference the per-batch
+            // OwnedString payloads still reference the per-batch
             // arena (Stage C rebases later), so pass it explicitly.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
         }
@@ -726,7 +726,7 @@ public:
             auto objectValue = object.value();
             // sourceIsStable=false: every string is copied into the
             // owned arena. fileBegin/fileSize=0 prevents
-            // `MakeStringCompact` from mistaking a padded-buffer view
+            // MakeStringCompact from mistaking a padded-buffer view
             // for an mmap slice.
             simdjson::error_code parseError = simdjson::SUCCESS;
             ParseJsonLine(
@@ -768,13 +768,13 @@ static_assert(
 
 } // namespace
 
-void JsonParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
+void JsonParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     JsonLineDecoder decoder;
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
-void JsonParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
+void JsonParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::span<const char> bytes = source.StableBytes();
     const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;

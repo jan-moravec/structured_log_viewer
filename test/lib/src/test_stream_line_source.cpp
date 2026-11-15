@@ -1,6 +1,7 @@
 #include "common.hpp"
 
 #include <loglib/core/bytes_producer.hpp>
+#include <loglib/core/internal/memory_stats.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/stream_line_source.hpp>
 
@@ -232,13 +233,13 @@ TEST_CASE("Retention bounds stay ordered", "[line_source]")
 TEST_CASE("StreamLineSource: OwnedMemoryBytes accounts for line text and per-line arenas", "[StreamLineSource]")
 {
     StreamLineSource emptySource(std::filesystem::path("s.log"), nullptr);
-    const size_t emptyBytes = emptySource.OwnedMemoryBytes();
+    const size_t emptyBytes = loglib::internal::MemoryStats::StreamOwnedBytes(emptySource);
 
     StreamLineSource source(std::filesystem::path("s.log"), nullptr);
     source.AppendLine(std::string(1024, 'a'), std::string(2048, 'b'));
     source.AppendLine(std::string(512, 'c'), std::string(256, 'd'));
 
-    const size_t bytesAfter = source.OwnedMemoryBytes();
+    const size_t bytesAfter = loglib::internal::MemoryStats::StreamOwnedBytes(source);
     CHECK(bytesAfter > emptyBytes);
     // Lower bound: payload bytes alone (1024 + 2048 + 512 + 256 = 3840).
     CHECK(bytesAfter >= 3840);

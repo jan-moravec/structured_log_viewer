@@ -44,14 +44,12 @@ inline constexpr size_t CANONICAL_LEVEL_COUNT = 6;
  * @brief Maps text to a level using the built-in alias table.
  *
  * Matching ignores case. The aliases are:
- *   - Trace: trace, trc, t, finer, finest, silly
- *   - Debug: debug, dbg, d, verbose, vrb, v, fine
+ *   - Trace: trace, trc, t, finer, finest, silly, verbose, vrb, v
+ *   - Debug: debug, dbg, d, fine
  *   - Info:  info, inf, i, information, informational, notice
  *   - Warn:  warn, wrn, w, warning
  *   - Error: error, err, e, severe
  *   - Fatal: fatal, ftl, f, critical, crit, emerg, emergency, panic, alert, fault
- *
- * Verbose, vrb and v map to Debug, not Trace.
  *
  * Numeric levels such as those of Bunyan, Pino and syslog are not built in, because the conventions disagree. Map them
  * per column with levelMapping.

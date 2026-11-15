@@ -52,8 +52,8 @@
 #include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
-#include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
@@ -452,7 +452,7 @@ struct StreamingRun
 };
 
 // Drives one fixture through `LogModel::BeginStreaming` +
-// `JsonParser::ParseStreaming` + `QtStreamingLogSink`, mirroring
+// `JsonParser::Parse` + `QtStreamingLogSink`, mirroring
 // `MainWindow::OpenJsonStreaming` but on the calling thread. Pinned to
 // `threads=1` so per-batch newKeys / cell ordering is deterministic.
 StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = nullptr)
@@ -471,7 +471,7 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
         options.threads = 1;
 
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *run.model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *run.model->Sink(), options);
     }
 
     if (finishedSpy.count() == 0)
@@ -504,7 +504,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
         options.stopToken = stopToken;
         options.threads = 1;
 
-        loglib::LogfmtParser{}.ParseStreaming(*fileSourcePtr, *run.model->Sink(), options);
+        loglib::LogfmtParser{}.Parse(*fileSourcePtr, *run.model->Sink(), options);
     }
 
     if (finishedSpy.count() == 0)
@@ -533,7 +533,7 @@ std::unique_ptr<LogModel> RunStaticLoadInModel(const QString &fixturePath, const
 
     loglib::ParserOptions options;
     options.stopToken = stopToken;
-    parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+    parser.Parse(*fileSourcePtr, *model->Sink(), options);
 
     if (finishedSpy.count() == 0)
     {
@@ -1520,7 +1520,7 @@ private slots:
         options.threads = 1;
 
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*parseSource, *model.Sink(), options);
+        parser.Parse(*parseSource, *model.Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -5321,7 +5321,7 @@ private slots:
         loglib::ParserOptions options;
         options.stopToken = stopToken;
         options.threads = 1;
-        loglib::JsonParser{}.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        loglib::JsonParser{}.Parse(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(60000);
@@ -5697,7 +5697,7 @@ private slots:
         loglib::ParserOptions firstOpts;
         firstOpts.stopToken = firstToken;
         firstOpts.threads = 1;
-        loglib::JsonParser{}.ParseStreaming(*firstPtr, *model->Sink(), firstOpts);
+        loglib::JsonParser{}.Parse(*firstPtr, *model->Sink(), firstOpts);
         if (firstFinishedSpy.count() == 0)
         {
             firstFinishedSpy.wait(60000);
@@ -5721,7 +5721,7 @@ private slots:
         loglib::ParserOptions secondOpts;
         secondOpts.stopToken = secondToken;
         secondOpts.threads = 1;
-        loglib::JsonParser{}.ParseStreaming(*secondPtr, *model->Sink(), secondOpts);
+        loglib::JsonParser{}.Parse(*secondPtr, *model->Sink(), secondOpts);
         if (secondFinishedSpy.count() == 0)
         {
             secondFinishedSpy.wait(60000);
@@ -8320,7 +8320,7 @@ private slots:
             options.stopToken = stopToken;
             options.threads = 1;
             const loglib::JsonParser parser;
-            parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+            parser.Parse(*fileSourcePtr, *model->Sink(), options);
         }
         if (finishedSpy.count() == 0)
         {
@@ -9051,7 +9051,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -9833,7 +9833,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
@@ -9947,7 +9947,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(60000);
@@ -10584,7 +10584,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(60000);
@@ -10698,7 +10698,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(60000);
@@ -17329,7 +17329,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         const int totalRows = model->rowCount();
         QVERIFY2(totalRows > 0, "fixture must produce at least one row");
@@ -17407,7 +17407,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), 2);
 
@@ -17525,7 +17525,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), 40);
 
@@ -17613,7 +17613,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
@@ -17733,7 +17733,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
@@ -17808,7 +17808,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         auto *findRecord = mWindow->findChild<FindRecordWidget *>();
@@ -17879,7 +17879,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), lines.size());
 
@@ -20780,7 +20780,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -20871,7 +20871,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(60000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -21004,7 +21004,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
@@ -21060,7 +21060,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -21114,7 +21114,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -21173,7 +21173,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -21285,7 +21285,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
@@ -21365,7 +21365,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -21442,7 +21442,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -21520,7 +21520,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -21949,7 +21949,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -22006,7 +22006,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -22075,7 +22075,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(60000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -22988,7 +22988,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
         QCOMPARE(model->rowCount(), 3);
 
@@ -23102,7 +23102,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
         QCOMPARE(model->rowCount(), 2);
 
@@ -23151,7 +23151,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
 
         auto *dock = mWindow->findChild<RecordDetailDock *>();
@@ -23368,7 +23368,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
 
         QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
@@ -23530,7 +23530,7 @@ private slots:
         options.stopToken = stopToken;
         options.threads = 1;
         const loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
+        parser.Parse(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(60000));
         QCOMPARE(model->rowCount(), 3);
 

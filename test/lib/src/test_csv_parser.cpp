@@ -134,7 +134,7 @@ TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[cs
 
     TableSink sink;
     sink.table = &table;
-    loglib::CsvParser{}.ParseStreaming(*sourceRaw, sink, loglib::ParserOptions{});
+    loglib::CsvParser{}.Parse(*sourceRaw, sink, loglib::ParserOptions{});
 
     CHECK(table.RowCount() == 2);
     CHECK(table.ColumnCount() == 2);
@@ -478,7 +478,7 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     ParserOptions options;
     options.threads = 1;
     options.batchSizeBytes = 16; // forces the header into a later batch
-    CsvParser{}.ParseStreaming(*sourceRaw, sink, options);
+    CsvParser{}.Parse(*sourceRaw, sink, options);
 
     CHECK(table.RowCount() == 2);
     CHECK(table.ColumnCount() == 2);

@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
@@ -7,6 +8,7 @@
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
+#include <loglib/time/internal/generic_timestamp_parsing.hpp>
 #include <loglib/time/time_zone_context.hpp>
 #include <loglib/time/timestamp_parsing.hpp>
 #include <loglib/time/user_timestamp.hpp>
@@ -56,7 +58,7 @@ std::vector<std::string> ConvertTimeColumns(LogData &logData, const LogConfigura
 TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_processing]")
 {
     const auto invalidPath = std::filesystem::path("non_existent_path");
-    CHECK_THROWS_AS(TimeZoneContext::Load(invalidPath), std::runtime_error);
+    CHECK_THROWS_AS(TimeZoneContext::Load(invalidPath), IoError);
 }
 
 TEST_CASE("TimeZoneContext::Load accepts the staged tzdata directory", "[log_processing]")
@@ -685,7 +687,8 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 
     for (const auto &originalTimestamp : testTimestamps)
     {
-        const int64_t localMilliseconds = ProcessDefaultTimeZone().ToLocalMilliseconds(originalTimestamp);
+        const int64_t localMilliseconds =
+            UtcMicrosecondsToLocalMilliseconds(originalTimestamp.time_since_epoch().count());
         const TimeStamp convertedTimestamp = LocalMillisecondsSinceEpochToTimeStamp(localMilliseconds);
 
         const int64_t originalMs =
@@ -822,7 +825,7 @@ TEST_CASE("TimeZoneContext::LocalMillisecondsToUtc handles DST transitions", "[l
 TEST_CASE("TimeZoneContext::Load throws for an unavailable zone", "[log_processing]")
 {
     InitializeTimezoneData();
-    CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), std::runtime_error);
+    CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), FormatError);
 }
 
 TEST_CASE(

@@ -1,4 +1,5 @@
 #include "loglib/ingest/tcp_server_producer.hpp"
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 
 #include "loglib/ingest/internal/queued_producer_state.hpp"
@@ -30,19 +31,17 @@ namespace loglib::internal
 {
 
 // Bytes-queue and line-aware back-pressure are shared with
-// `UdpServerProducer` via `LineBytesQueue`
-// (`loglib/ingest/internal/line_bytes_queue.hpp`); sessions push complete-line
-// payloads through `mImpl->mReadyBuffer.Append(...)`.
+// UdpServerProducer via LineBytesQueue
+// (loglib/ingest/internal/line_bytes_queue.hpp); sessions push complete-line
+// payloads through mImpl->mReadyBuffer.Append(...).
 
 class TcpServerProducerImpl;
 
-/// Type-erased session handle so the impl can store both plain
-/// (`asio::ip::tcp::socket`) and TLS (`asio::ssl::stream<>`) sessions
-/// in a single `mActiveSessions` map and close them uniformly during
-/// `Stop()` without needing the templated session type at the call
-/// site. The vtable is tiny (one virtual: `Close`) so the indirection
-/// cost is negligible vs the network I/O each call wraps.
-// `loglib::internal` TU-local implementation detail for `TcpServerProducerImpl`.
+/**
+ * Type-erased session handle. It lets the implementation keep plain and TLS sessions in one map and close them the same
+ * way during Stop, without naming the session type. The only virtual call is Close, so the indirection costs little
+ * next to the network I/O.
+ */
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 class SessionBase
 {
@@ -55,24 +54,19 @@ public:
     SessionBase(SessionBase &&) = delete;
     SessionBase &operator=(SessionBase &&) = delete;
 
-    /// Cancel any in-flight read and close the underlying socket. The
-    /// async handler observes `operation_aborted` and finalises the
-    /// session via `Finalize`. Idempotent.
+    /** Cancels a read in flight and closes the socket. The read handler sees operation_aborted and finalizes the
+     * session. */
     virtual void Close() noexcept = 0;
 };
 
-/// Per-connection state, ref-counted via `shared_ptr` so the in-flight
-/// Asio async chain keeps the session alive until the read completes
-/// and we explicitly drop it.
-// NOLINTNEXTLINE(misc-use-internal-linkage): TU-local async session type for `TcpServerProducerImpl`.
+/** The state of one connection. It is shared, so the Asio handlers in flight keep it alive until the read ends. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): TU-local async session type for TcpServerProducerImpl.
 template <class Stream> class Session : public SessionBase, public std::enable_shared_from_this<Session<Stream>>
 {
 public:
     Session(Stream stream, TcpServerProducerImpl *impl, size_t id, size_t readChunkBytes);
 
-    /// Begin processing this session. For TLS sessions this issues
-    /// the handshake first; for plain sessions it goes straight to
-    /// the read loop.
+    /** Starts the session. A TLS session does the handshake first, and a plain one goes straight to reading. */
     void Start();
 
     void Close() noexcept override;
@@ -81,9 +75,8 @@ private:
     void DoRead();
     void OnRead(const asio::error_code &ec, std::size_t bytes);
 
-    /// Flush the session's per-client carry buffer (synthetic newline
-    /// appended if absent) and remove this session from the impl.
-    /// Idempotent via `mFinalized`.
+    /** Flushes the carry buffer of the client, adding a newline if it is missing, and removes the session. Safe to
+     * repeat. */
     void Finalize();
 
     Stream mStream;
@@ -114,18 +107,14 @@ public:
     [[nodiscard]] size_t TotalClientsRejected() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
-    /// Called from a session's read handler. Pushes the bytes in
-    /// @p completeLines (always ending on a `\n` boundary) into the
-    /// shared queue under the mutex, applying back-pressure.
+    /** Called by a session's read handler. Pushes complete lines into the shared queue and waits when it is full. */
     void OnSessionLines(std::string_view completeLines);
 
-    /// Counts bytes of a line a session dropped for exceeding `maxLineBytes`.
+    /** Counts the bytes of a line that a session dropped for exceeding maxLineBytes. */
     void OnOversizedLineBytes(size_t bytes) noexcept;
 
-    /// Called from a session's `Finalize`. Drops the session from
-    /// `mActiveSessions`, decrements the counter, and notifies the cv
-    /// so callers waiting in `WaitForBytes` wake up to observe a
-    /// possibly-empty queue + closed state.
+    /** Called by a session's Finalize. Forgets the session and wakes callers waiting in WaitForBytes, so they see the
+     * end. */
     void OnSessionEnded(size_t sessionId);
 
     [[nodiscard]] size_t ReadChunkBytes() const noexcept
@@ -146,9 +135,7 @@ private:
 #endif
     void OnAcceptPlain(const asio::error_code &ec, asio::ip::tcp::socket socket);
 
-    /// Common post-accept dispatch: if the cap is reached, immediately
-    /// close the new socket and bump the rejection counter. Otherwise
-    /// wrap into a Session and call `Start()`.
+    /** Closes the new socket and counts a rejection if the client cap is reached. Otherwise starts a session on it. */
     bool AdmitOrReject(asio::ip::tcp::socket &socket);
 
     TcpServerProducer::Options mOptions;
@@ -157,13 +144,12 @@ private:
     asio::ip::tcp::acceptor mAcceptor;
 
 #ifdef LOGLIB_HAS_TLS
-    /// Built once in the ctor when TLS is configured; nullopt for
-    /// plaintext.
+    /** Built in the constructor when TLS is configured. Empty for plain TCP. */
     std::optional<asio::ssl::context> mSslContext;
 #endif
 
-    /// Active sessions, keyed by id. Lives on the mutex so `Stop` can
-    /// snapshot and close them without racing the accept handler.
+    /** The active sessions by id. The mutex guards it, so Stop can copy and close them without racing the accept
+     * handler. */
     std::unordered_map<size_t, std::shared_ptr<SessionBase>> mActiveSessions;
     size_t mNextSessionId = 1;
 
@@ -221,7 +207,7 @@ template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec,
 {
     if (ec)
     {
-        // EOF, peer reset, or our own close from `Stop()`. All paths
+        // EOF, peer reset, or our own close from Stop(). All paths
         // converge on a clean session shutdown.
         Finalize();
         return;
@@ -311,9 +297,8 @@ template <class Stream> void Session<Stream>::Finalize()
 namespace
 {
 
-/// Build the server-side TLS context from the user-supplied options.
-/// Throws `std::runtime_error` on missing or malformed cert / key
-/// files so the producer constructor surfaces the failure synchronously.
+/** Builds the server TLS context from the options. Throws IoError if a certificate or key file is missing or malformed.
+ */
 asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
 {
     asio::ssl::context ctx(asio::ssl::context::tls_server);
@@ -328,7 +313,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
     ctx.use_certificate_chain_file(internal::PathToUtf8(tls.certificateChain), ec);
     if (ec)
     {
-        throw std::runtime_error(
+        throw IoError(
             "TcpServerProducer: failed to load certificate chain '" + internal::PathToUtf8(tls.certificateChain) +
             "': " + ec.message()
         );
@@ -336,7 +321,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
     ctx.use_private_key_file(internal::PathToUtf8(tls.privateKey), asio::ssl::context::pem, ec);
     if (ec)
     {
-        throw std::runtime_error(
+        throw IoError(
             "TcpServerProducer: failed to load private key '" + internal::PathToUtf8(tls.privateKey) +
             "': " + ec.message()
         );
@@ -347,7 +332,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
         ctx.load_verify_file(internal::PathToUtf8(tls.caBundle), ec);
         if (ec)
         {
-            throw std::runtime_error(
+            throw IoError(
                 "TcpServerProducer: failed to load CA bundle '" + internal::PathToUtf8(tls.caBundle) +
                 "': " + ec.message()
             );
@@ -377,7 +362,7 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
 #ifdef LOGLIB_HAS_TLS
         mSslContext.emplace(BuildSslContext(*mOptions.tls));
 #else
-        throw std::runtime_error("TcpServerProducer: TLS support is not built in (rebuild with LOGLIB_NETWORK_TLS=ON)");
+        throw IoError("TcpServerProducer: TLS support is not built in (rebuild with LOGLIB_NETWORK_TLS=ON)");
 #endif
     }
 
@@ -437,7 +422,7 @@ TcpServerProducerImpl::~TcpServerProducerImpl()
     }
 }
 
-// `asio::io_context::stop()` may throw in rare error paths; `noexcept` matches
+// asio::io_context::stop() may throw in rare error paths; noexcept matches
 // producer contract; the catch block below is the safety net.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 void TcpServerProducerImpl::Stop() noexcept
@@ -449,13 +434,13 @@ void TcpServerProducerImpl::Stop() noexcept
     // Post the close work onto the io_context so the acceptor and
     // session sockets are touched only on the worker thread (the same
     // thread that owns the in-flight async operations). This avoids a
-    // hard `mIoContext.stop()` that would abandon queued handlers --
-    // here every in-flight `async_accept` / `async_read_some` instead
-    // completes with `operation_aborted` and the session's `Finalize`
+    // hard mIoContext.stop() that would abandon queued handlers --
+    // here every in-flight async_accept / async_read_some instead
+    // completes with operation_aborted and the session's Finalize
     // path runs cleanly, flushing the per-client carry buffer as a
     // synthetic last line. Once every session has finalised and the
     // acceptor is closed, the io_context's outstanding work count
-    // drops to zero and `run()` returns naturally.
+    // drops to zero and run() returns naturally.
     try
     {
         asio::post(mIoContext, [this] {
@@ -482,7 +467,7 @@ void TcpServerProducerImpl::Stop() noexcept
     }
     catch (...)
     {
-        // `asio::post` can theoretically throw on allocator failure; in
+        // asio::post can theoretically throw on allocator failure; in
         // that case fall back to a hard stop so the producer still
         // terminates rather than wedging the worker thread.
         mIoContext.stop();
@@ -651,7 +636,7 @@ namespace loglib
 {
 
 TcpServerProducer::TcpServerProducer(Options options)
-    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio win_thread false positive under MSVC headers.
     : mImpl(std::make_unique<internal::TcpServerProducerImpl>(std::move(options)))
 {
 }

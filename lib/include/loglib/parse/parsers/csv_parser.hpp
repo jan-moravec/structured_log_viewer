@@ -59,13 +59,13 @@ public:
      * @brief Parses a static file. The header is read first to map the columns to key ids, then the pipeline runs.
      * Stage B records the offset of the header line and emits no row for it.
      */
-    void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /**
      * @brief Parses a live stream. The first non-blank line is the header and produces no row. The lines after it
      * become rows.
      */
-    void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
+    void Parse(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 };
 
 } // namespace loglib

@@ -39,12 +39,6 @@ enum class ExportFormat : int
 [[nodiscard]] const char *ExtensionFor(ExportFormat format) noexcept;
 
 /**
- * @brief The English name of a format, such as JSON Lines. It is not translated, so an application translates its own
- * labels. Tests use it so that format names stay in step with ExtensionFor.
- */
-[[nodiscard]] const char *LabelFor(ExportFormat format) noexcept;
-
-/**
  * @brief A read-only description of the rows and columns of one export.
  *
  * It is a snapshot. The table, and the vectors that the spans point into, must stay alive for the whole export.

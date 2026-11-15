@@ -1,5 +1,5 @@
 // Stop-teardown coverage for `TailingBytesProducer` +
-// `JsonParser::ParseStreaming`. Stop must reach the parser worker quickly, both for an
+// `JsonParser::Parse`. Stop must reach the parser worker quickly, both for an
 // idle source and for a worker mid-decode of a 100 KiB buffered batch.
 //
 // These tests drive the full source -> parser -> sink chain so any
@@ -154,7 +154,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes", "[str
     // Drive the parser worker on a dedicated thread (mirrors
     // `LogModel::BeginStreaming`'s `QtConcurrent::run` without Qt).
     JsonParser parser;
-    std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(*streamPtr, sink, std::move(options)); });
 
     // Let the worker drain pre-fill and park in WaitForBytes so we measure the typical idle path (Stop is correct
     // either way). Two passes of the producer mean its pre-fill is queued and the parser has had them to read.
@@ -205,7 +205,7 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker", "[stream_stop_teardo
     options.stopToken = stopSource.GetToken();
 
     JsonParser parser;
-    std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
+    std::thread worker([&] { parser.Parse(*streamPtr, sink, std::move(options)); });
 
     // Stop ASAP so we hit the worker mid-decode. Waiting for OnStarted means we do not measure setup time.
     REQUIRE(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }));

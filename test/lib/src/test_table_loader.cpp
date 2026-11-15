@@ -319,7 +319,7 @@ TEST_CASE("The sink runs on the caller's thread for a stream and never overlaps 
         StreamLineSource &sourceRef = *source;
         table.BeginStreaming(std::move(source));
         ThreadRecordingSink sink(table);
-        JsonParser{}.ParseStreaming(sourceRef, sink, ParserOptionsFor(table));
+        JsonParser{}.Parse(sourceRef, sink, ParserOptionsFor(table));
         CHECK(sink.AllOn(std::this_thread::get_id()));
         CHECK_FALSE(sink.Overlapped());
         CHECK(table.RowCount() == 500);
@@ -334,7 +334,7 @@ TEST_CASE("The sink runs on the caller's thread for a stream and never overlaps 
         ThreadRecordingSink sink(table);
         ParserOptions options = ParserOptionsFor(table);
         options.batchSizeBytes = 16 * 1024;
-        JsonParser{}.ParseStreaming(sourceRef, sink, options);
+        JsonParser{}.Parse(sourceRef, sink, options);
         CHECK_FALSE(sink.Overlapped());
         CHECK(table.RowCount() == 20'000);
     }
@@ -397,7 +397,7 @@ TEST_CASE("A time column the table detects is converted by the parser in the lat
     ParserOptions options = ParserOptionsFor(table);
     REQUIRE(options.timeColumns.empty());
     options.batchSizeBytes = 16 * 1024;
-    JsonParser{}.ParseStreaming(sourceRef, sink, options);
+    JsonParser{}.Parse(sourceRef, sink, options);
     FinishLoading(table);
 
     REQUIRE(table.RowCount() == 20'000);

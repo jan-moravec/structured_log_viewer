@@ -1,4 +1,5 @@
 #include "loglib/time/timestamp_parsing.hpp"
+#include "loglib/time/internal/generic_timestamp_parsing.hpp"
 
 #include "loglib/time/user_timestamp.hpp"
 
@@ -66,10 +67,10 @@ TimestampFormatKind FastPathKind(std::string_view format)
     constexpr std::string_view ISO_SPACE{"%F %T"};
     constexpr std::string_view ISO_T_OFFSET{"%FT%T%Ez"};
     constexpr std::string_view ISO_SPACE_OFFSET{"%F %T%Ez"};
-    // Both `%e` (space-padded day) and `%d` (zero-padded day) are
+    // Both %e (space-padded day) and %d (zero-padded day) are
     // legitimate RFC 3164 spellings. RFC 3164 §4.1.2 mandates the
     // space-padded shape, but many implementations (and stdlib
-    // `strftime` on Windows) emit the zero-padded shape, so the fast
+    // strftime on Windows) emit the zero-padded shape, so the fast
     // path handles both. The parser accepts either input verbatim so
     // either format string routes to the same manual parser.
     constexpr std::string_view SYSLOG_E{"%b %e %H:%M:%S"};
@@ -181,8 +182,8 @@ bool ParseIsoTimestamp(std::string_view sv, char dateTimeSep, IsoZoneSuffix zone
 
     size_t cursor = PREFIX_LEN;
     int64_t fractionalUs = 0;
-    // ISO 8601 permits both `.` and `,` as the decimal separator. Java
-    // Logback, log4j2, and SLF4J emit `,`. Digits past microseconds are
+    // ISO 8601 permits both . and , as the decimal separator. Java
+    // Logback, log4j2, and SLF4J emit ,. Digits past microseconds are
     // consumed and truncated, so nanosecond timestamps keep their instant.
     if (cursor < sv.size() && (sv[cursor] == '.' || sv[cursor] == ','))
     {
@@ -227,7 +228,7 @@ bool ParseIsoTimestamp(std::string_view sv, char dateTimeSep, IsoZoneSuffix zone
         }
     }
 
-    // Accept second == 60 to match `date::parse("%T")` leap-second handling.
+    // Accept second == 60 to match date::parse("%T") leap-second handling.
     if (hour > MAX_HOUR_INCLUSIVE || minute > MAX_MINUTE_INCLUSIVE || second > MAX_SECOND_INCLUSIVE_LEAP)
     {
         return false;
@@ -316,7 +317,7 @@ bool TryParseSyslogRfc3164Timestamp(
     std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
 )
 {
-    // Shortest legal shape is `Jan  1 00:00:00` = 15 bytes.
+    // Shortest legal shape is Jan  1 00:00:00 = 15 bytes.
     constexpr size_t MIN_LEN = 15;
     if (sv.size() < MIN_LEN)
     {
@@ -333,8 +334,8 @@ bool TryParseSyslogRfc3164Timestamp(
         return false;
     }
 
-    // Skip the optional second padding space (`%e` shape); accept
-    // both `Aug  8 ...` (space-padded) and `Aug 08 ...` (zero-padded).
+    // Skip the optional second padding space (%e shape); accept
+    // both Aug  8 ... (space-padded) and Aug 08 ... (zero-padded).
     size_t cursor = 4;
     if (sv[cursor] == ' ')
     {
@@ -365,13 +366,13 @@ bool TryParseSyslogRfc3164Timestamp(
     }
     ++cursor;
 
-    // Fixed-width `HH:MM:SS` tail (8 bytes) with a hard end-of-input.
+    // Fixed-width HH:MM:SS tail (8 bytes) with a hard end-of-input.
     constexpr size_t TIME_TAIL_LEN = 8;
     if (sv.size() - cursor != TIME_TAIL_LEN)
     {
         return false;
     }
-    // Byte offsets within the `HH:MM:SS` tail.
+    // Byte offsets within the HH:MM:SS tail.
     constexpr size_t MINUTE_COLON_OFFSET = 2;
     constexpr size_t MINUTE_DIGITS_TAIL_OFFSET = 3;
     constexpr size_t SECOND_COLON_OFFSET = 5;
@@ -530,11 +531,11 @@ bool ParseWithDate(std::string_view sv, const std::string &format, TimestampPars
     scratch.stream.clear();
     scratch.stream.str(scratch.str);
     out = TimeStamp{};
-    // Call `date::from_stream` directly rather than using
-    // `scratch.stream >> date::parse(format, out)`. The latter expands inside
-    // `date::parse` to an unqualified `from_stream(...)` call, which becomes
-    // ambiguous in C++20+/libc++ where `std::chrono::from_stream` is also a
-    // viable overload for `std::chrono::time_point<system_clock, microseconds>`.
+    // Call date::from_stream directly rather than using
+    // scratch.stream >> date::parse(format, out). The latter expands inside
+    // date::parse to an unqualified from_stream(...) call, which becomes
+    // ambiguous in C++20+/libc++ where std::chrono::from_stream is also a
+    // viable overload for std::chrono::time_point<system_clock, microseconds>.
     date::from_stream(scratch.stream, format.c_str(), out);
     // The POSIX epoch and pre-1970 timestamps are valid outputs, so only the
     // stream state decides. Unconsumed input means the format did not match.

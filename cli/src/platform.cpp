@@ -2,6 +2,7 @@
 
 #include "diagnostics.hpp"
 
+#include <loglib/core/error.hpp>
 #include <loglib/support/user_paths.hpp>
 
 #include <cstdint>
@@ -34,8 +35,6 @@ namespace slp
 
 namespace
 {
-
-constexpr std::string_view UNAVAILABLE_ZONE = "is unavailable";
 
 #ifdef _WIN32
 constexpr unsigned int WINDOWS_PATH_CHARS = 32768;
@@ -239,6 +238,7 @@ TimeZoneSetup ResolveTimeZone(std::string_view zoneName, const std::filesystem::
         return setup;
     }
 
+    bool loaded = true;
     try
     {
         if (zoneName == "local")
@@ -250,14 +250,22 @@ TimeZoneSetup ResolveTimeZone(std::string_view zoneName, const std::filesystem::
             setup.context = loglib::TimeZoneContext::Load(tzdataDirectory, zoneName);
         }
     }
-    catch (const std::exception &ex)
+    catch (const loglib::FormatError &ex)
     {
-        const std::string_view reason = ex.what();
-        if (reason.contains(UNAVAILABLE_ZONE))
+        // A zone the user named that the data does not have is an error. The local zone falls back to UTC.
+        if (zoneName != "local")
         {
-            setup.error = std::string(reason);
+            setup.error = ex.what();
             return setup;
         }
+        loaded = false;
+    }
+    catch (const std::exception &)
+    {
+        loaded = false;
+    }
+    if (!loaded)
+    {
         setup.warning = "timezone data at '" + tzdataDirectory.string() + "' could not be loaded; times use UTC.";
         setup.context = loglib::TimeZoneContext::Utc();
     }

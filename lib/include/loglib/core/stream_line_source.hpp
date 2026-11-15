@@ -27,6 +27,11 @@
 namespace loglib
 {
 
+namespace internal
+{
+struct MemoryStats;
+} // namespace internal
+
 class BytesProducer;
 
 /**
@@ -106,9 +111,6 @@ public:
     /** @brief Number of lines held now, not counting evicted ones. */
     [[nodiscard]] size_t Size() const noexcept;
 
-    /** @brief Heap bytes held by line text and decoded strings, counting capacity. For the memory benchmark. */
-    [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
-
     /**
      * @brief Holds the read lock of a source on the calling thread, so the reads in between take no lock of their own.
      *
@@ -133,6 +135,11 @@ public:
     };
 
 private:
+    friend struct internal::MemoryStats;
+
+    /** @brief Heap bytes held by line text and decoded strings, counting capacity. For the memory benchmark. */
+    [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
+
     [[nodiscard]] bool LineIsLiveLocked(size_t lineId) const noexcept;
     [[nodiscard]] size_t IndexForLocked(size_t lineId) const noexcept;
 

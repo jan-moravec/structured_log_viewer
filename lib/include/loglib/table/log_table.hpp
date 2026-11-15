@@ -37,6 +37,11 @@ namespace loglib
 {
 
 class BytesProducer;
+
+namespace internal
+{
+struct LogTableTestAccess;
+} // namespace internal
 class EnumInference;
 
 /** @brief What happened to the dictionary or type of an enumeration column. */
@@ -251,6 +256,8 @@ public:
      * the row's source can resolve, so use GetValue for text. The pointer stays valid until the table changes.
      */
     [[nodiscard]] const CompactLogValue *FindCell(size_t row, size_t column) const noexcept;
+
+    /** @brief The cell as text, formatted with the print format of its column. A missing cell gives an empty string. */
     [[nodiscard]] std::string GetFormattedValue(size_t row, size_t column) const;
 
     /**
@@ -301,6 +308,7 @@ public:
      */
     void SetEnumValueCap(uint16_t cap) noexcept;
 
+    /** @brief The cap that new enumeration dictionaries get, as set by SetEnumValueCap. */
     [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
     /**
@@ -309,6 +317,7 @@ public:
      */
     void SetEnumValueMaxLen(uint32_t maxLen) noexcept;
 
+    /** @brief The longest value that still looks like an enumeration value, as set by SetEnumValueMaxLen. */
     [[nodiscard]] uint32_t EnumValueMaxLen() const noexcept;
 
     /**
@@ -447,10 +456,6 @@ public:
      */
     void SetReferenceTime(std::chrono::system_clock::time_point referenceTime) noexcept;
 
-    /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. Tests inject one.
-     */
-    void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
-
     /** @brief The "now" the table uses to convert timestamp formats without a year. */
     [[nodiscard]] std::chrono::system_clock::time_point ReferenceTime() const noexcept;
 
@@ -460,6 +465,11 @@ public:
     ColumnLayout &Layout();
 
 private:
+    friend struct internal::LogTableTestAccess;
+
+    /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. */
+    void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
+
     /** @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
      * columns. */
     [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
