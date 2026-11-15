@@ -10,6 +10,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <bit>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -56,7 +57,7 @@ TEST_CASE("Network and stdin producers throw IoError for resources they cannot o
     }
     SECTION("an invalid standard input handle")
     {
-        void *invalidHandle = reinterpret_cast<void *>(static_cast<std::intptr_t>(-1));
+        void *const invalidHandle = std::bit_cast<void *>(static_cast<std::intptr_t>(-1));
         CHECK_THROWS_AS(
             internal::StdinBytesProducerTestAccess::Create(invalidHandle, StdinBytesProducer::Options{}), IoError
         );

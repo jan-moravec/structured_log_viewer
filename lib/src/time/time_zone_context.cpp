@@ -43,8 +43,8 @@ TimeZoneContext &DefaultContextSlot()
 
 void InstallTzdata(const std::filesystem::path &tzdataPath)
 {
-    std::error_code existsEc;
-    if (!std::filesystem::exists(tzdataPath, existsEc) || !std::filesystem::is_directory(tzdataPath))
+    std::error_code ec;
+    if (!std::filesystem::is_directory(tzdataPath, ec))
     {
         throw IoError("tzdata directory does not exist: " + internal::PathToUtf8(tzdataPath));
     }
