@@ -28,6 +28,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -50,7 +51,7 @@ constexpr std::size_t BUNDLE_RECORDS = 250'000;
 class TempBundlePath
 {
 public:
-    TempBundlePath()
+    explicit TempBundlePath(std::string_view extension = ".slvbundle")
     {
         // Atomic counter is drift-proofing for future parallel runs;
         // benchmarks are sequential today.
@@ -59,7 +60,7 @@ public:
         while (true)
         {
             const int n = ++counter;
-            mPath = tmpDir / (std::string("slv_bench_bundle_") + std::to_string(n) + ".slvbundle");
+            mPath = tmpDir / (std::string("slv_bench_bundle_") + std::to_string(n) + std::string(extension));
             if (!std::filesystem::exists(mPath))
             {
                 break;
@@ -165,6 +166,13 @@ struct BundleInput
     // Encoded once at level 3 (writer default) so the read benchmark measures pure decode + rehydrate cost.
     std::unique_ptr<TempBundlePath> bundlePath;
     std::size_t compressedBytes = 0;
+};
+
+struct BundleTextInput
+{
+    SharedTable table;
+    // The rows of a bundle, decoded once to a plain text file.
+    std::unique_ptr<TempBundlePath> textPath;
 };
 
 // Level 3 with the given number of zstd workers. A negative number compresses on the calling thread.
@@ -276,6 +284,46 @@ void RegisterSessionBundleBenchmarks()
             }
             SetBundleCounters(state, fixture);
             state.counters["bundle_MiB"] = static_cast<double>(input.compressedBytes) / (1024.0 * 1024.0);
+        },
+        LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
+    );
+
+    // The rows a bundle holds, decoded once in setup and parsed as plain text: the reference the bundle read is
+    // compared with.
+    RegisterLarge<BundleTextInput>(
+        "Parse text of the bundle rows (250'000 JSON entries)",
+        [table] {
+            auto input = std::make_unique<BundleTextInput>();
+            input->table = table;
+            const TableFixture &fixture = table->Get();
+            const TempBundlePath bundlePath;
+            WriteSessionBundle(
+                fixture.Table(), fixture.Table().Configuration().Configuration(), bundlePath.Path(), WriteOptions()
+            );
+            DecompressingByteSource::Options options;
+            options.discardFirstLine = true;
+            const DecompressingByteSource decoded(bundlePath.Path(), {}, {}, options);
+            input->textPath = std::make_unique<TempBundlePath>(".jsonl");
+            std::filesystem::copy_file(decoded.EffectivePath(), input->textPath->Path());
+            return input;
+        },
+        [](BundleTextInput &input, benchmark::State &state, bool first) {
+            const TableFixture &fixture = input.table->Get();
+            const auto parseOnce = [&] {
+                const ParseResult parsed = ParseFile(input.textPath->Path());
+                return parsed.errors.empty() && parsed.data.Lines().size() == fixture.recordCount;
+            };
+            bool ok = !first || parseOnce();
+            for (const auto _ : state)
+            {
+                ok = parseOnce();
+            }
+            if (!ok)
+            {
+                Fail(state, "the text did not parse to the written rows");
+                return;
+            }
+            SetBundleCounters(state, fixture);
         },
         LargeOptions{.iterations = FAST_LARGE_ITERATIONS}
     );

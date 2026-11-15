@@ -40,8 +40,10 @@ namespace loglib
 namespace
 {
 
-// Shared 64 KiB codec buffer size.
-constexpr std::size_t CHUNK_SIZE = 64 * 1024;
+// Codec buffer sizes. Large blocks keep the number of reads and writes small; the decoders poll for progress and
+// cancellation once per output block.
+constexpr std::size_t INPUT_BLOCK_SIZE = 1024 * 1024;
+constexpr std::size_t OUTPUT_BLOCK_SIZE = 4 * 1024 * 1024;
 
 // Bytes read for the codec probe. Matches the widest supported
 // magic (.xz is 6 bytes).
@@ -373,8 +375,8 @@ void DecodeConcatenatedMembers(
     std::size_t maxDecompressedBytes
 )
 {
-    std::array<char, CHUNK_SIZE> inBuf{};
-    std::array<char, CHUNK_SIZE> outBuf{};
+    std::vector<char> inBuf(INPUT_BLOCK_SIZE);
+    std::vector<char> outBuf(OUTPUT_BLOCK_SIZE);
 
     std::size_t consumed = 0;
     // Preserve end-of-member state across chunk boundaries.
@@ -711,8 +713,8 @@ void DecodeXz(
     };
     const XzGuard guard(&strm);
 
-    std::array<std::uint8_t, CHUNK_SIZE> inBuf{};
-    std::array<std::uint8_t, CHUNK_SIZE> outBuf{};
+    std::vector<std::uint8_t> inBuf(INPUT_BLOCK_SIZE);
+    std::vector<std::uint8_t> outBuf(OUTPUT_BLOCK_SIZE);
 
     std::size_t consumed = 0;
     lzma_ret ret = LZMA_OK;
@@ -801,8 +803,8 @@ void DecodeZstd(
     };
     const ZstdGuard guard(dctx);
 
-    std::array<char, CHUNK_SIZE> inBuf{};
-    std::array<char, CHUNK_SIZE> outBuf{};
+    std::vector<char> inBuf(INPUT_BLOCK_SIZE);
+    std::vector<char> outBuf(OUTPUT_BLOCK_SIZE);
 
     std::size_t consumed = 0;
     std::size_t lastResult = 0;
