@@ -47,17 +47,17 @@ The library is one static target, `loglib`. Its files sit in nine module folders
                                    core
 ```
 
-| Module  | Its one job                                  | Main headers                                                                                                                                                                                 |
-| ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| core    | What a log row is, and where its bytes live  | `log_line`, `log_value`, `compact_log_value`, `key_index`, `enum_dictionary`, `line_source`, `file_line_source`, `stream_line_source`, `log_file`, `bytes_producer`, `row_batch`, `log_data` |
-| schema  | What the user configured, as saveable values | `log_configuration`, `column_schema`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                             |
-| time    | Reading timestamps and converting time zones | `time_zone_context`, `timestamp_parsing`, `user_timestamp`                                                                                                                                   |
-| ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                              |
-| parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                                           |
-| table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                                          |
-| query   | Finding, ordering and summarizing rows       | `row_filter`, `filter_compile`, `query_parser`, `log_string_matcher`, `log_compare`, `row_ordering`, `histogram_bucket_index`                                                                |
-| output  | Writing and reading whole files of rows      | `exports/*`, `session_bundle`, `file_loading`                                                                                                                                                |
-| support | Application helpers that are not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                                       |
+| Module  | Its one job                                  | Main headers                                                                                                                                                                     |
+| ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| core    | What a log row is, and where its bytes live  | `log_line`, `log_value`, `compact_log_value`, `key_index`, `enum_dictionary`, `line_source`, `file_line_source`, `stream_line_source`, `bytes_producer`, `row_batch`, `log_data` |
+| schema  | What the user configured, as saveable values | `log_configuration`, `column_schema`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                 |
+| time    | Reading timestamps and converting time zones | `time_zone_context`, `timestamp_parsing`, `user_timestamp`                                                                                                                       |
+| ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                  |
+| parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                               |
+| table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                              |
+| query   | Finding, ordering and summarizing rows       | `row_filter`, `filter_compile`, `query_parser`, `log_string_matcher`, `log_compare`, `row_ordering`, `histogram_bucket_index`                                                    |
+| output  | Writing and reading whole files of rows      | `exports/*`, `session_bundle`, `file_loading`                                                                                                                                    |
+| support | Application helpers that are not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                           |
 
 Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit and CI:
 
@@ -117,6 +117,26 @@ The library keeps little state outside the objects that use it. What remains is 
 
 A TBB pipeline for a static file runs in its own task arena with the thread count of that parse, so it does not limit other TBB users in the process.
 
+## Errors
+
+The rules are in [CONTRIBUTING.md](../CONTRIBUTING.md), section Error handling. Parsing user data never throws: a bad line becomes a parse error in the result. Validating user input, such as a query text, returns `std::expected`. A failed resource throws a subclass of `loglib::Error` from `core/error.hpp`: `IoError` for a file, pipe or socket operation, `FormatError` for a saved file whose content is invalid, and `LimitError` for a size limit. `OperationCancelled` and `BrokenPipe` are not `Error` subclasses, so a handler for `Error` does not swallow a cancel or a closed pipe. A programming error, such as writing to a finished export sink or setting a value by a key that is not in the index, is an assertion.
+
+| Module  | What it throws                                                                                                                                                                                                   |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| core    | `IoError` when a file cannot be opened or mapped. `OperationCancelled` from `stop_token`. `StreamLineSource` throws `std::out_of_range` for a line that was evicted or does not exist yet.                       |
+| schema  | `IoError` when a configuration cannot be read or written, `FormatError` when its content is invalid.                                                                                                             |
+| time    | `IoError` when the tzdata folder does not exist, `FormatError` when a zone is not available.                                                                                                                     |
+| ingest  | `IoError`, `FormatError` and `LimitError` while unpacking compressed files. `IoError` for standard input and for TLS files. `std::system_error` when a socket cannot be bound or a tailed file cannot be opened. |
+| parse   | `FormatError` for a regex template whose JSON is invalid. Parsing log lines does not throw.                                                                                                                      |
+| table   | Nothing of its own. Parse errors are collected in the result.                                                                                                                                                    |
+| query   | Nothing. `ParseQuery` returns `std::expected`.                                                                                                                                                                   |
+| output  | `IoError`, `FormatError` and `LimitError` for files and bundles, `IoError` and `BrokenPipe` from export sinks, `OperationCancelled` from exports.                                                                |
+| support | `FormatError` for a theme whose JSON is invalid.                                                                                                                                                                 |
+
+## Saved files
+
+The readers of all four saved formats reject keys they do not know, and the message names the key. Configuration files need only the keys that their types require. In regex template and theme files, a key that is missing takes the default documented on its member. Session bundles have format version 1, and the reader gives a `FormatError` for any other version. Nothing reads older or newer files.
+
 ## Worked example: `slp`
 
 [`cli/`](../cli) is a complete `loglib`-only host. It links no Qt target and builds with `-DSLV_BUILD_GUI=OFF`. It shows the whole composition: source resolution (`ResolveSourcePlan`), format detection, streaming parse into a `LogTable`, filter compilation (`CompileExpression`), sorting (`RowOrdering`), export sinks, session bundles, and the live producers behind `slp tail`. See the [`slp` reference](../doc/cli.md).
@@ -127,7 +147,7 @@ Supported headers are `LOGLIB_PUBLIC_HEADERS` in [`lib/CMakeLists.txt`](CMakeLis
 
 ## v1 boundary decisions
 
-- Timezone type: `TimeZoneContext`. `Load` throws `std::runtime_error` on invalid tzdata or zone.
+- Timezone type: `TimeZoneContext`. `Load` throws `IoError` if the tzdata folder does not exist and `FormatError` if the zone is not available.
 - `FileLineSource` hides the mapping backend behind an incomplete type and an out-of-line destructor.
 - Schema module: `ColumnLayout` holds the columns of a table and the operations on them. `SessionView` holds the filter, the sort, the highlight rules and the anchors of a session, and every part of it finds its column by keys. `LogConfiguration` is the content of a configuration file: `columns`, `view` and `source`. `LoadConfiguration`, `ParseConfiguration`, `SaveConfiguration` and `SerializeConfiguration` read and write it, and a session bundle stores the same JSON.
 - Configuration file: JSON with a required `version`, which is 1. Unknown keys are errors that name the key and the file. A column is written with its `type` only when the user chose it. See [the format](../CONTRIBUTING.md#configuration-file).
