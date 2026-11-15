@@ -1,6 +1,6 @@
 // The library has no Qt in its include chain, so the TBB-before-Qt include order that the application needs does not
 // apply here.
-#include "loglib/query/log_filter.hpp"
+#include "loglib/query/row_filter.hpp"
 
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_value.hpp"

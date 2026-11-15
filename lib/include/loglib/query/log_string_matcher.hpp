@@ -10,7 +10,7 @@
  */
 #pragma once
 
-#include "loglib/query/log_filter.hpp"
+#include "loglib/query/row_filter.hpp"
 
 #include <optional>
 #include <string>

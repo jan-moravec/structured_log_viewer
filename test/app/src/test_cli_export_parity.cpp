@@ -7,8 +7,8 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/query/row_ordering.hpp>
 #include <loglib/schema/filter_expression.hpp>
 

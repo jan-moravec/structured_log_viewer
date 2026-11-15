@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include "loglib/query/log_filter.hpp"
+#include "loglib/query/row_filter.hpp"
 #include "loglib/schema/filter_expression.hpp"
 #include "loglib/schema/highlight_rule.hpp"
 #include "loglib/schema/log_configuration.hpp"

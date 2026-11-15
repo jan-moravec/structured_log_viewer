@@ -8,8 +8,8 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/highlight_rule.hpp>
 #include <loglib/schema/log_configuration.hpp>

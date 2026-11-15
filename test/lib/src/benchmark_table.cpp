@@ -16,7 +16,7 @@
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/query/filter_compile.hpp>
 #include <loglib/query/log_compare.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/column_schema.hpp>
 #include <loglib/schema/filter_expression.hpp>

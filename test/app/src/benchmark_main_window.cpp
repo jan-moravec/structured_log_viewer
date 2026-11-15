@@ -27,7 +27,7 @@
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/query/log_compare.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/table/log_table.hpp>
@@ -191,7 +191,7 @@ private slots:
     }
 
     // Enum filter wall-clock under the production proxy chain. Mirrors
-    // the lib-level `[log_filter][large]` benchmark but lands the rows
+    // the lib-level `[row_filter][large]` benchmark but lands the rows
     // through the full `LogModel -> RowOrderProxyModel -> LogFilterModel`
     // path so any regression in the proxy's `filterAcceptsRow` shows up
     // here even if the lib path stays fast.
@@ -236,7 +236,7 @@ private slots:
         // Two breakdown measurements:
         //   * predicate-only: walk every row in the same `LogTable`
         //     through `EnumRowPredicate::MatchesRow`. Mirrors the
-        //     lib-level `[log_filter][large]` numbers and proves the
+        //     lib-level `[row_filter][large]` numbers and proves the
         //     non-Qt cost stays small.
         //   * proxy-roundtrip: also include `QSortFilterProxyModel`'s
         //     `invalidateFilter` + lazy row-map rebuild on `rowCount()`.
@@ -331,7 +331,7 @@ private slots:
         // `CompareLevel`, which calls `GetLevelForRow` per side --
         // an extra `Keys().Find` + `unordered_map::find` per compare
         // on top of the enum sibling's array-indexed rank read. The
-        // lib sibling in `benchmark_log_filter.cpp` (multi-sample
+        // lib sibling in `benchmark_row_filter.cpp` (multi-sample
         // `low` over 10 runs) measures ~1916 ms low / ~2201 ms high
         // on this runner and asserts at 2000 ms; this single-sample
         // app gate adds ~50% headroom on top of the lib `high` to

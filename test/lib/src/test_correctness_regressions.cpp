@@ -19,8 +19,8 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/query/filter_compile.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
-#include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 

@@ -51,7 +51,7 @@ add_library(
     src/clang_tidy_stubs/glaze_options.cpp
     src/query/log_compare.cpp
     src/core/log_data.cpp
-    src/query/log_filter.cpp
+    src/query/row_filter.cpp
     src/query/log_filter_evaluator.cpp
     src/core/log_level.cpp
     src/core/log_line.cpp
@@ -125,7 +125,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/query/log_compare.hpp
     include/loglib/schema/log_configuration.hpp
     include/loglib/core/log_data.hpp
-    include/loglib/query/log_filter.hpp
+    include/loglib/query/row_filter.hpp
     include/loglib/core/log_level.hpp
     include/loglib/core/log_line.hpp
     include/loglib/core/row_batch.hpp

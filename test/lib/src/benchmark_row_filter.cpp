@@ -20,7 +20,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/query/log_compare.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
@@ -515,7 +515,7 @@ void RegisterFilterAcceptedRows(
 
 } // namespace
 
-void RegisterLogFilterBenchmarks()
+void RegisterRowFilterBenchmarks()
 {
     // Each table is built on first use and shared by the benchmarks that read it.
     const SharedTable enumTable = MakeLazy<TableInput>([] { return MakeEnumInput("benchmark_log_filter_enum.json"); });

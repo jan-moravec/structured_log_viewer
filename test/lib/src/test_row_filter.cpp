@@ -8,7 +8,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
@@ -191,7 +191,7 @@ std::vector<std::string_view> ToViews(const std::vector<std::string> &values)
 
 } // namespace
 
-TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log_filter][enum]")
+TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[row_filter][enum]")
 {
     // Non-level key (`category`) keeps the column Enumeration; a
     // `level`-named column with the same values would auto-promote
@@ -219,7 +219,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
     }
 }
 
-TEST_CASE("EnumRowPredicate rejects every row on an empty selection", "[log_filter][enum]")
+TEST_CASE("EnumRowPredicate rejects every row on an empty selection", "[row_filter][enum]")
 {
     const MemoryLogFile fixture("log_filter_enum_empty.json");
     fixture.Write("");
@@ -238,7 +238,7 @@ TEST_CASE("EnumRowPredicate rejects every row on an empty selection", "[log_filt
 }
 
 TEST_CASE(
-    "EnumRowPredicate falls back to the string set when the column isn't promoted", "[log_filter][enum][fallback]"
+    "EnumRowPredicate falls back to the string set when the column isn't promoted", "[row_filter][enum][fallback]"
 )
 {
     const MemoryLogFile fixture("log_filter_enum_string_fallback.json");
@@ -260,7 +260,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", "[log_filter][enum][post_dict_growth]")
+TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", "[row_filter][enum][post_dict_growth]")
 {
     // Fully-resolved predicate: an id past the bitset is provably for
     // an unselected value, so the predicate must reject (not fall
@@ -310,7 +310,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
 
 TEST_CASE(
     "EnumRowPredicate falls through to the string set for a stale predicate's unresolved selected value",
-    "[log_filter][enum][post_dict_growth]"
+    "[row_filter][enum][post_dict_growth]"
 )
 {
     // Regression: a selected value that was unresolved at construction
@@ -366,7 +366,7 @@ TEST_CASE(
 // values, not retain `string_view`s into caller-owned bytes.
 // `MainWindow::UpdateFilters` builds the span on the stack and lets
 // the predicate outlive it; ASan would catch a regression here.
-TEST_CASE("EnumRowPredicate does not retain references into the selection span", "[log_filter][enum][lifetime]")
+TEST_CASE("EnumRowPredicate does not retain references into the selection span", "[row_filter][enum][lifetime]")
 {
     const MemoryLogFile fixture("log_filter_enum_lifetime.json");
     fixture.Write("");
@@ -403,7 +403,7 @@ TEST_CASE("EnumRowPredicate does not retain references into the selection span",
 }
 
 TEST_CASE(
-    "EnumRowPredicate dedupes duplicate selected values when accounting `mAllResolved`", "[log_filter][enum][dedupe]"
+    "EnumRowPredicate dedupes duplicate selected values when accounting `mAllResolved`", "[row_filter][enum][dedupe]"
 )
 {
     // `mAllResolved` is keyed on *distinct* selected values, not raw
@@ -476,7 +476,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside", "[log_filter][time]")
+TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside", "[row_filter][time]")
 {
     const MemoryLogFile fixture("log_filter_time.json");
     fixture.Write("");
@@ -492,7 +492,7 @@ TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside
     }
 }
 
-TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[log_filter][time]")
+TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[row_filter][time]")
 {
     const MemoryLogFile fixture("log_filter_time_wrong_column.json");
     fixture.Write("");
@@ -503,7 +503,7 @@ TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[log_filter][time]"
     CHECK_FALSE(predicate.MatchesRow(table, 1));
 }
 
-TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[log_filter][callback]")
+TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[row_filter][callback]")
 {
     const MemoryLogFile fixture("log_filter_callback_string.json");
     fixture.Write("");
@@ -521,7 +521,7 @@ TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[
     CHECK(callCount == 3);
 }
 
-TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column printFormat", "[log_filter][callback]")
+TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column printFormat", "[row_filter][callback]")
 {
     InitializeTimezoneData();
     const MemoryLogFile fixture("log_filter_callback_time.json");
@@ -581,7 +581,7 @@ LogTable BuildSingleColumnTable(
 
 } // namespace
 
-TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_filter][numeric_range]")
+TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[row_filter][numeric_range]")
 {
     const MemoryLogFile fixture("log_filter_numeric_bounded.json");
     fixture.Write("");
@@ -599,7 +599,7 @@ TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_fil
     CHECK_FALSE(predicate.MatchesRow(table, 5)); // monostate rejects
 }
 
-TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals max", "[log_filter][numeric_range]")
+TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals max", "[row_filter][numeric_range]")
 {
     // `min == max` is a valid single-point filter. Inverted ranges
     // (`min > max`) are caught by the GUI; the predicate doesn't
@@ -616,7 +616,7 @@ TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals
     CHECK(predicate.MatchesRow(table, 3));       // double 5.0
 }
 
-TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][numeric_range]")
+TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[row_filter][numeric_range]")
 {
     const MemoryLogFile fixture("log_filter_numeric_unbounded.json");
     fixture.Write("");
@@ -651,7 +651,7 @@ TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][nume
     }
 }
 
-TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[log_filter][numeric_range]")
+TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[row_filter][numeric_range]")
 {
     const MemoryLogFile fixture("log_filter_numeric_mixed.json");
     fixture.Write("");
@@ -668,7 +668,7 @@ TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[log_fi
     CHECK_FALSE(predicate.MatchesRow(table, 4)); // wrong-type slot rejects
 }
 
-TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[log_filter][numeric_range]")
+TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[row_filter][numeric_range]")
 {
     const MemoryLogFile fixture("log_filter_numeric_nan_bounds.json");
     fixture.Write("");
@@ -683,7 +683,7 @@ TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[log_filte
     CHECK(predicate.MatchesRow(table, 2));
 }
 
-TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[log_filter][time]")
+TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[row_filter][time]")
 {
     // Bounds are `int64_t`, so a `uint64_t` past `int64_t::max` can
     // never be a meaningful match. Reject explicitly (matches
@@ -706,7 +706,7 @@ TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[l
     CHECK_FALSE(predicate.MatchesRow(table, 3));
 }
 
-TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
+TEST_CASE("BoolRowPredicate selects by side", "[row_filter][boolean]")
 {
     const MemoryLogFile fixture("log_filter_boolean.json");
     fixture.Write("");
@@ -755,7 +755,7 @@ TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
 
 TEST_CASE(
     "EnumRowPredicate reused for Type::Level columns matches expanded dictionary entries",
-    "[log_filter][enum_row_predicate][level]"
+    "[row_filter][enum_row_predicate][level]"
 )
 {
     // Mirrors `MainWindow::BuildRowPredicates` for Level columns:
@@ -914,7 +914,7 @@ CompiledFilterExpression MakeCompiledNot(CompiledFilterExpression child)
 
 } // namespace
 
-TEST_CASE("EvaluateExpression: default expression matches every row", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: default expression matches every row", "[row_filter][expression]")
 {
     const MemoryLogFile fixture("log_filter_expr_matchall.json");
     fixture.Write("");
@@ -928,7 +928,7 @@ TEST_CASE("EvaluateExpression: default expression matches every row", "[log_filt
     }
 }
 
-TEST_CASE("EvaluateExpression: empty Or rejects every row", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: empty Or rejects every row", "[row_filter][expression]")
 {
     const MemoryLogFile fixture("log_filter_expr_empty_or.json");
     fixture.Write("");
@@ -941,7 +941,7 @@ TEST_CASE("EvaluateExpression: empty Or rejects every row", "[log_filter][expres
     }
 }
 
-TEST_CASE("EvaluateExpression: default Not (null child) matches every row", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: default Not (null child) matches every row", "[row_filter][expression]")
 {
     // A `Not` with a null child is only reachable via test / editor
     // code paths; the compile factory always seeds `child`. The
@@ -959,7 +959,7 @@ TEST_CASE("EvaluateExpression: default Not (null child) matches every row", "[lo
     }
 }
 
-TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[row_filter][expression]")
 {
     // Two-column enum table: col 0 is "category" (a/b), col 1 is
     // "region" (x/y). A row is accepted iff category=a AND region=x.
@@ -1009,7 +1009,7 @@ TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_f
     CHECK_FALSE(EvaluateExpression(andExpr, table, 3)); // b,y (both reject)
 }
 
-TEST_CASE("EvaluateExpression: OR short-circuits when a child accepts", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: OR short-circuits when a child accepts", "[row_filter][expression]")
 {
     const MemoryLogFile fixture("log_filter_expr_or.json");
     fixture.Write("");
@@ -1030,7 +1030,7 @@ TEST_CASE("EvaluateExpression: OR short-circuits when a child accepts", "[log_fi
     }
 }
 
-TEST_CASE("EvaluateExpression: NOT inverts its child", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: NOT inverts its child", "[row_filter][expression]")
 {
     const MemoryLogFile fixture("log_filter_expr_not.json");
     fixture.Write("");
@@ -1047,7 +1047,7 @@ TEST_CASE("EvaluateExpression: NOT inverts its child", "[log_filter][expression]
     }
 }
 
-TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expression]")
+TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[row_filter][expression]")
 {
     // Same 2-column shape as the AND short-circuit test above.
     const MemoryLogFile fixture("log_filter_expr_composite.json");
@@ -1107,7 +1107,7 @@ TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expr
     CHECK_FALSE(EvaluateExpression(expr, table, 5)); // (c,y)
 }
 
-TEST_CASE("FilterAcceptedRows: visit-path result matches sequential reference", "[log_filter][expression]")
+TEST_CASE("FilterAcceptedRows: visit-path result matches sequential reference", "[row_filter][expression]")
 {
     const MemoryLogFile fixture("log_filter_accepted_visit.json");
     fixture.Write("");
@@ -1134,7 +1134,7 @@ TEST_CASE("FilterAcceptedRows: visit-path result matches sequential reference", 
 
 TEST_CASE(
     "FilterAcceptedRows: bitset materialisation matches visit-path output on complex trees",
-    "[log_filter][expression][bitset]"
+    "[row_filter][expression][bitset]"
 )
 {
     // Force the bitset path: >=4 unique leaves over enough rows that
@@ -1179,7 +1179,7 @@ TEST_CASE(
     CHECK(parallel == sequential);
 }
 
-TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", "[log_filter][expression]")
+TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", "[row_filter][expression]")
 {
     // Ordering is monotonic (relative to observed benchmark cost);
     // exact numbers don't matter but the ranks matter because
@@ -1218,12 +1218,12 @@ TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", 
 // interior nodes -- empty `And{}`, empty `Or{}`, and `Not{child=null}`
 // nested inside a two-plus-leaf `Or` -- so `EvaluateExpressionBitset`
 // takes the `FillTrue` / zero-init branches at
-// `lib/src/query/log_filter.cpp:722-724` / `:740-741` / `:760-762`.
+// `lib/src/query/row_filter.cpp:722-724` / `:740-741` / `:760-762`.
 // Every test picks a rowCount that isn't a multiple of `WORD_BITS`
 // (64), so `MaskTail` also has to work for the `Count()`/`CollectInto`
 // helpers to return the right number of rows.
 //
-// Eligibility check (`ShouldUseBitsetPath`, log_filter.cpp:495-517):
+// Eligibility check (`ShouldUseBitsetPath`, row_filter.cpp:495-517):
 //   rowCount >= 1 AND leafCount >= 2 AND (hasOr OR hasNot).
 // Every tree below uses two enum leaves next to the degenerate node,
 // so the sibling leaves force `leafCount >= 2` even when the
@@ -1231,7 +1231,7 @@ TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", 
 // contributes 0; a null-child `Not` contributes 0 too).
 // -----------------------------------------------------------------------
 
-TEST_CASE("FilterAcceptedRows: bitset path handles an empty And{} nested inside Or", "[log_filter][expression][bitset]")
+TEST_CASE("FilterAcceptedRows: bitset path handles an empty And{} nested inside Or", "[row_filter][expression][bitset]")
 {
     // 100 rows -> `rowCount` isn't a multiple of `WORD_BITS`; the
     // tail-mask branch of `MaskTail` must fire on `FillTrue`.
@@ -1257,7 +1257,7 @@ TEST_CASE("FilterAcceptedRows: bitset path handles an empty And{} nested inside 
     CHECK(accepted.size() == table.RowCount());
 }
 
-TEST_CASE("FilterAcceptedRows: bitset path handles an empty Or{} nested inside Or", "[log_filter][expression][bitset]")
+TEST_CASE("FilterAcceptedRows: bitset path handles an empty Or{} nested inside Or", "[row_filter][expression][bitset]")
 {
     const MemoryLogFile fixture("log_filter_bitset_empty_or.json");
     fixture.Write("");
@@ -1288,7 +1288,7 @@ TEST_CASE("FilterAcceptedRows: bitset path handles an empty Or{} nested inside O
 }
 
 TEST_CASE(
-    "FilterAcceptedRows: bitset path handles Not{child=null} nested inside Or", "[log_filter][expression][bitset]"
+    "FilterAcceptedRows: bitset path handles Not{child=null} nested inside Or", "[row_filter][expression][bitset]"
 )
 {
     const MemoryLogFile fixture("log_filter_bitset_null_not.json");
@@ -1316,7 +1316,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "FilterAcceptedRows: bitset path respects MaskTail on a non-64-aligned rowCount", "[log_filter][expression][bitset]"
+    "FilterAcceptedRows: bitset path respects MaskTail on a non-64-aligned rowCount", "[row_filter][expression][bitset]"
 )
 {
     // 130 rows -> two full words (128 bits) plus 2 tail bits. If
@@ -1345,10 +1345,10 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "FilterAcceptedRows: empty table returns no rows without engaging either evaluator path", "[log_filter][expression]"
+    "FilterAcceptedRows: empty table returns no rows without engaging either evaluator path", "[row_filter][expression]"
 )
 {
-    // Zero-row short-circuit at `log_filter.cpp:832-834`: neither
+    // Zero-row short-circuit at `row_filter.cpp:832-834`: neither
     // the visit nor the bitset path can produce a row, so the
     // caller returns an empty vector immediately. Not a bitset-
     // path test per se, but it's the sibling degenerate case that

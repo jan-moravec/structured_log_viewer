@@ -15,7 +15,7 @@ void RegisterDecompressionBenchmarks();
 void RegisterExportBenchmarks();
 void RegisterHistogramBucketIndexBenchmarks();
 void RegisterJsonBenchmarks();
-void RegisterLogFilterBenchmarks();
+void RegisterRowFilterBenchmarks();
 void RegisterLogfmtBenchmarks();
 void RegisterMemoryBenchmarks();
 void RegisterNetworkBenchmarks();

@@ -4,7 +4,7 @@
 
 #include <loglib/core/key_index.hpp>
 #include <loglib/query/log_compare.hpp>
-#include <loglib/query/log_filter.hpp>
+#include <loglib/query/row_filter.hpp>
 #include <loglib/query/row_ordering.hpp>
 
 #include <QAbstractProxyModel>
