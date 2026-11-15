@@ -159,8 +159,8 @@ TEST_CASE("FileLineSource: ResolveOwnedBytes indexes into the owned-string arena
 
     FileLineSource source(testLogFile.GetFilePath());
 
-    const auto firstOffset = source.AppendOwnedBytes(0, "first");
-    const auto secondOffset = source.AppendOwnedBytes(0, "second");
+    const auto firstOffset = source.AppendOwnedBytes("first");
+    const auto secondOffset = source.AppendOwnedBytes("second");
     REQUIRE(firstOffset == 0);
     REQUIRE(secondOffset == 5);
 
@@ -178,8 +178,8 @@ TEST_CASE("FileLineSource: TryExtendOwnedString extends only the newest string",
     testLogFile.Write("x\n");
 
     FileLineSource source(testLogFile.GetFilePath());
-    const auto first = source.AppendOwnedBytes(0, "first");
-    const auto second = source.AppendOwnedBytes(0, "second");
+    const auto first = source.AppendOwnedBytes("first");
+    const auto second = source.AppendOwnedBytes("second");
 
     CHECK_FALSE(source.TryExtendOwnedString(first, 5, "!"));
     CHECK(source.TryExtendOwnedString(second, 6, "!"));
@@ -314,7 +314,7 @@ TEST_CASE("FileLineSource::FromBytes keeps views valid while the arena grows", "
 
     const char *const dataBefore = source->StableBytes().data();
     const std::string_view mappedView = source->ResolveMmapBytes(0, 5, /*lineId=*/0);
-    const uint64_t firstOffset = source->AppendOwnedBytes(0, "first");
+    const uint64_t firstOffset = source->AppendOwnedBytes("first");
     const std::string_view ownedView = source->ResolveOwnedBytes(firstOffset, 5, /*lineId=*/0);
     const char *const ownedData = ownedView.data();
 
@@ -322,7 +322,7 @@ TEST_CASE("FileLineSource::FromBytes keeps views valid while the arena grows", "
     const std::string filler(10'000, 'x');
     for (int i = 0; i < 2'000; ++i)
     {
-        source->AppendOwnedBytes(0, filler);
+        source->AppendOwnedBytes(filler);
     }
 
     CHECK(source->StableBytes().data() == dataBefore);

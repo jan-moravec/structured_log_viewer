@@ -107,7 +107,11 @@ public:
     /** @brief The mapped bytes, or the bytes given to FromBytes. Empty for an empty file. */
     [[nodiscard]] std::span<const char> StableBytes() const noexcept override;
 
-    /** @brief Appends bytes to the owned-string arena, which every line shares. Safe from any thread. */
+    /** @brief Appends bytes to the owned-string arena, which every line shares, and returns their offset. Safe from any
+     * thread. */
+    uint64_t AppendOwnedBytes(std::string_view bytes);
+
+    /** @brief Same as the overload without a line id. A file source ignores the id. */
     uint64_t AppendOwnedBytes(size_t lineId, std::string_view bytes) override;
 
     [[nodiscard]] bool SupportsEviction() const noexcept override;

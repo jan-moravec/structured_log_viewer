@@ -111,7 +111,11 @@ public:
         return mSlicesOutliveRows;
     }
 
-    /** @brief Stores decoded bytes for a line and returns the offset to put in its OwnedString cell. */
+    /**
+     * @brief Stores decoded bytes for a line and returns the offset to put in its OwnedString cell. Only a stream
+     * source uses the line id, to keep the bytes with their line so that eviction frees them. A file source keeps one
+     * arena for every line.
+     */
     virtual uint64_t AppendOwnedBytes(size_t lineId, std::string_view bytes) = 0;
 
     /** @brief True when EvictBefore removes lines. A file source cannot evict. */
