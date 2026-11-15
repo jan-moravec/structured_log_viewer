@@ -15,6 +15,7 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "main_window.hpp"
+#include "network_stream_dialog.hpp"
 #include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
 #include "qstring_path.hpp"
@@ -52,6 +53,7 @@
 #include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
@@ -5144,6 +5146,74 @@ private slots:
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(configPath));
         QCoreApplication::processEvents();
         QCOMPARE(dock->Count(), 1);
+    }
+
+    // The dialog returns the picked template's pattern with its continuation settings, and for a custom pattern the
+    // settings the user entered, even when the custom pattern equals a template's pattern.
+    void TestNetworkDialogReturnsItsTemplateAsOneValue()
+    {
+        const loglib::RegexTemplate *withContinuation = nullptr;
+        for (const loglib::RegexTemplate &tmpl : loglib::BuiltinRegexTemplates())
+        {
+            if (tmpl.continuationMode != loglib::ContinuationMode::None)
+            {
+                withContinuation = &tmpl;
+                break;
+            }
+        }
+        QVERIFY2(withContinuation != nullptr, "a built-in template with continuation lines must exist");
+
+        NetworkStreamDialog dialog;
+        auto *templates = dialog.findChild<QComboBox *>(QStringLiteral("networkRegexTemplate"));
+        auto *pattern = dialog.findChild<QLineEdit *>(QStringLiteral("networkRegexPattern"));
+        auto *continuation = dialog.findChild<QComboBox *>(QStringLiteral("networkRegexContinuation"));
+        auto *anchor = dialog.findChild<QLineEdit *>(QStringLiteral("networkRegexHeaderAnchor"));
+        QVERIFY(templates != nullptr && pattern != nullptr && continuation != nullptr && anchor != nullptr);
+
+        const int templateIdx = templates->findData(QString::fromStdString(withContinuation->name));
+        QVERIFY(templateIdx >= 0);
+        templates->setCurrentIndex(templateIdx);
+        NetworkStreamDialog::Config picked = dialog.Configuration();
+        QCOMPARE(picked.regex.pattern.toStdString(), withContinuation->pattern);
+        QCOMPARE(picked.regex.continuationMode, withContinuation->continuationMode);
+        QCOMPARE(picked.regex.headerAnchor.toStdString(), withContinuation->headerAnchor);
+
+        // Custom pattern with the template's own pattern text and other settings.
+        templates->setCurrentIndex(templates->findData(QString{}));
+        pattern->setText(QString::fromStdString(withContinuation->pattern));
+        continuation->setCurrentIndex(continuation->findData(static_cast<int>(loglib::ContinuationMode::None)));
+        anchor->setText(QString{});
+        const NetworkStreamDialog::Config custom = dialog.Configuration();
+        QCOMPARE(custom.regex.pattern.toStdString(), withContinuation->pattern);
+        QCOMPARE(custom.regex.continuationMode, loglib::ContinuationMode::None);
+        QVERIFY(custom.regex.headerAnchor.isEmpty());
+    }
+
+    // A network session keeps the continuation settings of the dialog's value. A custom pattern equal to a built-in
+    // template's pattern is not given that template's settings.
+    void TestNetworkSessionKeepsUserContinuationSettings()
+    {
+        const loglib::RegexTemplate &tmpl = loglib::BuiltinRegexTemplates().front();
+        const loglib::ContinuationMode userMode = tmpl.continuationMode == loglib::ContinuationMode::Indented
+                                                      ? loglib::ContinuationMode::None
+                                                      : loglib::ContinuationMode::Indented;
+
+        NetworkStreamDialog::Config cfg;
+        cfg.protocol = NetworkStreamDialog::Protocol::Udp;
+        cfg.format = NetworkStreamDialog::Format::Regex;
+        cfg.regex.pattern = QString::fromStdString(tmpl.pattern);
+        cfg.regex.continuationMode = userMode;
+        cfg.bindAddress = QStringLiteral("127.0.0.1");
+        cfg.port = 0;
+
+        mWindow->StartNetworkStreamForTest(cfg, 1024 * 1024);
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        QCOMPARE(source->regexPattern, tmpl.pattern);
+        QCOMPARE(source->regexContinuationMode, userMode);
+        QVERIFY(source->regexHeaderAnchor.empty());
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
     }
 
     void TestGotoLineFilteredOutRowSurfacesSpecificHint()

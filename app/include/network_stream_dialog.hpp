@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loglib/schema/source_descriptor.hpp>
+
 #include <QDialog>
 #include <QString>
 
@@ -13,6 +15,10 @@ class QRadioButton;
 class QSpinBox;
 class QGroupBox;
 class RegexTemplateRegistry;
+namespace loglib
+{
+struct RegexTemplate;
+}
 
 /// Modal dialog for `MainWindow::OpenNetworkStream`. Lets the user
 /// pick a protocol (TCP or UDP), a bind address + port, and (TCP-only,
@@ -53,16 +59,26 @@ public:
         Regex,
     };
 
+    /// The regex the user chose, as one value: a template's pattern with its
+    /// continuation settings, or a custom pattern with the settings the user
+    /// entered next to it. Only meaningful when `format == Regex`.
+    struct RegexChoice
+    {
+        QString pattern;
+        loglib::ContinuationMode continuationMode = loglib::ContinuationMode::None;
+        /// Pattern of the first line of a record; used with `UntilNextHeader`.
+        /// Empty means the pattern itself.
+        QString headerAnchor;
+    };
+
     /// Resolved configuration; populated only after the dialog is
     /// `accept()`ed. Inspect via the public getters below.
     struct Config
     {
         Protocol protocol = Protocol::Tcp;
         Format format = Format::AutoDetect;
-        /// PCRE2 pattern; only populated when `format == Regex`.
-        /// Either the selected template's pattern or a free-text
-        /// user-supplied one.
-        QString regexPattern;
+        /// Only populated when `format == Regex`.
+        RegexChoice regex;
         QString bindAddress;
         uint16_t port = 0;
         size_t maxConcurrentClients = 16; // TCP-only
@@ -98,6 +114,8 @@ private slots:
 private:
     void LoadFromSettings();
     void SaveToSettings() const;
+    /// Shows a template's pattern, continuation mode and header anchor.
+    void ShowTemplate(const loglib::RegexTemplate &tmpl);
 
     QRadioButton *mTcpRadio = nullptr;
     QRadioButton *mUdpRadio = nullptr;
@@ -112,6 +130,10 @@ private:
     QGroupBox *mRegexGroup = nullptr;
     QComboBox *mRegexTemplate = nullptr;
     QLineEdit *mRegexPattern = nullptr;
+    /// Continuation mode and header anchor of the regex. Filled from the
+    /// template and read-only for a template; editable for a custom pattern.
+    QComboBox *mRegexContinuation = nullptr;
+    QLineEdit *mRegexHeaderAnchor = nullptr;
     QLineEdit *mBindAddress = nullptr;
     QSpinBox *mPort = nullptr;
     QSpinBox *mMaxConcurrentClients = nullptr;

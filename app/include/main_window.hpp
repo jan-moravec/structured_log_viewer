@@ -10,6 +10,7 @@
 #include "log_session.hpp"
 #include "log_session_view.hpp"
 #include "log_table_view.hpp"
+#include "network_stream_dialog.hpp"
 #include "overview_rail_model.hpp"
 #include "overview_rail_widget.hpp"
 #include "parse_errors_dock.hpp"
@@ -1433,6 +1434,13 @@ public:
     }
 
     /**
+     * @brief Starts a network session from @p cfg without showing the dialog.
+     * @param cfg Network stream configuration, as the dialog would return it.
+     * @param maxQueueBytes Queue limit of the producer. A small value lets a test make it drop bytes.
+     */
+    void StartNetworkStreamForTest(const NetworkStreamDialog::Config &cfg, std::size_t maxQueueBytes);
+
+    /**
      * @brief Export a bundle without showing the dialog, using production
      * preflight checks and default zstd settings.
      * @param destination The `destination` value.
@@ -1617,6 +1625,12 @@ private slots:
      * call `LogModel::BeginStreaming`.
      */
     void OpenNetworkStream();
+    /**
+     * @brief Builds the producer for @p cfg and starts a network session on the active tab.
+     * @param cfg What the network stream dialog returned.
+     * @param maxQueueBytes Overrides the producer's queue limit. Empty keeps the producer's default.
+     */
+    void StartNetworkStream(const NetworkStreamDialog::Config &cfg, std::optional<std::size_t> maxQueueBytes);
     /**
      * @brief "Save Configuration\u2026" -- writes the portable
      * columns-only slice.

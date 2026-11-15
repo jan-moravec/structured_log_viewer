@@ -5590,6 +5590,11 @@ void MainWindow::ExportSessionBundle()
     BeginAsyncBundleExport(logapp::QStringToFsPath(config.destination), config.compressionLevel, config.totalWorkers);
 }
 
+void MainWindow::StartNetworkStreamForTest(const NetworkStreamDialog::Config &cfg, std::size_t maxQueueBytes)
+{
+    StartNetworkStream(cfg, maxQueueBytes);
+}
+
 void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
 {
     // Run production preflight without showing the dialog.
@@ -6618,8 +6623,11 @@ void MainWindow::OpenNetworkStream()
     {
         return;
     }
-    const auto cfg = dialog.Configuration();
+    StartNetworkStream(dialog.Configuration(), std::nullopt);
+}
 
+void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std::optional<std::size_t> maxQueueBytes)
+{
     std::unique_ptr<loglib::BytesProducer> producer;
     std::string displayName;
     try
@@ -6630,6 +6638,10 @@ void MainWindow::OpenNetworkStream()
             opts.bindAddress = cfg.bindAddress.toStdString();
             opts.port = cfg.port;
             opts.maxConcurrentClients = cfg.maxConcurrentClients;
+            if (maxQueueBytes.has_value())
+            {
+                opts.maxQueueBytes = *maxQueueBytes;
+            }
             if (cfg.tlsEnabled)
             {
                 opts.tls.emplace();
@@ -6647,6 +6659,10 @@ void MainWindow::OpenNetworkStream()
             loglib::UdpServerProducer::Options opts;
             opts.bindAddress = cfg.bindAddress.toStdString();
             opts.port = cfg.port;
+            if (maxQueueBytes.has_value())
+            {
+                opts.maxQueueBytes = *maxQueueBytes;
+            }
             auto udp = std::make_unique<loglib::UdpServerProducer>(std::move(opts));
             displayName = udp->DisplayName();
             producer = std::move(udp);
@@ -6737,19 +6753,10 @@ void MainWindow::OpenNetworkStream()
         .kind = loglib::Source::Kind::NetworkStream,
         .format = dialogFormat,
         .locators = {{displayName, displayName}},
-        .regexPattern = cfg.regexPattern.toStdString(),
+        .regexPattern = cfg.regex.pattern.toStdString(),
+        .regexContinuationMode = cfg.regex.continuationMode,
+        .regexHeaderAnchor = cfg.regex.headerAnchor.toStdString(),
     };
-    // The dialog gives only a pattern. If it is a known template, keep the template's continuation settings with the
-    // source, so the saved session parses multi-line records the same way after the template is deleted.
-    if (auto &networkSource = mSession->MutableCurrentSource();
-        networkSource.has_value() && networkSource->format == loglib::Source::Format::Regex)
-    {
-        if (const auto tmpl = loglib::FindTemplateByPattern(networkSource->regexPattern); tmpl.has_value())
-        {
-            networkSource->regexContinuationMode = tmpl->continuationMode;
-            networkSource->regexHeaderAnchor = tmpl->headerAnchor;
-        }
-    }
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
     SetConfigurationUiEnabled(false);
