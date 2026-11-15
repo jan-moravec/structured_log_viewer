@@ -1119,6 +1119,13 @@ MainWindow::MainWindow(
     addAction(mActionToggleParseErrors);
     WireDockToggle(mParseErrorsDock.data(), mActionToggleParseErrors, &ParseErrorsDock::closed);
     connect(mParseErrorsDock, &ParseErrorsDock::countChanged, this, &MainWindow::UpdateParseErrorsStatus);
+    // The dock lists the errors of the session it is bound to, so the jump goes to that session's table.
+    connect(mParseErrorsDock, &ParseErrorsDock::errorActivated, this, [this](quint64 firstLine, quint64 lastLine) {
+        if (LogSessionView *view = LogSessionViewForSession(mParseErrorsDock->BoundSession()); view != nullptr)
+        {
+            view->GotoParseErrorLines(firstLine, lastLine);
+        }
+    });
     // Auto-raise on the first batch of a session, unless the find
     // bar holds focus -- raising would yank focus mid-search. The
     // status-bar indicator is enough notice in that case.

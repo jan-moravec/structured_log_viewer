@@ -104,6 +104,17 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
     setWidget(body);
 
     connect(mClearButton, &QPushButton::clicked, this, &ParseErrorsDock::ClearErrors);
+    connect(mList, &QListWidget::itemActivated, this, [this](const QListWidgetItem *item) {
+        if (item == nullptr)
+        {
+            return;
+        }
+        const quint64 firstLine = item->data(FIRST_LINE_ROLE).toULongLong();
+        if (firstLine != 0)
+        {
+            emit errorActivated(firstLine, item->data(LAST_LINE_ROLE).toULongLong());
+        }
+    });
 
     // Ctrl+C on `body` (not `mList`) so the shortcut still fires
     // after the user clicks Clear (which moves focus off the list).

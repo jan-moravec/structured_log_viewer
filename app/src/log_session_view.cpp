@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -425,6 +426,49 @@ void LogSessionView::ExecuteGotoLine(const QString &input)
         return;
     }
 
+    SelectSourceRow(sourceRow);
+}
+
+void LogSessionView::GotoParseErrorLines(quint64 firstLine, quint64 lastLine)
+{
+    if (mSession == nullptr)
+    {
+        return;
+    }
+    auto *model = mSession->Model();
+    auto *rowOrder = mSession->RowOrderProxy();
+    auto *filterProxy = mSession->FilterProxy();
+    if (model == nullptr || rowOrder == nullptr || filterProxy == nullptr)
+    {
+        return;
+    }
+
+    // Error lines count from 1 and row line ids from 0.
+    int sourceRow = -1;
+    const std::span<const loglib::LogLine> lines = model->Table().Data().Lines();
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+        const quint64 line = static_cast<quint64>(lines[i].LineId()) + 1;
+        if (line >= firstLine && line <= lastLine)
+        {
+            sourceRow = static_cast<int>(i);
+            break;
+        }
+    }
+    const QString lineText =
+        firstLine == lastLine ? QString::number(firstLine) : tr("%1-%2").arg(firstLine).arg(lastLine);
+    if (sourceRow < 0)
+    {
+        emit statusMessageRequested(tr("Line %1 is no longer in the table.").arg(lineText));
+        return;
+    }
+
+    const QModelIndex midIdx = rowOrder->mapFromSource(model->index(sourceRow, 0));
+    if (!midIdx.isValid() || !filterProxy->mapFromSource(midIdx).isValid())
+    {
+        emit statusMessageRequested(tr("Line %1 is currently filtered out.").arg(lineText));
+        return;
+    }
     SelectSourceRow(sourceRow);
 }
 

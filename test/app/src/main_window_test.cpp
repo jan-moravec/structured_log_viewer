@@ -5049,6 +5049,65 @@ private slots:
     // Regression pin: a filter-hidden target must surface the
     // caller-specific "Line %1 is currently filtered out." hint
     // instead of `SelectSourceRow`'s generic fallback.
+    // Activating a parse error that has a line selects the row of that line. A line that is not in the table is
+    // reported in the status bar and the selection stays.
+    void TestParseErrorActivationSelectsTheRowOfItsLine()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(model != nullptr && view != nullptr && dock != nullptr);
+        dock->ResetSessionState();
+
+        QStringList lines;
+        for (int i = 1; i <= 10; ++i)
+        {
+            lines.append(QStringLiteral(R"({"msg": "line-%1"})").arg(i));
+        }
+        const TempJsonFile fixture(lines);
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(test_common::WaitUntil([&] {
+            QCoreApplication::processEvents();
+            return model->rowCount() == 10 && !model->IsStreamingActive();
+        }));
+
+        dock->AppendParseErrors(
+            QStringLiteral("Test errors"),
+            {loglib::ParseError{.firstLine = 5, .lastLine = 5, .message = "bad value"},
+             loglib::ParseError{.firstLine = 99, .lastLine = 99, .message = "gone"}}
+        );
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QListWidgetItem *lineFive = nullptr;
+        QListWidgetItem *lineGone = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            if (list->item(i)->text().contains(QStringLiteral("bad value")))
+            {
+                lineFive = list->item(i);
+            }
+            if (list->item(i)->text().contains(QStringLiteral("gone")))
+            {
+                lineGone = list->item(i);
+            }
+        }
+        QVERIFY(lineFive != nullptr && lineGone != nullptr);
+
+        view->selectionModel()->clearSelection();
+        emit list->itemActivated(lineFive);
+        QCoreApplication::processEvents();
+        const QModelIndexList selected = view->selectionModel()->selectedRows();
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(selected.front().row(), 4);
+
+        view->selectionModel()->clearSelection();
+        mWindow->statusBar()->clearMessage();
+        emit list->itemActivated(lineGone);
+        QCoreApplication::processEvents();
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+        QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("99")));
+    }
+
     void TestGotoLineFilteredOutRowSurfacesSpecificHint()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();

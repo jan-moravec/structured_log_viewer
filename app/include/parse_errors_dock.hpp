@@ -134,6 +134,13 @@ signals:
     /** @brief Emitted for the first batch after construction or reset. */
     void firstBatchArrived();
 
+    /**
+     * @brief Emitted when the user activates an error that has a line, by double-click or Enter.
+     * @param firstLine First line of the error, counted from 1.
+     * @param lastLine Last line of the error, counted from 1.
+     */
+    void errorActivated(quint64 firstLine, quint64 lastLine);
+
     /** @brief Emitted when the user closes the dock. */
     void closed();
 
