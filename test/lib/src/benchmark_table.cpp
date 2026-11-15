@@ -14,7 +14,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stream_line_source.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/query/log_compare.hpp>
 #include <loglib/query/log_filter.hpp>
 #include <loglib/schema/column_layout.hpp>

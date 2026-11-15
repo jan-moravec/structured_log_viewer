@@ -17,8 +17,8 @@
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
 #include <loglib/query/log_filter.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/column_layout.hpp>
@@ -340,7 +340,7 @@ TEST_CASE("ParseQuery rejects excessive nesting instead of overflowing the stack
     CHECK_FALSE(ParseQuery(notChain + "n>1", TimeZoneContext{}).has_value());
 }
 
-TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule_compile][level]")
+TEST_CASE("A level selection with no matching rows matches nothing", "[filter_compile][level]")
 {
     ParseResult result = ParseText(JsonParser{}, "{\"level\":\"info\"}\n{\"level\":\"warn\"}\n{\"level\":\"info\"}\n");
     const LogTable table = TableOf(std::move(result.data));
@@ -357,7 +357,7 @@ TEST_CASE("A level selection with no matching rows matches nothing", "[leaf_rule
     CHECK(rowsFor("NOT level IN [Trace]") == 3);
 }
 
-TEST_CASE("FindFilterProblems reports unknown columns and invalid patterns", "[leaf_rule_compile][problems]")
+TEST_CASE("FindFilterProblems reports unknown columns and invalid patterns", "[filter_compile][problems]")
 {
     const std::vector<Column> columns = {Column{.header = "msg", .keys = {"msg"}}};
     const auto problemsFor = [&](const char *query) {

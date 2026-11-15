@@ -1,6 +1,6 @@
 #include "highlight_rule_set.hpp"
 
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 
 #include <loglib/query/log_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>

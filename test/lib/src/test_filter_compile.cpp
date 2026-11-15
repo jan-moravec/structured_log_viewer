@@ -1,5 +1,5 @@
 // Port of the leaf-rule compile QTest. Covers absent leaves and combinator propagation.
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/query/log_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
@@ -95,19 +95,19 @@ using Leaf = loglib::LeafRule;
 
 } // namespace
 
-TEST_CASE("ResolveEmptyKeysReturnsMinusOne", "[leaf_rule_compile]")
+TEST_CASE("ResolveEmptyKeysReturnsMinusOne", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     REQUIRE(loglib::ResolveLeafColumnByKeys({}, columns) == -1);
 }
 
-TEST_CASE("ResolveKeysNoMatchReturnsMinusOne", "[leaf_rule_compile]")
+TEST_CASE("ResolveKeysNoMatchReturnsMinusOne", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     REQUIRE(loglib::ResolveLeafColumnByKeys({"missing"}, columns) == -1);
 }
 
-TEST_CASE("ResolveKeysSubsetMatchesFirstColumn", "[leaf_rule_compile]")
+TEST_CASE("ResolveKeysSubsetMatchesFirstColumn", "[filter_compile]")
 {
     Column withAlias;
     withAlias.header = "level";
@@ -117,7 +117,7 @@ TEST_CASE("ResolveKeysSubsetMatchesFirstColumn", "[leaf_rule_compile]")
     REQUIRE(loglib::ResolveLeafColumnByKeys({"level"}, columns) == 0);
 }
 
-TEST_CASE("ResolveKeysReturnsFirstMatchIndex", "[leaf_rule_compile]")
+TEST_CASE("ResolveKeysReturnsFirstMatchIndex", "[filter_compile]")
 {
     const std::vector<Column> columns{
         MakeColumn("service", "service", loglib::ColumnType::String),
@@ -126,21 +126,21 @@ TEST_CASE("ResolveKeysReturnsFirstMatchIndex", "[leaf_rule_compile]")
     REQUIRE(loglib::ResolveLeafColumnByKeys({"level"}, columns) == 1);
 }
 
-TEST_CASE("CompileLeafUnresolvedColumnAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileLeafUnresolvedColumnAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("level", Leaf::Match::Contains, "warn");
     REQUIRE_FALSE(loglib::CompileLeaf(rule, /*resolvedColumn=*/-1, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileTimeLeafNoBoundsAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileTimeLeafNoBoundsAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
     const Leaf rule = MakeTimeLeaf("ts", std::nullopt, std::nullopt);
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileTimeLeafLowerOnlyProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileTimeLeafLowerOnlyProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
     const Leaf rule = MakeTimeLeaf("ts", std::int64_t{0}, std::nullopt);
@@ -149,7 +149,7 @@ TEST_CASE("CompileTimeLeafLowerOnlyProduces", "[leaf_rule_compile]")
     REQUIRE(std::holds_alternative<loglib::TimeRangeRowPredicate>(*compiled));
 }
 
-TEST_CASE("CompileTimeLeafUpperOnlyProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileTimeLeafUpperOnlyProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
     const Leaf rule = MakeTimeLeaf("ts", std::nullopt, std::int64_t{1000});
@@ -157,7 +157,7 @@ TEST_CASE("CompileTimeLeafUpperOnlyProduces", "[leaf_rule_compile]")
     REQUIRE(compiled.has_value());
 }
 
-TEST_CASE("CompileTimeLeafBothBoundsProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileTimeLeafBothBoundsProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
     const Leaf rule = MakeTimeLeaf("ts", std::int64_t{0}, std::int64_t{1000});
@@ -165,7 +165,7 @@ TEST_CASE("CompileTimeLeafBothBoundsProduces", "[leaf_rule_compile]")
     REQUIRE(compiled.has_value());
 }
 
-TEST_CASE("CompileTimeLeafImpossibleRangeRejectsEveryRow", "[leaf_rule_compile]")
+TEST_CASE("CompileTimeLeafImpossibleRangeRejectsEveryRow", "[filter_compile]")
 {
     // A saved filter can hold a range that ends before the epoch or before it begins. It must keep matching no row
     // rather than be dropped, which would match every row.
@@ -184,14 +184,14 @@ TEST_CASE("CompileTimeLeafImpossibleRangeRejectsEveryRow", "[leaf_rule_compile]"
     }
 }
 
-TEST_CASE("CompileNumberLeafNoBoundsAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileNumberLeafNoBoundsAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};
     const Leaf rule = MakeNumberLeaf("latency", std::nullopt, std::nullopt);
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileNumberLeafLowerOnlyProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileNumberLeafLowerOnlyProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};
     const Leaf rule = MakeNumberLeaf("latency", 100.0, std::nullopt);
@@ -200,7 +200,7 @@ TEST_CASE("CompileNumberLeafLowerOnlyProduces", "[leaf_rule_compile]")
     REQUIRE(std::holds_alternative<loglib::NumericRangeRowPredicate>(*compiled));
 }
 
-TEST_CASE("CompileNumberLeafUpperOnlyProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileNumberLeafUpperOnlyProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};
     const Leaf rule = MakeNumberLeaf("latency", std::nullopt, 100.0);
@@ -208,21 +208,21 @@ TEST_CASE("CompileNumberLeafUpperOnlyProduces", "[leaf_rule_compile]")
     REQUIRE(compiled.has_value());
 }
 
-TEST_CASE("CompileBooleanLeafEmptyValuesAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileBooleanLeafEmptyValuesAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
     const Leaf rule = MakeBooleanLeaf("ok", {});
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileBooleanLeafOnlyGarbageValuesAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileBooleanLeafOnlyGarbageValuesAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
     const Leaf rule = MakeBooleanLeaf("ok", {"maybe", "yes", "no"});
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileBooleanLeafTrueOnlyProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileBooleanLeafTrueOnlyProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
     const Leaf rule = MakeBooleanLeaf("ok", {"true"});
@@ -231,14 +231,14 @@ TEST_CASE("CompileBooleanLeafTrueOnlyProduces", "[leaf_rule_compile]")
     REQUIRE(std::holds_alternative<loglib::BoolRowPredicate>(*compiled));
 }
 
-TEST_CASE("CompileBooleanLeafCaseInsensitive", "[leaf_rule_compile]")
+TEST_CASE("CompileBooleanLeafCaseInsensitive", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
     const Leaf rule = MakeBooleanLeaf("ok", {"True", "FALSE"});
     REQUIRE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileEnumLeafEmptyValuesAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileEnumLeafEmptyValuesAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Enumeration)};
     const Leaf rule = MakeEnumLeaf("level", {});
@@ -246,14 +246,14 @@ TEST_CASE("CompileEnumLeafEmptyValuesAbsent", "[leaf_rule_compile]")
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, &table).has_value());
 }
 
-TEST_CASE("CompileEnumLeafNullTableAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileEnumLeafNullTableAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Enumeration)};
     const Leaf rule = MakeEnumLeaf("level", {"Info", "Warn"});
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileEnumLeafNonLevelWithEmptyTableProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileEnumLeafNonLevelWithEmptyTableProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Enumeration)};
     const Leaf rule = MakeEnumLeaf("level", {"Info", "Warn"});
@@ -263,7 +263,7 @@ TEST_CASE("CompileEnumLeafNonLevelWithEmptyTableProduces", "[leaf_rule_compile]"
     REQUIRE(std::holds_alternative<loglib::EnumRowPredicate>(*compiled));
 }
 
-TEST_CASE("CompileEnumLeafLevelColumnNullRankCacheAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileEnumLeafLevelColumnNullRankCacheAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Level)};
     const Leaf rule = MakeEnumLeaf("level", {"Info"});
@@ -271,7 +271,7 @@ TEST_CASE("CompileEnumLeafLevelColumnNullRankCacheAbsent", "[leaf_rule_compile]"
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, &table).has_value());
 }
 
-TEST_CASE("CompileStringLeafNoNeedleAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafNoNeedleAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     Leaf rule;
@@ -282,7 +282,7 @@ TEST_CASE("CompileStringLeafNoNeedleAbsent", "[leaf_rule_compile]")
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileStringLeafNoMatchTypeAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafNoMatchTypeAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     Leaf rule;
@@ -293,28 +293,28 @@ TEST_CASE("CompileStringLeafNoMatchTypeAbsent", "[leaf_rule_compile]")
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileStringLeafContainsEmptyAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafContainsEmptyAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Contains, std::string{});
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileStringLeafWildcardEmptyAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafWildcardEmptyAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Wildcard, std::string{});
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileStringLeafRegexEmptyAbsent", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafRegexEmptyAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("msg", Leaf::Match::RegularExpression, std::string{});
     REQUIRE_FALSE(loglib::CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
 }
 
-TEST_CASE("CompileStringLeafExactlyEmptyProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafExactlyEmptyProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Exactly, std::string{});
@@ -322,7 +322,7 @@ TEST_CASE("CompileStringLeafExactlyEmptyProduces", "[leaf_rule_compile]")
     REQUIRE(compiled.has_value());
 }
 
-TEST_CASE("CompileStringLeafContainsProduces", "[leaf_rule_compile]")
+TEST_CASE("CompileStringLeafContainsProduces", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Contains, std::string{"warn"});
@@ -331,7 +331,7 @@ TEST_CASE("CompileStringLeafContainsProduces", "[leaf_rule_compile]")
     REQUIRE(std::holds_alternative<loglib::CallbackStringRowPredicate>(*compiled));
 }
 
-TEST_CASE("CompileExprEmptyInputAndIsMatchAll", "[leaf_rule_compile]")
+TEST_CASE("CompileExprEmptyInputAndIsMatchAll", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     const loglib::FilterExpression expr = loglib::MakeAnd({});
@@ -339,7 +339,7 @@ TEST_CASE("CompileExprEmptyInputAndIsMatchAll", "[leaf_rule_compile]")
     REQUIRE(loglib::IsMatchAllCompiled(compiled));
 }
 
-TEST_CASE("CompileExprAllAbsentAndAtRootRendersMatchAll", "[leaf_rule_compile]")
+TEST_CASE("CompileExprAllAbsentAndAtRootRendersMatchAll", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     // Both leaves reference an unknown column; the entire
@@ -352,7 +352,7 @@ TEST_CASE("CompileExprAllAbsentAndAtRootRendersMatchAll", "[leaf_rule_compile]")
     REQUIRE(loglib::IsMatchAllCompiled(compiled));
 }
 
-TEST_CASE("CompileExprAllAbsentOrAtRootRendersMatchAll", "[leaf_rule_compile]")
+TEST_CASE("CompileExprAllAbsentOrAtRootRendersMatchAll", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     std::vector<loglib::FilterExpression> children;
@@ -363,7 +363,7 @@ TEST_CASE("CompileExprAllAbsentOrAtRootRendersMatchAll", "[leaf_rule_compile]")
     REQUIRE(loglib::IsMatchAllCompiled(compiled));
 }
 
-TEST_CASE("CompileExprNotOverAbsentChildAtRootRendersMatchAll", "[leaf_rule_compile]")
+TEST_CASE("CompileExprNotOverAbsentChildAtRootRendersMatchAll", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     const loglib::FilterExpression expr =
@@ -372,7 +372,7 @@ TEST_CASE("CompileExprNotOverAbsentChildAtRootRendersMatchAll", "[leaf_rule_comp
     REQUIRE(loglib::IsMatchAllCompiled(compiled));
 }
 
-TEST_CASE("CompileExprNotNullChildIsMatchAll", "[leaf_rule_compile]")
+TEST_CASE("CompileExprNotNullChildIsMatchAll", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     loglib::FilterExpression expr;
@@ -381,7 +381,7 @@ TEST_CASE("CompileExprNotNullChildIsMatchAll", "[leaf_rule_compile]")
     REQUIRE(loglib::IsMatchAllCompiled(compiled));
 }
 
-TEST_CASE("CompileExprAndDropsAbsentChild", "[leaf_rule_compile]")
+TEST_CASE("CompileExprAndDropsAbsentChild", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
     std::vector<loglib::FilterExpression> children;
@@ -396,7 +396,7 @@ TEST_CASE("CompileExprAndDropsAbsentChild", "[leaf_rule_compile]")
     REQUIRE(AsCompiledLeaf(andNode->children.front()) != nullptr);
 }
 
-TEST_CASE("CompileExprOrDropsAbsentChild", "[leaf_rule_compile]")
+TEST_CASE("CompileExprOrDropsAbsentChild", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
     std::vector<loglib::FilterExpression> children;
@@ -410,7 +410,7 @@ TEST_CASE("CompileExprOrDropsAbsentChild", "[leaf_rule_compile]")
     REQUIRE(AsCompiledLeaf(orNode->children.front()) != nullptr);
 }
 
-TEST_CASE("CompileExprNestedAllAbsentOrDropsFromAnd", "[leaf_rule_compile]")
+TEST_CASE("CompileExprNestedAllAbsentOrDropsFromAnd", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
     std::vector<loglib::FilterExpression> orChildren;
@@ -428,7 +428,7 @@ TEST_CASE("CompileExprNestedAllAbsentOrDropsFromAnd", "[leaf_rule_compile]")
     REQUIRE(andNode->children.size() == std::size_t{1});
 }
 
-TEST_CASE("CompileExprReferencedColumnsAreDeduped", "[leaf_rule_compile]")
+TEST_CASE("CompileExprReferencedColumnsAreDeduped", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
     std::vector<loglib::FilterExpression> children;
@@ -440,7 +440,7 @@ TEST_CASE("CompileExprReferencedColumnsAreDeduped", "[leaf_rule_compile]")
     REQUIRE(compiled.referencedColumns.front() == std::size_t{0});
 }
 
-TEST_CASE("CompileExprReferencedColumnsAreSortedAndDistinct", "[leaf_rule_compile]")
+TEST_CASE("CompileExprReferencedColumnsAreSortedAndDistinct", "[filter_compile]")
 {
     const std::vector<Column> columns{
         MakeColumn("svc", "svc", loglib::ColumnType::String),
@@ -458,7 +458,7 @@ TEST_CASE("CompileExprReferencedColumnsAreSortedAndDistinct", "[leaf_rule_compil
     REQUIRE(compiled.referencedColumns[1] == std::size_t{1});
 }
 
-TEST_CASE("CompileExprSingleLeafStaysLeaf", "[leaf_rule_compile]")
+TEST_CASE("CompileExprSingleLeafStaysLeaf", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
     const loglib::FilterExpression expr = loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "auth"));
@@ -466,7 +466,7 @@ TEST_CASE("CompileExprSingleLeafStaysLeaf", "[leaf_rule_compile]")
     REQUIRE(AsCompiledLeaf(compiled) != nullptr);
 }
 
-TEST_CASE("CompileExprNotOverResolvableLeafProducesNot", "[leaf_rule_compile]")
+TEST_CASE("CompileExprNotOverResolvableLeafProducesNot", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
     const loglib::FilterExpression expr =

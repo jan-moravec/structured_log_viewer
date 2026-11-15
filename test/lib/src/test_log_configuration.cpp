@@ -1,7 +1,7 @@
 #include "common.hpp"
 
 #include <loglib/core/error.hpp>
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>

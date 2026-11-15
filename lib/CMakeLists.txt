@@ -56,7 +56,7 @@ add_library(
     src/core/log_level.cpp
     src/core/log_line.cpp
     src/parse/log_parser.cpp
-    src/query/leaf_rule_compile.cpp
+    src/query/filter_compile.cpp
     src/query/log_string_matcher.cpp
     src/time/time_zone_context.cpp
     src/time/timestamp_formatter.cpp
@@ -120,7 +120,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/schema/highlight_rule.hpp
     include/loglib/query/histogram_bucket_index.hpp
     include/loglib/core/key_index.hpp
-    include/loglib/query/leaf_rule_compile.hpp
+    include/loglib/query/filter_compile.hpp
     include/loglib/core/line_source.hpp
     include/loglib/query/log_compare.hpp
     include/loglib/schema/log_configuration.hpp

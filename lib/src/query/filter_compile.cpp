@@ -1,4 +1,4 @@
-#include "loglib/query/leaf_rule_compile.hpp"
+#include "loglib/query/filter_compile.hpp"
 
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/log_level.hpp"

@@ -47,7 +47,7 @@ add_executable(
     "src/test_histogram_bucket_index.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
-    "src/test_leaf_rule_compile.cpp"
+    "src/test_filter_compile.cpp"
     "src/test_line_bytes_queue.cpp"
     "src/test_column_layout.cpp"
     "src/test_log_configuration.cpp"

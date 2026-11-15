@@ -8,12 +8,12 @@
 // `RebindColumns` after schema growth, `ClearMatches`, key-based
 // identity survives `MoveColumn`, Boolean / Number predicates,
 // and empty-needle rejection. Also hosts a focused regression
-// test for the shared `CompileExpression` path (`leaf_rule_compile`).
+// test for the shared `CompileExpression` path (`filter_compile`).
 
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
-#include <loglib/query/leaf_rule_compile.hpp>
+#include <loglib/query/filter_compile.hpp>
 
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/stop_token.hpp>
