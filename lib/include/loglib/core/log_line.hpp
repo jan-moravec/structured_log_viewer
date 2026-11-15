@@ -144,11 +144,13 @@ public:
     /** @brief Heap bytes owned by this row alone. For the memory benchmark. */
     size_t OwnedMemoryBytes() const;
 
+    /** @brief The number of fields in the row. */
     size_t ValueCount() const noexcept;
 
     /** @brief Adds delta to every OwnedString offset, after the row's strings moved within the source's arena. */
     void RebaseOwnedStringOffsets(uint64_t delta) noexcept;
 
+    /** @brief True if the field for the key is an enumeration cell. */
     bool IsDictRef(KeyId id) const noexcept;
 
     /** @brief The enumeration value id if the field is a DictRef cell, otherwise nullopt. */

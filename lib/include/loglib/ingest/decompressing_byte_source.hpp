@@ -32,6 +32,7 @@ namespace loglib
 class DecompressingByteSource
 {
 public:
+    /** @brief The compression format of the input. None means the file is used as it is. */
     enum class Codec
     {
         None,
@@ -59,6 +60,7 @@ public:
     /** @brief The default cap on the size of the discarded first line, 64 MiB. */
     static constexpr std::size_t DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES = std::size_t{64} << 20U;
 
+    /** @brief The limits and callbacks of one decompression. */
     struct Options
     {
         /**
@@ -118,7 +120,10 @@ public:
      */
     [[nodiscard]] const std::filesystem::path &EffectivePath() const noexcept;
 
+    /** @brief True if the input was compressed, so that EffectivePath is a decompressed copy. */
     [[nodiscard]] bool WasDecompressed() const noexcept;
+
+    /** @brief The codec found in the file, or None for a plain file. */
     [[nodiscard]] Codec DetectedCodec() const noexcept;
 
     /** @brief The size of the input file in bytes. */

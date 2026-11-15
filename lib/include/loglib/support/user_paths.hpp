@@ -2,7 +2,7 @@
  * @brief Per-user folders for application data.
  *
  * Returns the folder where the application keeps user data, such as regex templates, using the platform's standard
- * location. The folder names match the desktop application so both programs share one location. Nothing here creates
+ * location. The folder names match those of the desktop program so that both share one location. Nothing here creates
  * folders.
  *
  * This is part of the support module.
@@ -19,13 +19,13 @@ namespace loglib
 {
 
 /**
- * @brief The organization folder name used by UserDataDirectory. The desktop application uses the same name, so both
+ * @brief The organization folder name used by UserDataDirectory. The desktop program uses the same name, so both
  * share one data folder.
  */
 inline constexpr std::string_view USER_DATA_ORGANIZATION_NAME = "jan-moravec";
 
 /**
- * @brief The application folder name used by UserDataDirectory. The desktop application uses the same name, so both
+ * @brief The application folder name used by UserDataDirectory. The desktop program uses the same name, so both
  * share one data folder.
  */
 inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogViewer";
@@ -42,7 +42,7 @@ inline constexpr std::string_view USER_DATA_APPLICATION_NAME = "StructuredLogVie
 [[nodiscard]] bool EnvironmentIsSet(std::string_view name);
 
 /**
- * @brief The folder where the application stores its data, the same one Qt reports as the application data location.
+ * @brief The folder where the application stores its data, the standard application data location of the platform.
  *
  * On Windows it is %APPDATA%/organization/application, and the result is empty if %APPDATA% is not set. On Linux it is
  * $XDG_DATA_HOME/organization/application when that variable is an absolute path, and otherwise

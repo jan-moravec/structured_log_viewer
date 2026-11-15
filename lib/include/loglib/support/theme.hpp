@@ -35,7 +35,7 @@ enum class ThemeKind : uint8_t
  * @brief How rows of one log level look.
  *
  * Every color is optional, and a missing one is taken from the application's palette. Colors are written as #RRGGBB or
- * #AARRGGBB text, which keeps this header free of any GUI library.
+ * #AARRGGBB text, which keeps this header free of any user interface library.
  */
 struct LevelStyle
 {
@@ -96,7 +96,7 @@ struct ChromeStyle
  */
 struct AppStyle
 {
-    /** @brief The name of a widget style, such as fusion or windows. */
+    /** @brief The name of a user interface style, such as fusion or windows. */
     std::optional<std::string> qtStyle;
     std::optional<std::string> fontFamily;
     std::optional<int> fontSize;
@@ -223,7 +223,7 @@ struct Theme
     friend bool operator==(const Theme &, const Theme &) = default;
 };
 
-/** @brief The number of anchor colors. It is defined here so that tests that do not use Qt can use it. */
+/** @brief The number of anchor colors. It is defined here so that code without a user interface library can use it. */
 inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 
 /**

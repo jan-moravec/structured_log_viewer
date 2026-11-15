@@ -43,6 +43,7 @@ struct LogValueTrustView
 {
 };
 
+/** @brief The text of a string or string_view value, or nullopt for any other kind. The view points into the value. */
 std::optional<std::string_view> AsStringView(const LogValue &value);
 
 /**

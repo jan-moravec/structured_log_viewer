@@ -109,6 +109,10 @@ struct CompactLogValue
         return copy;
     }
 
+    /**
+     * @brief Factories for the kinds of cell. A slice or an owned string stores an offset and a length into the bytes
+     * of its line source, an enumeration cell stores the id of its value, and the key id is set with WithKey.
+     */
     static CompactLogValue MakeMonostate() noexcept;
     static CompactLogValue MakeMmapSlice(uint64_t offset, uint32_t length) noexcept;
     static CompactLogValue MakeOwnedString(uint64_t offset, uint32_t length) noexcept;

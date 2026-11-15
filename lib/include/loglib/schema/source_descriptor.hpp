@@ -70,14 +70,15 @@ struct SourceLocator
  * @brief Where a log came from, as saved in a configuration.
  *
  * An empty source in LogConfiguration means none is bound. The application may reopen the source on load, and if that
- * fails the columns and filters still apply. A saved source field that is not recognized drops the source and keeps the
- * rest, because unknown fields are ignored.
+ * fails the columns and filters still apply. An unknown field in a saved source is an error, as for any other part of
+ * a configuration.
  *
  * Locators hold each path together with its comparison key, so the two cannot get out of step. The saved file keeps
  * them as two parallel lists, locators and locatorDedupKeys, which ReplaceDisplayPaths and ReplaceDedupKeys fill.
  */
 struct Source
 {
+    /** @brief What the source reads from. */
     enum class Kind
     {
         File,

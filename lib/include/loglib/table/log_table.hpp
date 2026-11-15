@@ -251,6 +251,8 @@ public:
      * the row's source can resolve, so use GetValue for text. The pointer stays valid until the table changes.
      */
     [[nodiscard]] const CompactLogValue *FindCell(size_t row, size_t column) const noexcept;
+
+    /** @brief The cell as text, formatted with the print format of its column. A missing cell gives an empty string. */
     [[nodiscard]] std::string GetFormattedValue(size_t row, size_t column) const;
 
     /**
@@ -301,6 +303,7 @@ public:
      */
     void SetEnumValueCap(uint16_t cap) noexcept;
 
+    /** @brief The cap that new enumeration dictionaries get, as set by SetEnumValueCap. */
     [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
     /**
@@ -309,6 +312,7 @@ public:
      */
     void SetEnumValueMaxLen(uint32_t maxLen) noexcept;
 
+    /** @brief The longest value that still looks like an enumeration value, as set by SetEnumValueMaxLen. */
     [[nodiscard]] uint32_t EnumValueMaxLen() const noexcept;
 
     /**

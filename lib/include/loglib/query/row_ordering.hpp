@@ -2,7 +2,7 @@
  * @brief Sort order of the rows of a table.
  *
  * A RowOrdering holds a column and a direction and describes how a table's rows are ordered. It does not depend on any
- * GUI type, so the interface converts its own sort order at the boundary.
+ * user interface type, so an interface converts its own sort order at the boundary.
  *
  * This is part of the query module.
  */

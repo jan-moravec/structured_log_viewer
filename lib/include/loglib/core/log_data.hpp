@@ -80,6 +80,7 @@ public:
      */
     void EvictPrefix(size_t count);
 
+    /** @brief The key index that the key ids of all rows refer to. */
     const KeyIndex &Keys() const;
     KeyIndex &Keys();
 
