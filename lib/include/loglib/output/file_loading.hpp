@@ -113,6 +113,9 @@ struct LoadResult
 /**
  * @brief Opens a file, detects its format and parses it into a new table, as the applications do.
  *
+ * This is the simplest way to get a table from a path. Use OpenFileSource and a parser directly only to control the
+ * steps in between.
+ *
  * Time columns are converted while parsing and type detection is finished before the call returns. The format comes
  * from the head of the file, except for a session bundle, whose rows are always JSON. Throws what OpenFileSource
  * throws. It also throws IoError for a file that is empty and FormatError for content that no parser accepts.

@@ -3,6 +3,7 @@
 
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
+#include <loglib/core/internal/memory_stats.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 
@@ -126,7 +127,7 @@ TEST_CASE("Set and update values", "[log_line]")
     CHECK(line.Values(keys).size() == 1);
 
     const std::string updatedValue = "updatedValue";
-    line.SetValue(keys, "existingKey", updatedValue);
+    line.SetValue(keys.Find("existingKey"), updatedValue);
 
     CHECK(std::get<std::string>(line.GetValue(keys, "existingKey")) == updatedValue);
     CHECK(line.Values(keys).size() == 1);
@@ -135,12 +136,10 @@ TEST_CASE("Set and update values", "[log_line]")
     REQUIRE(resultKeys.size() == 1);
     CHECK(resultKeys[0] == "existingKey");
 
-    // SetValue(string) requires the key to be registered. Pre-insert it via the KeyIndex
-    // because LogLine intentionally refuses to silently grow the dictionary on the slow path.
+    // A new field needs its key in the KeyIndex first.
     const std::string newKey = "newKey";
     const std::string newValue = "newValue";
-    static_cast<void>(keys.GetOrInsert(newKey));
-    line.SetValue(keys, newKey, newValue);
+    line.SetValue(keys.GetOrInsert(newKey), newValue);
 
     REQUIRE(line.Values(keys).size() == 2);
     CHECK(std::get<std::string>(line.GetValue(keys, newKey)) == newValue);
@@ -150,12 +149,8 @@ TEST_CASE("Set and update values", "[log_line]")
     CHECK(std::ranges::find(resultKeys, newKey) != resultKeys.end());
 }
 
-// `AsStringView` / `HoldsString` / `ToOwnedLogValue` / `LogValueEquivalent`
-// are the public seam consumers use to read string-typed values without
-// caring whether the parser landed on the view or owned alternative. Pin
-// the contract so downstream code (e.g. `LogModel::data`)
-// keeps working as the parser shifts more values
-// onto the fast path.
+// AsStringView reads text whether the parser stored a view or an owned string. HoldsString, ToOwnedLogValue and
+// LogValueEquivalent are test helpers built on the same rule.
 TEST_CASE("AsStringView returns bytes for both string alternatives, nullopt for non-strings", "[log_line][helpers]")
 {
     const std::string owned = "owned-bytes";
@@ -417,7 +412,7 @@ TEST_CASE("Rows that borrow their fields from an arena behave like other rows", 
             REQUIRE(lines[static_cast<size_t>(i)].ValueCount() == 2);
             CHECK(std::get<int64_t>(lines[static_cast<size_t>(i)].GetValue(first)) == i);
             CHECK(std::get<int64_t>(lines[static_cast<size_t>(i)].GetValue(third)) == -i);
-            CHECK(lines[static_cast<size_t>(i)].OwnedMemoryBytes() == 0);
+            CHECK(loglib::internal::MemoryStats::RowOwnedBytes(lines[static_cast<size_t>(i)]) == 0);
         }
         CHECK(arena.MemoryBytes() > 0);
     }
@@ -429,14 +424,14 @@ TEST_CASE("Rows that borrow their fields from an arena behave like other rows", 
         CHECK(std::get<int64_t>(lines[10].GetValue(second)) == 99);
         CHECK(std::get<int64_t>(lines[10].GetValue(first)) == 10);
         CHECK(std::get<int64_t>(lines[10].GetValue(third)) == -10);
-        CHECK(lines[10].OwnedMemoryBytes() > 0);
+        CHECK(loglib::internal::MemoryStats::RowOwnedBytes(lines[10]) > 0);
         CHECK(lines[11].ValueCount() == 2);
         CHECK(std::get<int64_t>(lines[11].GetValue(first)) == 11);
         CHECK(std::get<int64_t>(lines[9].GetValue(third)) == -9);
 
         // Updating a field in place keeps the row in the arena.
         lines[20].SetValue(first, LogValue{int64_t{7}});
-        CHECK(lines[20].OwnedMemoryBytes() == 0);
+        CHECK(loglib::internal::MemoryStats::RowOwnedBytes(lines[20]) == 0);
         CHECK(std::get<int64_t>(lines[20].GetValue(first)) == 7);
     }
 

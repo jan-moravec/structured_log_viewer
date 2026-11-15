@@ -37,7 +37,8 @@ namespace loglib
 namespace internal
 {
 class StableByteArena;
-}
+struct MemoryStats;
+} // namespace internal
 
 /**
  * @brief LineSource for a file that has a fixed size.
@@ -156,22 +157,24 @@ public:
      */
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
-    /** @brief Heap bytes held by the line offsets, counting capacity. Used by the memory benchmark. */
-    [[nodiscard]] size_t LineOffsetsMemoryBytes() const noexcept;
-
-    /** @brief Heap bytes reserved by the owned-string arena. */
-    [[nodiscard]] size_t OwnedStringsMemoryBytes() const noexcept;
-
     /**
      * @brief Takes over the memory that rows of this source borrow their fields from. The parser calls it for each
      * batch before the batch's rows reach anyone. Not thread safe: the caller is the serial stage.
      */
     void AdoptFieldArena(FieldArena arena);
 
+private:
+    friend struct internal::MemoryStats;
+
+    /** @brief Heap bytes held by the line offsets, counting capacity. Used by the memory benchmark. */
+    [[nodiscard]] size_t LineOffsetsMemoryBytes() const noexcept;
+
+    /** @brief Heap bytes reserved by the owned-string arena. */
+    [[nodiscard]] size_t OwnedStringsMemoryBytes() const noexcept;
+
     /** @brief Heap bytes of the field arenas this source holds. Used by the memory benchmark. */
     [[nodiscard]] size_t FieldArenasMemoryBytes() const noexcept;
 
-private:
     struct Backing;
     struct InMemoryTag
     {

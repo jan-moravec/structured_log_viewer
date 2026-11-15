@@ -19,6 +19,7 @@
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/column_layout.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/table/internal/log_table_test_access.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
 #include <loglib/time/timestamp_parsing.hpp>
@@ -710,7 +711,7 @@ TEST_CASE(
         .parseFormats = {"%b %e %H:%M:%S"},
     });
     LogTable table(ColumnLayout(configuration.columns));
-    table.SetClock([&stream] { return stream.now; });
+    loglib::internal::LogTableTestAccess::SetClock(table, [&stream] { return stream.now; });
     StreamLineSource *sourcePtr = source.get();
     table.BeginStreaming(std::move(source));
 

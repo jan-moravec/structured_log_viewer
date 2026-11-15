@@ -25,6 +25,11 @@
 namespace loglib
 {
 
+namespace internal
+{
+struct MemoryStats;
+} // namespace internal
+
 /** @brief Id of a string in an EnumDictionary. Ids count up in insertion order and are stored in DictRef cells. */
 enum class EnumValueId : uint16_t
 {
@@ -165,10 +170,12 @@ public:
         return mDictionaries.empty();
     }
 
+private:
+    friend struct internal::MemoryStats;
+
     /** @brief Approximate heap bytes used. For the memory benchmark. */
     [[nodiscard]] size_t EstimatedMemoryBytes() const noexcept;
 
-private:
     /** @brief A dictionary and every key that uses it. The list always includes the canonical key. */
     struct DictionaryEntry
     {

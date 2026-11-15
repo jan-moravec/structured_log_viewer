@@ -4,6 +4,7 @@
 
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
+#include <loglib/core/internal/memory_stats.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -24,21 +25,21 @@ RowMemory MeasureRowMemory(const loglib::LogTable &table)
     memory.lineObjects = memory.rows * sizeof(loglib::LogLine);
     for (const loglib::LogLine &line : data.Lines())
     {
-        memory.ownedByRows += line.OwnedMemoryBytes();
+        memory.ownedByRows += loglib::internal::MemoryStats::RowOwnedBytes(line);
     }
     if (const loglib::FileLineSource *file = data.FrontFileSource(); file != nullptr)
     {
-        memory.fieldArenas = file->FieldArenasMemoryBytes();
-        memory.lineOffsets = file->LineOffsetsMemoryBytes();
-        memory.arena = file->OwnedStringsMemoryBytes();
+        memory.fieldArenas = loglib::internal::MemoryStats::FieldArenasBytes(*file);
+        memory.lineOffsets = loglib::internal::MemoryStats::LineOffsetsBytes(*file);
+        memory.arena = loglib::internal::MemoryStats::OwnedStringsBytes(*file);
     }
     else if (const loglib::StreamLineSource *stream = data.BackStreamSource(); stream != nullptr)
     {
         // A stream keeps the text of each line and its decoded strings.
-        memory.arena = stream->OwnedMemoryBytes();
+        memory.arena = loglib::internal::MemoryStats::StreamOwnedBytes(*stream);
     }
-    memory.keyIndex = data.Keys().EstimatedMemoryBytes();
-    memory.enumDictionaries = table.EnumDictionaries().EstimatedMemoryBytes();
+    memory.keyIndex = loglib::internal::MemoryStats::KeyIndexBytes(data.Keys());
+    memory.enumDictionaries = loglib::internal::MemoryStats::EnumDictionariesBytes(table.EnumDictionaries());
     return memory;
 }
 

@@ -20,6 +20,7 @@
 #include "table_fixture.hpp"
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
+#include <loglib/core/internal/memory_stats.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/output/file_loading.hpp>
@@ -304,7 +305,7 @@ inline StructuralBytesWithEnums ComputeStructuralBytesWithEnums(const loglib::Lo
 {
     StructuralBytesWithEnums result;
     static_cast<StructuralBytes &>(result) = ComputeStructuralBytes(table);
-    result.enumDictionaries = table.EnumDictionaries().EstimatedMemoryBytes();
+    result.enumDictionaries = loglib::internal::MemoryStats::EnumDictionariesBytes(table.EnumDictionaries());
     return result;
 }
 

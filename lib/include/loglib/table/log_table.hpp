@@ -37,6 +37,11 @@ namespace loglib
 {
 
 class BytesProducer;
+
+namespace internal
+{
+struct LogTableTestAccess;
+} // namespace internal
 class EnumInference;
 
 /** @brief What happened to the dictionary or type of an enumeration column. */
@@ -451,10 +456,6 @@ public:
      */
     void SetReferenceTime(std::chrono::system_clock::time_point referenceTime) noexcept;
 
-    /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. Tests inject one.
-     */
-    void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
-
     /** @brief The "now" the table uses to convert timestamp formats without a year. */
     [[nodiscard]] std::chrono::system_clock::time_point ReferenceTime() const noexcept;
 
@@ -464,6 +465,11 @@ public:
     ColumnLayout &Layout();
 
 private:
+    friend struct internal::LogTableTestAccess;
+
+    /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. */
+    void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
+
     /** @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
      * columns. */
     [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;

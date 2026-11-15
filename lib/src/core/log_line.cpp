@@ -276,13 +276,6 @@ LogValue LogLine::GetValue(const KeyIndex &keys, std::string_view key) const
     return GetValue(id);
 }
 
-void LogLine::SetValue(const KeyIndex &keys, std::string_view key, const LogValue &value)
-{
-    const KeyId id = keys.Find(key);
-    assert(id != INVALID_KEY_ID && "SetValue by name needs a key that is already in the KeyIndex");
-    SetValue(id, value);
-}
-
 std::vector<std::string> LogLine::GetKeys(const KeyIndex &keys) const
 {
     std::vector<std::string> names;
