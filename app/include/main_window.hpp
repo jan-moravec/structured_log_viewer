@@ -2326,9 +2326,13 @@ private:
      * @param title The error-group title.
      * @param errors The errors to append.
      * @param originatingSession The owning session, or `nullptr` for the active session.
+     * @param source Path of the source the lines of the errors belong to. Empty when they are not tied to one source.
      */
     void ShowParsedErrors(
-        const QString &title, const std::vector<loglib::ParseError> &errors, LogSession *originatingSession = nullptr
+        const QString &title,
+        const std::vector<loglib::ParseError> &errors,
+        LogSession *originatingSession = nullptr,
+        const QString &source = QString()
     );
     void ShowParseErrors(
         const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession = nullptr

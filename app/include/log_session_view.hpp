@@ -162,14 +162,16 @@ public:
     void PromptGotoTimestamp();
 
     /**
-     * @brief Selects and scrolls to the first row whose line is in a parse error's range.
+     * @brief Selects and scrolls to the first row at or after the first line of a parse error.
+     * @param source Path of the source the lines belong to. Empty searches every source of the session.
      * @param firstLine First line of the error, counted from 1.
      * @param lastLine Last line of the error, counted from 1.
      *
-     * When no retained row has a line in the range, or the row is filtered out, the reason goes to
-     * `statusMessageRequested()` and the selection stays as it is.
+     * A line that did not parse has no row, so this selects the row after it. Line numbers restart in every file, so
+     * only rows of the named source match. When no retained row is at or after the line, or the row is filtered out,
+     * the reason goes to statusMessageRequested() and the selection stays as it is.
      */
-    void GotoParseErrorLines(quint64 firstLine, quint64 lastLine);
+    void GotoParseErrorLines(const QString &source, quint64 firstLine, quint64 lastLine);
 
     /**
      * @brief Processes one-based Go to Line input.

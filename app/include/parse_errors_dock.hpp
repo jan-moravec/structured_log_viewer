@@ -60,9 +60,17 @@ public:
      */
     void AppendErrorsForSession(LogSession *originating, const QString &title, const std::vector<std::string> &errors);
 
-    /** @brief Like AppendErrorsForSession, for errors that carry the lines they refer to. */
+    /**
+     * @brief Like AppendErrorsForSession, for errors that carry the lines they refer to.
+     *
+     * Pass the path of the source the lines belong to as source, so activating an error finds its row in that source
+     * and not a row with the same line in another file of the session.
+     */
     void AppendParseErrorsForSession(
-        LogSession *originating, const QString &title, const std::vector<loglib::ParseError> &errors
+        LogSession *originating,
+        const QString &title,
+        const std::vector<loglib::ParseError> &errors,
+        const QString &source = QString()
     );
 
     /** @brief Clears displayed errors without rearming first-batch notification. */
@@ -136,10 +144,11 @@ signals:
 
     /**
      * @brief Emitted when the user activates an error that has a line, by double-click or Enter.
+     * @param source Path of the source the lines belong to. Empty when the error is not tied to one source.
      * @param firstLine First line of the error, counted from 1.
      * @param lastLine Last line of the error, counted from 1.
      */
-    void errorActivated(quint64 firstLine, quint64 lastLine);
+    void errorActivated(const QString &source, quint64 firstLine, quint64 lastLine);
 
     /** @brief Emitted when the user closes the dock. */
     void closed();
@@ -167,11 +176,12 @@ private:
     /**
      * @brief Appends the retained portion of a batch to the shadow log.
      * @param title Batch heading.
+     * @param source Path of the source the lines belong to, or empty.
      * @param errors Original error messages.
      * @param errorsBegin Index of the first retained error.
      */
     void MirrorAppendIntoShadow(
-        const QString &title, const std::vector<loglib::ParseError> &errors, size_t errorsBegin
+        const QString &title, const QString &source, const std::vector<loglib::ParseError> &errors, size_t errorsBegin
     );
     void TrimShadowToCap();
     void ReplayLogIntoVisibleList(const SessionParseErrorLog &log);
@@ -180,12 +190,13 @@ private:
      * @brief Appends a capped batch directly to a session's stored log.
      * @param session Session whose log should receive the batch.
      * @param title Batch heading.
+     * @param source Path of the source the lines belong to, or empty.
      * @param errors Error messages.
      *
      * Visible dock state is not changed.
      */
     void AppendErrorsIntoSessionLog(
-        LogSession *session, const QString &title, const std::vector<loglib::ParseError> &errors
+        LogSession *session, const QString &title, const QString &source, const std::vector<loglib::ParseError> &errors
     );
 
     QListWidget *mList = nullptr;

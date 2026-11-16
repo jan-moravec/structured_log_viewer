@@ -5048,11 +5048,8 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression pin: a filter-hidden target must surface the
-    // caller-specific "Line %1 is currently filtered out." hint
-    // instead of `SelectSourceRow`'s generic fallback.
-    // Activating a parse error that has a line selects the row of that line. A line that is not in the table is
-    // reported in the status bar and the selection stays.
+    // Activating a parse error that has a line selects the row of that line. A line after the last row is reported
+    // in the status bar and the selection stays.
     void TestParseErrorActivationSelectsTheRowOfItsLine()
     {
         auto *model = mWindow->Model();
@@ -5253,6 +5250,78 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    // Line numbers restart in every file. Activating an error of the second file of a session selects the row of that
+    // file, not the row with the same line in the first file.
+    void TestParseErrorActivationSelectsTheRowInItsOwnFile()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(model != nullptr && view != nullptr && dock != nullptr);
+        dock->ResetSessionState();
+
+        const TempJsonFile first(
+            {QStringLiteral(R"({"msg": "a-1"})"),
+             QStringLiteral(R"({"msg": "a-2"})"),
+             QStringLiteral(R"({"msg": "a-3"})")}
+        );
+        const TempJsonFile second(
+            {QStringLiteral(R"({"msg": "b-1"})"), QStringLiteral("not json"), QStringLiteral(R"({"msg": "b-3"})")}
+        );
+        mWindow->OpenFilesForTest({first.Path(), second.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(test_common::WaitUntil([&] {
+            QCoreApplication::processEvents();
+            return model->rowCount() == 5 && !model->IsStreamingActive() && dock->Count() > 0;
+        }));
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QListWidgetItem *lineTwo = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            if (list->item(i)->text().contains(QStringLiteral("line 2")))
+            {
+                lineTwo = list->item(i);
+            }
+        }
+        QVERIFY(lineTwo != nullptr);
+
+        // Line 2 of the second file did not parse, so it has no row. The jump goes to the row after it, the second
+        // file's line 3, which is the fifth row. The first file's line 2 must not be selected.
+        view->selectionModel()->clearSelection();
+        emit list->itemActivated(lineTwo);
+        QCoreApplication::processEvents();
+        const QModelIndexList selected = view->selectionModel()->selectedRows();
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(selected.front().row(), 4);
+
+        // No row of the second file is at or after line 9, even though the jump could have gone to another file.
+        dock->AppendParseErrorsForSession(
+            nullptr,
+            QStringLiteral("Second file"),
+            {loglib::ParseError{.firstLine = 9, .lastLine = 9, .message = "past the end"}},
+            second.Path()
+        );
+        QListWidgetItem *pastEnd = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            if (list->item(i)->text().contains(QStringLiteral("past the end")))
+            {
+                pastEnd = list->item(i);
+            }
+        }
+        QVERIFY(pastEnd != nullptr);
+        view->selectionModel()->clearSelection();
+        mWindow->statusBar()->clearMessage();
+        emit list->itemActivated(pastEnd);
+        QCoreApplication::processEvents();
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+        QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("No row at or after line 9")));
+    }
+
+    // Regression pin: a filter-hidden target must surface the
+    // caller-specific "Line %1 is currently filtered out." hint
+    // instead of `SelectSourceRow`'s generic fallback.
     void TestGotoLineFilteredOutRowSurfacesSpecificHint()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();

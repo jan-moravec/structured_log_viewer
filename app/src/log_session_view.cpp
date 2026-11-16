@@ -7,6 +7,7 @@
 #include "log_table_view.hpp"
 #include "overview_rail_model.hpp"
 #include "overview_rail_widget.hpp"
+#include "qstring_path.hpp"
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/schema/log_configuration.hpp>
@@ -33,6 +34,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -429,7 +431,7 @@ void LogSessionView::ExecuteGotoLine(const QString &input)
     SelectSourceRow(sourceRow);
 }
 
-void LogSessionView::GotoParseErrorLines(quint64 firstLine, quint64 lastLine)
+void LogSessionView::GotoParseErrorLines(const QString &source, quint64 firstLine, quint64 lastLine)
 {
     if (mSession == nullptr)
     {
@@ -443,13 +445,33 @@ void LogSessionView::GotoParseErrorLines(quint64 firstLine, quint64 lastLine)
         return;
     }
 
-    // Error lines count from 1 and row line ids from 0.
+    // Line numbers restart in every file, so the row must come from the error's own source.
+    const loglib::LogData &data = model->Table().Data();
+    std::vector<const loglib::LineSource *> sources;
+    if (!source.isEmpty())
+    {
+        const std::filesystem::path sourcePath = logapp::QStringToFsPath(source);
+        for (const auto &candidate : data.Sources())
+        {
+            if (candidate != nullptr && candidate->Path() == sourcePath)
+            {
+                sources.push_back(candidate.get());
+            }
+        }
+    }
+
+    // A line that did not parse has no row, so the jump goes to the first row at or after the error. Rows of one source
+    // are in line order. Error lines count from 1 and row line ids from 0.
     int sourceRow = -1;
-    const std::span<const loglib::LogLine> lines = model->Table().Data().Lines();
+    const std::span<const loglib::LogLine> lines = data.Lines();
     for (std::size_t i = 0; i < lines.size(); ++i)
     {
+        if (!source.isEmpty() && std::ranges::find(sources, lines[i].Source()) == sources.end())
+        {
+            continue;
+        }
         const quint64 line = static_cast<quint64>(lines[i].LineId()) + 1;
-        if (line >= firstLine && line <= lastLine)
+        if (line >= firstLine)
         {
             sourceRow = static_cast<int>(i);
             break;
@@ -459,7 +481,7 @@ void LogSessionView::GotoParseErrorLines(quint64 firstLine, quint64 lastLine)
         firstLine == lastLine ? QString::number(firstLine) : tr("%1-%2").arg(firstLine).arg(lastLine);
     if (sourceRow < 0)
     {
-        emit statusMessageRequested(tr("Line %1 is no longer in the table.").arg(lineText));
+        emit statusMessageRequested(tr("No row at or after line %1.").arg(lineText));
         return;
     }
 

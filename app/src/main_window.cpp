@@ -1120,12 +1120,17 @@ MainWindow::MainWindow(
     WireDockToggle(mParseErrorsDock.data(), mActionToggleParseErrors, &ParseErrorsDock::closed);
     connect(mParseErrorsDock, &ParseErrorsDock::countChanged, this, &MainWindow::UpdateParseErrorsStatus);
     // The dock lists the errors of the session it is bound to, so the jump goes to that session's table.
-    connect(mParseErrorsDock, &ParseErrorsDock::errorActivated, this, [this](quint64 firstLine, quint64 lastLine) {
-        if (LogSessionView *view = LogSessionViewForSession(mParseErrorsDock->BoundSession()); view != nullptr)
-        {
-            view->GotoParseErrorLines(firstLine, lastLine);
+    connect(
+        mParseErrorsDock,
+        &ParseErrorsDock::errorActivated,
+        this,
+        [this](const QString &source, quint64 firstLine, quint64 lastLine) {
+            if (LogSessionView *view = LogSessionViewForSession(mParseErrorsDock->BoundSession()); view != nullptr)
+            {
+                view->GotoParseErrorLines(source, firstLine, lastLine);
+            }
         }
-    });
+    );
     // Auto-raise on the first batch of a session, unless the find
     // bar holds focus -- raising would yank focus mid-search. The
     // status-bar indicator is enough notice in that case.
@@ -4410,7 +4415,15 @@ void MainWindow::OnStreamingFinished(LogSession *origin, StreamingResult result)
             const QString title = origin->StreamingFileName().isEmpty()
                                       ? tr("Error Parsing Logs")
                                       : tr("Error Parsing Logs \u2014 %1").arg(origin->StreamingFileName());
-            ShowParsedErrors(title, thisFileErrors, origin);
+            // Line numbers restart in every file, so a static session names the file the errors came from. A live
+            // session's errors are not tied to one source.
+            QString source;
+            if (const loglib::FileLineSource *file = model->Table().Data().BackFileSource();
+                file != nullptr && origin->SessionMode() == SessionMode::Static)
+            {
+                source = logapp::FsPathToQString(file->Path());
+            }
+            ShowParsedErrors(title, thisFileErrors, origin, source);
         }
         origin->SetStreamingErrorsCut(allErrors.size());
     }
@@ -4773,7 +4786,8 @@ void MainWindow::BeginAsyncOpen(LogSession *origin, const QString &originalPath)
     // false positive on `QtConcurrent::run`, which stores any escaped
     // exception into the returned `QFuture`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker,bugprone-exception-escape)
-    auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken]() {
+    const bool isSessionBundle = loglib::HasSessionBundleExtension(input);
+    auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
         auto progressCb = [sharedBytesIn, sharedTotal](const loglib::DecompressingByteSource::Progress &p) {
             // Relaxed: the GUI only needs a recent-enough snapshot.
@@ -4791,9 +4805,22 @@ void MainWindow::BeginAsyncOpen(LogSession *origin, const QString &originalPath)
         {
             result.cancelled = true;
         }
+        catch (const loglib::FormatError &e)
+        {
+            // The metadata errors of a bundle do not name the file, and a drop of several files needs to say which
+            // one failed.
+            result.error = isSessionBundle ? "'" + logapp::FsPathToQString(input).toStdString() +
+                                                 "' is not a valid session bundle: " + e.what()
+                                           : std::string(e.what());
+        }
         catch (const std::exception &e)
         {
             result.error = e.what();
+        }
+        catch (...)
+        {
+            // The result is read on the GUI thread, where an escaped exception would end the program.
+            result.error = "Failed to open '" + logapp::FsPathToQString(input).toStdString() + "'";
         }
         return result;
     });
@@ -5069,7 +5096,11 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     LogSession::OpenResult result = watcher->result();
     std::shared_ptr<loglib::OpenedFile> opened = std::move(result.file);
     const bool cancelled = result.cancelled;
-    const QString errorEntry = QString::fromStdString(result.error);
+    QString errorEntry = QString::fromStdString(result.error);
+    if (!cancelled && errorEntry.isEmpty() && (opened == nullptr || opened->source == nullptr))
+    {
+        errorEntry = tr("Failed to open '%1'").arg(origin->DecompressionOriginalPath());
+    }
 
     // Detach the future so a follow-up open re-arms cleanly.
     watcher->setFuture(QFuture<LogSession::OpenResult>{});
@@ -8343,7 +8374,10 @@ void MainWindow::ShowParseErrors(
 }
 
 void MainWindow::ShowParsedErrors(
-    const QString &title, const std::vector<loglib::ParseError> &errors, LogSession *originatingSession
+    const QString &title,
+    const std::vector<loglib::ParseError> &errors,
+    LogSession *originatingSession,
+    const QString &source
 )
 
 {
@@ -8367,7 +8401,7 @@ void MainWindow::ShowParsedErrors(
     // session) or only into the originating session's log
     // (background session).
     LogSession *originating = originatingSession != nullptr ? originatingSession : mSession;
-    mParseErrorsDock->AppendParseErrorsForSession(originating, title, errors);
+    mParseErrorsDock->AppendParseErrorsForSession(originating, title, errors, source);
     if (originating != nullptr && originating != mParseErrorsDock->BoundSession())
     {
         originating->QueueParseErrorsRaise();
