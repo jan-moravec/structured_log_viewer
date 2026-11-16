@@ -438,8 +438,8 @@ void LogSessionView::GotoParseErrorLines(const QString &source, quint64 firstLin
         return;
     }
     auto *model = mSession->Model();
-    auto *rowOrder = mSession->RowOrderProxy();
-    auto *filterProxy = mSession->FilterProxy();
+    const auto *rowOrder = mSession->RowOrderProxy();
+    const auto *filterProxy = mSession->FilterProxy();
     if (model == nullptr || rowOrder == nullptr || filterProxy == nullptr)
     {
         return;

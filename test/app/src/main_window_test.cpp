@@ -5072,8 +5072,10 @@ private slots:
 
         dock->AppendParseErrors(
             QStringLiteral("Test errors"),
-            {loglib::ParseError{.firstLine = 5, .lastLine = 5, .message = "bad value"},
-             loglib::ParseError{.firstLine = 99, .lastLine = 99, .message = "gone"}}
+            {
+                loglib::ParseError{.firstLine = 5, .lastLine = 5, .message = "bad value"},
+                loglib::ParseError{.firstLine = 99, .lastLine = 99, .message = "gone"},
+            }
         );
         auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
         QVERIFY(list != nullptr);
@@ -5260,11 +5262,11 @@ private slots:
         QVERIFY(model != nullptr && view != nullptr && dock != nullptr);
         dock->ResetSessionState();
 
-        const TempJsonFile first(
-            {QStringLiteral(R"({"msg": "a-1"})"),
-             QStringLiteral(R"({"msg": "a-2"})"),
-             QStringLiteral(R"({"msg": "a-3"})")}
-        );
+        const TempJsonFile first({
+            QStringLiteral(R"({"msg": "a-1"})"),
+            QStringLiteral(R"({"msg": "a-2"})"),
+            QStringLiteral(R"({"msg": "a-3"})"),
+        });
         const TempJsonFile second(
             {QStringLiteral(R"({"msg": "b-1"})"), QStringLiteral("not json"), QStringLiteral(R"({"msg": "b-3"})")}
         );

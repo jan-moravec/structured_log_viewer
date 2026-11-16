@@ -5094,7 +5094,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     }
 
     LogSession::OpenResult result = watcher->result();
-    std::shared_ptr<loglib::OpenedFile> opened = std::move(result.file);
+    const std::shared_ptr<loglib::OpenedFile> opened = std::move(result.file);
     const bool cancelled = result.cancelled;
     QString errorEntry = QString::fromStdString(result.error);
     if (!cancelled && errorEntry.isEmpty() && (opened == nullptr || opened->source == nullptr))
@@ -5151,7 +5151,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
                                   origin->ApplyEmbeddedBundleConfigForPath() == origin->DecompressionOriginalPath();
     const bool sessionStillFresh = !origin->MutableCurrentSource().has_value();
     const bool isBundle = opened && opened->bundle.has_value();
-    if (isBundle && armedForThisFile && sessionStillFresh && model != nullptr)
+    if (opened && opened->bundle.has_value() && armedForThisFile && sessionStillFresh && model != nullptr)
     {
         loglib::LogConfiguration embedded = std::move(opened->bundle->configuration);
         const std::string dedupKey = logapp::CanonicalLocator(origin->DecompressionOriginalPath()).toStdString();

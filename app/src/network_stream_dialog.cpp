@@ -210,7 +210,7 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     mRegexHeaderAnchor->setAccessibleName(tr("Regex header anchor"));
     mRegexHeaderAnchor->setObjectName(QStringLiteral("networkRegexHeaderAnchor"));
     regexLayout->addRow(tr("Header anchor:"), mRegexHeaderAnchor);
-    connect(mRegexContinuation, &QComboBox::currentIndexChanged, this, [this]() {
+    connect(mRegexContinuation, &QComboBox::currentIndexChanged, this, [this] {
         mRegexHeaderAnchor->setEnabled(
             !mRegexPattern->isReadOnly() &&
             mRegexContinuation->currentData().toInt() == static_cast<int>(loglib::ContinuationMode::UntilNextHeader)
