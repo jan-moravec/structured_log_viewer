@@ -47,13 +47,17 @@ constexpr int AUTO_FOLLOW_TAIL_SLACK_PX = 4;
 constexpr int FIRST_LINE_ROLE = Qt::UserRole + 2;
 constexpr int LAST_LINE_ROLE = Qt::UserRole + 3;
 
-QListWidgetItem *MakeErrorItem(const QIcon &icon, const loglib::ParseError &error)
+/** The path of the source the error's lines belong to. Empty when the error is not tied to one source. */
+constexpr int SOURCE_ROLE = Qt::UserRole + 4;
+
+QListWidgetItem *MakeErrorItem(const QIcon &icon, const loglib::ParseError &error, const QString &source)
 {
     const QString text = QString::fromStdString(loglib::FormatParseError(error));
     auto *item = new QListWidgetItem(icon, text);
     item->setToolTip(text);
     item->setData(FIRST_LINE_ROLE, static_cast<qulonglong>(error.firstLine));
     item->setData(LAST_LINE_ROLE, static_cast<qulonglong>(error.lastLine));
+    item->setData(SOURCE_ROLE, source);
     return item;
 }
 } // namespace
@@ -104,6 +108,19 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
     setWidget(body);
 
     connect(mClearButton, &QPushButton::clicked, this, &ParseErrorsDock::ClearErrors);
+    connect(mList, &QListWidget::itemActivated, this, [this](const QListWidgetItem *item) {
+        if (item == nullptr)
+        {
+            return;
+        }
+        const quint64 firstLine = item->data(FIRST_LINE_ROLE).toULongLong();
+        if (firstLine != 0)
+        {
+            emit errorActivated(
+                item->data(SOURCE_ROLE).toString(), firstLine, item->data(LAST_LINE_ROLE).toULongLong()
+            );
+        }
+    });
 
     // Ctrl+C on `body` (not `mList`) so the shortcut still fires
     // after the user clicks Clear (which moves focus off the list).
@@ -132,7 +149,7 @@ void ParseErrorsDock::AppendErrorsForSession(
 }
 
 void ParseErrorsDock::AppendParseErrorsForSession(
-    LogSession *originating, const QString &title, const std::vector<loglib::ParseError> &errors
+    LogSession *originating, const QString &title, const std::vector<loglib::ParseError> &errors, const QString &source
 )
 {
     if (errors.empty())
@@ -155,7 +172,7 @@ void ParseErrorsDock::AppendParseErrorsForSession(
     const LogSession *bound = mBoundSession.data();
     if (originating != nullptr && originating != bound)
     {
-        AppendErrorsIntoSessionLog(originating, effectiveTitle, errors);
+        AppendErrorsIntoSessionLog(originating, effectiveTitle, source, errors);
         return;
     }
 
@@ -191,7 +208,7 @@ void ParseErrorsDock::AppendParseErrorsForSession(
     }
 
     // Mirror the trimmed batch so bind/unbind need not parse list items.
-    MirrorAppendIntoShadow(effectiveTitle, errors, errorsBegin);
+    MirrorAppendIntoShadow(effectiveTitle, source, errors, errorsBegin);
 
     // Group header (disabled so arrow keys step over it).
     auto *headerItem = new QListWidgetItem(effectiveTitle);
@@ -203,7 +220,7 @@ void ParseErrorsDock::AppendParseErrorsForSession(
 
     for (size_t i = errorsBegin; i < errors.size(); ++i)
     {
-        auto *item = MakeErrorItem(warningIcon, errors[i]);
+        auto *item = MakeErrorItem(warningIcon, errors[i], source);
         item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         mList->addItem(item);
         ++mErrorCount;
@@ -355,11 +372,12 @@ LogSession *ParseErrorsDock::BoundSession() const noexcept
 }
 
 void ParseErrorsDock::MirrorAppendIntoShadow(
-    const QString &title, const std::vector<loglib::ParseError> &errors, size_t errorsBegin
+    const QString &title, const QString &source, const std::vector<loglib::ParseError> &errors, size_t errorsBegin
 )
 {
     SessionParseErrorBatch batch;
     batch.title = title;
+    batch.source = source;
     batch.errors.reserve(errors.size() - errorsBegin);
     for (size_t i = errorsBegin; i < errors.size(); ++i)
     {
@@ -369,7 +387,7 @@ void ParseErrorsDock::MirrorAppendIntoShadow(
 }
 
 void ParseErrorsDock::AppendErrorsIntoSessionLog(
-    LogSession *session, const QString &title, const std::vector<loglib::ParseError> &errors
+    LogSession *session, const QString &title, const QString &source, const std::vector<loglib::ParseError> &errors
 )
 {
     if (session == nullptr || errors.empty())
@@ -391,6 +409,7 @@ void ParseErrorsDock::AppendErrorsIntoSessionLog(
 
     SessionParseErrorBatch batch;
     batch.title = title;
+    batch.source = source;
     batch.errors.reserve(errors.size() - errorsBegin);
     for (size_t i = errorsBegin; i < errors.size(); ++i)
     {
@@ -501,7 +520,7 @@ void ParseErrorsDock::ReplayLogIntoVisibleList(const SessionParseErrorLog &log)
         mList->addItem(headerItem);
         for (const auto &error : batch.errors)
         {
-            auto *item = MakeErrorItem(warningIcon, error);
+            auto *item = MakeErrorItem(warningIcon, error, batch.source);
             item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
             mList->addItem(item);
             ++mErrorCount;

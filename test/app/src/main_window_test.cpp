@@ -15,6 +15,7 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "main_window.hpp"
+#include "network_stream_dialog.hpp"
 #include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
 #include "qstring_path.hpp"
@@ -52,6 +53,7 @@
 #include <loglib/parse/parsers/csv_parser.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/schema/filter_expression.hpp>
@@ -97,6 +99,7 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScopedPointer>
@@ -330,6 +333,20 @@ QString WriteBundleFixture(
     const QString path = directory.filePath(QStringLiteral("fixture.slvbundle"));
     loglib::WriteSessionBundle(table, configuration, logapp::QStringToFsPath(path));
     return path;
+}
+
+// Pumps events until the model's parse is armed, then stops before any later event runs. Files open on a worker, so
+// the parse starts from an event; a parse that finishes can only be reported by a later event.
+[[nodiscard]] bool PumpUntilStreamingActive(const LogModel *model)
+{
+    return test_common::WaitUntil(
+        [model] {
+            QCoreApplication::processEvents();
+            return model->IsStreamingActive();
+        },
+        std::chrono::milliseconds{60000},
+        std::chrono::milliseconds{1}
+    );
 }
 
 // Gzip-compress @p bytes into a self-contained gzip stream
@@ -5029,6 +5046,279 @@ private slots:
         QVERIFY(view->selectionModel()->selectedRows().isEmpty());
 
         model->EndStreaming(false);
+    }
+
+    // Activating a parse error that has a line selects the row of that line. A line after the last row is reported
+    // in the status bar and the selection stays.
+    void TestParseErrorActivationSelectsTheRowOfItsLine()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(model != nullptr && view != nullptr && dock != nullptr);
+        dock->ResetSessionState();
+
+        QStringList lines;
+        for (int i = 1; i <= 10; ++i)
+        {
+            lines.append(QStringLiteral(R"({"msg": "line-%1"})").arg(i));
+        }
+        const TempJsonFile fixture(lines);
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(test_common::WaitUntil([&] {
+            QCoreApplication::processEvents();
+            return model->rowCount() == 10 && !model->IsStreamingActive();
+        }));
+
+        dock->AppendParseErrors(
+            QStringLiteral("Test errors"),
+            {
+                loglib::ParseError{.firstLine = 5, .lastLine = 5, .message = "bad value"},
+                loglib::ParseError{.firstLine = 99, .lastLine = 99, .message = "gone"},
+            }
+        );
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QListWidgetItem *lineFive = nullptr;
+        QListWidgetItem *lineGone = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            if (list->item(i)->text().contains(QStringLiteral("bad value")))
+            {
+                lineFive = list->item(i);
+            }
+            if (list->item(i)->text().contains(QStringLiteral("gone")))
+            {
+                lineGone = list->item(i);
+            }
+        }
+        QVERIFY(lineFive != nullptr && lineGone != nullptr);
+
+        view->selectionModel()->clearSelection();
+        emit list->itemActivated(lineFive);
+        QCoreApplication::processEvents();
+        const QModelIndexList selected = view->selectionModel()->selectedRows();
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(selected.front().row(), 4);
+
+        view->selectionModel()->clearSelection();
+        mWindow->statusBar()->clearMessage();
+        emit list->itemActivated(lineGone);
+        QCoreApplication::processEvents();
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+        QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("99")));
+    }
+
+    // A print format that no value accepts is replaced by the library when a configuration loads. The GUI shows that
+    // as one error without a line, titled with the configuration file.
+    void TestConfigurationWithBadPrintFormatShowsOneWarning()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(dock != nullptr);
+        dock->ResetSessionState();
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString configPath = dir.filePath(QStringLiteral("bad_format.json"));
+        WriteBinaryForTest(configPath, QByteArrayLiteral(R"({"version":1,"columns":[
+        {"header":"latency","keys":["latency"],"printFormat":"{:q}","type":"any","parseFormats":[],"visible":true},
+        {"header":"ok","keys":["ok"],"printFormat":"{:.1f}","type":"any","parseFormats":[],"visible":true}
+    ]})"));
+
+        mWindow->LoadConfigurationFromPathForTest(configPath);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(dock->Count(), 1);
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QStringList texts;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            texts.append(list->item(i)->text());
+        }
+        const QString all = texts.join(QChar::fromLatin1('\n'));
+        QVERIFY2(all.contains(QStringLiteral("bad_format.json")), qPrintable(all));
+        QVERIFY2(all.contains(QStringLiteral("{:q}")), qPrintable(all));
+
+        // Applying the same file again as a lone configuration shows its warning too.
+        dock->ResetSessionState();
+        QVERIFY(mWindow->TryLoadAsConfigurationForTest(configPath));
+        QCoreApplication::processEvents();
+        QCOMPARE(dock->Count(), 1);
+    }
+
+    // The dialog returns the picked template's pattern with its continuation settings, and for a custom pattern the
+    // settings the user entered, even when the custom pattern equals a template's pattern.
+    void TestNetworkDialogReturnsItsTemplateAsOneValue()
+    {
+        const loglib::RegexTemplate *withContinuation = nullptr;
+        for (const loglib::RegexTemplate &tmpl : loglib::BuiltinRegexTemplates())
+        {
+            if (tmpl.continuationMode != loglib::ContinuationMode::None)
+            {
+                withContinuation = &tmpl;
+                break;
+            }
+        }
+        QVERIFY2(withContinuation != nullptr, "a built-in template with continuation lines must exist");
+
+        NetworkStreamDialog dialog;
+        auto *templates = dialog.findChild<QComboBox *>(QStringLiteral("networkRegexTemplate"));
+        auto *pattern = dialog.findChild<QLineEdit *>(QStringLiteral("networkRegexPattern"));
+        auto *continuation = dialog.findChild<QComboBox *>(QStringLiteral("networkRegexContinuation"));
+        auto *anchor = dialog.findChild<QLineEdit *>(QStringLiteral("networkRegexHeaderAnchor"));
+        QVERIFY(templates != nullptr && pattern != nullptr && continuation != nullptr && anchor != nullptr);
+
+        const int templateIdx = templates->findData(QString::fromStdString(withContinuation->name));
+        QVERIFY(templateIdx >= 0);
+        templates->setCurrentIndex(templateIdx);
+        NetworkStreamDialog::Config picked = dialog.Configuration();
+        QCOMPARE(picked.regex.pattern.toStdString(), withContinuation->pattern);
+        QCOMPARE(picked.regex.continuationMode, withContinuation->continuationMode);
+        QCOMPARE(picked.regex.headerAnchor.toStdString(), withContinuation->headerAnchor);
+
+        // Custom pattern with the template's own pattern text and other settings.
+        templates->setCurrentIndex(templates->findData(QString{}));
+        pattern->setText(QString::fromStdString(withContinuation->pattern));
+        continuation->setCurrentIndex(continuation->findData(static_cast<int>(loglib::ContinuationMode::None)));
+        anchor->setText(QString{});
+        const NetworkStreamDialog::Config custom = dialog.Configuration();
+        QCOMPARE(custom.regex.pattern.toStdString(), withContinuation->pattern);
+        QCOMPARE(custom.regex.continuationMode, loglib::ContinuationMode::None);
+        QVERIFY(custom.regex.headerAnchor.isEmpty());
+    }
+
+    // A network session keeps the continuation settings of the dialog's value. A custom pattern equal to a built-in
+    // template's pattern is not given that template's settings.
+    void TestNetworkSessionKeepsUserContinuationSettings()
+    {
+        const loglib::RegexTemplate &tmpl = loglib::BuiltinRegexTemplates().front();
+        const loglib::ContinuationMode userMode = tmpl.continuationMode == loglib::ContinuationMode::Indented
+                                                      ? loglib::ContinuationMode::None
+                                                      : loglib::ContinuationMode::Indented;
+
+        NetworkStreamDialog::Config cfg;
+        cfg.protocol = NetworkStreamDialog::Protocol::Udp;
+        cfg.format = NetworkStreamDialog::Format::Regex;
+        cfg.regex.pattern = QString::fromStdString(tmpl.pattern);
+        cfg.regex.continuationMode = userMode;
+        cfg.bindAddress = QStringLiteral("127.0.0.1");
+        cfg.port = 0;
+
+        mWindow->StartNetworkStreamForTest(cfg, 1024 * 1024);
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        QCOMPARE(source->regexPattern, tmpl.pattern);
+        QCOMPARE(source->regexContinuationMode, userMode);
+        QVERIFY(source->regexHeaderAnchor.empty());
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // A network session whose producer queue is tiny cannot keep every byte. The status bar then says how many bytes
+    // were dropped, and its tooltip says why.
+    void TestNetworkSessionShowsDroppedBytes()
+    {
+        NetworkStreamDialog::Config cfg;
+        cfg.protocol = NetworkStreamDialog::Protocol::Tcp;
+        cfg.format = NetworkStreamDialog::Format::Json;
+        cfg.bindAddress = QStringLiteral("127.0.0.1");
+        cfg.port = 0;
+        mWindow->StartNetworkStreamForTest(cfg, /*maxQueueBytes=*/64);
+
+        auto *label = mWindow->findChild<QLabel *>(QStringLiteral("streamingStatusLabel"));
+        QVERIFY(label != nullptr);
+        QVERIFY(!label->text().contains(QStringLiteral("bytes dropped")));
+
+        const QRegularExpressionMatch portMatch =
+            QRegularExpression(QStringLiteral(R"(:(\d+)$)")).match(mWindow->StreamingFileNameForTest());
+        QVERIFY2(portMatch.hasMatch(), qPrintable(mWindow->StreamingFileNameForTest()));
+        const auto port = static_cast<uint16_t>(portMatch.captured(1).toUInt());
+
+        std::string blob;
+        while (blob.size() < 256 * 1024)
+        {
+            blob += "{\"msg\": \"a line that is long enough to overflow the tiny queue\"}\n";
+        }
+        test_common::TcpLogClient client("127.0.0.1", port);
+        QVERIFY(test_common::WaitUntil([&] {
+            client.SendRaw(blob);
+            QCoreApplication::processEvents();
+            return label->text().contains(QStringLiteral("bytes dropped"));
+        }));
+        QVERIFY(label->toolTip().contains(QStringLiteral("more slowly")));
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // Line numbers restart in every file. Activating an error of the second file of a session selects the row of that
+    // file, not the row with the same line in the first file.
+    void TestParseErrorActivationSelectsTheRowInItsOwnFile()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(model != nullptr && view != nullptr && dock != nullptr);
+        dock->ResetSessionState();
+
+        const TempJsonFile first({
+            QStringLiteral(R"({"msg": "a-1"})"),
+            QStringLiteral(R"({"msg": "a-2"})"),
+            QStringLiteral(R"({"msg": "a-3"})"),
+        });
+        const TempJsonFile second(
+            {QStringLiteral(R"({"msg": "b-1"})"), QStringLiteral("not json"), QStringLiteral(R"({"msg": "b-3"})")}
+        );
+        mWindow->OpenFilesForTest({first.Path(), second.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(test_common::WaitUntil([&] {
+            QCoreApplication::processEvents();
+            return model->rowCount() == 5 && !model->IsStreamingActive() && dock->Count() > 0;
+        }));
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QListWidgetItem *lineTwo = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            if (list->item(i)->text().contains(QStringLiteral("line 2")))
+            {
+                lineTwo = list->item(i);
+            }
+        }
+        QVERIFY(lineTwo != nullptr);
+
+        // Line 2 of the second file did not parse, so it has no row. The jump goes to the row after it, the second
+        // file's line 3, which is the fifth row. The first file's line 2 must not be selected.
+        view->selectionModel()->clearSelection();
+        emit list->itemActivated(lineTwo);
+        QCoreApplication::processEvents();
+        const QModelIndexList selected = view->selectionModel()->selectedRows();
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(selected.front().row(), 4);
+
+        // No row of the second file is at or after line 9, even though the jump could have gone to another file.
+        dock->AppendParseErrorsForSession(
+            nullptr,
+            QStringLiteral("Second file"),
+            {loglib::ParseError{.firstLine = 9, .lastLine = 9, .message = "past the end"}},
+            second.Path()
+        );
+        QListWidgetItem *pastEnd = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            if (list->item(i)->text().contains(QStringLiteral("past the end")))
+            {
+                pastEnd = list->item(i);
+            }
+        }
+        QVERIFY(pastEnd != nullptr);
+        view->selectionModel()->clearSelection();
+        mWindow->statusBar()->clearMessage();
+        emit list->itemActivated(pastEnd);
+        QCoreApplication::processEvents();
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+        QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("No row at or after line 9")));
     }
 
     // Regression pin: a filter-hidden target must surface the
@@ -13725,7 +14015,7 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 60000);
+        QVERIFY(PumpUntilStreamingActive(model));
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
@@ -13781,7 +14071,7 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 60000);
+        QVERIFY(PumpUntilStreamingActive(model));
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
@@ -14582,7 +14872,7 @@ private slots:
         // pumped before the second open: the session only ends on the
         // GUI thread, so it is still active however fast the worker is.
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(model->IsStreamingActive());
+        QVERIFY(PumpUntilStreamingActive(model));
 
         // Second open is the regression case: with an in-flight
         // streaming worker, the file must defer onto
@@ -14644,7 +14934,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(model->IsStreamingActive());
+        QVERIFY(PumpUntilStreamingActive(model));
         // Second open lands in `mPendingOpenFiles` because the
         // first session is still active.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
@@ -15057,6 +15347,112 @@ private slots:
         QCOMPARE(model->rowCount(), followUpLines.size());
     }
 
+    // A cancel that lands after the worker has read part of the input stops the open: nothing is parsed, the
+    // session goes idle, and the unpacked copy is removed so a later open starts clean.
+    void TestCancelMidDecompressionStopsTheOpen()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        mWindow->SetSuppressDialogsForTest(true);
+
+        // Text that does not compress well, so the compressed file is read over many chunks.
+        QByteArray uncompressed;
+        uncompressed.reserve(60'000'000);
+        QRandomGenerator random(12345);
+        for (int i = 0; i < 200000; ++i)
+        {
+            uncompressed.append("{\"idx\": ");
+            uncompressed.append(QByteArray::number(i));
+            uncompressed.append(", \"msg\": \"");
+            for (int word = 0; word < 25; ++word)
+            {
+                uncompressed.append(QByteArray::number(random.generate(), 16));
+            }
+            uncompressed.append("\"}\n");
+        }
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString gzipPath = tempDir.filePath(QStringLiteral("mid_cancel.jsonl.gz"));
+        WriteBinaryForTest(gzipPath, GzipCompressForTest(uncompressed));
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
+        LogSession *session = mWindow->activeSession();
+        QVERIFY(session != nullptr);
+
+        // The worker reports progress between input chunks, so a non-zero count means it is inside the file.
+        QVERIFY(
+            test_common::WaitUntil(
+                [session] {
+                    QCoreApplication::processEvents();
+                    return session->DecompressionBytesIn().loadRelaxed() > 0 || !session->IsDecompressionInFlight();
+                },
+                std::chrono::milliseconds{60000},
+                std::chrono::milliseconds{1}
+            )
+        );
+        QVERIFY2(mWindow->IsDecompressionInFlightForTest(), "the open must still be running when the cancel arrives");
+        QVERIFY(session->DecompressionBytesIn().loadRelaxed() < session->DecompressionTotalBytesIn().loadRelaxed());
+
+        mWindow->RequestDecompressionCancelForTest();
+        QVERIFY(test_common::WaitUntil([this] {
+            QCoreApplication::processEvents();
+            return !mWindow->IsDecompressionInFlightForTest();
+        }));
+
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(model->rowCount(), 0);
+        QVERIFY(session->PendingOpenErrors().empty());
+        QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("cancelled")));
+
+        const TempJsonFile followUp({QStringLiteral(R"({"idx": 0, "msg": "after-mid-cancel"})")});
+        mWindow->OpenFilesForTest({followUp.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(60000));
+        QCOMPARE(model->rowCount(), 1);
+    }
+
+    // A path with the bundle extension is a session bundle whatever its content. A plain log under that name fails with
+    // the library's message and opens no rows.
+    void TestBundleExtensionOnPlainFileFailsWithLibraryError()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        mWindow->SetSuppressDialogsForTest(true);
+
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(dock != nullptr);
+        dock->ResetSessionState();
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString bundlePath = tempDir.filePath(QStringLiteral("plain.slvbundle"));
+        WriteBinaryForTest(bundlePath, QByteArrayLiteral("{\"idx\": 0, \"msg\": \"not a bundle\"}\n"));
+
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        mWindow->OpenFilesForTest({bundlePath}, MainWindow::OpenMode::Replace);
+        QVERIFY(test_common::WaitUntil([this, dock] {
+            QCoreApplication::processEvents();
+            return !mWindow->IsDecompressionInFlightForTest() && dock->Count() > 0;
+        }));
+
+        QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(dock->Count(), 1);
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QStringList texts;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            texts.append(list->item(i)->text());
+        }
+        const QString all = texts.join(QChar::fromLatin1('\n'));
+        QVERIFY2(all.contains(QStringLiteral("Error Opening File")), qPrintable(all));
+        QVERIFY2(all.contains(QStringLiteral("plain.slvbundle")), qPrintable(all));
+    }
+
     // Regression: a decompression failure at the end of a multi-file
     // queue used to be silently lost. Pre-fix, opening `[good.log,
     // corrupt.gz]` in Append ended with the error entry stuck in
@@ -15133,9 +15529,7 @@ private slots:
         // The decompression failure surfaces in the dock.
         QCOMPARE(dock->Count(), startingErrorCount + 1);
 
-        // Entry must land under `Error Decompressing File`, not
-        // `Error Opening File`. The whole point of the second error
-        // bucket is correct categorisation.
+        // Entry must land under `Error Opening File`.
         auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
         QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
         bool foundDecompressionHeader = false;
@@ -15148,7 +15542,7 @@ private slots:
                 continue;
             }
             const QString text = item->text();
-            if (text.contains(QStringLiteral("Error Decompressing File")))
+            if (text.contains(QStringLiteral("Error Opening File")))
             {
                 foundDecompressionHeader = true;
             }
@@ -15159,8 +15553,7 @@ private slots:
         }
         QVERIFY2(
             foundDecompressionHeader,
-            "the chain-terminal decompression failure must be surfaced under an "
-            "`Error Decompressing File` header, not lumped into `Error Opening File`"
+            "the chain-terminal decompression failure must be surfaced under an `Error Opening File` header"
         );
         QVERIFY2(
             foundCorruptEntry, "the failure entry must name the original .gz path so the user can locate the culprit"

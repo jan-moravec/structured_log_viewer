@@ -7,6 +7,7 @@
 #include "log_table_view.hpp"
 #include "overview_rail_model.hpp"
 #include "overview_rail_widget.hpp"
+#include "qstring_path.hpp"
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/schema/log_configuration.hpp>
@@ -33,8 +34,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -425,6 +428,69 @@ void LogSessionView::ExecuteGotoLine(const QString &input)
         return;
     }
 
+    SelectSourceRow(sourceRow);
+}
+
+void LogSessionView::GotoParseErrorLines(const QString &source, quint64 firstLine, quint64 lastLine)
+{
+    if (mSession == nullptr)
+    {
+        return;
+    }
+    auto *model = mSession->Model();
+    const auto *rowOrder = mSession->RowOrderProxy();
+    const auto *filterProxy = mSession->FilterProxy();
+    if (model == nullptr || rowOrder == nullptr || filterProxy == nullptr)
+    {
+        return;
+    }
+
+    // Line numbers restart in every file, so the row must come from the error's own source.
+    const loglib::LogData &data = model->Table().Data();
+    std::vector<const loglib::LineSource *> sources;
+    if (!source.isEmpty())
+    {
+        const std::filesystem::path sourcePath = logapp::QStringToFsPath(source);
+        for (const auto &candidate : data.Sources())
+        {
+            if (candidate != nullptr && candidate->Path() == sourcePath)
+            {
+                sources.push_back(candidate.get());
+            }
+        }
+    }
+
+    // A line that did not parse has no row, so the jump goes to the first row at or after the error. Rows of one source
+    // are in line order. Error lines count from 1 and row line ids from 0.
+    int sourceRow = -1;
+    const std::span<const loglib::LogLine> lines = data.Lines();
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+        if (!source.isEmpty() && std::ranges::find(sources, lines[i].Source()) == sources.end())
+        {
+            continue;
+        }
+        const quint64 line = static_cast<quint64>(lines[i].LineId()) + 1;
+        if (line >= firstLine)
+        {
+            sourceRow = static_cast<int>(i);
+            break;
+        }
+    }
+    const QString lineText =
+        firstLine == lastLine ? QString::number(firstLine) : tr("%1-%2").arg(firstLine).arg(lastLine);
+    if (sourceRow < 0)
+    {
+        emit statusMessageRequested(tr("No row at or after line %1.").arg(lineText));
+        return;
+    }
+
+    const QModelIndex midIdx = rowOrder->mapFromSource(model->index(sourceRow, 0));
+    if (!midIdx.isValid() || !filterProxy->mapFromSource(midIdx).isValid())
+    {
+        emit statusMessageRequested(tr("Line %1 is currently filtered out.").arg(lineText));
+        return;
+    }
     SelectSourceRow(sourceRow);
 }
 

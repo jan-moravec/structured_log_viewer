@@ -251,7 +251,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
             ops |= static_cast<std::uint32_t>(SessionOperationState::Paused);
         }
     }
-    if (!mPendingPresentation.failureTitle.isEmpty() || !mPendingDecompressionErrors.empty())
+    if (!mPendingPresentation.failureTitle.isEmpty() || !mPendingOpenErrors.empty())
     {
         ops |= static_cast<std::uint32_t>(SessionOperationState::Failed);
     }
@@ -864,16 +864,10 @@ void LogSession::ClearPendingOpenErrors() noexcept
     mPendingOpenErrors.clear();
 }
 
-void LogSession::ClearPendingDecompressionErrors() noexcept
-{
-    mPendingDecompressionErrors.clear();
-}
-
 void LogSession::ClearPendingOpenQueues() noexcept
 {
     mPendingOpenFiles.clear();
     mPendingOpenErrors.clear();
-    mPendingDecompressionErrors.clear();
 }
 
 void LogSession::ResetParseErrorLog() noexcept
@@ -1151,7 +1145,7 @@ void LogSession::DrainDecompressionWatcher() noexcept
     {
         // Cancellation and decode errors are consumed by the closer.
     }
-    mDecompressionWatcher->setFuture(QFuture<DecompressionByteSourcePtr>{});
+    mDecompressionWatcher->setFuture(QFuture<OpenResult>{});
 }
 
 LogSession::ExportWatcher *LogSession::EnsureExportWatcher()
@@ -1168,11 +1162,6 @@ void LogSession::SetDecompressionOriginalPath(QString path)
     mDecompressionOriginalPath = std::move(path);
 }
 
-void LogSession::SetDecompressionCodecName(QString codec)
-{
-    mDecompressionCodecName = std::move(codec);
-}
-
 void LogSession::SetDecompressionStartedAt(std::chrono::steady_clock::time_point startedAt) noexcept
 {
     mDecompressionStartedAt = startedAt;
@@ -1181,7 +1170,6 @@ void LogSession::SetDecompressionStartedAt(std::chrono::steady_clock::time_point
 void LogSession::ClearDecompressionScratchPaths() noexcept
 {
     mDecompressionOriginalPath.clear();
-    mDecompressionCodecName.clear();
 }
 
 void LogSession::SetExportInFlight(bool inFlight)

@@ -3,7 +3,7 @@
 #include "log_session_presentation.hpp"
 
 #include <loglib/core/stop_token.hpp>
-#include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/output/file_loading.hpp>
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/schema/session_view.hpp>
@@ -768,32 +768,7 @@ public:
     void ClearPendingOpenErrors() noexcept;
 
     /**
-     * @brief Returns decompression errors accumulated for the queue.
-     *
-     * @return The read-only error list.
-     */
-    [[nodiscard]] const std::vector<std::string> &PendingDecompressionErrors() const noexcept
-    {
-        return mPendingDecompressionErrors;
-    }
-
-    /**
-     * @brief Returns mutable decompression errors.
-     *
-     * @return The mutable error list.
-     */
-    [[nodiscard]] std::vector<std::string> &MutablePendingDecompressionErrors() noexcept
-    {
-        return mPendingDecompressionErrors;
-    }
-
-    /**
-     * @brief Clears accumulated decompression errors.
-     */
-    void ClearPendingDecompressionErrors() noexcept;
-
-    /**
-     * @brief Clears pending files and both pending error lists.
+     * @brief Clears pending files and the pending open errors.
      */
     void ClearPendingOpenQueues() noexcept;
 
@@ -1186,8 +1161,23 @@ public:
         mLiveTailElapsedTimer.start();
     }
 
-    using DecompressionByteSourcePtr = std::shared_ptr<loglib::DecompressingByteSource>;
-    using DecompressionWatcher = QFutureWatcher<DecompressionByteSourcePtr>;
+    /**
+     * @brief What the open worker returns. The worker catches its own exceptions, because a future can only carry
+     * them as an unspecific Qt exception that has lost the message.
+     */
+    struct OpenResult
+    {
+        /** @brief The opened file. Null when the open failed or was cancelled. */
+        std::shared_ptr<loglib::OpenedFile> file;
+
+        /** @brief The message of the failure. Empty when the open succeeded or was cancelled. */
+        std::string error;
+
+        /** @brief Whether the stop token cancelled the open. */
+        bool cancelled = false;
+    };
+
+    using DecompressionWatcher = QFutureWatcher<OpenResult>;
     using ExportWatcher = QFutureWatcher<void>;
 
     /**
@@ -1340,23 +1330,6 @@ public:
     void SetDecompressionOriginalPath(QString path);
 
     /**
-     * @brief Returns the active decompression codec label.
-     *
-     * @return The codec label.
-     */
-    [[nodiscard]] const QString &DecompressionCodecName() const noexcept
-    {
-        return mDecompressionCodecName;
-    }
-
-    /**
-     * @brief Sets the active decompression codec label.
-     *
-     * @param codec Codec label.
-     */
-    void SetDecompressionCodecName(QString codec);
-
-    /**
      * @brief Returns the decompression start time.
      *
      * @return The monotonic start time.
@@ -1374,7 +1347,7 @@ public:
     void SetDecompressionStartedAt(std::chrono::steady_clock::time_point startedAt) noexcept;
 
     /**
-     * @brief Clears the decompression source path and codec label.
+     * @brief Clears the path of the file being opened.
      */
     void ClearDecompressionScratchPaths() noexcept;
 
@@ -1778,7 +1751,6 @@ private:
     // Pending open queue and categorized errors.
     QStringList mPendingOpenFiles;
     std::vector<std::string> mPendingOpenErrors;
-    std::vector<std::string> mPendingDecompressionErrors;
 
     // Session-specific dock state.
     SessionParseErrorLog mParseErrorLog;
@@ -1809,7 +1781,6 @@ private:
     bool mDecompressionInFlight = false;
     std::uint64_t mDecompressionGeneration = 0;
     QString mDecompressionOriginalPath;
-    QString mDecompressionCodecName;
     std::chrono::steady_clock::time_point mDecompressionStartedAt;
 
     // Export operation identity and labels.

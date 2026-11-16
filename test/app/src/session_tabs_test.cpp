@@ -2658,9 +2658,8 @@ private slots:
         LogModel *modelB = sessionB->Model();
         QVERIFY(modelA != nullptr && modelB != nullptr);
 
+        QTRY_VERIFY_WITH_TIMEOUT(modelA->rowCount() > 0 && modelB->rowCount() > 0, 60000);
         QTRY_VERIFY_WITH_TIMEOUT(!modelA->IsStreamingActive() && !modelB->IsStreamingActive(), 60000);
-        QVERIFY(modelA->rowCount() > 0);
-        QVERIFY(modelB->rowCount() > 0);
         QCOMPARE(window.activeSession(), sessionB);
     }
 
@@ -2832,7 +2831,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 60000);
         QVERIFY2(
             !sessionA->ParseErrorLog().batches.empty() || !sessionA->PendingPresentation().isEmpty() ||
-                !sessionA->PendingDecompressionErrors().empty() || !sessionA->PendingOpenErrors().empty(),
+                !sessionA->PendingOpenErrors().empty(),
             "A background decompression failure must be recorded on the originating session."
         );
         QVERIFY(sessionB->ParseErrorLog().batches.empty());

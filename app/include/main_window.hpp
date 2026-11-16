@@ -10,6 +10,7 @@
 #include "log_session.hpp"
 #include "log_session_view.hpp"
 #include "log_table_view.hpp"
+#include "network_stream_dialog.hpp"
 #include "overview_rail_model.hpp"
 #include "overview_rail_widget.hpp"
 #include "parse_errors_dock.hpp"
@@ -1433,6 +1434,13 @@ public:
     }
 
     /**
+     * @brief Starts a network session from @p cfg without showing the dialog.
+     * @param cfg Network stream configuration, as the dialog would return it.
+     * @param maxQueueBytes Queue limit of the producer. A small value lets a test make it drop bytes.
+     */
+    void StartNetworkStreamForTest(const NetworkStreamDialog::Config &cfg, std::size_t maxQueueBytes);
+
+    /**
      * @brief Export a bundle without showing the dialog, using production
      * preflight checks and default zstd settings.
      * @param destination The `destination` value.
@@ -1594,8 +1602,11 @@ private slots:
      * @param uuid Session UUID to pin after a successful load.
      * @param parsed Configuration to apply; consumed.
      * @param informIfNonFile Whether non-file sources show a dialog.
+     * @param configPath The file the configuration was read from, named in any configuration warning.
      */
-    void OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile);
+    void OpenParsedSession(
+        const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile, const QString &configPath
+    );
 
     /**
      * @brief Shared tail of `RestoreLastSessionFromPath` and
@@ -1614,6 +1625,19 @@ private slots:
      * call `LogModel::BeginStreaming`.
      */
     void OpenNetworkStream();
+    /**
+     * @brief Builds the producer for @p cfg and starts a network session on the active tab.
+     * @param cfg What the network stream dialog returned.
+     * @param maxQueueBytes Overrides the producer's queue limit. Empty keeps the producer's default.
+     */
+    void StartNetworkStream(const NetworkStreamDialog::Config &cfg, std::optional<std::size_t> maxQueueBytes);
+    /**
+     * @brief Bytes the network producer of @p session dropped because the GUI read slower than the sender wrote.
+     * @return Zero for a session that is not a network session.
+     */
+    [[nodiscard]] static std::size_t NetworkDroppedBytes(const LogSession *session);
+    /** @brief Explains a non-zero drop count to the user. */
+    [[nodiscard]] static QString NetworkDropExplanation();
     /**
      * @brief "Save Configuration\u2026" -- writes the portable
      * columns-only slice.
@@ -2195,59 +2219,46 @@ private:
     void StartStreamingOpenQueue(QStringList files, OpenMode mode, const QString &applyEmbeddedBundlePath = QString());
 
     /**
-     * @brief Starts the next queued file or asynchronous decompression.
+     * @brief Starts the next queued file on the open worker.
      *
-     * Open and decompression failures accumulate in separate session-owned
-     * buckets. Compressed inputs resume through `OnDecompressionFinished()`.
+     * Open failures accumulate in a session-owned list. The file resumes through `OnDecompressionFinished()`.
      */
     void StreamNextPendingFile(LogSession *origin);
 
     /**
-     * @brief Dispatch an async `DecompressingByteSource` worker for
-     * @p originalPath after the sniff has decided it is
-     * compressed. Wires up the progress dialog, poll timer, and
-     * watcher; the worker runs on the Qt thread pool. Called
-     * from `StreamNextPendingFile`; the finished slot
-     * (`OnDecompressionFinished`) picks the flow back up on the
-     * GUI thread.
+     * @brief Opens @p originalPath on the Qt thread pool through loglib::OpenFileSource.
+     *
+     * The worker unpacks compressed files and reads session bundles, reporting progress through the session's atomics
+     * and stopping on its stop token. Wires up the progress dialog, poll timer and watcher. The finished slot
+     * (`OnDecompressionFinished`) picks the flow back up on the GUI thread.
      * @param origin Session that owns the queued file.
-     * @param originalPath The `originalPath` value.
-     * @param codec The `codec` value.
+     * @param originalPath The user-facing path of the file.
      */
-    void BeginAsyncDecompression(
-        LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
-    );
+    void BeginAsyncOpen(LogSession *origin, const QString &originalPath);
 
     /**
-     * @brief Continuation of `StreamNextPendingFile` for compressed
-     * inputs: takes ownership of the worker-produced
-     * `DecompressingByteSource`, resumes the parse (or the queue
-     * drain, on failure) on the GUI thread.
+     * @brief Continuation of `StreamNextPendingFile`: takes the file the worker opened, then resumes the parse (or
+     * the queue drain, on failure) on the GUI thread.
      */
     void OnDecompressionFinished();
 
     /**
-     * @brief Completes decompression for a hosted origin session.
-     * @param origin Session whose decompression watcher finished.
+     * @brief Completes the open for a hosted origin session.
+     * @param origin Session whose watcher finished.
      */
     void OnDecompressionFinishedFor(LogSession *origin);
 
     /**
-     * @brief Continues a prepared file open on the GUI thread.
+     * @brief Continues an opened file on the GUI thread.
      * @param origin Session that owns the open queue.
      * @param originalPath The user-facing source path used for labels and persistence.
-     * @param effectivePath The path probed and mapped by the parser.
-     * @param decompressionAnchor Shared ownership that keeps a temporary decompressed file alive.
-     * @return `true` when a parse worker starts; `false` after recording a synchronous open error.
+     * @param opened The file the worker opened. Its source keeps any unpacked temporary copy alive.
+     * @return `true` when a parse worker starts.
      *
-     * The function constructs the log source, detects its format, and begins or
-     * appends streaming. A null anchor denotes an uncompressed input.
+     * The function detects the format of the effective path and begins or appends streaming.
      */
     [[nodiscard]] bool ContinueOpenAfterPrepared(
-        LogSession *origin,
-        const QString &originalPath,
-        const std::filesystem::path &effectivePath,
-        std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
+        LogSession *origin, const QString &originalPath, loglib::OpenedFile opened
     );
 
     /**
@@ -2315,9 +2326,13 @@ private:
      * @param title The error-group title.
      * @param errors The errors to append.
      * @param originatingSession The owning session, or `nullptr` for the active session.
+     * @param source Path of the source the lines of the errors belong to. Empty when they are not tied to one source.
      */
     void ShowParsedErrors(
-        const QString &title, const std::vector<loglib::ParseError> &errors, LogSession *originatingSession = nullptr
+        const QString &title,
+        const std::vector<loglib::ParseError> &errors,
+        LogSession *originatingSession = nullptr,
+        const QString &source = QString()
     );
     void ShowParseErrors(
         const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession = nullptr
@@ -2526,9 +2541,20 @@ private:
      * configuration, and rebuilds filters. Returns false (with a
      * warning dialog) if the apply step throws.
      * @param parsed The `parsed` value.
+     * @param configPath The file the configuration was read from, named in any configuration warning.
      * @return The result described above.
      */
-    bool ApplyLoadedConfiguration(loglib::LogConfiguration parsed);
+    bool ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const QString &configPath);
+
+    /**
+     * @brief Shows the warnings the library kept while it applied a configuration to a session's columns.
+     * @param session Session whose column layout was just replaced.
+     * @param configPath The file the configuration came from, named in the title.
+     *
+     * A print format the library replaced with the default is reported here as an error without a line, in the parse
+     * error dock. Nothing is shown when there are no warnings.
+     */
+    void ShowConfigurationWarnings(LogSession *session, const QString &configPath);
 
     /**
      * @brief Re-validate every saved filter against the freshly-loaded
@@ -3604,20 +3630,14 @@ private:
     // `LogSession::DisableRotationHistoryOverride`, and
     // `LogSession::LastRotationExpansionOriginalInputs`.
     //
-    // Note: `mPendingOpenErrors` (parse/open errors accumulated
+    // Note: `mPendingOpenErrors` (open errors accumulated
     // during a multi-file drain, drained under
-    // `tr("Error Opening File")`) and `mPendingDecompressionErrors`
-    // (decompression-specific errors drained under
-    // `tr("Error Decompressing File")`) live on `mSession`; see
-    // `LogSession::PendingOpenErrors` /
-    // `LogSession::PendingDecompressionErrors`.
+    // `tr("Error Opening File")`) lives on `mSession`; see
+    // `LogSession::PendingOpenErrors`.
 
     /**
-     * @brief QFutureWatcher for the current async decompression. Owns a
-     * `std::shared_ptr<DecompressingByteSource>`; the shared_ptr
-     * is captured into the subsequent parse callable so the temp
-     * file survives for the whole parse. `nullptr` when no
-     * decompression is in flight.
+     * @brief QFutureWatcher for the current async open. Its result is a
+     * `std::shared_ptr<loglib::OpenedFile>` whose source is handed to the model.
      */
     // The QFutureWatcher lives on `mSession`;
     // see `LogSession::DecompressionWatcherPtr`. The shell still owns
@@ -3652,8 +3672,7 @@ private:
     QPointer<QProgressDialog> mDecompressionProgressDialog;
 
     // Note: `mDecompressionOriginalPath` (user-facing path being
-    // decompressed), `mDecompressionCodecName` (pre-sniffed codec
-    // label rendered by the poll-timer lambda), and
+    // opened) and
     // `mDecompressionStartedAt` (wall-clock start for the completion
     // toast) all live on `mSession`; see
     // `LogSession::DecompressionOriginalPath`.

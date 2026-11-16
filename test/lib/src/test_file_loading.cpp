@@ -147,6 +147,24 @@ TEST_CASE("OpenFileSource deletes the unpacked copy when the source is destroyed
     }
 }
 
+TEST_CASE("OpenFileSource reports the codec and the sizes of the file", "[file_loading][compressed]")
+{
+    const test_common::TempDir dir("file_loading_info");
+    const std::string rows = JsonRows(10);
+    const auto gzipPath = dir.Write("info.jsonl.gz", Gzip(rows));
+    const auto plainPath = dir.Write("info.jsonl", rows);
+
+    const OpenedFile gzip = OpenFileSource(gzipPath);
+    CHECK(gzip.codec == DecompressingByteSource::Codec::Gzip);
+    CHECK(gzip.compressedSize == std::filesystem::file_size(gzipPath));
+    CHECK(gzip.decompressedSize == rows.size());
+
+    const OpenedFile plain = OpenFileSource(plainPath);
+    CHECK(plain.codec == DecompressingByteSource::Codec::None);
+    CHECK(plain.compressedSize == rows.size());
+    CHECK(plain.decompressedSize == 0);
+}
+
 TEST_CASE("The unpacked copy stays until the table that holds its rows is destroyed", "[file_loading][compressed]")
 {
     const test_common::TempDir dir("file_loading_table_temp");

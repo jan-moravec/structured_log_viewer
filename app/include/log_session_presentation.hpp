@@ -286,6 +286,11 @@ struct SessionParseErrorBatch
 {
     /** @brief Group header. */
     QString title;
+    /**
+     * @brief Path of the source the lines of the errors belong to, as LineSource reports it. Empty when the batch is
+     * not tied to one source, and a jump to a line then searches every source.
+     */
+    QString source;
     /** @brief Error rows in insertion order. */
     std::vector<loglib::ParseError> errors;
 };

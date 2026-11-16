@@ -35,6 +35,9 @@ OpenedFile OpenFileSource(const std::filesystem::path &path, const OpenFileOptio
     }
 
     opened.effectivePath = decompressor->EffectivePath();
+    opened.codec = decompressor->DetectedCodec();
+    opened.compressedSize = decompressor->CompressedSize();
+    opened.decompressedSize = decompressor->DecompressedSize();
     opened.source = std::make_unique<FileLineSource>(opened.effectivePath, path);
     // The file is unmapped first and the temporary copy is deleted after it.
     opened.source->AttachLifetimeAnchor(std::move(decompressor));
