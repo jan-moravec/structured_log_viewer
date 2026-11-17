@@ -33,7 +33,7 @@ target_link_libraries(apptest_support PUBLIC Qt6::Test Qt6::Widgets logapp test_
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
 target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
 
-foreach(AREA streaming files columns filters sessions main_window)
+foreach(AREA streaming files columns filters sessions recents recents_locks main_window)
     set(TARGET_NAME apptest_${AREA})
     qt_add_executable(${TARGET_NAME} src/${TARGET_NAME}_test.cpp ${RESOURCES})
     # The test translation units are large; MSVC's COFF object files hit the 65536-section limit without `/bigobj`.
