@@ -159,7 +159,7 @@ Follows **one** source and emits rows as they arrive.
 
 - A file is pre-filled with its last `--retention` rows, then followed. Rotation (rename, copy-truncate, truncate, delete-and-recreate) is handled by the library.
 - `-` reads standard input to EOF.
-- `tcp://[host]:port` and `udp://[host]:port` bind a listener (all interfaces when the host is omitted) and print `slp tail: listening on <uri>` on stderr once bound. TLS is not supported: a TLS-only TCP peer produces unparseable bytes, and `slp tail` says so.
+- `tcp://[host]:port` and `udp://[host]:port` bind a listener (all interfaces when the host is omitted) and print `slp tail: listening on <uri>` on stderr once bound. TLS is not supported: a TLS-only TCP peer produces unparseable bytes. As soon as a peer opens its connection with a TLS handshake, `slp tail` writes a note about it to stderr, once for each such peer.
 
 | Flag                                | Default     | Meaning                                                                                                                                                     |
 | ----------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
