@@ -1,6 +1,7 @@
 // Binding and rebinding tests for session-aware docks.
 
 #include "anchor_manager.hpp"
+#include "apptest_wait.hpp"
 #include "anchors_dock.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
@@ -600,14 +601,15 @@ private slots:
         // Rebind to session B; a subsequent modelReset on A must
         // NOT reach the histogram model (subscription bag dropped).
         // The Bind itself schedules a coalesced `bucketsChanged`
-        // via the fresh `OnModelReset` inside `BindSources`; wait
-        // the ~50 ms coalesce window to drain that emit BEFORE
-        // clearing the spy so it doesn't count toward the
+        // via the fresh `OnModelReset` inside `BindSources`; cancel that
+        // emit BEFORE clearing the spy so it doesn't count toward the
         // post-rebind observation below.
         QSignalSpy bucketsSpy(dock.ModelForTest(), &HistogramModel::bucketsChanged);
         dock.Bind(SessionBindContext::FromSessionAndView(sessionB.get(), viewB.get()));
         QCOMPARE(dock.boundSessionForTest(), sessionB.get());
-        QTest::qWait(80);
+        // Cancel the coalesced emit that the rebind may have scheduled, instead of waiting for it, so it cannot count
+        // toward the observation below.
+        dock.ModelForTest()->CancelPendingEmit();
         bucketsSpy.clear();
 
         // Poke session A's model; the histogram (now bound to B)
@@ -615,8 +617,9 @@ private slots:
         // to observe here because `OnModelReset` schedules a
         // coalesced `bucketsChanged`.
         sessionA->Model()->Reset();
-        // Give the coalesce timer a chance to fire (50 ms cadence).
-        QTest::qWait(120);
+        // Absence: nothing observable marks the end of the coalesce window, so wait past it (50 ms cadence) and
+        // check that the outgoing session's reset produced no emit.
+        apptest_support::WaitToProveAbsence(std::chrono::milliseconds{120});
         QCOMPARE(bucketsSpy.count(), 0);
     }
 
@@ -664,17 +667,16 @@ private slots:
         dock.Bind(SessionBindContext::FromSessionAndView(session.get(), view.get()));
         QCOMPARE(dock.boundSessionForTest(), session.get());
 
+        // Unbind's `BindSources(nullptr, nullptr)` -> `OnModelReset()` queues an emit. Wait for it before the "poke
+        // the outgoing source" observation below, so the count starts at zero.
+        QSignalSpy bucketsSpy(dock.ModelForTest(), &HistogramModel::bucketsChanged);
         dock.Unbind();
         QCOMPARE(dock.boundSessionForTest(), nullptr);
-
-        // Drain any queued emit from the Unbind's `BindSources(nullptr,
-        // nullptr)` -> `OnModelReset()` before we install the spy so
-        // the count starts at zero for the "poke the outgoing source"
-        // observation below.
-        QTest::qWait(80);
-        const QSignalSpy bucketsSpy(dock.ModelForTest(), &HistogramModel::bucketsChanged);
+        dock.ModelForTest()->CancelPendingEmit();
+        bucketsSpy.clear();
         session->Model()->Reset();
-        QTest::qWait(120);
+        // Absence: wait past the 50 ms coalesce window and check that the outgoing model's reset produced no emit.
+        apptest_support::WaitToProveAbsence(std::chrono::milliseconds{120});
         QCOMPARE(bucketsSpy.count(), 0);
     }
 
@@ -690,7 +692,8 @@ private slots:
         // timer; explicit cancellation must clear it deterministically.
         const QSignalSpy spy(&model, &HistogramModel::bucketsChanged);
         model.CancelPendingEmit();
-        QTest::qWait(120);
+        // Absence: wait past the 50 ms coalesce window and check that the cancelled emit never fires.
+        apptest_support::WaitToProveAbsence(std::chrono::milliseconds{120});
         QCOMPARE(spy.count(), 0);
     }
 

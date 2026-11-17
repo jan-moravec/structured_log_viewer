@@ -155,6 +155,8 @@ private slots:
         QVERIFY(pending.IsPending());
 
         const std::jthread releaser([&pending] {
+            // Models another process that holds the lock for a while and then lets go. The lock attempt below has
+            // to ride out this time, and nothing observable marks it.
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             pending.Release();
         });

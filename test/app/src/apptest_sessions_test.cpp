@@ -1663,21 +1663,19 @@ private slots:
         // `flush` may return false if the OS already drained;
         // rely on `waitForBytesWritten` for the wire guarantee.
         secondary.flush();
-        secondary.waitForBytesWritten(1000);
+        // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+        QVERIFY(WaitUntilProcessingEvents([&] { return secondary.bytesToWrite() == 0; }));
 
         // Spin the loop so the primary drains the pipe.
-        QVERIFY(spy.wait(60000));
+        QVERIFY(spy.count() > 0 || spy.wait(60000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         const QStringList received = args.at(0).toStringList();
         QCOMPARE(received, forwardFiles);
         QCOMPARE(args.at(1).toInt(), 0);
 
+        // The guard runs on this thread, so a blocking wait here would only time out; closing is enough.
         secondary.disconnectFromServer();
-        if (secondary.state() != QLocalSocket::UnconnectedState)
-        {
-            secondary.waitForDisconnected(1000);
-        }
     }
 
     // With `--new-instance`, the secondary skips forwarding and
@@ -1742,7 +1740,8 @@ private slots:
 
         peer.write(payload);
         peer.flush();
-        peer.waitForBytesWritten(1000);
+        // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+        QVERIFY(WaitUntilProcessingEvents([&] { return peer.bytesToWrite() == 0; }));
 
         // Let the primary drain the bytes; no signal expected.
         for (int i = 0; i < 10; ++i)
@@ -1751,11 +1750,8 @@ private slots:
         }
         QCOMPARE(spy.count(), 0);
 
+        // The guard runs on this thread, so a blocking wait here would only time out; closing is enough.
         peer.disconnectFromServer();
-        if (peer.state() != QLocalSocket::UnconnectedState)
-        {
-            peer.waitForDisconnected(1000);
-        }
     }
 
     void TestSingleInstanceVersionOutOfRangeRejected()
@@ -1786,7 +1782,8 @@ private slots:
 
         peer.write(payload);
         peer.flush();
-        peer.waitForBytesWritten(1000);
+        // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+        QVERIFY(WaitUntilProcessingEvents([&] { return peer.bytesToWrite() == 0; }));
 
         for (int i = 0; i < 10; ++i)
         {
@@ -1794,11 +1791,8 @@ private slots:
         }
         QCOMPARE(spy.count(), 0);
 
+        // The guard runs on this thread, so a blocking wait here would only time out; closing is enough.
         peer.disconnectFromServer();
-        if (peer.state() != QLocalSocket::UnconnectedState)
-        {
-            peer.waitForDisconnected(1000);
-        }
     }
 
     void TestSingleInstanceLargePayloadRejected()
@@ -1822,10 +1816,13 @@ private slots:
         const QByteArray garbage(2 * 1024 * 1024, 'x');
         peer.write(garbage);
         peer.flush();
-        peer.waitForBytesWritten(2000);
 
-        // Wait for the disconnect once the buffer overruns the cap.
-        peer.waitForDisconnected(2000);
+        // The primary closes the connection once the buffer overruns the cap. It runs on this thread, so wait with
+        // the event loop running; a blocking wait would only time out.
+        QVERIFY2(
+            WaitUntilProcessingEvents([&] { return peer.state() == QLocalSocket::UnconnectedState; }),
+            "primary must close a connection that exceeds the payload cap"
+        );
         QCOMPARE(spy.count(), 0);
     }
 
@@ -1873,7 +1870,8 @@ private slots:
             const int n = std::min(chunkSize, static_cast<int>(payload.size()) - sent);
             peer.write(payload.constData() + sent, n);
             peer.flush();
-            peer.waitForBytesWritten(500);
+            // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+            QVERIFY(WaitUntilProcessingEvents([&] { return peer.bytesToWrite() == 0; }));
             sent += n;
             QElapsedTimer pause;
             pause.start();
@@ -1941,9 +1939,10 @@ private slots:
         const qint64 written = peer.write(payload);
         QCOMPARE(written, payload.size());
         peer.flush();
-        peer.waitForBytesWritten(1000);
+        // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+        QVERIFY(WaitUntilProcessingEvents([&] { return peer.bytesToWrite() == 0; }));
 
-        QVERIFY(spy.wait(60000));
+        QVERIFY(spy.count() > 0 || spy.wait(60000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);
@@ -1992,9 +1991,10 @@ private slots:
         }
         peer.write(payload);
         peer.flush();
-        peer.waitForBytesWritten(1000);
+        // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+        QVERIFY(WaitUntilProcessingEvents([&] { return peer.bytesToWrite() == 0; }));
 
-        QVERIFY(spy.wait(60000));
+        QVERIFY(spy.count() > 0 || spy.wait(60000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);
@@ -2091,7 +2091,8 @@ private slots:
             const int n = std::min(chunkSize, static_cast<int>(payload.size()) - sent);
             peer.write(payload.constData() + sent, n);
             peer.flush();
-            peer.waitForBytesWritten(500);
+            // The guard reads on this thread, so wait with the event loop running; a blocking wait only times out.
+            QVERIFY(WaitUntilProcessingEvents([&] { return peer.bytesToWrite() == 0; }));
             sent += n;
             // Gap so the primary's `readyRead` resets the watchdog.
             QElapsedTimer pause;
@@ -2585,16 +2586,10 @@ private slots:
             QLockFile holderLock(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
             QVERIFY(holderLock.tryLock(2000));
             startSignal.store(true, std::memory_order_release);
-            while (!stopSignal.load(std::memory_order_acquire))
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
+            static_cast<void>(test_common::WaitUntil([&] { return stopSignal.load(std::memory_order_acquire); }));
             holderLock.unlock();
         });
-        while (!startSignal.load(std::memory_order_acquire))
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        QVERIFY(test_common::WaitUntil([&] { return startSignal.load(std::memory_order_acquire); }));
 
         // `List()` skips the cross-process lock by contract and
         // must return promptly even with the lock file held.

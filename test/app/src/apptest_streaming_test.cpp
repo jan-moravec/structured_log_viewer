@@ -244,6 +244,9 @@ private slots:
         // `Reset()` blocks on `waitForFinished()`; release the worker from a
         // separate thread so `Reset()` can return.
         std::thread releaser([&]() {
+            // Lets `Reset()` block on the worker first, so the test covers the blocked path. It passes when the
+            // release comes before `Reset()` blocks, so this only picks the path under test and is not a
+            // correctness wait; nothing observable shows that `Reset()` is blocked.
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             {
                 const std::scoped_lock lock(releaseMutex);
@@ -3858,7 +3861,8 @@ private slots:
 
         // Let the trailing timer tick down, then re-bump. Remaining
         // time must NOT bounce back up -- that would mean the
-        // second bump reset the timer (the bug we're pinning).
+        // second bump reset the timer (the bug we're pinning). The wait
+        // models time passing on the timer; nothing observable marks it.
         QTest::qWait(20);
         const int remainingBefore = trailing->remainingTime();
         if (remainingBefore < 0)

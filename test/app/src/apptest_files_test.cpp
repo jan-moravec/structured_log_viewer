@@ -243,12 +243,10 @@ private slots:
         // count must stay frozen at 150 — the buffer is the side channel.
         // Drain Qt events too in case any lambdas slip through (they
         // shouldn't while paused).
-        const auto pauseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (sink->PausedLineCount() < 50 && std::chrono::steady_clock::now() < pauseDeadline)
-        {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
+        QVERIFY2(
+            WaitUntilProcessingEvents([&] { return sink->PausedLineCount() >= 50; }),
+            "the worker must drain the appended lines into the paused buffer"
+        );
         QCOMPARE(model.rowCount(), 150);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), 50);
 
@@ -1083,7 +1081,9 @@ private slots:
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
-        // Do not pump GUI events; worker completion must remain queued for Stop.
+        // Do not pump GUI events; worker completion must remain queued for Stop. The worker's completion is
+        // only visible through the event queue this test must leave alone, so time is the only signal here. The
+        // test passes whether or not the worker has finished, and the pause only lets it reach the queued state.
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         model->StopAndKeepRows();

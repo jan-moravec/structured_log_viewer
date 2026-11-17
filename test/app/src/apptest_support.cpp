@@ -152,9 +152,15 @@ QString AppTestBase::ClickAndReadClipboardWithRetry(
     {
         button->click();
         QCoreApplication::processEvents();
-        QTest::qWait(sleepMs);
-        text = clipboard->text();
-        if (marker.isEmpty() ? !text.isEmpty() : text.contains(marker))
+        // Wait up to sleepMs for the clipboard to carry the marker; the next attempt clicks again.
+        const bool seen = WaitUntilProcessingEvents(
+            [&] {
+                text = clipboard->text();
+                return marker.isEmpty() ? !text.isEmpty() : text.contains(marker);
+            },
+            std::chrono::milliseconds(sleepMs)
+        );
+        if (seen)
         {
             return text;
         }
@@ -179,9 +185,15 @@ QString AppTestBase::InvokeAndReadClipboardWithRetry(
             return {};
         }
         QCoreApplication::processEvents();
-        QTest::qWait(sleepMs);
-        text = clipboard->text();
-        if (marker.isEmpty() ? !text.isEmpty() : text.contains(marker))
+        // Wait up to sleepMs for the clipboard to carry the marker; the next attempt clicks again.
+        const bool seen = WaitUntilProcessingEvents(
+            [&] {
+                text = clipboard->text();
+                return marker.isEmpty() ? !text.isEmpty() : text.contains(marker);
+            },
+            std::chrono::milliseconds(sleepMs)
+        );
+        if (seen)
         {
             return text;
         }
@@ -481,17 +493,7 @@ std::unique_ptr<loglib::LogParser> ThrowingParserFactory()
 
 bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::milliseconds deadline)
 {
-    return test_common::WaitUntil(
-        [&] {
-            if (model.rowCount() >= target)
-            {
-                return true;
-            }
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
-            return false;
-        },
-        deadline
-    );
+    return WaitUntilProcessingEvents([&] { return model.rowCount() >= target; }, deadline);
 }
 
 int ColumnByHeader(const LogModel &model, const QString &header)

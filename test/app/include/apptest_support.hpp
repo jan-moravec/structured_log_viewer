@@ -11,6 +11,7 @@
 #pragma once
 
 #include "advanced_filter_editor.hpp"
+#include "apptest_wait.hpp"
 #include "log_model.hpp"
 #include "main_window.hpp"
 #include "qstring_path.hpp"

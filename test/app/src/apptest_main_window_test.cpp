@@ -363,8 +363,9 @@ private slots:
         model.BeginStreaming(std::move(source), options, [] { return std::make_unique<loglib::JsonParser>(); });
 
         QVERIFY(finishedSpy.wait(60000));
-        // Give a second, wrongly sent OnFinished the chance to arrive.
-        QTest::qWait(100);
+        // Absence: give a second, wrongly sent OnFinished the chance to arrive. Nothing marks the end of that
+        // period, so the wait is short and fixed.
+        WaitToProveAbsence(std::chrono::milliseconds(100));
         QCOMPARE(finishedSpy.count(), 1);
 
         const auto &errors = model.StreamingErrors();
@@ -388,7 +389,8 @@ private slots:
         model.BeginStreaming(std::move(source), options, ThrowingParserFactory);
 
         QVERIFY(finishedSpy.wait(60000));
-        QTest::qWait(100);
+        // Absence: give a second, wrongly sent OnFinished the chance to arrive.
+        WaitToProveAbsence(std::chrono::milliseconds(100));
         QCOMPARE(finishedSpy.count(), 1);
 
         const auto &errors = model.StreamingErrors();
@@ -681,6 +683,9 @@ private slots:
         static_cast<void>(stop);
 
         std::thread releaser([&]() {
+            // Lets `Reset()` block on the worker first, so the test covers the blocked path. It passes when the
+            // release comes before `Reset()` blocks, so this only picks the path under test and is not a
+            // correctness wait; nothing observable shows that `Reset()` is blocked.
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             {
                 const std::scoped_lock lock(releaseMutex);
@@ -3375,26 +3380,18 @@ private slots:
         // Wait for the worker to fill the queue. We deliberately do
         // NOT spin the event loop here -- the drain lambda must stay
         // queued so the worker has nowhere to push the (cap+1)-th batch.
-        const auto fillDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (enqueuedCount.load(std::memory_order_acquire) < static_cast<int>(CAPACITY))
-        {
-            QVERIFY(std::chrono::steady_clock::now() < fillDeadline);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        QVERIFY(test_common::WaitUntil(
+            [&] { return enqueuedCount.load(std::memory_order_acquire) >= static_cast<int>(CAPACITY); }
+        ));
         // Producer must remain parked: count stays at cap for a
-        // sustained sample window.
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // sustained sample window. Absence of progress has no signal, so
+        // time is the only evidence.
+        test_common::SleepToProveAbsence(std::chrono::milliseconds(50));
         QCOMPARE(enqueuedCount.load(std::memory_order_acquire), static_cast<int>(CAPACITY));
 
         // Now spin the event loop so the drain lambda runs, pulls
         // batches out, wakes the worker, and the rest go through.
-        const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (enqueuedCount.load(std::memory_order_acquire) < TOTAL_BATCHES)
-        {
-            QVERIFY(std::chrono::steady_clock::now() < drainDeadline);
-            QCoreApplication::processEvents();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        QVERIFY(WaitUntilProcessingEvents([&] { return enqueuedCount.load(std::memory_order_acquire) >= TOTAL_BATCHES; }));
         worker.join();
 
         // Final drain so any trailing posted lambda runs.
@@ -3432,15 +3429,9 @@ private slots:
             finished.store(true, std::memory_order_release);
         });
 
-        const auto enterDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (!entered.load(std::memory_order_acquire))
-        {
-            QVERIFY(std::chrono::steady_clock::now() < enterDeadline);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
         // Give the worker a moment to actually park inside the queue's
         // condition variable.
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        test_common::LetWaiterPark(entered);
         QVERIFY(!finished.load(std::memory_order_acquire));
 
         // Reset must wake the parked worker via NotifyStop and return
@@ -3490,13 +3481,7 @@ private slots:
             producerDone.store(true, std::memory_order_release);
         });
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (model.rowCount() < TOTAL_BATCHES)
-        {
-            QVERIFY(std::chrono::steady_clock::now() < deadline);
-            QCoreApplication::processEvents();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        QVERIFY(WaitUntilProcessingEvents([&] { return model.rowCount() >= TOTAL_BATCHES; }));
         worker.join();
         QVERIFY(producerDone.load(std::memory_order_acquire));
 

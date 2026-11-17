@@ -80,7 +80,7 @@ set_target_properties(apptest_session_tabs_bench PROPERTIES WIN32_EXECUTABLE FAL
 # not pull in the GUI fixture loader.
 qt_add_executable(apptest_queue src/test_bounded_batch_queue.cpp)
 
-target_link_libraries(apptest_queue PRIVATE Qt6::Test logapp)
+target_link_libraries(apptest_queue PRIVATE Qt6::Test logapp test_common)
 
 target_include_directories(apptest_queue PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
@@ -222,7 +222,7 @@ add_test(
 )
 
 qt_add_executable(apptest_dock_binding src/dock_binding_test.cpp)
-target_link_libraries(apptest_dock_binding PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_link_libraries(apptest_dock_binding PRIVATE Qt6::Test Qt6::Widgets logapp apptest_support)
 target_include_directories(apptest_dock_binding PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_dock_binding

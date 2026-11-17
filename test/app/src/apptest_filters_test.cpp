@@ -3393,6 +3393,8 @@ private slots:
         edit->clear();
         spy.clear();
         emit dock->revealed();
+        // Absence: the debounce is 120 ms and nothing marks the end of a quiet period, so wait past it and check that
+        // no request came.
         QVERIFY2(!spy.wait(300), "FindDock::revealed must NOT trigger MatchCountRequested for an empty needle");
     }
 
@@ -3430,6 +3432,8 @@ private slots:
         {
             findRecord->BumpMatchCountDebounce();
             const qint64 beforeWait = wallClock.elapsed();
+            // Models continuous activity: a bump every 50 ms, faster than the trailing debounce, which is the
+            // input the max-age cap exists for. The pace is the input and not a wait for an event.
             QTest::qWait(BUMP_INTERVAL_MS);
             oversleptMs += std::max<qint64>(0, wallClock.elapsed() - beforeWait - BUMP_INTERVAL_MS);
             if (spy.count() > 0)
