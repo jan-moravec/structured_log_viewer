@@ -282,6 +282,18 @@ QString WriteBundleFixture(
     return path;
 }
 
+bool PumpUntilStreamingActive(const LogModel *model)
+{
+    return test_common::WaitUntil(
+        [model] {
+            QCoreApplication::processEvents();
+            return model->IsStreamingActive();
+        },
+        std::chrono::milliseconds{60000},
+        std::chrono::milliseconds{1}
+    );
+}
+
 QByteArray GzipCompressForTest(const QByteArray &bytes)
 {
     z_stream strm{};

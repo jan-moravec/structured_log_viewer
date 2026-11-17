@@ -61,6 +61,15 @@ struct OpenedFile
 
     /** @brief The metadata line of a session bundle. Empty for every other file. */
     std::optional<SessionBundleMetadata> bundle;
+
+    /** @brief The compression format found in the file, or None for a plain file. */
+    DecompressingByteSource::Codec codec = DecompressingByteSource::Codec::None;
+
+    /** @brief The size of the file at the path in bytes. */
+    std::size_t compressedSize = 0;
+
+    /** @brief The size of the unpacked copy in bytes, or zero for a plain file. */
+    std::size_t decompressedSize = 0;
 };
 
 /**

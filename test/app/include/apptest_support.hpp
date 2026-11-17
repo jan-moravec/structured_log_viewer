@@ -210,6 +210,10 @@ QString WriteBundleFixture(
     const std::function<void(loglib::LogConfiguration &)> &configure
 );
 
+// Pumps events until the model's parse is armed, then stops before any later event runs. Files open on a worker, so
+// the parse starts from an event; a parse that finishes can only be reported by a later event.
+[[nodiscard]] bool PumpUntilStreamingActive(const LogModel *model);
+
 // Gzip-compress @p bytes into a self-contained gzip stream
 // (windowBits = 15 + 16). In-TU helper for the transparent-
 // decompression regression suite; the codec-level round-trip lives

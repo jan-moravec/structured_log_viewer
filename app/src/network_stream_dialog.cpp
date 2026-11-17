@@ -24,6 +24,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <optional>
 
 namespace
@@ -40,6 +41,9 @@ constexpr auto KEY_TLS_KEY = "tls/privateKey";
 constexpr auto KEY_TLS_CA = "tls/caBundle";
 constexpr auto KEY_TLS_REQUIRE_CLIENT = "tls/requireClientCert";
 constexpr auto KEY_REGEX_PATTERN = "regex/pattern";
+constexpr auto KEY_REGEX_TEMPLATE = "regex/template";
+constexpr auto KEY_REGEX_CONTINUATION = "regex/continuation";
+constexpr auto KEY_REGEX_HEADER_ANCHOR = "regex/headerAnchor";
 
 /// Sentinel combobox userData that means "use the custom-pattern
 /// line edit". Real templates carry their `name` as userData, so
@@ -176,6 +180,7 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
            "with the same name.")
     );
     mRegexTemplate->setAccessibleName(tr("Regex template"));
+    mRegexTemplate->setObjectName(QStringLiteral("networkRegexTemplate"));
     regexLayout->addRow(tr("Template:"), mRegexTemplate);
 
     mRegexPattern = new QLineEdit(mRegexGroup);
@@ -186,7 +191,31 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
            "the registry).")
     );
     mRegexPattern->setAccessibleName(tr("Regex pattern"));
+    mRegexPattern->setObjectName(QStringLiteral("networkRegexPattern"));
     regexLayout->addRow(tr("Pattern:"), mRegexPattern);
+
+    mRegexContinuation = new QComboBox(mRegexGroup);
+    mRegexContinuation->addItem(tr("None"), QVariant(static_cast<int>(loglib::ContinuationMode::None)));
+    mRegexContinuation->addItem(tr("Indented lines"), QVariant(static_cast<int>(loglib::ContinuationMode::Indented)));
+    mRegexContinuation->addItem(
+        tr("Until next header"), QVariant(static_cast<int>(loglib::ContinuationMode::UntilNextHeader))
+    );
+    mRegexContinuation->setToolTip(tr("How lines that do not start a record are joined to the record before them."));
+    mRegexContinuation->setAccessibleName(tr("Regex continuation"));
+    mRegexContinuation->setObjectName(QStringLiteral("networkRegexContinuation"));
+    regexLayout->addRow(tr("Continuation:"), mRegexContinuation);
+
+    mRegexHeaderAnchor = new QLineEdit(mRegexGroup);
+    mRegexHeaderAnchor->setPlaceholderText(tr("Pattern of the first line of a record; empty uses the pattern above"));
+    mRegexHeaderAnchor->setAccessibleName(tr("Regex header anchor"));
+    mRegexHeaderAnchor->setObjectName(QStringLiteral("networkRegexHeaderAnchor"));
+    regexLayout->addRow(tr("Header anchor:"), mRegexHeaderAnchor);
+    connect(mRegexContinuation, &QComboBox::currentIndexChanged, this, [this] {
+        mRegexHeaderAnchor->setEnabled(
+            !mRegexPattern->isReadOnly() &&
+            mRegexContinuation->currentData().toInt() == static_cast<int>(loglib::ContinuationMode::UntilNextHeader)
+        );
+    });
 
     // Signpost pointing at the dedicated editor. Template CRUD
     // lives behind `Settings -> Regex templates...`; showing the
@@ -355,6 +384,10 @@ void NetworkStreamDialog::OnRegexTemplateChanged()
         // without clobbering whatever they already typed (a prior
         // custom session may have persisted text worth keeping).
         mRegexPattern->setReadOnly(false);
+        mRegexContinuation->setEnabled(true);
+        mRegexHeaderAnchor->setEnabled(
+            mRegexContinuation->currentData().toInt() == static_cast<int>(loglib::ContinuationMode::UntilNextHeader)
+        );
         return;
     }
     // Resolve by name. Prefer the merged registry (built-ins ∪
@@ -365,7 +398,7 @@ void NetworkStreamDialog::OnRegexTemplateChanged()
         const auto tmpl = mRegistry->Load(templateName);
         if (tmpl.has_value())
         {
-            mRegexPattern->setText(QString::fromStdString(tmpl->pattern));
+            ShowTemplate(*tmpl);
         }
     }
     else
@@ -375,12 +408,23 @@ void NetworkStreamDialog::OnRegexTemplateChanged()
         {
             if (t.name == stdName)
             {
-                mRegexPattern->setText(QString::fromStdString(t.pattern));
+                ShowTemplate(t);
                 break;
             }
         }
     }
     mRegexPattern->setReadOnly(true);
+    mRegexContinuation->setEnabled(false);
+    mRegexHeaderAnchor->setEnabled(false);
+}
+
+void NetworkStreamDialog::ShowTemplate(const loglib::RegexTemplate &tmpl)
+{
+    mRegexPattern->setText(QString::fromStdString(tmpl.pattern));
+    mRegexContinuation->setCurrentIndex(
+        std::max(0, mRegexContinuation->findData(QVariant(static_cast<int>(tmpl.continuationMode))))
+    );
+    mRegexHeaderAnchor->setText(QString::fromStdString(tmpl.headerAnchor));
 }
 
 void NetworkStreamDialog::BrowseCertChain()
@@ -565,36 +609,26 @@ void NetworkStreamDialog::LoadFromSettings()
         mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::AutoDetect)));
     }
 
-    // Restore the prior pattern and resolve template-vs-custom by
-    // looking the stored bytes up in the merged registry. A
-    // registry upgrade that changes a pattern then silently moves
-    // the user from "matched template" to "custom" without losing
-    // their text — they only lose the named-template tag.
-    // `FindTemplateByPattern` consults the same merged catalog
-    // the probe loop uses, so user matches are honoured.
-    const QString storedPattern = settings.value(KEY_REGEX_PATTERN).toString();
-    if (!storedPattern.isEmpty())
+    // Restore the template by name. A name that is no longer in the catalog, or none, means a custom pattern: its text,
+    // continuation mode and header anchor come back as the user left them.
+    const QString storedTemplate = settings.value(KEY_REGEX_TEMPLATE).toString();
+    int comboIdx = storedTemplate.isEmpty() ? -1 : mRegexTemplate->findData(QVariant(storedTemplate));
+    if (comboIdx < 0)
     {
-        mRegexPattern->setText(storedPattern);
-        const std::string storedStdString = storedPattern.toStdString();
-        QVariant pickerData = QVariant(RegexTemplateCustomData());
-        if (const std::optional<loglib::RegexTemplate> match = loglib::FindTemplateByPattern(storedStdString);
-            match.has_value())
-        {
-            pickerData = QVariant(QString::fromStdString(match->name));
-        }
-        const int comboIdx = mRegexTemplate->findData(pickerData);
-        if (comboIdx >= 0)
-        {
-            mRegexTemplate->setCurrentIndex(comboIdx);
-        }
-        else
-        {
-            // The stored template name has vanished from the
-            // catalog since last launch. Fall back to "Custom..."
-            // so the pattern text stays editable.
-            mRegexTemplate->setCurrentIndex(mRegexTemplate->findData(QVariant(RegexTemplateCustomData())));
-        }
+        comboIdx = mRegexTemplate->findData(QVariant(RegexTemplateCustomData()));
+    }
+    if (comboIdx >= 0)
+    {
+        mRegexTemplate->setCurrentIndex(comboIdx);
+    }
+    if (mRegexTemplate->currentData().toString().isEmpty())
+    {
+        mRegexPattern->setText(settings.value(KEY_REGEX_PATTERN).toString());
+        const int modeIdx = mRegexContinuation->findData(
+            QVariant(settings.value(KEY_REGEX_CONTINUATION, static_cast<int>(loglib::ContinuationMode::None)).toInt())
+        );
+        mRegexContinuation->setCurrentIndex(std::max(0, modeIdx));
+        mRegexHeaderAnchor->setText(settings.value(KEY_REGEX_HEADER_ANCHOR).toString());
     }
 
     mBindAddress->setText(settings.value(KEY_BIND, mBindAddress->text()).toString());
@@ -635,7 +669,11 @@ void NetworkStreamDialog::SaveToSettings() const
         }
         settings.setValue(KEY_FORMAT, formatName);
     }
+    // The template is stored by name, so a custom pattern that equals a template's pattern stays custom.
+    settings.setValue(KEY_REGEX_TEMPLATE, mRegexTemplate->currentData().toString());
     settings.setValue(KEY_REGEX_PATTERN, mRegexPattern->text());
+    settings.setValue(KEY_REGEX_CONTINUATION, mRegexContinuation->currentData().toInt());
+    settings.setValue(KEY_REGEX_HEADER_ANCHOR, mRegexHeaderAnchor->text());
     settings.setValue(KEY_BIND, mBindAddress->text());
     settings.setValue(KEY_PORT, mPort->value());
     settings.setValue(KEY_MAX_CLIENTS, mMaxConcurrentClients->value());
@@ -678,7 +716,9 @@ NetworkStreamDialog::Config NetworkStreamDialog::Configuration() const
             out.format = Format::AutoDetect;
         }
     }
-    out.regexPattern = mRegexPattern->text();
+    out.regex.pattern = mRegexPattern->text();
+    out.regex.continuationMode = static_cast<loglib::ContinuationMode>(mRegexContinuation->currentData().toInt());
+    out.regex.headerAnchor = mRegexHeaderAnchor->text();
     out.bindAddress = mBindAddress->text();
     out.port = static_cast<uint16_t>(mPort->value());
     out.maxConcurrentClients = static_cast<size_t>(mMaxConcurrentClients->value());

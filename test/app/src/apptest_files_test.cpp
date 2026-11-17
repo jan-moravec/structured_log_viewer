@@ -98,6 +98,7 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScopedPointer>
@@ -1021,7 +1022,7 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 60000);
+        QVERIFY(PumpUntilStreamingActive(model));
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
@@ -1077,7 +1078,7 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 60000);
+        QVERIFY(PumpUntilStreamingActive(model));
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
@@ -1825,7 +1826,7 @@ private slots:
         // pumped before the second open: the session only ends on the
         // GUI thread, so it is still active however fast the worker is.
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(model->IsStreamingActive());
+        QVERIFY(PumpUntilStreamingActive(model));
 
         // Second open is the regression case: with an in-flight
         // streaming worker, the file must defer onto
@@ -1887,7 +1888,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(model->IsStreamingActive());
+        QVERIFY(PumpUntilStreamingActive(model));
         // Second open lands in `mPendingOpenFiles` because the
         // first session is still active.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
@@ -2300,6 +2301,112 @@ private slots:
         QCOMPARE(model->rowCount(), followUpLines.size());
     }
 
+    // A cancel that lands after the worker has read part of the input stops the open: nothing is parsed, the
+    // session goes idle, and the unpacked copy is removed so a later open starts clean.
+    void TestCancelMidDecompressionStopsTheOpen()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        mWindow->SetSuppressDialogsForTest(true);
+
+        // Text that does not compress well, so the compressed file is read over many chunks.
+        QByteArray uncompressed;
+        uncompressed.reserve(60'000'000);
+        QRandomGenerator random(12345);
+        for (int i = 0; i < 200000; ++i)
+        {
+            uncompressed.append("{\"idx\": ");
+            uncompressed.append(QByteArray::number(i));
+            uncompressed.append(", \"msg\": \"");
+            for (int word = 0; word < 25; ++word)
+            {
+                uncompressed.append(QByteArray::number(random.generate(), 16));
+            }
+            uncompressed.append("\"}\n");
+        }
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString gzipPath = tempDir.filePath(QStringLiteral("mid_cancel.jsonl.gz"));
+        WriteBinaryForTest(gzipPath, GzipCompressForTest(uncompressed));
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
+        LogSession *session = mWindow->activeSession();
+        QVERIFY(session != nullptr);
+
+        // The worker reports progress between input chunks, so a non-zero count means it is inside the file.
+        QVERIFY(
+            test_common::WaitUntil(
+                [session] {
+                    QCoreApplication::processEvents();
+                    return session->DecompressionBytesIn().loadRelaxed() > 0 || !session->IsDecompressionInFlight();
+                },
+                std::chrono::milliseconds{60000},
+                std::chrono::milliseconds{1}
+            )
+        );
+        QVERIFY2(mWindow->IsDecompressionInFlightForTest(), "the open must still be running when the cancel arrives");
+        QVERIFY(session->DecompressionBytesIn().loadRelaxed() < session->DecompressionTotalBytesIn().loadRelaxed());
+
+        mWindow->RequestDecompressionCancelForTest();
+        QVERIFY(test_common::WaitUntil([this] {
+            QCoreApplication::processEvents();
+            return !mWindow->IsDecompressionInFlightForTest();
+        }));
+
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(model->rowCount(), 0);
+        QVERIFY(session->PendingOpenErrors().empty());
+        QVERIFY(mWindow->statusBar()->currentMessage().contains(QStringLiteral("cancelled")));
+
+        const TempJsonFile followUp({QStringLiteral(R"({"idx": 0, "msg": "after-mid-cancel"})")});
+        mWindow->OpenFilesForTest({followUp.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(60000));
+        QCOMPARE(model->rowCount(), 1);
+    }
+
+    // A path with the bundle extension is a session bundle whatever its content. A plain log under that name fails with
+    // the library's message and opens no rows.
+    void TestBundleExtensionOnPlainFileFailsWithLibraryError()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        mWindow->SetSuppressDialogsForTest(true);
+
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY(dock != nullptr);
+        dock->ResetSessionState();
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString bundlePath = tempDir.filePath(QStringLiteral("plain.slvbundle"));
+        WriteBinaryForTest(bundlePath, QByteArrayLiteral("{\"idx\": 0, \"msg\": \"not a bundle\"}\n"));
+
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        mWindow->OpenFilesForTest({bundlePath}, MainWindow::OpenMode::Replace);
+        QVERIFY(test_common::WaitUntil([this, dock] {
+            QCoreApplication::processEvents();
+            return !mWindow->IsDecompressionInFlightForTest() && dock->Count() > 0;
+        }));
+
+        QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(dock->Count(), 1);
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY(list != nullptr);
+        QStringList texts;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            texts.append(list->item(i)->text());
+        }
+        const QString all = texts.join(QChar::fromLatin1('\n'));
+        QVERIFY2(all.contains(QStringLiteral("Error Opening File")), qPrintable(all));
+        QVERIFY2(all.contains(QStringLiteral("plain.slvbundle")), qPrintable(all));
+    }
+
     // Regression: a decompression failure at the end of a multi-file
     // queue used to be silently lost. Pre-fix, opening `[good.log,
     // corrupt.gz]` in Append ended with the error entry stuck in
@@ -2376,9 +2483,7 @@ private slots:
         // The decompression failure surfaces in the dock.
         QCOMPARE(dock->Count(), startingErrorCount + 1);
 
-        // Entry must land under `Error Decompressing File`, not
-        // `Error Opening File`. The whole point of the second error
-        // bucket is correct categorisation.
+        // Entry must land under `Error Opening File`.
         auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
         QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
         bool foundDecompressionHeader = false;
@@ -2391,7 +2496,7 @@ private slots:
                 continue;
             }
             const QString text = item->text();
-            if (text.contains(QStringLiteral("Error Decompressing File")))
+            if (text.contains(QStringLiteral("Error Opening File")))
             {
                 foundDecompressionHeader = true;
             }
@@ -2402,8 +2507,7 @@ private slots:
         }
         QVERIFY2(
             foundDecompressionHeader,
-            "the chain-terminal decompression failure must be surfaced under an "
-            "`Error Decompressing File` header, not lumped into `Error Opening File`"
+            "the chain-terminal decompression failure must be surfaced under an `Error Opening File` header"
         );
         QVERIFY2(
             foundCorruptEntry, "the failure entry must name the original .gz path so the user can locate the culprit"
