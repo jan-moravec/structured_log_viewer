@@ -610,7 +610,14 @@ llvm-cov-23 report \
     -instr-profile=build/clang-coverage/merged.profdata \
     -ignore-filename-regex='(_deps|build|test)/' \
     build/clang-coverage/bin/RelWithDebInfo/tests \
-    -object build/clang-coverage/bin/RelWithDebInfo/apptest \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_streaming \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_files \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_columns \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_filters \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_sessions \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_recents \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_recents_locks \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_main_window \
     -object build/clang-coverage/bin/RelWithDebInfo/apptest_queue
 ```
 
