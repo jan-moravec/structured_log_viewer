@@ -15,6 +15,12 @@ qt_add_resources(RESOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fixtures.qrc
 )
+# Shared fixtures and the AppTestBase QtTest base class for the GUI test executables. Every executable that drives a
+# MainWindow links it.
+qt_add_library(apptest_support STATIC src/apptest_support.cpp include/apptest_support.hpp)
+target_include_directories(apptest_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib/include)
+target_link_libraries(apptest_support PUBLIC Qt6::Test Qt6::Widgets logapp test_common ZLIB::ZLIB)
+
 qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
 
 # `main_window_test.cpp` is a monolithic ~20k line TU; MSVC's COFF
@@ -34,7 +40,7 @@ endif()
 # needed at the test surface: the other three codecs are already
 # exercised by `test_lib_decompressing_byte_source`, and the app-side
 # tests focus on the MainWindow orchestration, which is codec-agnostic.
-target_link_libraries(apptest PRIVATE Qt6::Test logapp test_common ZLIB::ZLIB)
+target_link_libraries(apptest PRIVATE apptest_support)
 
 target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
