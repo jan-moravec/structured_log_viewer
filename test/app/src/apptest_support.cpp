@@ -71,7 +71,10 @@ int AppTestBase::StreamFixtureForColumnTests()
     // promotes `level` to enum, but below the static-mode
     // promotion threshold for arbitrary keys.
     const QStringList levels{
-        QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
+        QStringLiteral("info"),
+        QStringLiteral("warn"),
+        QStringLiteral("error"),
+        QStringLiteral("debug"),
     };
     QStringList lines;
     lines.reserve(200);

@@ -180,7 +180,8 @@ private slots:
         );
         cfg.columns.push_back(loglib::Column{.header = "msg", .keys = {"msg"}, .type = loglib::ColumnType::String});
         cfg.source = loglib::Source{
-            .kind = loglib::Source::Kind::File, .locators = {"C:/logs/first.json", "C:/logs/second.json"}
+            .kind = loglib::Source::Kind::File,
+            .locators = {"C:/logs/first.json", "C:/logs/second.json"},
         };
 
         const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
@@ -241,7 +242,7 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::Source{
                 .kind = loglib::Source::Kind::File,
-                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()},
             };
             const QString uuid = manager.WriteSnapshot(cfg);
             QVERIFY(!uuid.isEmpty());
@@ -341,7 +342,7 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::Source{
                 .kind = loglib::Source::Kind::File,
-                .locators = {QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()}
+                .locators = {QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()},
             };
             uuids.append(manager.WriteSnapshot(cfg));
         }
@@ -417,7 +418,7 @@ private slots:
         {
             snapshot.insert(key, settings.value(key));
         }
-        auto restoreGuard = qScopeGuard([&]() {
+        auto restoreGuard = qScopeGuard([&] {
             settings.clear();
             for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
             {
@@ -445,7 +446,7 @@ private slots:
         {
             snapshot.insert(key, settings.value(key));
         }
-        auto restoreGuard = qScopeGuard([&]() {
+        auto restoreGuard = qScopeGuard([&] {
             settings.clear();
             for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
             {
@@ -480,7 +481,7 @@ private slots:
         {
             snapshot.insert(key, settings.value(key));
         }
-        auto restoreGuard = qScopeGuard([&]() {
+        auto restoreGuard = qScopeGuard([&] {
             settings.clear();
             for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
             {
@@ -1097,7 +1098,7 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::Source{
                 .kind = loglib::Source::Kind::File,
-                .locators = {QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()}
+                .locators = {QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()},
             };
             const QString uuid = manager.WriteSnapshot(cfg);
             QVERIFY(!uuid.isEmpty());
@@ -1185,7 +1186,7 @@ private slots:
     {
         QSettings settings;
         const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
-        auto restoreGuard = qScopeGuard([&]() {
+        auto restoreGuard = qScopeGuard([&] {
             QSettings restore;
             if (previous.isValid())
             {
@@ -1212,7 +1213,7 @@ private slots:
     {
         const QSettings settings;
         const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
-        auto restoreGuard = qScopeGuard([&]() {
+        auto restoreGuard = qScopeGuard([&] {
             QSettings restore;
             if (previous.isValid())
             {
@@ -1241,7 +1242,7 @@ private slots:
     {
         const QSettings settings;
         const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
-        auto restoreGuard = qScopeGuard([&]() {
+        auto restoreGuard = qScopeGuard([&] {
             QSettings restore;
             if (previous.isValid())
             {
@@ -1265,7 +1266,7 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::Source{
                 .kind = loglib::Source::Kind::File,
-                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()},
             };
             QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
         }
@@ -1279,7 +1280,7 @@ private slots:
     void TestWriteSnapshotAndPublishUpdatesOpenWindowsAtomically()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        auto restoreGuard = qScopeGuard([&] { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         const QTemporaryDir sessionsDir;
@@ -1310,7 +1311,7 @@ private slots:
     void TestWriteSnapshotAndPublishSkipsPublishWhenFlagFalse()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        auto restoreGuard = qScopeGuard([&] { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         const QTemporaryDir sessionsDir;
@@ -1373,7 +1374,8 @@ private slots:
         // Mutate the source so `BuildLabel` differs; fast-path
         // equality check rejects and rewrites the entry slot.
         cfg.source = loglib::Source{
-            .kind = loglib::Source::Kind::File, .locators = {"C:/logs/initial.json", "C:/logs/added.json"}
+            .kind = loglib::Source::Kind::File,
+            .locators = {"C:/logs/initial.json", "C:/logs/added.json"},
         };
         const QString reuse = manager.WriteSnapshot(cfg, uuid);
         QCOMPARE(reuse, uuid);
@@ -1404,7 +1406,7 @@ private slots:
                 loglib::LogConfiguration cfg;
                 cfg.source = loglib::Source{
                     .kind = loglib::Source::Kind::File,
-                    .locators = {QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()}
+                    .locators = {QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()},
                 };
                 if (!manager.WriteSnapshot(cfg).isEmpty())
                 {
@@ -1413,7 +1415,7 @@ private slots:
             }
         };
 
-        auto reader = [&]() {
+        auto reader = [&] {
             while (!stop.load())
             {
                 // `List()` always returns a self-consistent snapshot.

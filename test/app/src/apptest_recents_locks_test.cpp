@@ -236,7 +236,7 @@ private slots:
     void TestRecentsTakeOpenWindowsAtQuitReturnsEmptyOnContention()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        auto restoreGuard = qScopeGuard([&] { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         // Seed the persisted set with a uuid so the read half would
