@@ -607,8 +607,6 @@ private slots:
         QSignalSpy bucketsSpy(dock.ModelForTest(), &HistogramModel::bucketsChanged);
         dock.Bind(SessionBindContext::FromSessionAndView(sessionB.get(), viewB.get()));
         QCOMPARE(dock.boundSessionForTest(), sessionB.get());
-        // Cancel the coalesced emit that the rebind may have scheduled, instead of waiting for it, so it cannot count
-        // toward the observation below.
         dock.ModelForTest()->CancelPendingEmit();
         bucketsSpy.clear();
 
@@ -667,7 +665,7 @@ private slots:
         dock.Bind(SessionBindContext::FromSessionAndView(session.get(), view.get()));
         QCOMPARE(dock.boundSessionForTest(), session.get());
 
-        // Unbind's `BindSources(nullptr, nullptr)` -> `OnModelReset()` queues an emit. Wait for it before the "poke
+        // Unbind's `BindSources(nullptr, nullptr)` -> `OnModelReset()` queues an emit. Cancel it before the "poke
         // the outgoing source" observation below, so the count starts at zero.
         QSignalSpy bucketsSpy(dock.ModelForTest(), &HistogramModel::bucketsChanged);
         dock.Unbind();

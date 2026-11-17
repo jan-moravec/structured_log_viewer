@@ -975,7 +975,7 @@ ExitCode RunTail(
         // client at the port learns why nothing shows up.
         live->producer =
             std::make_unique<TlsHandshakeNotice>(std::move(live->producer), [&console, label = live->label] {
-                console.Error(
+                console.Warn(
                     std::format(
                         "a peer of '{}' speaks TLS, but slp tail does not support TLS, so a TLS-only peer cannot be "
                         "read",
