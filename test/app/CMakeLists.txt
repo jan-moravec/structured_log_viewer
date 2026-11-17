@@ -21,47 +21,29 @@ qt_add_library(apptest_support STATIC src/apptest_support.cpp include/apptest_su
 target_include_directories(apptest_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib/include)
 target_link_libraries(apptest_support PUBLIC Qt6::Test Qt6::Widgets logapp test_common ZLIB::ZLIB)
 
-qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
-
-# `main_window_test.cpp` is a monolithic ~20k line TU; MSVC's COFF
-# object files hit the 65536-section limit without `/bigobj`. GCC /
-# clang cost nothing here.
-if(MSVC)
-    target_compile_options(apptest PRIVATE /bigobj)
-endif()
-
-# `test_common` provides Tcp/UdpLogClient used by the network-stream
-# open-path tests. Qt::Test stays first so generated MOC integrates
-# normally; logapp pulls in the GUI under test.
+# The MainWindow tests are split into one QtTest executable per area, so each stays quick and can be rerun on its own.
+# The helper classes live in apptest_support. The tests only read the embedded fixtures, so every executable gets the
+# resource file. WORKING_DIRECTORY is pinned to the binary directory so `MainWindow::InitializeTimezoneDatabase`
+# (called from the QtTest `initTestCase` slot) resolves the staged `tzdata/` against the binary's directory.
 #
-# ZLIB::ZLIB is linked so the transparent-decompression regression
-# tests can compress a fixture in-process (deterministic byte-for-byte
-# output, no dependency on a system `gzip` binary). Only gzip is
-# needed at the test surface: the other three codecs are already
-# exercised by `test_lib_decompressing_byte_source`, and the app-side
-# tests focus on the MainWindow orchestration, which is codec-agnostic.
-target_link_libraries(apptest PRIVATE apptest_support)
-
-target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
-
-# Expose the test-only accessors on `logapp` classes (cache-size
-# probes, column-move helpers, session-mode shims) while we're
-# building tests. The macro is set as a PUBLIC compile definition on
-# `logapp` so both the library TU and every test TU see the same
-# decls. Gated by `BUILD_TESTING` at the top level via the
-# `add_subdirectory(test/...)` block, so `-DBUILD_TESTING=OFF` strips
-# the helpers from shipped binaries. Mirrors the existing
+# Expose the test-only accessors on `logapp` classes (cache-size probes, column-move helpers, session-mode shims)
+# while we're building tests. The macro is set as a PUBLIC compile definition on `logapp` so both the library TU and
+# every test TU see the same decls. Gated by `BUILD_TESTING` at the top level via the `add_subdirectory(test/...)`
+# block, so `-DBUILD_TESTING=OFF` strips the helpers from shipped binaries. Mirrors the existing
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
 target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
 
-# WORKING_DIRECTORY pinned to the binary directory so
-# `MainWindow::InitializeTimezoneDatabase` (called from the QtTest
-# `initTestCase` slot) resolves the staged `tzdata/` against the binary's
-# directory. Both the `appDir / "tzdata"` probe and the CWD-ancestor
-# fallback succeed under this layout; without the pin, ctest launches
-# apptest from build/test/app/ where no tzdata exists and the init slot
-# fails the suite with a `QVERIFY2` diagnostic.
-add_test(NAME apptest COMMAND apptest WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest>)
+foreach(AREA streaming files columns filters sessions main_window)
+    set(TARGET_NAME apptest_${AREA})
+    qt_add_executable(${TARGET_NAME} src/${TARGET_NAME}_test.cpp ${RESOURCES})
+    # The test translation units are large; MSVC's COFF object files hit the 65536-section limit without `/bigobj`.
+    # GCC / clang cost nothing here.
+    if(MSVC)
+        target_compile_options(${TARGET_NAME} PRIVATE /bigobj)
+    endif()
+    target_link_libraries(${TARGET_NAME} PRIVATE apptest_support)
+    add_test(NAME ${TARGET_NAME} COMMAND ${TARGET_NAME} WORKING_DIRECTORY $<TARGET_FILE_DIR:${TARGET_NAME}>)
+endforeach()
 
 # Separate executable for the GUI-path throughput benchmark. Kept out of
 # the default ctest run via the `benchmark` label (mirrors the lib test

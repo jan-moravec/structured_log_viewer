@@ -12,6 +12,7 @@
 #include <test_common/wait.hpp>
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSignalSpy>
@@ -32,7 +33,9 @@ void AppTestBase::initTestCase()
     // Use a dedicated test identity for QSettings so the recents and open-windows round-trip tests have a writable
     // backing store that does not collide with the real app profile.
     QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
-    QCoreApplication::setApplicationName(QStringLiteral("apptest"));
+    // Each test executable gets its own application name, so executables that run at the same time never share
+    // settings or the recents directory.
+    QCoreApplication::setApplicationName(QFileInfo(QCoreApplication::applicationFilePath()).completeBaseName());
 
     // Initialise loglib's timezone database before any test loads a saved configuration containing a time-range
     // filter; mirrors what production `main()` does before constructing the primary window. CMake pins the working
