@@ -19,7 +19,10 @@ qt_add_resources(RESOURCES
 # MainWindow links it.
 qt_add_library(apptest_support STATIC src/apptest_support.cpp include/apptest_support.hpp)
 target_include_directories(apptest_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib/include)
-target_link_libraries(apptest_support PUBLIC Qt6::Test Qt6::Widgets logapp test_common ZLIB::ZLIB)
+target_link_libraries(
+    apptest_support
+    PUBLIC Qt6::Test Qt6::Widgets logapp test_common ZLIB::ZLIB
+)
 
 # The MainWindow tests are split into one QtTest executable per area, so each stays quick and can be rerun on its own.
 # The helper classes live in apptest_support. The tests only read the embedded fixtures, so every executable gets the
@@ -33,7 +36,17 @@ target_link_libraries(apptest_support PUBLIC Qt6::Test Qt6::Widgets logapp test_
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
 target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
 
-foreach(AREA streaming files columns filters sessions recents recents_locks main_window)
+foreach(
+    AREA
+    streaming
+    files
+    columns
+    filters
+    sessions
+    recents
+    recents_locks
+    main_window
+)
     set(TARGET_NAME apptest_${AREA})
     qt_add_executable(${TARGET_NAME} src/${TARGET_NAME}_test.cpp ${RESOURCES})
     # The test translation units are large; MSVC's COFF object files hit the 65536-section limit without `/bigobj`.

@@ -145,7 +145,8 @@ int AppTestBase::StreamFixtureWithTimeColumnForRowMenuTests()
 }
 
 QString AppTestBase::ClickAndReadClipboardWithRetry(
-    QClipboard *clipboard, QPushButton *button, const QString &marker, int maxAttempts, int sleepMs)
+    QClipboard *clipboard, QPushButton *button, const QString &marker, int maxAttempts, int sleepMs
+)
 {
     QString text;
     for (int attempt = 0; attempt < maxAttempts; ++attempt)
@@ -169,12 +170,8 @@ QString AppTestBase::ClickAndReadClipboardWithRetry(
 }
 
 QString AppTestBase::InvokeAndReadClipboardWithRetry(
-    QClipboard *clipboard,
-    QObject *target,
-    const char *member,
-    const QString &marker,
-    int maxAttempts,
-    int sleepMs)
+    QClipboard *clipboard, QObject *target, const char *member, const QString &marker, int maxAttempts, int sleepMs
+)
 {
     QString text;
     for (int attempt = 0; attempt < maxAttempts; ++attempt)

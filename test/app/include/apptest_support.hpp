@@ -29,14 +29,14 @@
 #include <loglib/schema/log_configuration.hpp>
 
 #include <QAction>
-#include <QClipboard>
-#include <QPushButton>
 #include <QByteArray>
+#include <QClipboard>
 #include <QFile>
 #include <QFileInfo>
 #include <QMainWindow>
 #include <QMenu>
 #include <QObject>
+#include <QPushButton>
 #include <QScopedPointer>
 #include <QString>
 #include <QStringList>

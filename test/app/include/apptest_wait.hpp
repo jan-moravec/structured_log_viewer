@@ -20,7 +20,8 @@
 namespace apptest_support
 {
 
-/** @brief The deadline of WaitUntilProcessingEvents when the caller gives none. It guards a hang and is never a speed claim. */
+/** @brief The deadline of WaitUntilProcessingEvents when the caller gives none. It guards a hang and is never a speed
+ * claim. */
 inline constexpr std::chrono::milliseconds DEFAULT_EVENT_WAIT_DEADLINE{60000};
 
 /**

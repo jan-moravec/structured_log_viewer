@@ -1,8 +1,8 @@
 // Binding and rebinding tests for session-aware docks.
 
 #include "anchor_manager.hpp"
-#include "apptest_wait.hpp"
 #include "anchors_dock.hpp"
+#include "apptest_wait.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
 #include "highlight_rule_set.hpp"

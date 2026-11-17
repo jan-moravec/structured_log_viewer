@@ -1,7 +1,7 @@
-#include "apptest_support.hpp"
 #include "advanced_filter_editor.hpp"
 #include "anchor_manager.hpp"
 #include "anchors_dock.hpp"
+#include "apptest_support.hpp"
 #include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"

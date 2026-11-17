@@ -1,7 +1,7 @@
-#include "apptest_support.hpp"
 #include "advanced_filter_editor.hpp"
 #include "anchor_manager.hpp"
 #include "anchors_dock.hpp"
+#include "apptest_support.hpp"
 #include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
@@ -3380,9 +3380,9 @@ private slots:
         // Wait for the worker to fill the queue. We deliberately do
         // NOT spin the event loop here -- the drain lambda must stay
         // queued so the worker has nowhere to push the (cap+1)-th batch.
-        QVERIFY(test_common::WaitUntil(
-            [&] { return enqueuedCount.load(std::memory_order_acquire) >= static_cast<int>(CAPACITY); }
-        ));
+        QVERIFY(test_common::WaitUntil([&] {
+            return enqueuedCount.load(std::memory_order_acquire) >= static_cast<int>(CAPACITY);
+        }));
         // Producer must remain parked: count stays at cap for a
         // sustained sample window. Absence of progress has no signal, so
         // time is the only evidence.
@@ -3391,7 +3391,9 @@ private slots:
 
         // Now spin the event loop so the drain lambda runs, pulls
         // batches out, wakes the worker, and the rest go through.
-        QVERIFY(WaitUntilProcessingEvents([&] { return enqueuedCount.load(std::memory_order_acquire) >= TOTAL_BATCHES; }));
+        QVERIFY(WaitUntilProcessingEvents([&] {
+            return enqueuedCount.load(std::memory_order_acquire) >= TOTAL_BATCHES;
+        }));
         worker.join();
 
         // Final drain so any trailing posted lambda runs.

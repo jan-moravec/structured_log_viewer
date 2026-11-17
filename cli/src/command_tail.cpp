@@ -670,9 +670,9 @@ private:
 /**
  * @brief A producer that passes everything through and reports each line that opens like a TLS handshake record.
  *
- * A TLS client opens its connection with one handshake record, so each report stands for one TLS peer. The check looks at
- * the first three bytes of every line: record type 0x16 and protocol version 3.0 to 3.4. The callback runs on the thread
- * that reads.
+ * A TLS client opens its connection with one handshake record, so each report stands for one TLS peer. The check looks
+ * at the first three bytes of every line: record type 0x16 and protocol version 3.0 to 3.4. The callback runs on the
+ * thread that reads.
  */
 class TlsHandshakeNotice final : public loglib::BytesProducer
 {
@@ -973,9 +973,8 @@ ExitCode RunTail(
     {
         // TLS is not supported. Say so when a handshake arrives, not when the run ends, so a user who points a TLS
         // client at the port learns why nothing shows up.
-        live->producer = std::make_unique<TlsHandshakeNotice>(
-            std::move(live->producer),
-            [&console, label = live->label] {
+        live->producer =
+            std::make_unique<TlsHandshakeNotice>(std::move(live->producer), [&console, label = live->label] {
                 console.Error(
                     std::format(
                         "a peer of '{}' speaks TLS, but slp tail does not support TLS, so a TLS-only peer cannot be "
@@ -983,8 +982,7 @@ ExitCode RunTail(
                         label
                     )
                 );
-            }
-        );
+            });
     }
     auto source = std::make_unique<loglib::StreamLineSource>(live->displayName, std::move(live->producer));
     loglib::StreamLineSource *rawSource = source.get();
