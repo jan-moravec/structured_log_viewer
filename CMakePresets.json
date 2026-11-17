@@ -83,7 +83,7 @@
         {
             "name": "clang-tsan",
             "displayName": "Clang ThreadSanitizer",
-            "description": "Clang 23 RelWithDebInfo + TSan for the loglib threading code (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel teardown). The matching test preset excludes the Qt-coupled `apptest` because Qt's private mutexes generate false positives; `apptest_queue` (pure C++ BoundedBatchQueue) still runs.",
+            "description": "Clang 23 RelWithDebInfo + TSan for the loglib threading code (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel teardown). The matching test preset excludes the Qt-coupled `apptest_*` suites that drive a MainWindow because Qt's private mutexes generate false positives; `apptest_queue` (pure C++ BoundedBatchQueue) still runs.",
             "inherits": "_clang_ci_base",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
@@ -201,14 +201,14 @@
         },
         {
             "name": "clang-tsan",
-            "displayName": "TSan tests (excludes benchmarks, apptest, apptest_overview_rail, apptest_histogram, apptest_highlight_rules, apptest_session_tabs)",
-            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest, apptest_overview_rail, apptest_histogram, apptest_highlight_rules, and apptest_session_tabs suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show(), or the QMetaObject::invokeMethod queued-slot allocation race between the parser worker's QtStreamingLogSink::OnFinished callable-post and the main-thread QObject::event dispatch, or the QWaitCondition destroy-vs-broadcast teardown race between the TBB parallel_pipeline global thread pool and process exit that fires from any Qt-hosted binary that drives JsonParser::Parse). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
+            "displayName": "TSan tests (excludes benchmarks, the apptest_streaming, apptest_files, apptest_columns, apptest_filters, apptest_sessions and apptest_main_window suites, apptest_overview_rail, apptest_histogram, apptest_highlight_rules, apptest_session_tabs)",
+            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest_streaming, apptest_files, apptest_columns, apptest_filters, apptest_sessions, apptest_main_window, apptest_overview_rail, apptest_histogram, apptest_highlight_rules, and apptest_session_tabs suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show(), or the QMetaObject::invokeMethod queued-slot allocation race between the parser worker's QtStreamingLogSink::OnFinished callable-post and the main-thread QObject::event dispatch, or the QWaitCondition destroy-vs-broadcast teardown race between the TBB parallel_pipeline global thread pool and process exit that fires from any Qt-hosted binary that drives JsonParser::Parse). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
             "configurePreset": "clang-tsan",
             "inherits": "_test_base",
             "filter": {
                 "exclude": {
                     "label": "benchmark",
-                    "name": "^apptest(_overview_rail|_histogram|_highlight_rules|_session_tabs)?$"
+                    "name": "^apptest(_streaming|_files|_columns|_filters|_sessions|_main_window|_overview_rail|_histogram|_highlight_rules|_session_tabs)$"
                 }
             },
             "environment": {

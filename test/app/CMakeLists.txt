@@ -100,7 +100,7 @@ add_test(NAME apptest_theme COMMAND apptest_theme WORKING_DIRECTORY $<TARGET_FIL
 
 # Unit tests for the histogram / activity-rate strip (ROADMAP item 2).
 # Focused binary so the histogram concern doesn't inflate the
-# monolithic `apptest`. Runs the same offscreen QPA pattern.
+# other GUI test executables. Runs the same offscreen QPA pattern.
 qt_add_executable(apptest_histogram src/test_histogram_dock.cpp)
 
 target_link_libraries(apptest_histogram PRIVATE Qt6::Test Qt6::Widgets logapp)
@@ -111,7 +111,7 @@ add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TA
 
 # Unit tests for the match overview rail (ROADMAP item 13). Same
 # concern-per-binary pattern as `apptest_histogram`: keeps the
-# monolithic `apptest` lean and lets `ctest -R apptest_overview_rail`
+# other GUI test executables lean and lets `ctest -R apptest_overview_rail`
 # rerun just this concern.
 #
 # Links the built-in theme JSONs from `resources.qrc` so the paint
@@ -132,7 +132,7 @@ add_test(
 )
 
 # Focused tests for `HighlightRuleSet` (ROADMAP item 3). Kept out
-# of the monolithic `apptest` so `ctest -R apptest_highlight_rules`
+# of the other GUI test executables so `ctest -R apptest_highlight_rules`
 # reruns just this concern; mirrors the histogram / overview-rail
 # split.
 qt_add_executable(apptest_highlight_rules src/test_highlight_rule_set.cpp)
@@ -197,7 +197,7 @@ add_test(
 # `tasks/tasks-main-window-session-tabs.md` §1.9). Phase 1 seeds a
 # minimal test per binary; later phases grow each file into the
 # authoritative coverage venue for its concern instead of extending
-# the monolithic `main_window_test.cpp`.
+# the `apptest_*` executables.
 qt_add_executable(apptest_log_session_lifecycle src/log_session_lifecycle_test.cpp)
 target_link_libraries(apptest_log_session_lifecycle PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_log_session_lifecycle PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
