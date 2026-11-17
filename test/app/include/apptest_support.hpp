@@ -28,6 +28,8 @@
 #include <loglib/schema/log_configuration.hpp>
 
 #include <QAction>
+#include <QClipboard>
+#include <QPushButton>
 #include <QByteArray>
 #include <QFile>
 #include <QFileInfo>
@@ -52,28 +54,6 @@
 
 namespace apptest_support
 {
-
-/**
- * @brief QtTest base class that gives each test function a fresh MainWindow and ThemeControl.
- *
- * The first test function of a run sets up a test-only settings identity, redirects the standard paths and loads the
- * time zone database. Each test function then starts with cleared settings and a new window, and ends by deleting the
- * window before the theme controller.
- */
-class AppTestBase : public QObject
-{
-    Q_OBJECT
-
-private slots:
-    void initTestCase();
-    void cleanupTestCase();
-    void init();
-    void cleanup();
-
-protected:
-    MainWindow *mWindow{};
-    QScopedPointer<ThemeControl> mTheme;
-};
 
 /// Saves the columns of @p model as a configuration file.
 void SaveLayoutForTest(const LogModel &model, const std::string &path);
@@ -471,5 +451,65 @@ QAction *FindActionByObjectName(QMainWindow *window, const QString &name);
     }
     return nullptr;
 }
+
+/**
+ * @brief QtTest base class that gives each test function a fresh MainWindow and ThemeControl.
+ *
+ * The first test function of a run sets up a test-only settings identity, redirects the standard paths and loads the
+ * time zone database. Each test function then starts with cleared settings and a new window, and ends by deleting the
+ * window before the theme controller.
+ */
+class AppTestBase : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void initTestCase();
+    void cleanupTestCase();
+    void init();
+    void cleanup();
+
+protected:
+    // Stream a small two-column fixture and return the `level`
+    // column index. QTest filters non-void slots out of the test
+    // scan, so this stays callable from inside `private slots:`.
+    int StreamFixtureForColumnTests();
+
+    // Stream a three-row fixture with a `timestamp` column (promoted to
+    // `Type::Time`) and a `msg` column. Returns the time-column index
+    // post-bubble, or -1 on streaming failure.
+    int StreamFixtureWithTimeColumnForRowMenuTests();
+
+    // Click a clipboard-producing button and read the clipboard,
+    // retrying until the text contains `marker`. The Windows OLE
+    // clipboard is async and contended; `OleSetClipboard` can fail
+    // outright when other tests hammer the marshaller. The retry
+    // re-clicks each iteration so lost OLE handshakes also resolve.
+    static QString ClickAndReadClipboardWithRetry(
+        QClipboard *clipboard, QPushButton *button, const QString &marker, int maxAttempts = 20, int sleepMs = 25
+    );
+
+    // Same retry as the click overload, but drives the producer via
+    // `QMetaObject::invokeMethod` (for private slots).
+    static QString InvokeAndReadClipboardWithRetry(
+        QClipboard *clipboard,
+        QObject *target,
+        const char *member,
+        const QString &marker,
+        int maxAttempts = 20,
+        int sleepMs = 25
+    );
+
+    // A log value with no zone is read in the display zone. Outside
+    // `private slots:` so moc doesn't expose it as a test method.
+    static qint64 NaiveToUtcUs(qint64 wallClockUs);
+
+    // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
+    // so moc doesn't expose it as a test method.
+    static void AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount);
+
+    MainWindow *mWindow{};
+    QScopedPointer<ThemeControl> mTheme;
+};
 
 } // namespace apptest_support

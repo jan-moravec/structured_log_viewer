@@ -8,9 +8,11 @@
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
+#include <loglib/time/time_zone_context.hpp>
 #include <test_common/wait.hpp>
 
 #include <QCoreApplication>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -55,6 +57,173 @@ void AppTestBase::init()
     // `LogModel`, so theme-aware assertions see real brushes.
     mTheme.reset(new ThemeControl());
     mWindow = new MainWindow(mTheme.data());
+}
+
+int AppTestBase::StreamFixtureForColumnTests()
+{
+    auto *model = mWindow->Model();
+    Q_ASSERT(model != nullptr);
+
+    // 200 lines: above `STREAM_PROMOTION_MIN_ROWS` so streaming
+    // promotes `level` to enum, but below the static-mode
+    // promotion threshold for arbitrary keys.
+    const QStringList levels{
+        QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
+    };
+    QStringList lines;
+    lines.reserve(200);
+    for (int i = 0; i < 200; ++i)
+    {
+        lines.append(QStringLiteral(R"({"category": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
+    }
+    const TempJsonFile fixture(lines);
+    // Let the parse finish before returning so it doesn't
+    // outlive `fixture`'s temp dir.
+
+    QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+    if (!finishedSpy.isValid())
+    {
+        return -1;
+    }
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
+    loglib::FileLineSource *fileSourcePtr = fileSource.get();
+    const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+    loglib::ParserOptions options;
+    options.stopToken = stopToken;
+    options.threads = 1;
+    const loglib::JsonParser parser;
+    parser.Parse(*fileSourcePtr, *model->Sink(), options);
+    if (finishedSpy.count() == 0)
+    {
+        finishedSpy.wait(60000);
+    }
+    QCoreApplication::processEvents();
+
+    return ColumnByHeader(*model, QStringLiteral("category"));
+}
+
+int AppTestBase::StreamFixtureWithTimeColumnForRowMenuTests()
+{
+    auto *model = mWindow->Model();
+    Q_ASSERT(model != nullptr);
+
+    // Use explicit `+00:00` offsets: streaming time-promotion picks
+    // them up reliably with only three rows. The `Z` suffix would
+    // type the column as Time but leave the value as a raw string.
+    const QStringList lines{
+        QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
+        QStringLiteral(R"({"timestamp":"2024-04-28T10:00:02+00:00","msg":"second"})"),
+        QStringLiteral(R"({"timestamp":"2024-04-28T10:00:03+00:00","msg":"third"})"),
+    };
+    const TempJsonFile fixture(lines);
+
+    QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+    if (!finishedSpy.isValid())
+    {
+        return -1;
+    }
+    auto fileSource = std::make_unique<loglib::FileLineSource>(fixture.Path().toStdString());
+    loglib::FileLineSource *fileSourcePtr = fileSource.get();
+    const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+    loglib::ParserOptions options;
+    options.stopToken = stopToken;
+    options.threads = 1;
+    const loglib::JsonParser parser;
+    parser.Parse(*fileSourcePtr, *model->Sink(), options);
+    if (finishedSpy.count() == 0)
+    {
+        finishedSpy.wait(60000);
+    }
+    QCoreApplication::processEvents();
+
+    return ColumnByHeader(*model, QStringLiteral("timestamp"));
+}
+
+QString AppTestBase::ClickAndReadClipboardWithRetry(
+    QClipboard *clipboard, QPushButton *button, const QString &marker, int maxAttempts, int sleepMs)
+{
+    QString text;
+    for (int attempt = 0; attempt < maxAttempts; ++attempt)
+    {
+        button->click();
+        QCoreApplication::processEvents();
+        QTest::qWait(sleepMs);
+        text = clipboard->text();
+        if (marker.isEmpty() ? !text.isEmpty() : text.contains(marker))
+        {
+            return text;
+        }
+    }
+    return text;
+}
+
+QString AppTestBase::InvokeAndReadClipboardWithRetry(
+    QClipboard *clipboard,
+    QObject *target,
+    const char *member,
+    const QString &marker,
+    int maxAttempts,
+    int sleepMs)
+{
+    QString text;
+    for (int attempt = 0; attempt < maxAttempts; ++attempt)
+    {
+        const bool invoked = QMetaObject::invokeMethod(target, member, Qt::DirectConnection);
+        if (!invoked)
+        {
+            return {};
+        }
+        QCoreApplication::processEvents();
+        QTest::qWait(sleepMs);
+        text = clipboard->text();
+        if (marker.isEmpty() ? !text.isEmpty() : text.contains(marker))
+        {
+            return text;
+        }
+    }
+    return text;
+}
+
+qint64 AppTestBase::NaiveToUtcUs(qint64 wallClockUs)
+{
+    return loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(wallClockUs);
+}
+
+void AppTestBase::AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount)
+{
+    QCOMPARE(run.finishedCount, 1);
+    QCOMPARE(run.cancelled, false);
+    QCOMPARE(run.model->rowCount(), rowCount);
+    QVERIFY(run.model->StreamingErrors().empty());
+
+    const int tsCol = ColumnByHeader(*run.model, QStringLiteral("timestamp"));
+    QVERIFY2(tsCol >= 0, "auto-promoted timestamp column must exist");
+
+    const auto &columns = run.model->Layout().Columns();
+    QVERIFY(static_cast<size_t>(tsCol) < columns.size());
+    QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::ColumnType::Time);
+
+    // `FormatLogValue` rounds to milliseconds before formatting, so the
+    // date library always emits a `.fff` fractional suffix even with the
+    // `%F %H:%M:%S` printFormat — accept the optional fraction here.
+    const QRegularExpression dateTimeRe(QStringLiteral("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?$"));
+    for (int row = 0; row < rowCount; ++row)
+    {
+        const QVariant sortValue = run.model->data(run.model->index(row, tsCol), LogModelItemDataRole::SortRole);
+        QVERIFY2(sortValue.isValid(), qPrintable(QStringLiteral("row %1 timestamp must be promoted").arg(row)));
+        QCOMPARE(sortValue.typeId(), static_cast<int>(QMetaType::LongLong));
+
+        const QString display = run.model->data(run.model->index(row, tsCol), Qt::DisplayRole).toString();
+        QVERIFY2(
+            dateTimeRe.match(display).hasMatch(),
+            qPrintable(QStringLiteral("row %1 display '%2' must match %F %H:%M:%S").arg(row).arg(display))
+        );
+    }
+
+    const qint64 firstUs = run.model->data(run.model->index(0, tsCol), LogModelItemDataRole::SortRole).toLongLong();
+    QCOMPARE(firstUs, expectedFirstUtcUs);
 }
 
 void AppTestBase::cleanup()
