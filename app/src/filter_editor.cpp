@@ -463,7 +463,7 @@ void FilterEditor::SetupLayout()
     auto *mainLayout = new QVBoxLayout(this);
 
     auto *rowLayout = new QHBoxLayout();
-    rowLayout->addWidget(new QLabel("Row to filter:", this));
+    rowLayout->addWidget(new QLabel(tr("Column to filter:"), this));
     rowLayout->addWidget(mRowComboBox);
     mainLayout->addLayout(rowLayout);
 
