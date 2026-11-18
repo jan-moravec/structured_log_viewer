@@ -1,11 +1,13 @@
 // Unit tests for `logapp::BoundedBatchQueue` -- the bounded SPSC queue
 // that propagates GUI back-pressure to the parser worker. These tests
 // cover the queue in isolation; the end-to-end wiring through
-// `QtStreamingLogSink` is covered in `main_window_test.cpp`.
+// `QtStreamingLogSink` is covered in `apptest_streaming_test.cpp`.
 
 #include "bounded_batch_queue.hpp"
 
 #include <loglib/parse/log_parse_sink.hpp>
+
+#include <test_common/wait.hpp>
 
 #include <QtTest/QtTest>
 
@@ -59,14 +61,10 @@ private slots:
         });
 
         // Wait until the producer has at least entered the call.
-        const auto enterDeadline = std::chrono::steady_clock::now() + STRESS_DEADLINE;
-        while (!entered.load(std::memory_order_acquire))
-        {
-            QVERIFY(std::chrono::steady_clock::now() < enterDeadline);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        // The producer must remain blocked: queue stays at capacity.
-        std::this_thread::sleep_for(SHORT_WAIT);
+        QVERIFY(test_common::WaitUntil([&] { return entered.load(std::memory_order_acquire); }, STRESS_DEADLINE));
+        // The producer must remain blocked: queue stays at capacity. Absence of progress has no signal, so wait a
+        // short fixed time and check that it did not finish.
+        test_common::SleepToProveAbsence(SHORT_WAIT);
         QVERIFY(!finished.load(std::memory_order_acquire));
         QCOMPARE(queue.SizeApprox(), std::size_t{2});
 
@@ -99,14 +97,8 @@ private slots:
             result.store(ok, std::memory_order_release);
         });
 
-        const auto enterDeadline = std::chrono::steady_clock::now() + STRESS_DEADLINE;
-        while (!entered.load(std::memory_order_acquire))
-        {
-            QVERIFY(std::chrono::steady_clock::now() < enterDeadline);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
         // Give the producer a beat to reach the cv wait inside the queue.
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        test_common::LetWaiterPark(entered, std::chrono::milliseconds(10));
 
         const auto stopStart = std::chrono::steady_clock::now();
         queue.NotifyStop();
@@ -176,20 +168,18 @@ private slots:
 
         std::vector<std::size_t> received;
         received.reserve(COUNT);
-        const auto deadline = std::chrono::steady_clock::now() + STRESS_DEADLINE;
-        while (received.size() < COUNT)
-        {
-            QVERIFY(std::chrono::steady_clock::now() < deadline);
-            auto chunk = queue.DrainAll();
-            for (auto &batch : chunk)
-            {
-                received.push_back(batch.firstLineNumber);
-            }
-            if (chunk.empty())
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-        }
+        const bool drained = test_common::WaitUntil(
+            [&] {
+                auto chunk = queue.DrainAll();
+                for (auto &batch : chunk)
+                {
+                    received.push_back(batch.firstLineNumber);
+                }
+                return received.size() >= COUNT;
+            },
+            STRESS_DEADLINE
+        );
+        QVERIFY(drained);
         producer.join();
 
         QCOMPARE(received.size(), COUNT);

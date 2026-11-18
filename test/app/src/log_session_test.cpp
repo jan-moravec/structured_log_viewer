@@ -560,7 +560,9 @@ private slots:
 
         // Wait ~500 ms so the first timer has ~2500 ms left,
         // then re-trigger. The second lambda's generation
-        // supersedes the first.
+        // supersedes the first. The wait models time passing between two
+        // triggers: the test needs the first timer to be partly spent, and
+        // nothing observable marks that.
         QTest::qWait(500);
         if (!session.IsRotationFlashActive())
         {
@@ -624,7 +626,9 @@ private slots:
         // window. The full 3 s wait is not needed -- Qt severs
         // the connection synchronously in `~QObject` well before
         // the singleShot deadline, so an immediate leak would
-        // surface here without adding wall-clock cost.
+        // surface here without adding wall-clock cost. This proves an
+        // absence (no callback into the destroyed receiver); time is the only
+        // signal, so the wait stays short.
         QTest::qWait(50);
     }
 

@@ -15,3 +15,11 @@ ccb1e344e3c9edaecfa445cbbc17d28f6e6d2615
 fb2cd9b6aabdd67802bcc5bd69800b1e244376bf
 # Rename log_filter to row_filter.
 77a1620312a5d92bea02238d7cefed5643b70751
+# Move the shared GUI test helpers into apptest_support.
+0368c32294f9c55c1aa9362c58475628490b2cf6
+# Move the member helpers of the GUI tests into AppTestBase.
+25f19e3ad049b1adb2a4208334ddb88b373cbab3
+# Split the MainWindow tests into one executable per area.
+87846825badb3ba339666c7cb9259e1fcb84a7b8
+# Move the recents tests out of the session tests.
+4b5f69a8abc34ab37038f2ead82abcc8e0f670c2

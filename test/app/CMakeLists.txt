@@ -15,47 +15,48 @@ qt_add_resources(RESOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fixtures.qrc
 )
-qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
+# Shared fixtures and the AppTestBase QtTest base class for the GUI test executables. Every executable that drives a
+# MainWindow links it.
+qt_add_library(apptest_support STATIC src/apptest_support.cpp include/apptest_support.hpp)
+target_include_directories(apptest_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/lib/include)
+target_link_libraries(
+    apptest_support
+    PUBLIC Qt6::Test Qt6::Widgets logapp test_common ZLIB::ZLIB
+)
 
-# `main_window_test.cpp` is a monolithic ~20k line TU; MSVC's COFF
-# object files hit the 65536-section limit without `/bigobj`. GCC /
-# clang cost nothing here.
-if(MSVC)
-    target_compile_options(apptest PRIVATE /bigobj)
-endif()
-
-# `test_common` provides Tcp/UdpLogClient used by the network-stream
-# open-path tests. Qt::Test stays first so generated MOC integrates
-# normally; logapp pulls in the GUI under test.
+# The MainWindow tests are split into one QtTest executable per area, so each stays quick and can be rerun on its own.
+# The helper classes live in apptest_support. The tests only read the embedded fixtures, so every executable gets the
+# resource file. WORKING_DIRECTORY is pinned to the binary directory so `MainWindow::InitializeTimezoneDatabase`
+# (called from the QtTest `initTestCase` slot) resolves the staged `tzdata/` against the binary's directory.
 #
-# ZLIB::ZLIB is linked so the transparent-decompression regression
-# tests can compress a fixture in-process (deterministic byte-for-byte
-# output, no dependency on a system `gzip` binary). Only gzip is
-# needed at the test surface: the other three codecs are already
-# exercised by `test_lib_decompressing_byte_source`, and the app-side
-# tests focus on the MainWindow orchestration, which is codec-agnostic.
-target_link_libraries(apptest PRIVATE Qt6::Test logapp test_common ZLIB::ZLIB)
-
-target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
-
-# Expose the test-only accessors on `logapp` classes (cache-size
-# probes, column-move helpers, session-mode shims) while we're
-# building tests. The macro is set as a PUBLIC compile definition on
-# `logapp` so both the library TU and every test TU see the same
-# decls. Gated by `BUILD_TESTING` at the top level via the
-# `add_subdirectory(test/...)` block, so `-DBUILD_TESTING=OFF` strips
-# the helpers from shipped binaries. Mirrors the existing
+# Expose the test-only accessors on `logapp` classes (cache-size probes, column-move helpers, session-mode shims)
+# while we're building tests. The macro is set as a PUBLIC compile definition on `logapp` so both the library TU and
+# every test TU see the same decls. Gated by `BUILD_TESTING` at the top level via the `add_subdirectory(test/...)`
+# block, so `-DBUILD_TESTING=OFF` strips the helpers from shipped binaries. Mirrors the existing
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
 target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
 
-# WORKING_DIRECTORY pinned to the binary directory so
-# `MainWindow::InitializeTimezoneDatabase` (called from the QtTest
-# `initTestCase` slot) resolves the staged `tzdata/` against the binary's
-# directory. Both the `appDir / "tzdata"` probe and the CWD-ancestor
-# fallback succeed under this layout; without the pin, ctest launches
-# apptest from build/test/app/ where no tzdata exists and the init slot
-# fails the suite with a `QVERIFY2` diagnostic.
-add_test(NAME apptest COMMAND apptest WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest>)
+foreach(
+    AREA
+    streaming
+    files
+    columns
+    filters
+    sessions
+    recents
+    recents_locks
+    main_window
+)
+    set(TARGET_NAME apptest_${AREA})
+    qt_add_executable(${TARGET_NAME} src/${TARGET_NAME}_test.cpp ${RESOURCES})
+    # The test translation units are large; MSVC's COFF object files hit the 65536-section limit without `/bigobj`.
+    # GCC / clang cost nothing here.
+    if(MSVC)
+        target_compile_options(${TARGET_NAME} PRIVATE /bigobj)
+    endif()
+    target_link_libraries(${TARGET_NAME} PRIVATE apptest_support)
+    add_test(NAME ${TARGET_NAME} COMMAND ${TARGET_NAME} WORKING_DIRECTORY $<TARGET_FILE_DIR:${TARGET_NAME}>)
+endforeach()
 
 # Separate executable for the GUI-path throughput benchmark. Kept out of
 # the default ctest run via the `benchmark` label (mirrors the lib test
@@ -92,7 +93,7 @@ set_target_properties(apptest_session_tabs_bench PROPERTIES WIN32_EXECUTABLE FAL
 # not pull in the GUI fixture loader.
 qt_add_executable(apptest_queue src/test_bounded_batch_queue.cpp)
 
-target_link_libraries(apptest_queue PRIVATE Qt6::Test logapp)
+target_link_libraries(apptest_queue PRIVATE Qt6::Test logapp test_common)
 
 target_include_directories(apptest_queue PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 
@@ -112,7 +113,7 @@ add_test(NAME apptest_theme COMMAND apptest_theme WORKING_DIRECTORY $<TARGET_FIL
 
 # Unit tests for the histogram / activity-rate strip (ROADMAP item 2).
 # Focused binary so the histogram concern doesn't inflate the
-# monolithic `apptest`. Runs the same offscreen QPA pattern.
+# other GUI test executables. Runs the same offscreen QPA pattern.
 qt_add_executable(apptest_histogram src/test_histogram_dock.cpp)
 
 target_link_libraries(apptest_histogram PRIVATE Qt6::Test Qt6::Widgets logapp)
@@ -123,7 +124,7 @@ add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TA
 
 # Unit tests for the match overview rail (ROADMAP item 13). Same
 # concern-per-binary pattern as `apptest_histogram`: keeps the
-# monolithic `apptest` lean and lets `ctest -R apptest_overview_rail`
+# other GUI test executables lean and lets `ctest -R apptest_overview_rail`
 # rerun just this concern.
 #
 # Links the built-in theme JSONs from `resources.qrc` so the paint
@@ -144,7 +145,7 @@ add_test(
 )
 
 # Focused tests for `HighlightRuleSet` (ROADMAP item 3). Kept out
-# of the monolithic `apptest` so `ctest -R apptest_highlight_rules`
+# of the other GUI test executables so `ctest -R apptest_highlight_rules`
 # reruns just this concern; mirrors the histogram / overview-rail
 # split.
 qt_add_executable(apptest_highlight_rules src/test_highlight_rule_set.cpp)
@@ -209,7 +210,7 @@ add_test(
 # `tasks/tasks-main-window-session-tabs.md` §1.9). Phase 1 seeds a
 # minimal test per binary; later phases grow each file into the
 # authoritative coverage venue for its concern instead of extending
-# the monolithic `main_window_test.cpp`.
+# the `apptest_*` executables.
 qt_add_executable(apptest_log_session_lifecycle src/log_session_lifecycle_test.cpp)
 target_link_libraries(apptest_log_session_lifecycle PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_log_session_lifecycle PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
@@ -234,7 +235,7 @@ add_test(
 )
 
 qt_add_executable(apptest_dock_binding src/dock_binding_test.cpp)
-target_link_libraries(apptest_dock_binding PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_link_libraries(apptest_dock_binding PRIVATE Qt6::Test Qt6::Widgets logapp apptest_support)
 target_include_directories(apptest_dock_binding PRIVATE ${CMAKE_SOURCE_DIR}/lib/include)
 add_test(
     NAME apptest_dock_binding

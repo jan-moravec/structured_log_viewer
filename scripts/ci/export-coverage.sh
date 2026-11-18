@@ -10,7 +10,14 @@ IGNORE='(_deps|build|test)/'
 llvm-profdata-23 merge -sparse "$BUILD_DIR"/profiles/*.profraw -o "$BUILD_DIR/merged.profdata"
 OBJECTS=(
     "$BIN_DIR/tests"
-    -object "$BIN_DIR/apptest"
+    -object "$BIN_DIR/apptest_streaming"
+    -object "$BIN_DIR/apptest_files"
+    -object "$BIN_DIR/apptest_columns"
+    -object "$BIN_DIR/apptest_filters"
+    -object "$BIN_DIR/apptest_sessions"
+    -object "$BIN_DIR/apptest_recents"
+    -object "$BIN_DIR/apptest_recents_locks"
+    -object "$BIN_DIR/apptest_main_window"
     -object "$BIN_DIR/apptest_queue"
     -object "$BIN_DIR/slp"
 )

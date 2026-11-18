@@ -365,13 +365,15 @@ TEST_CASE("slp tail exits 0 on SIGINT after emitting what arrived", "[cli][tail]
 TEST_CASE("slp tail says so when a TCP peer speaks TLS", "[cli][tail][e2e][network]")
 {
     const std::uint16_t port = FreePort<loglib::TcpServerProducer>();
-    SlpChild child(TailArgs({"--for", "3s", "tcp://127.0.0.1:" + std::to_string(port)}));
+    SlpChild child(TailArgs({"--for", "1s", "tcp://127.0.0.1:" + std::to_string(port)}));
     (void)ListeningLine(child, "tcp");
     {
         test_common::TcpLogClient client("127.0.0.1", port);
         // A TLS ClientHello record header followed by binary noise and a line break.
         client.SendRaw(std::string("\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\x8f\x2a\x00\x11\x22", 16) + "\n");
     }
+    // The note comes as soon as the handshake arrives, not when the run ends.
+    CHECK(child.WaitForErr("TLS", LONG_WAIT));
     const auto exitCode = child.Wait(LONG_WAIT);
     REQUIRE(exitCode.has_value());
     const std::string err = child.Err();

@@ -41,6 +41,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -666,6 +667,111 @@ private:
     bool mDone = false;
 };
 
+/**
+ * @brief A producer that passes everything through and reports each line that opens like a TLS handshake record.
+ *
+ * A TLS client opens its connection with one handshake record, so each report stands for one TLS peer. The check looks
+ * at the first three bytes of every line: record type 0x16 and protocol version 3.0 to 3.4. The callback runs on the
+ * thread that reads.
+ */
+class TlsHandshakeNotice final : public loglib::BytesProducer
+{
+public:
+    TlsHandshakeNotice(std::unique_ptr<loglib::BytesProducer> inner, std::function<void()> onHandshake)
+        : mInner(std::move(inner)), mOnHandshake(std::move(onHandshake))
+    {
+    }
+
+    std::size_t Read(std::span<char> buffer) override
+    {
+        const std::size_t count = mInner->Read(buffer);
+        for (const char character : buffer.first(count))
+        {
+            Step(static_cast<unsigned char>(character));
+        }
+        return count;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds timeout) override
+    {
+        mInner->WaitForBytes(timeout);
+    }
+
+    void Stop() noexcept override
+    {
+        mInner->Stop();
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return mInner->IsClosed();
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return mInner->DisplayName();
+    }
+
+    void SetRotationCallback(const std::function<void()> &callback) override
+    {
+        mInner->SetRotationCallback(callback);
+    }
+
+    void SetStatusCallback(const std::function<void(loglib::SourceStatus)> &callback) override
+    {
+        mInner->SetStatusCallback(callback);
+    }
+
+    [[nodiscard]] std::size_t DroppedByteCount() const noexcept override
+    {
+        return mInner->DroppedByteCount();
+    }
+
+private:
+    /** @brief How much of the TLS record header the current line has matched so far. */
+    enum class Match : std::uint8_t
+    {
+        LineStart,
+        SawType,
+        SawMajorVersion,
+        NoMatch,
+    };
+
+    void Step(unsigned char byte)
+    {
+        constexpr unsigned char HANDSHAKE_RECORD_TYPE = 0x16;
+        constexpr unsigned char MAJOR_VERSION = 0x03;
+        constexpr unsigned char MAX_MINOR_VERSION = 0x04;
+        if (byte == '\n')
+        {
+            mMatch = Match::LineStart;
+            return;
+        }
+        switch (mMatch)
+        {
+        case Match::LineStart:
+            mMatch = byte == HANDSHAKE_RECORD_TYPE ? Match::SawType : Match::NoMatch;
+            break;
+        case Match::SawType:
+            mMatch = byte == MAJOR_VERSION ? Match::SawMajorVersion : Match::NoMatch;
+            break;
+        case Match::SawMajorVersion:
+            if (byte <= MAX_MINOR_VERSION)
+            {
+                mOnHandshake();
+            }
+            mMatch = Match::NoMatch;
+            break;
+        case Match::NoMatch:
+            break;
+        }
+    }
+
+    std::unique_ptr<loglib::BytesProducer> mInner;
+    std::function<void()> mOnHandshake;
+    Match mMatch = Match::LineStart;
+};
+
 /** @brief Live byte source with the label used in messages. */
 struct LiveSource
 {
@@ -863,6 +969,21 @@ ExitCode RunTail(
     loglib::StopSource stop;
     loglib::LogTable table;
     loglib::BytesProducer *producer = live->producer.get();
+    if (spec.kind == SourceKind::Tcp)
+    {
+        // TLS is not supported. Say so when a handshake arrives, not when the run ends, so a user who points a TLS
+        // client at the port learns why nothing shows up.
+        live->producer =
+            std::make_unique<TlsHandshakeNotice>(std::move(live->producer), [&console, label = live->label] {
+                console.Warn(
+                    std::format(
+                        "a peer of '{}' speaks TLS, but slp tail does not support TLS, so a TLS-only peer cannot be "
+                        "read",
+                        label
+                    )
+                );
+            });
+    }
     auto source = std::make_unique<loglib::StreamLineSource>(live->displayName, std::move(live->producer));
     loglib::StreamLineSource *rawSource = source.get();
     table.SetDisplayTimeZone(runtime.timeZone);
@@ -901,16 +1022,6 @@ ExitCode RunTail(
         return ExitCode::Success;
     }
     console.ParseErrors(parseErrors);
-    if (spec.kind == SourceKind::Tcp && sink.Emitted() == 0 && table.RowCount() == 0)
-    {
-        console.Error(
-            std::format(
-                "no rows could be parsed from '{}'; if the peer connects over TLS, note that slp tail does not "
-                "support TLS, so a TLS-only peer cannot be read",
-                live->label
-            )
-        );
-    }
     return options.strict ? ExitCode::Data : ExitCode::Success;
 }
 
