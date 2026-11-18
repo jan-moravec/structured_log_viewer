@@ -84,10 +84,11 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
     {
         throw std::system_error(ec, "UdpServerProducer: socket open failed");
     }
-    // SO_REUSEADDR is friendly for tests that bind ephemeral ports
-    // back-to-back; the OS still rejects truly conflicting binds via
-    // SO_EXCLUSIVEADDRUSE on Windows or the default semantics on POSIX.
+#ifndef _WIN32
+    // POSIX still rejects a second socket on a port in use. On Windows SO_REUSEADDR would let a second socket share
+    // the port and split the datagrams, so the default is kept there and a busy port fails to bind.
     mSocket.set_option(asio::socket_base::reuse_address(true), ec);
+#endif
     mSocket.bind(endpoint, ec);
     if (ec)
     {

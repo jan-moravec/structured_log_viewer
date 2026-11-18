@@ -10,6 +10,7 @@
 #include <chrono>
 #include <span>
 #include <string>
+#include <system_error>
 #include <thread>
 
 using loglib::UdpServerProducer;
@@ -168,4 +169,16 @@ TEST_CASE("UdpServerProducer: DisplayName reflects bound port", "[udp_producer][
     const std::string display = producer.DisplayName();
     REQUIRE(display.starts_with("udp://127.0.0.1:"));
     REQUIRE(display.ends_with(std::to_string(producer.BoundPort())));
+}
+
+TEST_CASE("UdpServerProducer: a port in use fails to bind", "[udp_producer][network]")
+{
+    UdpServerProducer::Options opts;
+    opts.bindAddress = "127.0.0.1";
+    const UdpServerProducer first(opts);
+    REQUIRE(first.BoundPort() != 0);
+
+    UdpServerProducer::Options again = opts;
+    again.port = first.BoundPort();
+    REQUIRE_THROWS_AS(UdpServerProducer(again), std::system_error);
 }
