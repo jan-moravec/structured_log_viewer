@@ -12,7 +12,9 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/time/internal/timestamp_formatter.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,13 @@ class NormalizedJsonRowWriter
 public:
     explicit NormalizedJsonRowWriter(const LogTable &table);
 
+    /**
+     * @brief Makes a writer that writes only the keys of the given columns, in the given order.
+     *
+     * The columns are indices into the columns of the table layout. A field whose key none of them lists is left out.
+     */
+    NormalizedJsonRowWriter(const LogTable &table, std::span<const std::size_t> columns);
+
     /** @brief Appends the row to out. The text has no newline at the end. */
     void Append(const LogLine &line, std::string &out);
 
@@ -56,8 +65,13 @@ private:
     [[nodiscard]] const std::string &KeyPrefix(KeyId id);
 
     const KeyIndex *mKeys;
+    /** @brief Ranks the keys of the columns, in the given order. */
+    void RankColumnKeys(const LogTable &table, std::span<const std::size_t> columns);
+
     /** @brief The rank of each key id, or UNRANKED when no column lists the key. */
     std::vector<std::uint32_t> mRankByKey;
+    /** @brief With true, fields whose key no column lists are left out. */
+    bool mRankedOnly = false;
     std::vector<std::string> mKeyPrefix;
     /** @brief The fields of the current row, in key id order. */
     std::vector<RowField> mRow;

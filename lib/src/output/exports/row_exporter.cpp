@@ -119,7 +119,11 @@ void JsonLinesExporter::Run(
         sink,
         stopToken,
         progress,
-        [&] { return loglib::internal::NormalizedJsonRowWriter(table); },
+        [&] {
+            return source.includeAllFieldsForJson
+                       ? loglib::internal::NormalizedJsonRowWriter(table)
+                       : loglib::internal::NormalizedJsonRowWriter(table, source.visibleColumns);
+        },
         [&](loglib::internal::NormalizedJsonRowWriter &writer, size_t sourceRow, std::string &text) {
             writer.Append(lines[sourceRow], text);
             text.push_back('\n');
