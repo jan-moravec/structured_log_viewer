@@ -1798,6 +1798,12 @@ private slots:
         int initialColumn = -1
     );
     void ClearAllFilters();
+
+    /**
+     * @brief Clears the filters for a new source. Unlike ClearAllFilters, it leaves the session clean, because a
+     * freshly opened source has nothing to save.
+     */
+    void ResetFiltersForNewSource();
     /**
      * @brief Open the modal Advanced Filter editor seeded with the
      * current `LogConfiguration::expression`. On accept, dispatches

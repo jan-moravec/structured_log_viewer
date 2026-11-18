@@ -1741,6 +1741,54 @@ private slots:
     // `SetSourceWaiting` on one tab must not project into the
     // sibling.
 
+    static void TestPausingALiveTailUpdatesTheTabLabel()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = WriteJsonlFixture(temp.filePath(QStringLiteral("live.jsonl")), 5);
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LogModel *model = window.activeSession() != nullptr ? window.activeSession()->Model() : nullptr;
+        QVERIFY(model != nullptr);
+        if (model == nullptr)
+        {
+            return;
+        }
+        window.OpenLogStreamForTest(path);
+        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive() && model->rowCount() == 5, 60000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("Ingesting")), 60000);
+        QVERIFY2(!window.activeSession()->HasUnsavedChanges(), "opening a stream is not an unsaved change");
+
+        auto *pauseStream = window.findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        QVERIFY(pauseStream != nullptr && pauseStream->isEnabled());
+        if (pauseStream == nullptr)
+        {
+            return;
+        }
+        pauseStream->setChecked(true);
+        QVERIFY(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("Paused")));
+
+        pauseStream->setChecked(false);
+        QVERIFY(window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("Ingesting")));
+
+        // Stopping while paused ends the pause too.
+        pauseStream->setChecked(true);
+        auto *stopStream = window.findChild<QAction *>(QStringLiteral("actionStopStream"));
+        QVERIFY(stopStream != nullptr);
+        if (stopStream == nullptr)
+        {
+            return;
+        }
+        stopStream->trigger();
+        QTRY_VERIFY_WITH_TIMEOUT(!model->IsStreamingActive(), 60000);
+        QCoreApplication::processEvents();
+        QVERIFY(!window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("Paused")));
+        QVERIFY(!window.TabWidgetForTest()->tabText(0).contains(QStringLiteral("Ingesting")));
+        QCOMPARE(model->rowCount(), 5);
+    }
+
     static void TestStaticAndLiveTailTabsHaveIndependentModeAndLabel()
     {
         MainWindow window;

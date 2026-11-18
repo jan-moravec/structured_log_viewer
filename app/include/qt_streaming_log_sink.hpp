@@ -103,8 +103,8 @@ public:
 
     /// Drains the paused buffer into a single coalesced batch. Used by
     /// `LogModel`'s teardown to flush already-parsed rows into the
-    /// visible model before tear-down. Empty optional iff the buffer was
-    /// already empty.
+    /// visible model before tear-down, and ends the pause. Empty optional
+    /// iff the buffer was already empty.
     std::optional<loglib::RowBatch> TakePausedBuffer();
 
     /// GUI-thread fallback used by `LogModel`'s teardown. Drains the

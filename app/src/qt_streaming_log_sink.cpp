@@ -173,6 +173,8 @@ std::optional<loglib::RowBatch> QtStreamingLogSink::TakePausedBuffer()
     {
         const std::scoped_lock lock(mPausedMutex);
         drained.swap(mPausedBatches);
+        // The stream is ending, so it is no longer paused. Otherwise the stopped tab keeps reporting Paused.
+        mPaused.store(false, std::memory_order_release);
     }
     if (drained.empty())
     {
