@@ -204,7 +204,7 @@ ExitCode RunQuery(
     {
         ApplyWindow(window, rows);
     }
-    console.ParseErrors(loaded->parseErrors);
+    console.ParseErrors(loaded->parseErrors, loaded->parseErrorCount);
 
     // Saved configuration is the effective one; it does not depend on paging or output.
     if (auto failure = SaveSessionFiles(options.save, options.input, global, *loaded, *session))

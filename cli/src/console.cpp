@@ -4,6 +4,7 @@
 
 #include <loglib/output/exports/export_sink.hpp>
 
+#include <algorithm>
 #include <format>
 #include <stdexcept>
 
@@ -71,15 +72,15 @@ void Console::Stage(std::string_view stage, std::uint64_t rows, std::chrono::ste
     WriteErr(FormatStageLine(stage, rows, static_cast<std::uint64_t>(elapsed.count())) + '\n');
 }
 
-void Console::ParseErrors(const std::vector<loglib::ParseError> &errors) const
+void Console::ParseErrors(const std::vector<loglib::ParseError> &errors, std::uint64_t total) const
 {
-    if (errors.empty() || mQuiet)
+    if ((errors.empty() && total == 0) || mQuiet)
     {
         return;
     }
-    WriteErr(
-        FormatErrorLine({}, std::format("{} lines could not be parsed (use --verbose to list)", errors.size())) + '\n'
-    );
+    total = std::max<std::uint64_t>(total, errors.size());
+    const std::string_view noun = total == 1 ? "line" : "lines";
+    WriteErr(FormatErrorLine({}, std::format("{} {} could not be parsed (use --verbose to list)", total, noun)) + '\n');
     if (mVerbose > 0)
     {
         for (const loglib::ParseError &error : errors)

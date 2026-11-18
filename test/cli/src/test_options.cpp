@@ -217,6 +217,13 @@ TEST_CASE("mutual exclusions and source rules exit as usage errors", "[cli][opti
     const auto formatClash = Parse({"slp", "query", "--format", "json", "--regex", "a", "a.log"});
     REQUIRE_FALSE(formatClash.has_value());
 
+    const auto badPattern = Parse({"slp", "query", "--regex", "^(?<a>x", "a.log"});
+    REQUIRE_FALSE(badPattern.has_value());
+    CHECK(badPattern.error().message.contains("--regex"));
+
+    const auto noNamedGroup = Parse({"slp", "query", "--regex", "^(x)$", "a.log"});
+    REQUIRE_FALSE(noNamedGroup.has_value());
+
     const auto twoStdin = Parse({"slp", "query", "-", "-"});
     REQUIRE_FALSE(twoStdin.has_value());
     CHECK(twoStdin.error().message.contains("once"));
