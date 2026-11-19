@@ -100,19 +100,19 @@ TEST_CASE("slp query --json-visible-only writes only the chosen columns", "[cli]
 {
     const auto fixture = (FixturesDir() / "two_lines.jsonl").string();
     const auto emptyTemplates = (FixturesDir() / "empty_templates").string();
-    const auto result = RunSlp(
-        {"query",
-         "--tz",
-         "UTC",
-         "--template-dir",
-         emptyTemplates,
-         "--json-visible-only",
-         "--columns",
-         "msg,level",
-         "--limit",
-         "1",
-         fixture}
-    );
+    const auto result = RunSlp({
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        emptyTemplates,
+        "--json-visible-only",
+        "--columns",
+        "msg,level",
+        "--limit",
+        "1",
+        fixture,
+    });
     INFO("stderr:\n" << result.err);
     REQUIRE(result.exitCode == 0);
     CHECK(result.out == "{\"msg\":\"hello\",\"level\":\"info\"}\n");
