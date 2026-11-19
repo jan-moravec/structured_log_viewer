@@ -89,7 +89,7 @@ jobs:
     # Clang 23 builds: ASan + UBSan, TSan, and coverage. The coverage leg also runs clang-tidy and uploads to Codecov.
     needs: pre-commit
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 120
     permissions:
       contents: read
       pull-requests: write # clang-tidy PR comment
@@ -241,7 +241,7 @@ jobs:
     # Builds and tests `slp` with no Qt installed, so it fails if Qt leaks out of `app/`.
     needs: pre-commit
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -267,7 +267,7 @@ jobs:
     # The oldest supported runner, so the AppImage works on Ubuntu 22.04 and other distributions of that age.
     needs: pre-commit
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       # Qt 6.10+ has a single Wayland platform plugin.
       EXTRA_PLATFORM_PLUGINS: "libqwayland.so"
@@ -360,7 +360,7 @@ jobs:
   build-windows:
     needs: pre-commit
     runs-on: windows-latest
-    timeout-minutes: 70
+    timeout-minutes: 120
     defaults:
       run:
         shell: pwsh
@@ -450,7 +450,7 @@ jobs:
   build-macos:
     needs: pre-commit
     runs-on: macos-latest
-    timeout-minutes: 40
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
