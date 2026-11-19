@@ -11,6 +11,9 @@ inputs:
   qt-arch:
     description: Qt architecture, e.g. linux_gcc_64.
     default: ""
+  aqt-source:
+    description: pip requirement to install aqtinstall from instead of PyPI, e.g. a pinned git commit. Empty uses PyPI.
+    default: ""
   gcc13:
     description: Install GCC 13 and make it the default. Ubuntu 22.04 has only GCC 10 and 12; `<format>` needs 13.
     default: "false"
@@ -50,6 +53,7 @@ runs:
         host: ${{ inputs.qt-host }}
         target: desktop
         arch: ${{ inputs.qt-arch }}
+        aqtsource: ${{ inputs.aqt-source }}
         # Release (tag) builds don't use caches.
         cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
 

@@ -44,9 +44,12 @@ env:
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   CMAKE_C_COMPILER_LAUNCHER: sccache
   CMAKE_CXX_COMPILER_LAUNCHER: sccache
-  QT_VERSION: "6.12.*"
-  # Windows stays on Qt 6.8 LTS until aqtinstall can install Windows Qt 6.11+ (miurahr/aqtinstall#1047).
-  QT_VERSION_WINDOWS: "6.8.*"
+  # Exact versions, so a new Qt release cannot break CI before its .sha256 files are on download.qt.io.
+  QT_VERSION: "6.12.0"
+  QT_VERSION_WINDOWS: "6.12.0"
+  # aqtinstall 3.3.0 cannot read the per-compiler Windows repositories that Qt 6.11+ uses, so Windows installs
+  # aqtinstall from a pinned main commit. Switch back to PyPI once a release supports them.
+  AQT_SOURCE_WINDOWS: "git+https://github.com/miurahr/aqtinstall@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7"
   APP_NAME: "StructuredLogViewer"
 
 jobs:
@@ -376,6 +379,7 @@ jobs:
           qt-version: ${{ env.QT_VERSION_WINDOWS }}
           qt-host: windows
           qt-arch: win64_msvc2022_64
+          aqt-source: ${{ env.AQT_SOURCE_WINDOWS }}
 
       - name: Set up MSVC environment
         # Finds Visual Studio with vswhere, because the runner image has switched editions before.
