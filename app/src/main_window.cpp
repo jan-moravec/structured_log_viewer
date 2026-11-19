@@ -3728,7 +3728,7 @@ void MainWindow::NewSession()
     const SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
-    ClearAllFilters();
+    ResetFiltersForNewSource();
 
     // Wipe the columns and re-emit `beginResetModel` /
     // `endResetModel` so the header collapses to zero sections.
@@ -4297,7 +4297,7 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode, const
         CancelInFlightDecompression();
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
-        ClearAllFilters();
+        ResetFiltersForNewSource();
         // Anchors are session-scoped; preserved on append.
         if (mAnchors != nullptr)
         {
@@ -6215,7 +6215,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     const SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
-    ClearAllFilters();
+    ResetFiltersForNewSource();
     // Anchors are session-scoped.
     if (mAnchors != nullptr)
     {
@@ -6591,7 +6591,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     const SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
-    ClearAllFilters();
+    ResetFiltersForNewSource();
     if (mAnchors != nullptr)
     {
         mAnchors->ClearAll();
@@ -6743,7 +6743,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
     const SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
-    ClearAllFilters();
+    ResetFiltersForNewSource();
     // Anchors are session-scoped.
     if (mAnchors != nullptr)
     {
@@ -6841,6 +6841,8 @@ void MainWindow::TogglePauseStream(bool paused)
     {
         mModel->Sink()->Resume();
     }
+    // The pause state is read from the sink, so the tab text needs an explicit refresh.
+    mSession->NotifyPresentationChanged();
     UpdateStreamingStatus();
 }
 
@@ -6854,6 +6856,8 @@ void MainWindow::StopStream()
     // on them. `mSession->MutableCurrentSource()` survives -- those rows still came
     // from that source.
     mModel->StopAndKeepRows();
+    // The finished signal can fire before the paused buffer is flushed, so refresh the tab once the pause is over.
+    mSession->NotifyPresentationChanged();
     // A synchronous completion may have promoted the pending live tail.
     if (!IsLiveTailSession())
     {
@@ -9027,10 +9031,8 @@ void MainWindow::EnsureFreshActiveTab()
     // source AND zero rows is the fresh / just-cleared state
     // where reusing the slot is preferable to leaving an empty
     // tab behind. We intentionally do NOT gate on
-    // `IsFiltersDirty()` because `NewSession()` marks the fresh
-    // session dirty via `ClearAllFilters()`, and gating on it
-    // would fork behaviour every time a user cleared the
-    // workspace before an open.
+    // `IsFiltersDirty()`: a user who cleared the filters of an
+    // empty tab before an open still gets the slot reused.
     const bool activeTabIsEmpty = (mSession != nullptr) && !mSession->CurrentSource().has_value() &&
                                   (mModel == nullptr || mModel->rowCount(QModelIndex{}) == 0);
     if (!activeTabIsEmpty)
@@ -10921,6 +10923,12 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     SyncClearAllFiltersEnabled();
     MarkFiltersDirty();
     SyncColumnFilterIndicators();
+}
+
+void MainWindow::ResetFiltersForNewSource()
+{
+    ClearAllFilters();
+    mSession->ClearFiltersDirty();
 }
 
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)

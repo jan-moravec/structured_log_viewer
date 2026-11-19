@@ -94,11 +94,12 @@ public:
     void Stage(std::string_view stage, std::uint64_t rows, std::chrono::steady_clock::time_point started) const;
 
     /**
-     * @brief Reports parse errors: a count line, then each error under `--verbose`.
+     * @brief Reports parse errors: a count line, then each stored error under verbose output.
      *
-     * Nothing is written for no errors or under `--quiet`.
+     * The count line gives total, the number of lines that failed, which can be more than the errors stored. Nothing is
+     * written for no errors or under quiet output.
      */
-    void ParseErrors(const std::vector<loglib::ParseError> &errors) const;
+    void ParseErrors(const std::vector<loglib::ParseError> &errors, std::uint64_t total) const;
 
     /** @brief Writes @p failure's text and returns its exit code. */
     ExitCode Report(const Failure &failure) const;

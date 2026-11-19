@@ -9,9 +9,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
+#include <system_error>
 #include <thread>
 
 using loglib::TcpServerProducer;
@@ -213,4 +215,35 @@ TEST_CASE("TcpServerProducer: invalid bind address throws", "[tcp_producer][netw
     TcpServerProducer::Options opts;
     opts.bindAddress = "not-a-host";
     REQUIRE_THROWS_AS(TcpServerProducer(opts), std::system_error);
+}
+
+TEST_CASE("TcpServerProducer: a port in use fails to bind", "[tcp_producer][network]")
+{
+    TcpServerProducer::Options opts;
+    opts.bindAddress = "127.0.0.1";
+    const TcpServerProducer first(opts);
+    REQUIRE(first.BoundPort() != 0);
+
+    TcpServerProducer::Options again = opts;
+    again.port = first.BoundPort();
+    REQUIRE_THROWS_AS(TcpServerProducer(again), std::system_error);
+}
+
+TEST_CASE("TcpServerProducer: a port can listen again after a client session ends", "[tcp_producer][network]")
+{
+    TcpServerProducer::Options opts;
+    opts.bindAddress = "127.0.0.1";
+    std::uint16_t port = 0;
+    {
+        TcpServerProducer producer(opts);
+        port = producer.BoundPort();
+        test_common::TcpLogClient client("127.0.0.1", port);
+        client.Send("hello\n");
+        REQUIRE(DrainUntil(producer, 6, 60000ms) == "hello\n");
+        producer.Stop();
+    }
+
+    opts.port = port;
+    TcpServerProducer reopened(opts);
+    CHECK(reopened.BoundPort() == port);
 }

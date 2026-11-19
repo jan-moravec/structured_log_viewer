@@ -271,7 +271,7 @@ void LogTableView::paintEvent(QPaintEvent *event)
     const QFontMetrics bodyFm(bodyFont);
     const QFontMetrics shortcutFm(shortcutFont);
 
-    const QString title = tr("Drop a JSON Lines log here, or use a shortcut below");
+    const QString title = tr("Drop a log file here, or use a shortcut below");
 
     // Measure widest label and shortcut so the two columns align across groups.
     int maxLabelWidth = 0;
@@ -309,14 +309,15 @@ void LogTableView::paintEvent(QPaintEvent *event)
     const int cardX = viewportRect.left() + ((viewportRect.width() - cardWidth) / 2);
     int y = viewportRect.top() + std::max(CARD_PADDING_PX, (viewportRect.height() - contentHeight) / 2);
 
-    // Title
+    // The title can be wider than the shortcut columns, so it gets the whole viewport width.
+    const int titleWidth = viewportRect.width() - (2 * CARD_PADDING_PX);
     painter.setOpacity(CARD_HEADING_OPACITY);
     painter.setPen(QPen(headingColor));
     painter.setFont(titleFont);
     painter.drawText(
-        QRect(cardX, y, cardWidth, titleFm.height()),
+        QRect(viewportRect.left() + CARD_PADDING_PX, y, titleWidth, titleFm.height()),
         Qt::AlignHCenter | Qt::AlignTop,
-        titleFm.elidedText(title, Qt::ElideRight, cardWidth)
+        titleFm.elidedText(title, Qt::ElideRight, titleWidth)
     );
     y += titleFm.height() + CARD_TITLE_GAP_PX;
 

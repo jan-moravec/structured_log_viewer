@@ -469,7 +469,7 @@ The `Network Stream` dialog only consumes the picker; the `Save as template...` 
 ## Prerequisites
 
 - **CMake** 3.28 or newer
-- **Qt** 6.1 or newer (Qt 6.8 LTS and 6.12 LTS are used in CI)
+- **Qt** 6.1 or newer (CI builds with Qt 6.12 LTS)
 - A C++23-capable toolchain:
   - Linux: GCC 13+ or Clang 17+
   - Windows: MSVC 2022 (Visual Studio 2022)

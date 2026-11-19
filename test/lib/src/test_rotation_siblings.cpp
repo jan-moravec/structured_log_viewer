@@ -135,6 +135,24 @@ TEST_CASE("EnumerateRotatedSiblings on a primary with no siblings", "[RotationSi
     CHECK(series.files.front().origin == RotatedFile::Origin::Primary);
 }
 
+TEST_CASE("EnumerateRotatedSiblings finds siblings of a bare file name in the current directory", "[RotationSiblings]")
+{
+    const TempDir dir("rotation_bare_name");
+    (void)dir.Write("app.log", "primary");
+    (void)dir.Write("app.log.1", "one older");
+
+    const std::filesystem::path previous = std::filesystem::current_path();
+    std::filesystem::current_path(dir.Path());
+    const RotationSeries series = EnumerateRotatedSiblings("app.log");
+    std::filesystem::current_path(previous);
+
+    REQUIRE(series.files.size() == 2);
+    // Siblings keep the relative form the caller used.
+    CHECK(series.files.front().path == std::filesystem::path("app.log.1"));
+    CHECK(series.files.front().origin == RotatedFile::Origin::NumberedSuffix);
+    CHECK(series.files.back().path == std::filesystem::path("app.log"));
+}
+
 TEST_CASE("EnumerateRotatedSiblings on a non-existent primary", "[RotationSiblings]")
 {
     // A missing primary is still returned as the sole series entry.

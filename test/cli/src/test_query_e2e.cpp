@@ -95,3 +95,45 @@ TEST_CASE("slp query rejects a filter that cannot work", "[cli][e2e][query]")
     CHECK(invalidRegex.exitCode == 2);
     CHECK(invalidRegex.err.find("invalid pattern") != std::string::npos);
 }
+
+TEST_CASE("slp query --json-visible-only writes only the chosen columns", "[cli][e2e][query]")
+{
+    const auto fixture = (FixturesDir() / "two_lines.jsonl").string();
+    const auto emptyTemplates = (FixturesDir() / "empty_templates").string();
+    const auto result = RunSlp({
+        "query",
+        "--tz",
+        "UTC",
+        "--template-dir",
+        emptyTemplates,
+        "--json-visible-only",
+        "--columns",
+        "msg,level",
+        "--limit",
+        "1",
+        fixture,
+    });
+    INFO("stderr:\n" << result.err);
+    REQUIRE(result.exitCode == 0);
+    CHECK(result.out == "{\"msg\":\"hello\",\"level\":\"info\"}\n");
+}
+
+TEST_CASE("slp query rejects an invalid --regex as a usage error", "[cli][e2e][query]")
+{
+    const auto fixture = (FixturesDir() / "two_lines.jsonl").string();
+    const auto result = RunSlp({"query", "--regex", "^(?<a>unterminated", fixture});
+    INFO("stderr:\n" << result.err);
+    CHECK(result.exitCode == 2);
+    CHECK(result.err.contains("--regex"));
+    CHECK(result.out.empty());
+}
+
+TEST_CASE("slp query counts the lines that failed to parse", "[cli][e2e][query]")
+{
+    const auto fixture = (FixturesDir() / "partial_corrupt.jsonl").string();
+    const auto emptyTemplates = (FixturesDir() / "empty_templates").string();
+    const auto result = RunSlp({"query", "--tz", "UTC", "--template-dir", emptyTemplates, "--count", fixture});
+    INFO("stderr:\n" << result.err);
+    REQUIRE(result.exitCode == 0);
+    CHECK(result.err.contains("1 line could not be parsed"));
+}

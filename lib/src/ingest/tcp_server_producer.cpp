@@ -379,7 +379,11 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
     {
         throw std::system_error(ec, "TcpServerProducer: acceptor open failed");
     }
+#ifndef _WIN32
+    // POSIX needs SO_REUSEADDR to listen again while old connections sit in TIME_WAIT. On Windows the same option lets
+    // a second socket take a port that is in use, so the default is kept there and a busy port fails to bind.
     mAcceptor.set_option(asio::socket_base::reuse_address(true), ec);
+#endif
     mAcceptor.bind(endpoint, ec);
     if (ec)
     {

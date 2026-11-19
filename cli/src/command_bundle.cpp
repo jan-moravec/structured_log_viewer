@@ -128,7 +128,7 @@ ExitCode RunBundle(
         configuration.view.expression = loglib::FilterExpression{};
     }
 
-    console.ParseErrors(loaded->parseErrors);
+    console.ParseErrors(loaded->parseErrors, loaded->parseErrorCount);
 
     const std::filesystem::path destination = WithBundleExtension(options.output);
 

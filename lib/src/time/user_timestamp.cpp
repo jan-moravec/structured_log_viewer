@@ -43,6 +43,14 @@ namespace
     return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
 }
 
+/** @brief Returns whether the text is the word now, in any case. */
+[[nodiscard]] bool IsNowKeyword(std::string_view text) noexcept
+{
+    constexpr std::string_view NOW = "now";
+    return text.size() == NOW.size() &&
+           std::ranges::equal(text, NOW, [](char a, char b) { return AsciiToLower(a) == b; });
+}
+
 [[nodiscard]] std::optional<UserTimestampParse> TryParseRelativeShortcut(
     std::string_view text, std::chrono::system_clock::time_point now
 )
@@ -172,6 +180,12 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
     if (trimmed.empty())
     {
         return std::nullopt;
+    }
+
+    if (IsNowKeyword(trimmed))
+    {
+        const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        return UserTimestampParse{.micros = nowMicros, .isNaive = false};
     }
 
     if (const auto relative = TryParseRelativeShortcut(trimmed, now); relative.has_value())

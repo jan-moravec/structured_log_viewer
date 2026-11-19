@@ -7,6 +7,7 @@
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/version.hpp>
 #include <loglib/output/session_bundle.hpp>
+#include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/support/user_paths.hpp>
 
 #include <CLI/CLI.hpp>
@@ -443,6 +444,12 @@ void ResolveSources(InputOptions &input, const std::vector<std::string> &tokens,
     if (regexGiven)
     {
         input.format = InputFormat::Regex;
+    }
+    if (input.regex.has_value())
+    {
+        std::string regexError;
+        const bool valid = loglib::ValidateRegexPattern(*input.regex, regexError);
+        Require(valid, std::format("--regex: {}", regexError));
     }
 }
 

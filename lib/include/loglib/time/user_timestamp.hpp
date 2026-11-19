@@ -51,10 +51,10 @@ struct UserTimestampParse
 /**
  * @brief Parses a time the user typed, either absolute or relative.
  *
- * It tries a relative form first: an optional sign, a number, and h or m, in any case and with spaces allowed. Any sign
- * means that many hours or minutes before now. Then it tries each of the column's formats, then %FT%T and %F %T. Spaces
- * at both ends of the input are ignored. It does not convert a naive time to UTC, so the caller does that with
- * LocalMicrosecondsSinceEpochToUtc.
+ * The word now, in any case, gives the reference time. It tries a relative form next: an optional sign, a number, and
+ * h or m, in any case and with spaces allowed. Any sign means that many hours or minutes before now. Then it tries each
+ * of the column's formats, then %FT%T and %F %T. Spaces at both ends of the input are ignored. It does not convert a
+ * naive time to UTC, so the caller does that with LocalMicrosecondsSinceEpochToUtc.
  *
  * @param now The reference time for relative input.
  * @return The parsed time, or nullopt if the text does not parse or the value overflows.

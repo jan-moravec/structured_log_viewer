@@ -28,6 +28,7 @@
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
+#include <loglib/table/table_loader.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -429,9 +430,16 @@ public:
         }
         loglib::LogTable::AppendBatchResult result = mTable->AppendBatch(std::move(batch));
         mTable->ApplyPlacements(result.placements);
-        mErrors.insert(
-            mErrors.end(), std::make_move_iterator(result.errors.begin()), std::make_move_iterator(result.errors.end())
-        );
+        // A long tail of bad lines must not grow memory, so keep the first errors and count the rest.
+        mErrorCount += result.errors.size();
+        for (loglib::ParseError &error : result.errors)
+        {
+            if (mErrors.size() >= loglib::MAX_STORED_PARSE_ERRORS)
+            {
+                break;
+            }
+            mErrors.push_back(std::move(error));
+        }
         Process(false);
         Evict();
     }
@@ -459,9 +467,16 @@ public:
         return mFailure;
     }
 
+    /** @brief The first parse errors, at most MAX_STORED_PARSE_ERRORS of them. */
     [[nodiscard]] const std::vector<loglib::ParseError> &ParseErrors() const noexcept
     {
         return mErrors;
+    }
+
+    /** @brief How many lines failed to parse, the ones ParseErrors does not hold included. */
+    [[nodiscard]] std::uint64_t ParseErrorCount() const noexcept
+    {
+        return mErrorCount;
     }
 
     [[nodiscard]] std::uint64_t Emitted() const noexcept
@@ -662,6 +677,7 @@ private:
     slp::Failure mSessionError;
     std::optional<slp::Failure> mFailure;
     std::vector<loglib::ParseError> mErrors;
+    std::uint64_t mErrorCount = 0;
     std::size_t mNextRow = 0;
     std::uint64_t mEmitted = 0;
     bool mDone = false;
@@ -1021,7 +1037,7 @@ ExitCode RunTail(
     {
         return ExitCode::Success;
     }
-    console.ParseErrors(parseErrors);
+    console.ParseErrors(parseErrors, sink.ParseErrorCount());
     return options.strict ? ExitCode::Data : ExitCode::Success;
 }
 

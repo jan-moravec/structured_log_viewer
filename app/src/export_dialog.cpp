@@ -176,7 +176,10 @@ ExportDialog::ExportDialog(
     destRow->addWidget(mDestinationEdit);
     mBrowseButton = new QPushButton(tr("&Browse..."), this);
     destRow->addWidget(mBrowseButton);
-    form->addRow(tr("&Destination:"), destRow);
+    // A layout field gives the form no buddy, so the label needs one to turn & into a mnemonic.
+    auto *destinationLabel = new QLabel(tr("&Destination:"), this);
+    destinationLabel->setBuddy(mDestinationEdit);
+    form->addRow(destinationLabel, destRow);
 
     // Options
     auto *optionsLayout = new QVBoxLayout;

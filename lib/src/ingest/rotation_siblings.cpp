@@ -273,8 +273,10 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
 {
     std::vector<Candidate> candidates;
     std::error_code ec;
-    const std::filesystem::path dir = primary.parent_path();
-    if (dir.empty() || !std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec))
+    // A bare file name lives in the current directory. Sibling paths keep the form the caller used.
+    const std::filesystem::path parent = primary.parent_path();
+    const std::filesystem::path dir = parent.empty() ? std::filesystem::path(".") : parent;
+    if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec))
     {
         return candidates;
     }
@@ -317,7 +319,7 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
             break;
         }
         const std::filesystem::directory_entry &entry = *it;
-        const std::filesystem::path path = entry.path();
+        const std::filesystem::path path = parent / entry.path().filename();
         const std::string filename = PathToUtf8(path.filename());
         const std::string &filenameKey =
 #if defined(_WIN32) || defined(__APPLE__)

@@ -20,6 +20,7 @@
 #include <iterator>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -143,10 +144,32 @@ NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table)
       mKeyPrefix(mKeys->Size()),
       mTimestampFormatter(TimeZoneContext::Utc(), "%FT%T", FractionPrecision::Microseconds)
 {
+    std::vector<std::size_t> all(table.Layout().Columns().size());
+    std::iota(all.begin(), all.end(), std::size_t{0});
+    RankColumnKeys(table, all);
+}
+
+NormalizedJsonRowWriter::NormalizedJsonRowWriter(const LogTable &table, std::span<const std::size_t> columns)
+    : mKeys(&table.Data().Keys()),
+      mRankByKey(mKeys->Size(), UNRANKED),
+      mRankedOnly(true),
+      mKeyPrefix(mKeys->Size()),
+      mTimestampFormatter(TimeZoneContext::Utc(), "%FT%T", FractionPrecision::Microseconds)
+{
+    RankColumnKeys(table, columns);
+}
+
+void NormalizedJsonRowWriter::RankColumnKeys(const LogTable &table, std::span<const std::size_t> columns)
+{
+    const auto &layoutColumns = table.Layout().Columns();
     std::uint32_t next = 0;
-    for (const Column &column : table.Layout().Columns())
+    for (const std::size_t index : columns)
     {
-        for (const std::string &key : column.keys)
+        if (index >= layoutColumns.size())
+        {
+            continue;
+        }
+        for (const std::string &key : layoutColumns[index].keys)
         {
             const KeyId id = mKeys->Find(key);
             if (id != INVALID_KEY_ID && mRankByKey[id] == UNRANKED)
@@ -231,6 +254,10 @@ void NormalizedJsonRowWriter::Append(const LogLine &line, std::string &out)
     for (const auto &slot : line.CompactValues())
     {
         const KeyId keyId = slot.Key();
+        if (mRankedOnly && (keyId >= mRankByKey.size() || mRankByKey[keyId] == UNRANKED))
+        {
+            continue;
+        }
         if (slot.tag != CompactTag::Monostate)
         {
             mRow.push_back(RowField{.id = keyId, .slot = &slot});

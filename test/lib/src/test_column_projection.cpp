@@ -216,3 +216,17 @@ TEST_CASE("column_projection: missing keys are omitted from JSON Lines", "[colum
     REQUIRE(jsonProjected.contains("\"c\":\"z\""));
     REQUIRE_FALSE(jsonProjected.contains("\"b\""));
 }
+
+TEST_CASE("column_projection: JSON Lines writes only the given columns, in their order", "[column_projection][exports]")
+{
+    const auto table = BuildSparseTable();
+
+    const std::vector<std::size_t> onlyC = {2};
+    CHECK(ExportFormatBytes(table, ExportFormat::JsonLines, onlyC, false) == "{\"c\":\"z\"}\n");
+
+    const std::vector<std::size_t> cThenA = {2, 0};
+    CHECK(ExportFormatBytes(table, ExportFormat::JsonLines, cThenA, false) == "{\"c\":\"z\",\"a\":\"x\"}\n");
+
+    // With every field requested, the columns argument does not limit the fields.
+    CHECK(ExportFormatBytes(table, ExportFormat::JsonLines, onlyC, true) == "{\"a\":\"x\",\"c\":\"z\"}\n");
+}

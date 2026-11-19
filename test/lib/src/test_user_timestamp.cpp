@@ -43,6 +43,20 @@ TEST_CASE("user_timestamp: relative -Nh / -Nm shortcuts", "[user_timestamp]")
     REQUIRE_FALSE(thirtyMinAgo->isNaive);
 }
 
+TEST_CASE("user_timestamp: now is the reference time", "[user_timestamp]")
+{
+    const std::vector<std::string> noFormats;
+
+    for (const char *text : {"now", "NOW", "  Now "})
+    {
+        const auto parsed = ParseUserTimestamp(text, noFormats, ReferenceNow());
+        REQUIRE(parsed.has_value());
+        CHECK(parsed->micros == REFERENCE_NOW_MICROS);
+        CHECK_FALSE(parsed->isNaive);
+    }
+    CHECK_FALSE(ParseUserTimestamp("nowish", noFormats, ReferenceNow()).has_value());
+}
+
 TEST_CASE("user_timestamp: relative +N and bare N mean units ago", "[user_timestamp]")
 {
     const std::vector<std::string> noFormats;
