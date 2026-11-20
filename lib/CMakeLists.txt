@@ -52,7 +52,7 @@ add_library(
     src/query/log_compare.cpp
     src/core/log_data.cpp
     src/query/row_filter.cpp
-    src/query/log_filter_evaluator.cpp
+    src/query/row_filter_evaluation.cpp
     src/core/log_level.cpp
     src/core/log_line.cpp
     src/parse/log_parser.cpp
@@ -67,13 +67,13 @@ add_library(
     src/table/table_loader.cpp
     src/output/normalized_json_row.cpp
     src/query/query_parser.cpp
-    src/query/query_printer.cpp
+    src/query/query_format.cpp
     src/ingest/rotation_siblings.cpp
     src/ingest/source_plan.cpp
     src/core/stable_byte_arena.cpp
     src/support/tzdata_search.cpp
     src/support/user_paths.cpp
-    src/parse/worker_threads.cpp
+    src/core/worker_threads.cpp
     src/core/version.cpp
     src/query/row_ordering.cpp
     src/output/file_loading.cpp
@@ -141,6 +141,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/parse/parsers/json_parser.hpp
     include/loglib/parse/parsers/logfmt_parser.hpp
     include/loglib/parse/parsers/regex_parser.hpp
+    include/loglib/query/query_format.hpp
     include/loglib/query/query_parser.hpp
     include/loglib/parse/regex_templates.hpp
     include/loglib/ingest/rotation_siblings.hpp
@@ -162,7 +163,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/udp_server_producer.hpp
     include/loglib/support/tzdata_search.hpp
     include/loglib/support/user_paths.hpp
-    include/loglib/parse/worker_threads.hpp
+    include/loglib/core/worker_threads.hpp
     include/loglib/time/user_timestamp.hpp
     include/loglib/core/version.hpp
 )

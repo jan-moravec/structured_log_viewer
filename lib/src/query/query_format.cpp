@@ -1,3 +1,5 @@
+#include "loglib/query/query_format.hpp"
+
 #include "loglib/query/query_parser.hpp"
 
 #include "loglib/core/ascii_case.hpp"

@@ -2,7 +2,7 @@
  * @brief Tokens, lexer and value parsing for the query language.
  *
  * The advanced filter text is split into tokens by Lexer. The helpers here also read numbers and ISO 8601 timestamps,
- * which the parser and the printer's quoting rules both need. Only query_parser.cpp and query_printer.cpp include it.
+ * which the parser and the printer's quoting rules both need. Only query_parser.cpp and query_format.cpp include it.
  *
  * This is part of the query module.
  */

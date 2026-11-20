@@ -4,11 +4,11 @@
 #include "options.hpp"
 #include "platform.hpp"
 
+#include <loglib/core/worker_threads.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/parse/worker_threads.hpp>
 #include <loglib/support/tzdata_search.hpp>
 
 #include <cstdio>
@@ -129,6 +129,6 @@ public:
 int main(int argc, char **argv)
 {
     const int code = RunSlpGuarded(argc, argv);
-    (void)loglib::JoinWorkerThreads();
+    (void)loglib::ShutdownWorkerThreads();
     return code;
 }

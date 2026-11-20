@@ -2,7 +2,8 @@
  * @brief Parses the text of the advanced filter into a filter expression.
  *
  * ParseQuery reads a query with and, or, not and groups, and returns either a FilterExpression or an error with the
- * position of the problem. FormatExpression writes an expression back as text. Nesting depth is limited.
+ * position of the problem. Nesting depth is limited. FormatExpression in query_format.hpp writes an expression back as
+ * text.
  *
  * This is part of the query module.
  */
@@ -77,22 +78,5 @@ struct QueryParseError
 [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseQuery(
     std::string_view input, const TimeZoneContext &timeZone
 );
-
-/**
- * @brief Writes an expression as query text. Every expression that ParseQuery accepts is written so that ParseQuery
- * reads back the same expression.
- *
- * An expression that the parser cannot make has no such guarantee. A leaf with no bounds or values, such as an empty IN
- * list, is written as IN [] for debugging, and that text does not parse.
- *
- * - A bareword is put in quotes when it contains whitespace or operator characters, or starts with a digit. A regular
- *   expression is always written between slashes.
- * - An empty And at the top gives empty text. An empty And deeper in the tree is written as * for debugging, and an
- *   empty Or as (). Neither parses.
- * - An Or under an And or a Not gets parentheses. An And under an And and an Or under an Or do too, because the parser
- *   keeps a group as a nested expression. A Not gets parentheses around its child unless the child is a leaf or another
- *   Not.
- */
-[[nodiscard]] std::string FormatExpression(const FilterExpression &expression);
 
 } // namespace loglib
