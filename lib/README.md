@@ -31,7 +31,7 @@ On Windows, keep `tbb12.dll` from `<prefix>/bin` on `PATH` or next to the execut
 
 ## Module map
 
-The library is one static target, `loglib`. Its files sit in nine module folders, `include/loglib/<module>/` and `src/<module>/`. A module may include only the modules below it in this picture.
+The library is one static target, `loglib`. Its files sit in nine module folders, `include/loglib/<module>/` and `src/<module>/`. A module may include only the modules below it in this picture. The support module is the exception to the picture: it holds Qt-free helpers that the desktop program and `slp` both need, they are not about logs, and no other module uses them. They live in loglib so that both programs link one library, which is cheaper than a second target, install component and package for three small files.
 
 ```text
                      support      output
@@ -55,9 +55,9 @@ The library is one static target, `loglib`. Its files sit in nine module folders
 | ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                  |
 | parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                               |
 | table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                              |
-| query   | Finding, ordering and summarizing rows       | `row_filter`, `filter_compile`, `query_parser`, `log_string_matcher`, `log_compare`, `row_ordering`, `histogram_bucket_index`                                                    |
+| query   | Finding, ordering and summarizing rows       | `row_filter`, `filter_compile`, `query_parser`, `query_format`, `log_string_matcher`, `log_compare`, `row_ordering`, `histogram_bucket_index`                                    |
 | output  | Writing and reading whole files of rows      | `exports/*`, `session_bundle`, `file_loading`                                                                                                                                    |
-| support | Application helpers that are not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                           |
+| support | Helpers both programs share, not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                           |
 
 Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit and CI:
 
