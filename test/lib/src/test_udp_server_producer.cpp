@@ -1,3 +1,4 @@
+#include <loglib/core/error.hpp>
 #include <loglib/ingest/udp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
@@ -158,7 +159,7 @@ TEST_CASE("UdpServerProducer: invalid bind address throws", "[udp_producer][netw
 {
     UdpServerProducer::Options opts;
     opts.bindAddress = "not-a-host";
-    REQUIRE_THROWS_AS(UdpServerProducer(opts), std::system_error);
+    REQUIRE_THROWS_AS(UdpServerProducer(opts), loglib::IoError);
 }
 
 TEST_CASE("UdpServerProducer: DisplayName reflects bound port", "[udp_producer][network]")
@@ -180,5 +181,5 @@ TEST_CASE("UdpServerProducer: a port in use fails to bind", "[udp_producer][netw
 
     UdpServerProducer::Options again = opts;
     again.port = first.BoundPort();
-    REQUIRE_THROWS_AS(UdpServerProducer(again), std::system_error);
+    REQUIRE_THROWS_AS(UdpServerProducer(again), loglib::IoError);
 }

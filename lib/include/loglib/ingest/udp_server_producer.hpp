@@ -46,7 +46,7 @@ public:
     {
         /**
          * @brief The address to listen on: "0.0.0.0" for any IPv4 address, "::" for IPv6 and IPv4, or the address of
-         * one interface. An address that cannot be parsed makes the constructor throw std::system_error.
+         * one interface. An address that cannot be parsed makes the constructor throw IoError.
          */
         std::string bindAddress = "0.0.0.0";
 
@@ -72,8 +72,8 @@ public:
     // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
     /**
-     * @brief Binds the socket and starts the I/O thread. Throws std::system_error if the address cannot be parsed or
-     * the socket cannot be bound.
+     * @brief Binds the socket and starts the I/O thread. Throws IoError, with the system error code, if the address
+     * cannot be parsed or the socket cannot be bound.
      */
     explicit UdpServerProducer(Options options);
 

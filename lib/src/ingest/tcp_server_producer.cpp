@@ -370,14 +370,14 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
     const asio::ip::address bindAddr = asio::ip::make_address(mOptions.bindAddress, ec);
     if (ec)
     {
-        throw std::system_error(ec, "TcpServerProducer: invalid bind address '" + mOptions.bindAddress + "'");
+        throw IoError("TcpServerProducer: invalid bind address '" + mOptions.bindAddress + "'", ec);
     }
 
     const asio::ip::tcp::endpoint endpoint(bindAddr, mOptions.port);
     mAcceptor.open(endpoint.protocol(), ec);
     if (ec)
     {
-        throw std::system_error(ec, "TcpServerProducer: acceptor open failed");
+        throw IoError("TcpServerProducer: acceptor open failed", ec);
     }
 #ifndef _WIN32
     // POSIX needs SO_REUSEADDR to listen again while old connections sit in TIME_WAIT. On Windows the same option lets
@@ -387,14 +387,14 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
     mAcceptor.bind(endpoint, ec);
     if (ec)
     {
-        throw std::system_error(
-            ec, "TcpServerProducer: bind failed for " + mOptions.bindAddress + ":" + std::to_string(mOptions.port)
+        throw IoError(
+            "TcpServerProducer: bind failed for " + mOptions.bindAddress + ":" + std::to_string(mOptions.port), ec
         );
     }
     mAcceptor.listen(asio::socket_base::max_listen_connections, ec);
     if (ec)
     {
-        throw std::system_error(ec, "TcpServerProducer: listen failed");
+        throw IoError("TcpServerProducer: listen failed", ec);
     }
     mBoundPort = mAcceptor.local_endpoint().port();
 

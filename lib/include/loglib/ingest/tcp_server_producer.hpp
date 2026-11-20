@@ -122,8 +122,8 @@ public:
     /**
      * @brief Binds the port, sets up TLS if requested, and starts the I/O thread.
      *
-     * Throws std::system_error if binding or listening fails, and IoError for TLS problems such as missing
-     * files or a build without TLS.
+     * Throws IoError if binding or listening fails, with the system error code, and IoError for TLS problems such as
+     * missing files or a build without TLS.
      */
     explicit TcpServerProducer(Options options);
 

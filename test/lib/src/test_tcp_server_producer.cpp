@@ -1,3 +1,4 @@
+#include <loglib/core/error.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/tcp_server_producer.hpp>
 
@@ -214,7 +215,7 @@ TEST_CASE("TcpServerProducer: invalid bind address throws", "[tcp_producer][netw
 {
     TcpServerProducer::Options opts;
     opts.bindAddress = "not-a-host";
-    REQUIRE_THROWS_AS(TcpServerProducer(opts), std::system_error);
+    REQUIRE_THROWS_AS(TcpServerProducer(opts), loglib::IoError);
 }
 
 TEST_CASE("TcpServerProducer: a port in use fails to bind", "[tcp_producer][network]")
@@ -226,7 +227,7 @@ TEST_CASE("TcpServerProducer: a port in use fails to bind", "[tcp_producer][netw
 
     TcpServerProducer::Options again = opts;
     again.port = first.BoundPort();
-    REQUIRE_THROWS_AS(TcpServerProducer(again), std::system_error);
+    REQUIRE_THROWS_AS(TcpServerProducer(again), loglib::IoError);
 }
 
 TEST_CASE("TcpServerProducer: a port can listen again after a client session ends", "[tcp_producer][network]")

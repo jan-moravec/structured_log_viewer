@@ -1,3 +1,4 @@
+#include <loglib/core/error.hpp>
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 
 #include <test_common/wait.hpp>
@@ -662,7 +663,7 @@ TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesP
     const TempDir dir;
     const auto path = dir.File("does_not_exist.log");
 
-    CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), std::system_error);
+    CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), loglib::IoError);
 }
 
 TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", "[TailingBytesProducer][fs-events]")
