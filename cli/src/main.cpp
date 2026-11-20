@@ -87,7 +87,7 @@ public:
         const slp::RuntimeContext runtime{.stop = stop.GetToken(), .timeZone = zone.context};
         return slp::Execute(*parsed, runtime);
     }
-    catch (const loglib::exports::BrokenPipe &)
+    catch (const loglib::BrokenPipe &)
     {
         return Exit(slp::ExitCode::Success);
     }

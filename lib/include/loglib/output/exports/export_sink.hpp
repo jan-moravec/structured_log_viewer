@@ -13,7 +13,6 @@
 
 #include <cstddef>
 #include <cstdio>
-#include <exception>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -109,21 +108,6 @@ private:
     // failures in the same way.
     std::FILE *mFile = nullptr;
     bool mFinished = false;
-};
-
-/**
- * @brief Thrown when a write reaches a pipe or socket that the reader has closed.
- *
- * It does not derive from loglib::Error, so a general I/O handler does not report it. Callers that treat a
- * closed reader as success, as in slp query piped into head, catch it and exit quietly.
- */
-class BrokenPipe : public std::exception
-{
-public:
-    [[nodiscard]] const char *what() const noexcept override
-    {
-        return "Broken pipe";
-    }
 };
 
 /**

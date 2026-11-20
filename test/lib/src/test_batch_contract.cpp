@@ -1249,7 +1249,7 @@ public:
         }
         if (mThrowFrom == ThrowFrom::OnBatch && batchCalls == mThrowOnBatchCall)
         {
-            throw exports::BrokenPipe();
+            throw BrokenPipe();
         }
         batches.push_back(std::move(batch));
     }
@@ -1260,7 +1260,7 @@ public:
         wasCancelled = cancelled;
         if (mThrowFrom == ThrowFrom::OnFinished)
         {
-            throw exports::BrokenPipe();
+            throw BrokenPipe();
         }
         ++finished;
     }
@@ -1599,7 +1599,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>(bytes, 4096));
         ThrowingLineDecoder<std::runtime_error> decoder(std::runtime_error("unused"));
         // 250 rows make a batch, so the second batch throws on the sink's second call.
-        CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
+        CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), BrokenPipe);
         CHECK(sink.batchCalls == 2);
         CHECK(sink.finishedCalls == 0);
     }
@@ -1628,7 +1628,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
                 ),
                 stageB
             )),
-            exports::BrokenPipe
+            BrokenPipe
         );
         CHECK(sink.batchCalls == 1);
         CHECK(sink.finishedCalls == 0);
@@ -1638,7 +1638,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
         CountingSink sink(CountingSink::ThrowFrom::OnFinished);
         StreamLineSource source("memory.log", std::make_unique<InMemoryBytesProducer>("one\ntwo\n", 4));
         ThrowingLineDecoder<std::runtime_error> decoder(std::runtime_error("unused"));
-        CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), exports::BrokenPipe);
+        CHECK_THROWS_AS(internal::RunStreamingParseLoop(source, decoder, sink, ParserOptions{}), BrokenPipe);
         CHECK(sink.finishedCalls == 1);
         CHECK(sink.batchCalls >= 1);
     }
