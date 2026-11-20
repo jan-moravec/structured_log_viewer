@@ -45,12 +45,6 @@ inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
  */
 inline constexpr size_t HISTOGRAM_MAX_BUCKETS = size_t{1} << 20U;
 
-/** @brief The step from one second to ten seconds and from one minute to ten minutes. */
-inline constexpr int TEN_UNITS_PER_STRIDE = 10;
-
-/** @brief The number of hours in the OneDay bucket. */
-inline constexpr int HOURS_PER_DAY = 24;
-
 /** @brief The width of one bucket of the given size. */
 [[nodiscard]] constexpr std::chrono::microseconds HistogramBucketWidth(HistogramBucketSize size) noexcept
 {
@@ -60,15 +54,15 @@ inline constexpr int HOURS_PER_DAY = 24;
     case HistogramBucketSize::OneSecond:
         return duration_cast<microseconds>(seconds{1});
     case HistogramBucketSize::TenSeconds:
-        return duration_cast<microseconds>(seconds{TEN_UNITS_PER_STRIDE});
+        return duration_cast<microseconds>(seconds{10});
     case HistogramBucketSize::OneMinute:
         return duration_cast<microseconds>(minutes{1});
     case HistogramBucketSize::TenMinutes:
-        return duration_cast<microseconds>(minutes{TEN_UNITS_PER_STRIDE});
+        return duration_cast<microseconds>(minutes{10});
     case HistogramBucketSize::OneHour:
         return duration_cast<microseconds>(hours{1});
     case HistogramBucketSize::OneDay:
-        return duration_cast<microseconds>(hours{HOURS_PER_DAY});
+        return duration_cast<microseconds>(days{1});
     }
     return microseconds{1};
 }
