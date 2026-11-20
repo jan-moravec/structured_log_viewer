@@ -13,7 +13,7 @@
 
 #include <cstddef>
 
-namespace loglib
+namespace loglib::internal
 {
 
 /**
@@ -22,4 +22,4 @@ namespace loglib
  */
 [[nodiscard]] bool ShouldBubbleLevelColumn(const ColumnLayout &layout, size_t columnIndex) noexcept;
 
-} // namespace loglib
+} // namespace loglib::internal

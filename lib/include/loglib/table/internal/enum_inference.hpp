@@ -28,9 +28,12 @@
 
 namespace loglib
 {
-
-class LogData;
 class ColumnLayout;
+class LogData;
+} // namespace loglib
+
+namespace loglib::internal
+{
 
 /** @brief For each level, the raw dictionary values that mapped to it. */
 using LevelValueMap = std::unordered_map<LogLevel, std::vector<std::string>>;
@@ -323,4 +326,4 @@ private:
     std::vector<ParseError> mPendingErrors;
 };
 
-} // namespace loglib
+} // namespace loglib::internal

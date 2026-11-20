@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 namespace
@@ -400,4 +400,4 @@ void EnumInference::DemoteColumnFromEnum(LogData &data, ColumnLayout &layout, si
     }
 }
 
-} // namespace loglib
+} // namespace loglib::internal

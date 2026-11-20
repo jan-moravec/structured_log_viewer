@@ -60,7 +60,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
         const bool parsed = prepared.Parse(text, scratch, REFERENCE_TIME, out);
 
         loglib::TimeStamp reference;
-        const bool referenceParsed = loglib::TryParseGenericTimestamp(text, format, scratch, reference);
+        const bool referenceParsed = loglib::internal::TryParseGenericTimestamp(text, format, scratch, reference);
         const bool comparable = prepared.Kind() == loglib::TimestampFormatKind::Compiled &&
                                 format.find_first_of("0123456789") == std::string::npos;
         if (comparable && (parsed != referenceParsed || (parsed && out != reference)))

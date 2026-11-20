@@ -14,7 +14,7 @@
 #include <string_view>
 #include <utility>
 
-namespace loglib
+namespace loglib::internal
 {
 
 namespace
@@ -125,4 +125,4 @@ void BackfillTimestampColumn(
     BackfillColumnLoop(keyIndex, column, lines, timeZone, referenceTime, nullptr);
 }
 
-} // namespace loglib
+} // namespace loglib::internal

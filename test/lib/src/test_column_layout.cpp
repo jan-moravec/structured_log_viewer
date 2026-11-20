@@ -34,6 +34,7 @@
 #endif
 
 using namespace loglib;
+using namespace loglib::internal;
 
 namespace
 {

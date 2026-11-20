@@ -210,6 +210,9 @@ void ColumnLayout::AppendKeys(const std::vector<std::string> &newKeys)
     }
 }
 
+namespace internal
+{
+
 bool ShouldBubbleLevelColumn(const ColumnLayout &layout, size_t columnIndex) noexcept
 {
     const auto &columns = layout.Columns();
@@ -234,6 +237,8 @@ bool ShouldBubbleLevelColumn(const ColumnLayout &layout, size_t columnIndex) noe
     }
     return true;
 }
+
+} // namespace internal
 
 void ColumnLayout::MoveColumn(size_t srcIndex, size_t destIndex)
 {

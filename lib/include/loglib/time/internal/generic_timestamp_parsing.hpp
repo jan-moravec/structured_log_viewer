@@ -15,7 +15,7 @@
 #include <string>
 #include <string_view>
 
-namespace loglib
+namespace loglib::internal
 {
 
 /**
@@ -26,4 +26,4 @@ bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 );
 
-} // namespace loglib
+} // namespace loglib::internal

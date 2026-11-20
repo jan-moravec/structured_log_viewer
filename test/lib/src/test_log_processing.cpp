@@ -28,6 +28,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace loglib::internal;
 
 namespace
 {

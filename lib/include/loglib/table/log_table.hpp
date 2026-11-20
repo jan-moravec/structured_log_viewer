@@ -41,8 +41,8 @@ class BytesProducer;
 namespace internal
 {
 struct LogTableTestAccess;
-} // namespace internal
 class EnumInference;
+} // namespace internal
 
 /** @brief What happened to the dictionary or type of an enumeration column. */
 enum class EnumColumnChange
@@ -529,7 +529,7 @@ private:
      * @brief Type inference, enumeration encoding and the level cache. It owns the dictionaries, which LineSources
      * borrow.
      */
-    std::unique_ptr<EnumInference> mEnum;
+    std::unique_ptr<internal::EnumInference> mEnum;
 
     /** @brief Scratch for AppendBatch, kept between calls so a steady stream does not allocate. */
     std::vector<EnumColumnSnapshot> mEnumSnapshot;

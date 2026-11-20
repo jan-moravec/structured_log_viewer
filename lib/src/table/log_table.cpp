@@ -101,13 +101,13 @@ bool TimeFormatPrints(const std::string &format)
 } // namespace
 
 LogTable::LogTable()
-    : mEnum(std::make_unique<EnumInference>())
+    : mEnum(std::make_unique<internal::EnumInference>())
 {
     mLayout.SetTimeFormatCheck(TimeFormatPrints);
 }
 
 LogTable::LogTable(ColumnLayout layout)
-    : mLayout(std::move(layout)), mEnum(std::make_unique<EnumInference>())
+    : mLayout(std::move(layout)), mEnum(std::make_unique<internal::EnumInference>())
 {
     mLayout.SetTimeFormatCheck(TimeFormatPrints);
     // Checks the Time formats, which the layout could not check before it had the check.
@@ -126,7 +126,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mLiveSource(other.mLiveSource),
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
       mTableConvertedTimeKeys(std::move(other.mTableConvertedTimeKeys)),
-      mEnum(std::make_unique<EnumInference>(std::move(*other.mEnum)))
+      mEnum(std::make_unique<internal::EnumInference>(std::move(*other.mEnum)))
 {
     RewireSourceRegistries();
 }
@@ -342,13 +342,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 
         if (firstObservation)
         {
-            BackfillTimestampColumn(
+            internal::BackfillTimestampColumn(
                 mData.Keys(),
                 column,
                 std::span<LogLine>(mData.Lines()),
                 mDefaultSourceTimeZone,
                 mReferenceTime,
-                BackfillErrors::Discard
+                internal::BackfillErrors::Discard
             );
             for (const KeyId id : columnKeyIds)
             {
@@ -370,8 +370,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
                 const std::span<LogLine> slice(
                     mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount
                 );
-                BackfillTimestampColumn(
-                    mData.Keys(), column, slice, mDefaultSourceTimeZone, mReferenceTime, BackfillErrors::Discard
+                internal::BackfillTimestampColumn(
+                    mData.Keys(),
+                    column,
+                    slice,
+                    mDefaultSourceTimeZone,
+                    mReferenceTime,
+                    internal::BackfillErrors::Discard
                 );
             }
         }
@@ -393,7 +398,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     }
 
     // Level values exist only if a dictionary was erased, and an erase is always recorded in demotedKeys.
-    std::unordered_map<KeyId, LevelValueMap> demotedValues;
+    std::unordered_map<KeyId, internal::LevelValueMap> demotedValues;
     const bool anyDemotion = !demotedKeys.empty();
     if (anyDemotion)
     {
@@ -902,7 +907,7 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
             EnumColumnEvent event{.column = columnIndex, .change = EnumColumnChange::Demoted};
             if (before == ColumnType::Level)
             {
-                const KeyId key = CanonicalKeyOf(mData.Keys(), columnsAfter[columnIndex]);
+                const KeyId key = internal::CanonicalKeyOf(mData.Keys(), columnsAfter[columnIndex]);
                 if (const auto values = demotedValues.find(key); values != demotedValues.end())
                 {
                     event.levelValuesBeforeDemotion = std::move(values->second);
@@ -959,13 +964,13 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             mLayout.SetColumnParseFormats(columnIndex, DefaultTimeParseFormats());
         }
-        BackfillTimestampColumn(
+        internal::BackfillTimestampColumn(
             mData.Keys(),
             mLayout.Columns()[columnIndex],
             std::span<LogLine>(mData.Lines()),
             mDefaultSourceTimeZone,
             mReferenceTime,
-            BackfillErrors::Discard
+            internal::BackfillErrors::Discard
         );
         break;
     }
@@ -983,11 +988,11 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             break;
         }
-        EnumColumnHealth &health = mEnum->HealthFor(canonical);
+        internal::EnumColumnHealth &health = mEnum->HealthFor(canonical);
         const bool previousWasEnumLike = previousType == ColumnType::Enumeration || previousType == ColumnType::Level;
         if (!previousWasEnumLike)
         {
-            health = EnumColumnHealth{};
+            health = internal::EnumColumnHealth{};
         }
         if (!mEnum->EncodeColumnRangeAsEnum(mData, mLayout.Columns()[columnIndex], 0U, mData.Lines().size(), health))
         {
@@ -1051,7 +1056,7 @@ std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &plac
         }
         return ColumnMove{.from = from, .to = 0};
     case ColumnPlacement::Kind::LevelToCanonicalSlot:
-        if (!ShouldBubbleLevelColumn(mLayout, from))
+        if (!internal::ShouldBubbleLevelColumn(mLayout, from))
         {
             return std::nullopt;
         }

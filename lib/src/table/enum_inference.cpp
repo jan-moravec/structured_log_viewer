@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 namespace
@@ -683,4 +683,4 @@ bool EnumInference::Finalize(LogData &data, ColumnLayout &layout)
     return promoted;
 }
 
-} // namespace loglib
+} // namespace loglib::internal

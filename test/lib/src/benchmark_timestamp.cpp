@@ -31,6 +31,7 @@ namespace
 {
 
 using namespace loglib;
+using namespace loglib::internal;
 
 constexpr std::size_t VALUE_COUNT = 10'000;
 

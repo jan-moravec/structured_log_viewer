@@ -18,6 +18,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace loglib::internal;
 
 TEST_CASE("RouteNoStringBail picks a terminal type from tag counts", "[enum_inference]")
 {

@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 /**
@@ -56,4 +56,4 @@ void BackfillTimestampColumn(
     BackfillErrors discardErrors
 );
 
-} // namespace loglib
+} // namespace loglib::internal

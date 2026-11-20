@@ -544,6 +544,9 @@ bool ParseWithDate(std::string_view sv, const std::string &format, TimestampPars
 
 } // namespace
 
+namespace internal
+{
+
 bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
@@ -555,6 +558,8 @@ bool TryParseGenericTimestamp(
     }
     return ParseWithDate(sv, format, scratch, out);
 }
+
+} // namespace internal
 
 namespace
 {

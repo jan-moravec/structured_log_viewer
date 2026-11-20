@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 void EnumInference::MaybePromoteToLevel(LogData &data, ColumnLayout &layout, size_t columnIndex)
@@ -148,4 +148,4 @@ const std::vector<LogLevel> *EnumInference::LevelRankCache(
     return &it->second;
 }
 
-} // namespace loglib
+} // namespace loglib::internal
