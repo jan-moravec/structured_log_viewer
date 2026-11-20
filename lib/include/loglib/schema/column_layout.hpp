@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -143,10 +144,10 @@ private:
 };
 
 /**
- * @brief The index of the first Time column, or -1. That column is the one used as the timestamp of a row, for example
- * for summaries and time filters.
+ * @brief The index of the first Time column, or nullopt. That column is the one used as the timestamp of a row, for
+ * example for summaries and time filters.
  */
-[[nodiscard]] int FirstTimeColumnIndex(const ColumnLayout &layout);
+[[nodiscard]] std::optional<size_t> FirstTimeColumnIndex(const ColumnLayout &layout);
 
 /**
  * @brief The columns of type Time, in column order. A parser gets these as ParserOptions::timeColumns and converts them

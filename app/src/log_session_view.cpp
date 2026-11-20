@@ -508,8 +508,8 @@ void LogSessionView::PromptGotoTimestamp()
         return;
     }
 
-    const int timeCol = loglib::FirstTimeColumnIndex(model->Layout());
-    if (timeCol < 0)
+    const std::optional<std::size_t> timeColumn = loglib::FirstTimeColumnIndex(model->Layout());
+    if (!timeColumn.has_value())
     {
         emit statusMessageRequested(tr("This log has no timestamp column."));
         return;
@@ -553,12 +553,13 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
         return;
     }
     const auto &layout = model->Layout();
-    const int timeCol = loglib::FirstTimeColumnIndex(layout);
-    if (timeCol < 0)
+    const std::optional<std::size_t> timeColumn = loglib::FirstTimeColumnIndex(layout);
+    if (!timeColumn.has_value())
     {
         emit statusMessageRequested(tr("This log has no timestamp column."));
         return;
     }
+    const int timeCol = static_cast<int>(*timeColumn);
 
     // Update the sticky input before the parse so a garbage value
     // the user wants to correct is retained on the next open.

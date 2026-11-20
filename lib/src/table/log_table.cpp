@@ -441,13 +441,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     // A column that was promoted and demoted within the batch is invisible to the snapshot.
     for (const KeyId key : demotedKeys)
     {
-        const int columnIndex = FindColumnIndexByKey(key);
-        if (columnIndex < 0 || std::ranges::contains(demotedColumns, static_cast<size_t>(columnIndex)))
+        const std::optional<size_t> columnIndex = FindColumnIndexByKey(key);
+        if (!columnIndex.has_value() || std::ranges::contains(demotedColumns, *columnIndex))
         {
             continue;
         }
-        demotedColumns.push_back(static_cast<size_t>(columnIndex));
-        result.enumEvents.push_back({.column = static_cast<size_t>(columnIndex), .change = EnumColumnChange::Demoted});
+        demotedColumns.push_back(*columnIndex);
+        result.enumEvents.push_back({.column = *columnIndex, .change = EnumColumnChange::Demoted});
     }
 
     // Columns the back-fill turned into enumerations. A column that was already one is covered by the events above.
@@ -481,11 +481,9 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     }
     for (const KeyId key : levelBubbleKeys)
     {
-        if (const int columnIndex = FindColumnIndexByKey(key); columnIndex >= 0)
+        if (const std::optional<size_t> columnIndex = FindColumnIndexByKey(key); columnIndex.has_value())
         {
-            result.placements.push_back(
-                {.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = static_cast<size_t>(columnIndex)}
-            );
+            result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = *columnIndex});
         }
     }
     return result;
@@ -918,11 +916,9 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
     }
     for (const KeyId key : levelBubbleKeys)
     {
-        if (const int columnIndex = FindColumnIndexByKey(key); columnIndex >= 0)
+        if (const std::optional<size_t> columnIndex = FindColumnIndexByKey(key); columnIndex.has_value())
         {
-            result.placements.push_back(
-                {.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = static_cast<size_t>(columnIndex)}
-            );
+            result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = *columnIndex});
         }
     }
     return result;
@@ -1081,11 +1077,11 @@ void LogTable::ApplyPlacements(std::span<const ColumnPlacement> placements)
     }
 }
 
-int LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
+std::optional<size_t> LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
 {
     if (kid == INVALID_KEY_ID)
     {
-        return -1;
+        return std::nullopt;
     }
     const auto &columns = mLayout.Columns();
     const auto &keys = mData.Keys();
@@ -1095,11 +1091,11 @@ int LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
         {
             if (keys.Find(key) == kid)
             {
-                return static_cast<int>(i);
+                return i;
             }
         }
     }
-    return -1;
+    return std::nullopt;
 }
 
 std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex) const noexcept

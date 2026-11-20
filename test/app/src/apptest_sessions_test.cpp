@@ -472,7 +472,7 @@ private slots:
 
         // Build a config with two leaves: a valid enum on `level`
         // and a string leaf whose column keys don't match any
-        // column (so `ResolveLeafColumnByKeys` returns -1). Serialise
+        // column (so `FindColumnByKeys` finds nothing). Serialise
         // via Glaze so the load path sees the same wire format
         // `Save` emits.
         (void)columnCount;

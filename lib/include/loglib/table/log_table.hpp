@@ -470,9 +470,9 @@ private:
     /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. */
     void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
 
-    /** @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
-     * columns. */
-    [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
+    /** @brief The index of the first column that uses kid, or nullopt. The search is linear, which is fine for a few
+     * dozen columns. */
+    [[nodiscard]] std::optional<size_t> FindColumnIndexByKey(KeyId kid) const noexcept;
 
     /**
      * @brief Formats a cell with the column's print format and the display zone. It does not throw: a print format that

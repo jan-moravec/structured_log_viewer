@@ -393,7 +393,7 @@ private slots:
         sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
-        QCOMPARE(loglib::FirstTimeColumnIndex(model->Layout()), -1);
+        QVERIFY(!loglib::FirstTimeColumnIndex(model->Layout()).has_value());
 
         mWindow->statusBar()->clearMessage();
         mWindow->ExecuteGotoTimestampForTest(

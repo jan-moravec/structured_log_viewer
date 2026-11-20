@@ -28,9 +28,9 @@ class LogTable;
  * @brief Finds the first column whose keys include all of the given keys. Filters and highlight rules both use it, so
  * they find columns the same way.
  *
- * It returns -1 if no column matches, and for an empty list of keys.
+ * It returns the index of that column, or nullopt if no column matches and for an empty list of keys.
  */
-[[nodiscard]] int ResolveLeafColumnByKeys(
+[[nodiscard]] std::optional<size_t> FindColumnByKeys(
     const std::vector<std::string> &keys, const std::vector<Column> &columns
 ) noexcept;
 
@@ -44,12 +44,12 @@ class LogTable;
  * For a Level column the rule is expanded to all raw values that map to the level, taken from LevelRankCache. A rule
  * saved as Warn therefore also matches rows that say WARN, warning or a user-defined alias.
  *
- * @param resolvedColumn The column found by ResolveLeafColumnByKeys, or -1.
+ * @param column The column found by FindColumnByKeys, or nullopt if there is none.
  * @param columns The columns, used to expand level aliases.
  * @param table The table that owns the enumeration dictionaries. May be null.
  */
 [[nodiscard]] std::optional<RowPredicate> CompileLeaf(
-    const LeafRule &rule, int resolvedColumn, const std::vector<Column> &columns, const LogTable *table
+    const LeafRule &rule, std::optional<size_t> column, const std::vector<Column> &columns, const LogTable *table
 );
 
 /**

@@ -21,7 +21,7 @@ namespace loglib
 
 /**
  * @brief The saved sort. The column is named by its keys, found the way filter leaves find theirs, so a column move
- * needs no update. Empty keys mean no sort. Use ResolveLeafColumnByKeys to get the column index.
+ * needs no update. Empty keys mean no sort. Use FindColumnByKeys to get the column index.
  */
 struct Sort
 {

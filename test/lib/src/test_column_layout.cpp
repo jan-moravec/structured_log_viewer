@@ -84,7 +84,7 @@ namespace
 
 /// Test helper: resolve the first column whose `keys` subset-matches @p keys.
 /// Returns -1 when nothing matches or @p keys is empty. Local copy of the
-/// subset-match rule so this fixture does not call `ResolveLeafColumnByKeys`.
+/// subset-match rule so this fixture does not call `FindColumnByKeys`.
 [[nodiscard]] int LegacyColumnKeysToRow(const std::vector<std::string> &keys, const std::vector<Column> &columns)
 {
     if (keys.empty())
@@ -494,17 +494,17 @@ TEST_CASE("IsLogLevelKey recognises canonical level aliases case-insensitively",
     CHECK_FALSE(IsLogLevelKey("level "));
 }
 
-TEST_CASE("FirstTimeColumnIndex returns the first Type::Time column or -1", "[ColumnLayout][time_column]")
+TEST_CASE("FirstTimeColumnIndex returns the first Type::Time column or nullopt", "[ColumnLayout][time_column]")
 {
     using Type = ColumnType;
 
     const LogConfiguration empty;
-    CHECK(FirstTimeColumnIndex(ColumnLayout(empty.columns)) == -1);
+    CHECK(FirstTimeColumnIndex(ColumnLayout(empty.columns)) == std::nullopt);
 
     LogConfiguration noTime;
     noTime.columns.push_back({.header = "msg", .type = Type::String});
     noTime.columns.push_back({.header = "level", .type = Type::Level});
-    CHECK(FirstTimeColumnIndex(ColumnLayout(noTime.columns)) == -1);
+    CHECK(FirstTimeColumnIndex(ColumnLayout(noTime.columns)) == std::nullopt);
 
     LogConfiguration single;
     single.columns.push_back({.header = "msg", .type = Type::String});

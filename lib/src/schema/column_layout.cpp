@@ -383,17 +383,17 @@ bool ColumnLayout::IsKeyInAnyColumnCached(const std::string &key) const
     return mKeysInColumns.contains(key);
 }
 
-int FirstTimeColumnIndex(const ColumnLayout &layout)
+std::optional<size_t> FirstTimeColumnIndex(const ColumnLayout &layout)
 {
     const auto &columns = layout.Columns();
     for (size_t i = 0; i < columns.size(); ++i)
     {
         if (columns[i].type == ColumnType::Time)
         {
-            return static_cast<int>(i);
+            return i;
         }
     }
-    return -1;
+    return std::nullopt;
 }
 
 std::vector<Column> TimeColumnsOf(const ColumnLayout &layout)

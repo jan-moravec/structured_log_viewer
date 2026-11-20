@@ -154,7 +154,7 @@ namespace
         [&columns]<class N>(const N &node) -> bool {
             if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
             {
-                return loglib::ResolveLeafColumnByKeys(node.rule.columnKeys, columns) < 0;
+                return !loglib::FindColumnByKeys(node.rule.columnKeys, columns).has_value();
             }
             else if constexpr (
                 std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
@@ -435,13 +435,14 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     using LeafType = loglib::LeafRule::Type;
     using ColumnType = loglib::ColumnType;
 
-    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
-    if (resolvedRow < 0)
+    const std::optional<size_t> resolvedColumn = loglib::FindColumnByKeys(filter.columnKeys, columns);
+    if (!resolvedColumn.has_value())
     {
         return FilterValidationFailure{
             .reason = FilterValidationReason::OutOfRangeRow, .row = -1, .columnHeader = std::string{}
         };
     }
+    const int resolvedRow = static_cast<int>(*resolvedColumn);
 
     const auto &column = columns[static_cast<size_t>(resolvedRow)];
 
@@ -3871,11 +3872,12 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // otherwise overwrite the loaded sort with the cleared
         // proxy sort. Columns-only files default to `-1` (no sort).
         const auto loadedSort = mSession->View().sort;
-        const int loadedSortColumn = loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Layout().Columns());
-        if (loadedSortColumn >= 0)
+        const std::optional<size_t> loadedSortColumn =
+            loglib::FindColumnByKeys(loadedSort.columnKeys, mModel->Layout().Columns());
+        if (loadedSortColumn.has_value())
         {
             mTableView->sortByColumn(
-                loadedSortColumn, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                static_cast<int>(*loadedSortColumn), loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
             );
         }
 
@@ -7897,17 +7899,19 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     entries.reserve(Filters().size());
     for (const auto &[id, filter] : Filters())
     {
-        const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, mModel->Layout().Columns());
-        QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
-                                  ? labels[static_cast<size_t>(row)]
-                                  // Filter pointing at a column that no
-                                  // longer exists (e.g. a config carrying
-                                  // over a renamed key). Surface it as
-                                  // `(unknown column)` so the user can
-                                  // still get rid of it via the dropdown.
-                                  : tr("(unknown column)");
+        const std::optional<size_t> row = loglib::FindColumnByKeys(filter.columnKeys, mModel->Layout().Columns());
+        QString columnLabel = (row.has_value() && *row < labels.size()) ? labels[*row]
+                                                                        // Filter pointing at a column that no
+                                                                        // longer exists (e.g. a config carrying
+                                                                        // over a renamed key). Surface it as
+                                                                        // `(unknown column)` so the user can
+                                                                        // still get rid of it via the dropdown.
+                                                                        : tr("(unknown column)");
         entries.push_back(
-            {.id = id, .columnLabel = std::move(columnLabel), .filterTitle = BuildFilterTitle(filter), .columnRow = row}
+            {.id = id,
+             .columnLabel = std::move(columnLabel),
+             .filterTitle = BuildFilterTitle(filter),
+             .columnRow = row.has_value() ? static_cast<int>(*row) : -1}
         );
     }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
@@ -9862,8 +9866,8 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                 for (auto &kv : mSession->MutableSimpleLeaves())
                 {
                     loglib::LeafRule &filter = kv.second;
-                    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
-                    if (resolvedRow != columnIndex)
+                    const std::optional<size_t> resolvedRow = loglib::FindColumnByKeys(filter.columnKeys, columnsCfg);
+                    if (!resolvedRow.has_value() || std::cmp_not_equal(*resolvedRow, columnIndex))
                     {
                         continue;
                     }
@@ -9915,7 +9919,8 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
         {
             return true;
         }
-        return loglib::ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
+        const std::optional<size_t> resolved = loglib::FindColumnByKeys(kv.second.columnKeys, columnsForResolve);
+        return resolved.has_value() && std::cmp_equal(*resolved, columnIndex);
     };
     bool rebuild = false;
     switch (reason)
@@ -10066,12 +10071,13 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const
         if (!mSession->HasPendingApplySortFromConfig())
         {
             const auto loadedSort = mSession->View().sort;
-            const int loadedSortColumn =
-                loglib::ResolveLeafColumnByKeys(loadedSort.columnKeys, mModel->Layout().Columns());
-            if (loadedSortColumn >= 0)
+            const std::optional<size_t> loadedSortColumn =
+                loglib::FindColumnByKeys(loadedSort.columnKeys, mModel->Layout().Columns());
+            if (loadedSortColumn.has_value())
             {
                 mTableView->sortByColumn(
-                    loadedSortColumn, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                    static_cast<int>(*loadedSortColumn),
+                    loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
                 );
             }
         }
@@ -10649,7 +10655,10 @@ void MainWindow::AddFilter(
     {
         // Column keys are the wire identity; the editor needs a
         // live column index, so resolve once here and forward.
-        const int editorRow = loglib::ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Layout().Columns());
+        const std::optional<size_t> editorColumn =
+            loglib::FindColumnByKeys(resolvedFilter->columnKeys, mModel->Layout().Columns());
+        // The editor takes a Qt row and uses -1 for a filter whose column is gone.
+        const int editorRow = editorColumn.has_value() ? static_cast<int>(*editorColumn) : -1;
         if (resolvedFilter->type == loglib::LeafRule::Type::Time)
         {
             // At least one bound must be set; the other side may be
@@ -10849,10 +10858,10 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // `mSimpleLeaves`; safe because `isSimpleRepresentable` already
     // proved the resolve.
     const auto promoteToColumnKeys = [&columns](loglib::LeafRule rule) {
-        const int resolved = loglib::ResolveLeafColumnByKeys(rule.columnKeys, columns);
-        if (resolved >= 0)
+        const std::optional<std::size_t> resolved = loglib::FindColumnByKeys(rule.columnKeys, columns);
+        if (resolved.has_value())
         {
-            rule.columnKeys = columns[static_cast<std::size_t>(resolved)].keys;
+            rule.columnKeys = columns[*resolved].keys;
         }
         return rule;
     };
@@ -11335,14 +11344,14 @@ void MainWindow::SyncColumnFilterIndicators()
         const auto &columns = mModel->Layout().Columns();
         for (const auto &[id, filter] : Filters())
         {
-            const int row = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columns);
-            if (row < 0 || row >= cols)
+            const std::optional<size_t> row = loglib::FindColumnByKeys(filter.columnKeys, columns);
+            if (!row.has_value() || std::cmp_greater_equal(*row, cols))
             {
                 // Column keys don't resolve (dropped/renamed); hide
                 // the tooltip entry until the column reappears.
                 continue;
             }
-            perColumnTitles[static_cast<size_t>(row)].append(BuildFilterTitle(filter));
+            perColumnTitles[*row].append(BuildFilterTitle(filter));
         }
         // Sort titles for stable tooltip ordering. `QCollator` gives
         // locale-aware case-insensitive numeric ordering (`9` < `10`).
@@ -11535,12 +11544,14 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
         return;
     }
     const auto &cfgSort = session->View().sort;
-    const int cfgSortColumn = loglib::ResolveLeafColumnByKeys(cfgSort.columnKeys, model->Layout().Columns());
-    if (cfgSortColumn < 0)
+    const std::optional<size_t> cfgSortColumn = loglib::FindColumnByKeys(cfgSort.columnKeys, model->Layout().Columns());
+    if (!cfgSortColumn.has_value())
     {
         return;
     }
-    table->sortByColumn(cfgSortColumn, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
+    table->sortByColumn(
+        static_cast<int>(*cfgSortColumn), cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+    );
 }
 
 bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
@@ -11550,13 +11561,14 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
         return true;
     }
     const auto &columnsCfg = mModel->Layout().Columns();
-    const int resolvedRow = loglib::ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
-    if (resolvedRow < 0)
+    const std::optional<size_t> resolvedColumn = loglib::FindColumnByKeys(filter.columnKeys, columnsCfg);
+    if (!resolvedColumn.has_value())
     {
         // Column keys don't resolve; leaf is inert and doesn't
         // need rebuilding either.
         return true;
     }
+    const int resolvedRow = static_cast<int>(*resolvedColumn);
     const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(resolvedRow);
     if (dictionary == nullptr)
     {
@@ -11909,7 +11921,8 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     const auto &columnsForResolve = mModel->Layout().Columns();
     for (const auto &entry : Filters())
     {
-        if (loglib::ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
+        if (const auto resolved = loglib::FindColumnByKeys(entry.second.columnKeys, columnsForResolve);
+            resolved.has_value() && std::cmp_equal(*resolved, logicalColumn))
         {
             filtersForColumn.push_back(
                 {.id = entry.first, .title = BuildFilterTitle(entry.second), .type = entry.second.type}
@@ -12095,12 +12108,11 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     // Pin to the first time column (shared with the Record Details
     // summary via `FirstTimeColumnIndex`).
     const auto &columns = mModel->Layout().Columns();
-    const int timeCol = loglib::FirstTimeColumnIndex(mModel->Layout());
+    const std::optional<size_t> timeCol = loglib::FirstTimeColumnIndex(mModel->Layout());
     const std::optional<int64_t> micros =
-        timeCol >= 0 ? loglib::AsEpochMicroseconds(
-                           mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
-                       )
-                     : std::nullopt;
+        timeCol.has_value()
+            ? loglib::AsEpochMicroseconds(mModel->Table().GetValue(static_cast<size_t>(sourceRow), *timeCol))
+            : std::nullopt;
     if (micros.has_value())
     {
         if (!menu->isEmpty())
@@ -12111,10 +12123,10 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         // Capture the stable column keys (not the index) so the action
         // still targets the right column if a streaming reorder fires
         // between menu build and click.
-        const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
+        const std::vector<std::string> timeKeys = columns[*timeCol].keys;
         // `ColumnMenuLabel` appends `[key]` to disambiguate duplicate
         // headers, matching `BuildHeaderContextMenu`.
-        const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
+        const QString colLabel = ColumnMenuLabel(*timeCol);
         const qint64 boundary = *micros;
 
         // Each action re-resolves the column by its captured keys at

@@ -479,11 +479,11 @@ TEST_CASE("Moving a column keeps the sort on the same column without any remappi
 
     const LogConfiguration configuration = MakeFullConfiguration();
     const auto &keys = configuration.view.sort.columnKeys;
-    CHECK(ResolveLeafColumnByKeys(keys, layout.Columns()) == 1);
+    CHECK(FindColumnByKeys(keys, layout.Columns()) == 1);
     layout.MoveColumn(1, 3);
-    CHECK(ResolveLeafColumnByKeys(keys, layout.Columns()) == 3);
+    CHECK(FindColumnByKeys(keys, layout.Columns()) == 3);
     layout.MoveColumn(3, 0);
-    CHECK(ResolveLeafColumnByKeys(keys, layout.Columns()) == 0);
+    CHECK(FindColumnByKeys(keys, layout.Columns()) == 0);
     CHECK(layout.Columns()[0].keys == std::vector<std::string>{"ts"});
 }
 

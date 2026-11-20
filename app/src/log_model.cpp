@@ -2025,11 +2025,12 @@ void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
     {
         return;
     }
-    const int timeCol = loglib::FirstTimeColumnIndex(Layout());
-    if (timeCol < 0)
+    const std::optional<std::size_t> timeColumn = loglib::FirstTimeColumnIndex(Layout());
+    if (!timeColumn.has_value())
     {
         return;
     }
+    const int timeCol = static_cast<int>(*timeColumn);
 
     // Single pass over the new rows: `runningMax` catches intra-
     // batch inversions; the first valid ts is compared against
