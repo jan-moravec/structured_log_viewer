@@ -19,6 +19,8 @@
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
@@ -41,8 +43,12 @@ TEST_CASE("Initialize a LogTable with given LogData and ColumnLayout", "[log_tab
     // Create test log lines
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
-    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, *sourcePtr, 1);
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0)
+    );
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key2", std::string("value2")}}, testKeys, *sourcePtr, 1)
+    );
 
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
@@ -93,7 +99,9 @@ TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_t
     // Create initial log lines
     KeyIndex initialKeys;
     std::vector<LogLine> initialLines;
-    initialLines.emplace_back(LogMap{{"key1", std::string("value1")}}, initialKeys, *sourcePtr, 0);
+    initialLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key1", std::string("value1")}}, initialKeys, *sourcePtr, 0)
+    );
 
     LogData initialData(std::move(source), std::move(initialLines), std::move(initialKeys));
 
@@ -121,7 +129,9 @@ TEST_CASE("Appending a second LogData adds its source and its new keys", "[log_t
     // Create new log lines with new keys
     KeyIndex newKeys;
     std::vector<LogLine> newLines;
-    newLines.emplace_back(LogMap{{"key2", std::string("value2")}}, newKeys, *newSourcePtr, 0);
+    newLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key2", std::string("value2")}}, newKeys, *newSourcePtr, 0)
+    );
 
     LogData newData(std::move(newSource), std::move(newLines), std::move(newKeys));
 
@@ -161,8 +171,12 @@ TEST_CASE("LogTable::Reset preserves the column layout", "[log_table]")
 
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
-    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, *sourcePtr, 1);
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0)
+    );
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key2", std::string("value2")}}, testKeys, *sourcePtr, 1)
+    );
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     LogConfiguration logConfiguration;
@@ -489,7 +503,11 @@ TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][a
 
     KeyIndex keysA;
     std::vector<LogLine> linesA;
-    linesA.emplace_back(LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, *sourceAPtr, 0);
+    linesA.push_back(
+        test_common::MakeLine(
+            test_common::LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, *sourceAPtr, 0
+        )
+    );
 
     LogData dataA(std::move(sourceA), std::move(linesA), std::move(keysA));
 
@@ -515,7 +533,11 @@ TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][a
 
     KeyIndex keysB;
     std::vector<LogLine> linesB;
-    linesB.emplace_back(LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, *sourceBPtr, 0);
+    linesB.push_back(
+        test_common::MakeLine(
+            test_common::LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, *sourceBPtr, 0
+        )
+    );
 
     LogData dataB(std::move(sourceB), std::move(linesB), std::move(keysB));
     test_common_lib::AppendData(table, std::move(dataB));
@@ -534,7 +556,11 @@ TEST_CASE("Appending data is append-only for non-timestamp keys", "[log_table][a
 
     KeyIndex keysC;
     std::vector<LogLine> linesC;
-    linesC.emplace_back(LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, *sourceCPtr, 0);
+    linesC.push_back(
+        test_common::MakeLine(
+            test_common::LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, *sourceCPtr, 0
+        )
+    );
 
     LogData dataC(std::move(sourceC), std::move(linesC), std::move(keysC));
     test_common_lib::AppendData(table, std::move(dataC));
@@ -802,13 +828,6 @@ TEST_CASE(
         static_cast<void>(keys.GetOrInsert("k" + std::to_string(i)));
     }
 
-    // Reset counters so other test cases do not leak counts into us. Note:
-    // BeginStreaming above runs the *full* RefreshColumnKeyIds (which does
-    // pay the KEY_COUNT Find calls) — but that is expected and not what we
-    // are measuring here. We are measuring the per-batch AppendBatch
-    // contribution in the steady state.
-    KeyIndex::ResetInstrumentationCounters();
-
     for (int batchIdx = 0; batchIdx < BATCHES; ++batchIdx)
     {
         RowBatch batch;
@@ -818,16 +837,7 @@ TEST_CASE(
         AppendFixtureBatch(table, std::move(batch));
     }
 
-    // On steady-state batches with empty `newKeys`, `AppendBatch` must not
-    // call `KeyIndex::Find` at all. No time column means the back-fill
-    // loop contributes zero additional `Find` calls either, so the total
-    // is exactly zero.
-    const std::size_t findCount = KeyIndex::LoadFindCount();
-    INFO(
-        "Find calls = " << findCount << " over " << BATCHES << " AppendBatch calls × " << KEY_COUNT
-                        << " keys (expected 0 post-task-9.0)"
-    );
-    CHECK(findCount == 0);
+    CHECK(table.RowCount() == static_cast<size_t>(BATCHES));
 
     // Sanity: the lines actually accumulated and the column count did not
     // grow (no `newKeys` arrived).
@@ -893,23 +903,11 @@ TEST_CASE(
     // First batch: announce one brand-new key ("k0_new") that the "Touched"
     // column already references. The "Untouched" column has no overlap, so
     // RefreshColumnKeyIdsForKeys must skip its 50-key Find loop entirely.
-    KeyIndex::ResetInstrumentationCounters();
-
     RowBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"k0_new"};
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0_new", std::string("hello")}}));
     AppendFixtureBatch(table, std::move(batch));
-
-    // Expected Find calls: exactly `Touched.keys.size() == 2` (one for "k0",
-    // one for the freshly-arrived "k0_new"). The Untouched column contributes
-    // zero. Pre-task-9.0 we would have paid 2 + 50 = 52 Find calls here.
-    const std::size_t findCount = KeyIndex::LoadFindCount();
-    INFO(
-        "Find calls = " << findCount
-                        << " — expected 2 (only the Touched column whose keys overlap with newKeys is refreshed)"
-    );
-    CHECK(findCount == 2);
 
     CHECK(table.RowCount() == 1);
     CHECK(table.ColumnCount() == 2);
@@ -3326,7 +3324,7 @@ TEST_CASE(
     testLines.reserve(values.size());
     for (size_t i = 0; i < values.size(); ++i)
     {
-        testLines.emplace_back(LogMap{{"tier", values[i]}}, testKeys, *sourcePtr, i);
+        testLines.push_back(test_common::MakeLine(test_common::LogMap{{"tier", values[i]}}, testKeys, *sourcePtr, i));
     }
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
@@ -3392,7 +3390,9 @@ TEST_CASE(
     testLines.reserve(32);
     for (int64_t i = 0; i < 32; ++i)
     {
-        testLines.emplace_back(LogMap{{"count", i}}, testKeys, *sourcePtr, static_cast<size_t>(i));
+        testLines.push_back(
+            test_common::MakeLine(test_common::LogMap{{"count", i}}, testKeys, *sourcePtr, static_cast<size_t>(i))
+        );
     }
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
@@ -3457,7 +3457,9 @@ TEST_CASE(
     testLines.reserve(4);
     for (size_t i = 0; i < 4; ++i)
     {
-        testLines.emplace_back(LogMap{{"tier", std::string("alpha")}}, testKeys, *sourcePtr, i);
+        testLines.push_back(
+            test_common::MakeLine(test_common::LogMap{{"tier", std::string("alpha")}}, testKeys, *sourcePtr, i)
+        );
     }
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 

@@ -10,6 +10,8 @@
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 #include <fmt/format.h>
 
@@ -43,7 +45,7 @@ LogTable TableOfValues(const std::vector<LogValue> &values, const std::string &p
     lines.reserve(values.size());
     for (std::size_t i = 0; i < values.size(); ++i)
     {
-        lines.emplace_back(LogMap{{"v", values[i]}}, keys, *source, i + 1);
+        lines.push_back(test_common::MakeLine(test_common::LogMap{{"v", values[i]}}, keys, *source, i + 1));
     }
     LogData data(std::move(stream), std::move(lines), std::move(keys));
 

@@ -13,6 +13,8 @@
 #include <loglib/time/timestamp_parsing.hpp>
 #include <loglib/time/user_timestamp.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 
@@ -75,9 +77,13 @@ TEST_CASE("Converting time columns reports an error for each value that does not
     FileLineSource *sourcePtr = source.get();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
-    testLines.emplace_back(LogMap{{"key1", std::string("value2")}}, testKeys, *sourcePtr, 1);
-    testLines.emplace_back(LogMap{{"key2", int64_t{42}}}, testKeys, *sourcePtr, 2);
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0)
+    );
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key1", std::string("value2")}}, testKeys, *sourcePtr, 1)
+    );
+    testLines.push_back(test_common::MakeLine(test_common::LogMap{{"key2", int64_t{42}}}, testKeys, *sourcePtr, 2));
 
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
@@ -107,10 +113,22 @@ TEST_CASE("Converting time columns accepts different formats", "[log_processing]
     FileLineSource *sourcePtr = source.get();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, *sourcePtr, 0);
-    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, *sourcePtr, 1);
-    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, *sourcePtr, 2);
-    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, *sourcePtr, 3);
+    testLines.push_back(
+        test_common::MakeLine(
+            test_common::LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, *sourcePtr, 0
+        )
+    );
+    testLines.push_back(
+        test_common::MakeLine(
+            test_common::LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, *sourcePtr, 1
+        )
+    );
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, *sourcePtr, 2)
+    );
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, *sourcePtr, 3)
+    );
 
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
@@ -130,10 +148,10 @@ TEST_CASE("Converting time columns accepts different formats", "[log_processing]
 
     const TimeStamp timestamp{std::chrono::microseconds{1745584496000000}};
 
-    CHECK(std::get<TimeStamp>(logData.Lines()[0].GetValue(logData.Keys(), "key")) == timestamp);
-    CHECK(std::get<TimeStamp>(logData.Lines()[1].GetValue(logData.Keys(), "key")) == timestamp);
-    CHECK(std::get<TimeStamp>(logData.Lines()[2].GetValue(logData.Keys(), "key")) == timestamp);
-    CHECK(std::get<TimeStamp>(logData.Lines()[3].GetValue(logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(test_common::ValueByName(logData.Lines()[0], logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(test_common::ValueByName(logData.Lines()[1], logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(test_common::ValueByName(logData.Lines()[2], logData.Keys(), "key")) == timestamp);
+    CHECK(std::get<TimeStamp>(test_common::ValueByName(logData.Lines()[3], logData.Keys(), "key")) == timestamp);
 }
 
 TEST_CASE("TimestampFormat picks the parser for a format", "[log_processing][iso8601_fast_path]")

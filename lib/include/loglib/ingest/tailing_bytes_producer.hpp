@@ -25,7 +25,8 @@ namespace loglib
 namespace internal
 {
 class TailingBytesProducerImpl; // pimpl forward decl
-}
+struct TailingBytesProducerTestAccess;
+} // namespace internal
 
 /**
  * @brief A BytesProducer that follows a file while it is being written.
@@ -134,23 +135,15 @@ public:
 
     void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
-    /**
-     * @brief How many rotations the worker has seen. The rotation callback fires less often when rotations are merged,
-     * which tests check with this count.
-     */
-    [[nodiscard]] size_t RotationCount() const noexcept;
-
-    /**
-     * @brief How many passes the worker has finished. A pass checks for rotation and reads what is new. A caller that
-     * changed the file and then saw the count rise by two knows the worker has looked at the file since the change.
-     * Tests use this to wait for the worker and to wait out a known number of passes.
-     */
-    [[nodiscard]] size_t PollCount() const noexcept;
-
     /** @brief How many bytes were dropped from lines longer than Options::maxLineBytes. */
     [[nodiscard]] size_t DroppedByteCount() const noexcept override;
 
 private:
+    friend struct internal::TailingBytesProducerTestAccess;
+
+    [[nodiscard]] size_t RotationCount() const noexcept;
+    [[nodiscard]] size_t PollCount() const noexcept;
+
     std::unique_ptr<internal::TailingBytesProducerImpl> mImpl;
 };
 

@@ -7,13 +7,17 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
+
+#include <chrono>
 
 using namespace loglib;
 
 TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]")
 {
-    const LogMap map{
+    const test_common::LogMap map{
         {"key1", std::string("value1")},
         {"key2", static_cast<uint64_t>(42)},
         {"key3", static_cast<int64_t>(-12)},
@@ -27,15 +31,15 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    const LogLine line(map, keys, *source, 1);
+    const LogLine line = test_common::MakeLine(map, keys, *source, 1);
 
-    REQUIRE(line.Values(keys).size() == map.size());
-    CHECK(std::get<std::string>(line.GetValue(keys, "key1")) == "value1");
-    CHECK(std::get<uint64_t>(line.GetValue(keys, "key2")) == 42);
-    CHECK(std::get<int64_t>(line.GetValue(keys, "key3")) == -12);
-    CHECK(std::get<double>(line.GetValue(keys, "key4")) == Catch::Approx(3.14));
-    CHECK(std::get<bool>(line.GetValue(keys, "key5")) == true);
-    CHECK(std::holds_alternative<std::monostate>(line.GetValue(keys, "key6")));
+    REQUIRE(test_common::ToMap(line, keys).size() == map.size());
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "key1")) == "value1");
+    CHECK(std::get<uint64_t>(test_common::ValueByName(line, keys, "key2")) == 42);
+    CHECK(std::get<int64_t>(test_common::ValueByName(line, keys, "key3")) == -12);
+    CHECK(std::get<double>(test_common::ValueByName(line, keys, "key4")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(test_common::ValueByName(line, keys, "key5")) == true);
+    CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(line, keys, "key6")));
 
     REQUIRE(line.Source() != nullptr);
     // `TestLogFile` resolves the fixture under a per-process scratch dir, so
@@ -45,7 +49,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(line.LineId() == 1);
     CHECK(line.Source()->RawLine(line.LineId()) == "efgh");
 
-    auto resultKeys = line.GetKeys(keys);
+    auto resultKeys = test_common::KeyNames(line, keys);
     REQUIRE(resultKeys.size() == map.size());
     CHECK(std::ranges::find(resultKeys, "key1") != resultKeys.end());
     CHECK(std::ranges::find(resultKeys, "key2") != resultKeys.end());
@@ -54,7 +58,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(std::ranges::find(resultKeys, "key5") != resultKeys.end());
     CHECK(std::ranges::find(resultKeys, "key6") != resultKeys.end());
 
-    const LogMap resultMap = line.Values(keys);
+    const test_common::LogMap resultMap = test_common::ToMap(line, keys);
 
     REQUIRE(resultMap.size() == map.size());
 
@@ -83,56 +87,56 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
 
 TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]")
 {
-    const LogMap emptyMap;
+    const test_common::LogMap emptyMap;
 
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    const LogLine emptyLine(emptyMap, keys, *source, 0);
+    const LogLine emptyLine = test_common::MakeLine(emptyMap, keys, *source, 0);
 
-    const auto resultKeys = emptyLine.GetKeys(keys);
+    const auto resultKeys = test_common::KeyNames(emptyLine, keys);
     CHECK(resultKeys.empty());
-    CHECK(emptyLine.Values(keys).empty());
+    CHECK(test_common::ToMap(emptyLine, keys).empty());
 }
 
 TEST_CASE("LogLine returns monostate for empty and non-existent key", "[log_line]")
 {
-    const LogMap map{{"key1", std::string("value1")}, {"key2", static_cast<uint64_t>(42)}};
+    const test_common::LogMap map{{"key1", std::string("value1")}, {"key2", static_cast<uint64_t>(42)}};
 
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    const LogLine line(map, keys, *source, 0);
+    const LogLine line = test_common::MakeLine(map, keys, *source, 0);
 
-    CHECK(std::holds_alternative<std::monostate>(line.GetValue(keys, "")));
-    CHECK(std::holds_alternative<std::monostate>(line.GetValue(keys, "non_existent_key")));
+    CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(line, keys, "")));
+    CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(line, keys, "non_existent_key")));
 
-    CHECK(std::get<std::string>(line.GetValue(keys, "key1")) == "value1");
-    CHECK(std::get<uint64_t>(line.GetValue(keys, "key2")) == 42);
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "key1")) == "value1");
+    CHECK(std::get<uint64_t>(test_common::ValueByName(line, keys, "key2")) == 42);
 }
 
 TEST_CASE("Set and update values", "[log_line]")
 {
-    const LogMap map{{"existingKey", std::string("initialValue")}};
+    const test_common::LogMap map{{"existingKey", std::string("initialValue")}};
 
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine line(map, keys, *source, 0);
+    LogLine line = test_common::MakeLine(map, keys, *source, 0);
 
-    CHECK(std::get<std::string>(line.GetValue(keys, "existingKey")) == "initialValue");
-    CHECK(line.Values(keys).size() == 1);
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "existingKey")) == "initialValue");
+    CHECK(test_common::ToMap(line, keys).size() == 1);
 
     const std::string updatedValue = "updatedValue";
     line.SetValue(keys.Find("existingKey"), updatedValue);
 
-    CHECK(std::get<std::string>(line.GetValue(keys, "existingKey")) == updatedValue);
-    CHECK(line.Values(keys).size() == 1);
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "existingKey")) == updatedValue);
+    CHECK(test_common::ToMap(line, keys).size() == 1);
 
-    auto resultKeys = line.GetKeys(keys);
+    auto resultKeys = test_common::KeyNames(line, keys);
     REQUIRE(resultKeys.size() == 1);
     CHECK(resultKeys[0] == "existingKey");
 
@@ -141,10 +145,10 @@ TEST_CASE("Set and update values", "[log_line]")
     const std::string newValue = "newValue";
     line.SetValue(keys.GetOrInsert(newKey), newValue);
 
-    REQUIRE(line.Values(keys).size() == 2);
-    CHECK(std::get<std::string>(line.GetValue(keys, newKey)) == newValue);
+    REQUIRE(test_common::ToMap(line, keys).size() == 2);
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, newKey)) == newValue);
 
-    resultKeys = line.GetKeys(keys);
+    resultKeys = test_common::KeyNames(line, keys);
     REQUIRE(resultKeys.size() == 2);
     CHECK(std::ranges::find(resultKeys, newKey) != resultKeys.end());
 }
@@ -299,19 +303,19 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
 
     // Fast vs. slow path must round-trip the same alternative.
     const LogValue fastView = line.GetValue(viewKey);
-    const LogValue slowView = line.GetValue(keys, "view-key");
+    const LogValue slowView = test_common::ValueByName(line, keys, "view-key");
     REQUIRE(LogValueEquivalent(fastView, slowView));
     REQUIRE(AsStringView(fastView).has_value());
     CHECK(*AsStringView(fastView) == "view-bytes");
 
     const LogValue fastOwned = line.GetValue(ownedKey);
-    const LogValue slowOwned = line.GetValue(keys, "owned-key");
+    const LogValue slowOwned = test_common::ValueByName(line, keys, "owned-key");
     REQUIRE(LogValueEquivalent(fastOwned, slowOwned));
     REQUIRE(AsStringView(fastOwned).has_value());
     CHECK(*AsStringView(fastOwned) == "owned-bytes");
 
     const LogValue fastInt = line.GetValue(intKey);
-    const LogValue slowInt = line.GetValue(keys, "int-key");
+    const LogValue slowInt = test_common::ValueByName(line, keys, "int-key");
     REQUIRE(std::holds_alternative<int64_t>(fastInt));
     REQUIRE(std::holds_alternative<int64_t>(slowInt));
     CHECK(std::get<int64_t>(fastInt) == 99);
@@ -336,7 +340,7 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
     source->SetEnumDictionaries(&registry);
 
     const KeyId messageKey = keys.GetOrInsert("message");
-    LogLine line({}, keys, *source, 1);
+    LogLine line = test_common::MakeLine({}, keys, *source, 1);
     line.SetValue(levelKey, LogValue{std::string("placeholder")});
     *line.FindCompactMutable(levelKey) = CompactLogValue::MakeDictRef(warnId).WithKey(levelKey);
     line.SetValue(messageKey, LogValue{std::string("hello")});
@@ -370,7 +374,7 @@ TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / Owned
 
     source->SetEnumDictionaries(&registry);
 
-    LogLine line({}, keys, *source, 1);
+    LogLine line = test_common::MakeLine({}, keys, *source, 1);
     line.SetValue(enumKey, LogValue{std::string("placeholder")});
     *line.FindCompactMutable(enumKey) = CompactLogValue::MakeDictRef(vid).WithKey(enumKey);
     line.SetValue(stringKey, LogValue{std::string("hello")});
@@ -443,4 +447,27 @@ TEST_CASE("Rows that borrow their fields from an arena behave like other rows", 
         assigned = std::move(moved);
         CHECK(std::get<int64_t>(assigned.GetValue(third)) == -5);
     }
+}
+
+TEST_CASE("The test support helpers give back the map a line was made from", "[log_line][test_common]")
+{
+    const test_common::LogMap map{
+        {"text", std::string("hello")},
+        {"unsigned", static_cast<uint64_t>(42)},
+        {"signed", static_cast<int64_t>(-12)},
+        {"real", 2.5},
+        {"flag", false},
+        {"when", TimeStamp{std::chrono::microseconds{1'700'000'000'000'000}}}
+    };
+
+    const TestLogFile testLogFile;
+    testLogFile.Write("abcd\n");
+    auto source = testLogFile.CreateFileLineSource();
+
+    KeyIndex keys;
+    const LogLine line = test_common::MakeLine(map, keys, *source, 0);
+
+    CHECK(test_common::ToMap(line, keys) == map);
+    CHECK(test_common::KeyNames(line, keys).size() == map.size());
+    CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(line, keys, "missing")));
 }

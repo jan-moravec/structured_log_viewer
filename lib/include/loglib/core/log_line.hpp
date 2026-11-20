@@ -69,13 +69,6 @@ public:
         std::span<const loglib::CompactLogValue> sortedValues, FieldArena &arena, LineSource &source, size_t lineId
     );
 
-    /**
-     * @brief Builds a row from a map, adding unknown keys to keys. Slow, meant for tests.
-     *
-     * The row does not keep keys. Pass the same index to the name-keyed accessors later.
-     */
-    LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId);
-
     LogLine(const LogLine &) = delete;
     LogLine &operator=(const LogLine &) = delete;
 
@@ -85,14 +78,6 @@ public:
 
     /** @brief The value of a field, or std::monostate if the row has none. */
     LogValue GetValue(KeyId id) const;
-
-    /**
-     * @brief The value of a field by key name, or std::monostate if the key is unknown or the row has no such field.
-     *
-     * Slow, because it looks the name up in keys. It is meant for tests and debugging. The index must be the one that
-     * the key ids of the row come from.
-     */
-    LogValue GetValue(const KeyIndex &keys, std::string_view key) const;
 
     /**
      * @brief Sets a field. The value should not be a string_view, which could dangle: debug builds assert on it. Use
@@ -107,25 +92,11 @@ public:
      */
     void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
-    /**
-     * @brief The names of the fields of the row, sorted by key id.
-     *
-     * Slow, meant for tests and debugging. Debug builds assert that every key id is below the size of keys.
-     */
-    std::vector<std::string> GetKeys(const KeyIndex &keys) const;
-
     /** @brief All fields as key and value pairs, sorted by key. Slow. */
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
 
     /** @brief The compact storage itself, for code that walks every field on a hot path. */
     std::span<const loglib::CompactLogValue> CompactValues() const noexcept;
-
-    /**
-     * @brief All fields by key name.
-     *
-     * Slow, meant for tests and debugging. Debug builds assert that every key id is below the size of keys.
-     */
-    LogMap Values(const KeyIndex &keys) const;
 
     /** @brief The source that holds this row's bytes. Never null. */
     [[nodiscard]] LineSource *Source() const noexcept;

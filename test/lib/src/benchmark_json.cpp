@@ -21,6 +21,7 @@
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/log_generator.hpp>
+#include <test_common/log_line_debug.hpp>
 
 #include <benchmark/benchmark.h>
 
@@ -289,7 +290,7 @@ void RegisterLookupBenchmarks()
             std::size_t found = 0;
             for (const std::string &key : LOOKUP_KEYS)
             {
-                found += !std::holds_alternative<std::monostate>(line.GetValue(data.Keys(), key));
+                found += !std::holds_alternative<std::monostate>(test_common::ValueByName(line, data.Keys(), key));
             }
             return found;
         });

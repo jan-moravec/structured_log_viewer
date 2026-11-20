@@ -122,11 +122,6 @@ target_link_libraries(
         zstd::libzstd
 )
 
-# Enable KeyIndex call-count instrumentation; PUBLIC so the test TU and
-# `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
-# at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
-target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
-
 # The version the library must report, taken from the same project() call that sets it.
 target_compile_definitions(tests PRIVATE "LOGLIB_TEST_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
 

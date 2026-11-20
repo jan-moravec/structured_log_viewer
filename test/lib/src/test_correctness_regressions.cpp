@@ -10,6 +10,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
+#include <loglib/ingest/internal/tailing_bytes_producer_test_access.hpp>
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/session_bundle.hpp>
@@ -26,6 +27,7 @@
 
 #include <loglib/table/log_table.hpp>
 
+#include <test_common/log_line_debug.hpp>
 #include <test_common/temp_dir.hpp>
 #include <test_common/wait.hpp>
 
@@ -50,6 +52,7 @@
 #include <vector>
 
 using namespace loglib;
+using loglib::internal::TailingBytesProducerTestAccess;
 using namespace std::chrono_literals;
 
 namespace
@@ -285,7 +288,7 @@ TEST_CASE("JSON integers past 64 bits keep their text", "[json_parser][malformed
     const ParseResult result = ParseText(JsonParser{}, "{\"id\":123456789012345678901234567890}\n");
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
-    const LogValue value = result.data.Lines()[0].GetValue(result.data.Keys(), "id");
+    const LogValue value = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "id");
     const auto text = AsStringView(value);
     REQUIRE(text.has_value());
     CHECK(*text == "123456789012345678901234567890");
@@ -299,7 +302,7 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
     REQUIRE(result.data.Lines().size() == 1);
     const LogLine &line = result.data.Lines()[0];
     const auto text = [&line, &result](const char *key) {
-        const LogValue value = line.GetValue(result.data.Keys(), key);
+        const LogValue value = test_common::ValueByName(line, result.data.Keys(), key);
         return std::string(AsStringView(value).value_or("<not a string>"));
     };
     CHECK(text("zip") == "007");
@@ -307,9 +310,9 @@ TEST_CASE("Bare scalars that a number cannot represent stay strings", "[logfmt_p
     CHECK(text("neg") == "-007");
     CHECK(text("small") == "-99999999999999999999");
     CHECK(text("plus") == "+5");
-    CHECK(std::holds_alternative<uint64_t>(line.GetValue(result.data.Keys(), "n")));
-    CHECK(std::holds_alternative<double>(line.GetValue(result.data.Keys(), "f")));
-    CHECK(std::holds_alternative<uint64_t>(line.GetValue(result.data.Keys(), "z")));
+    CHECK(std::holds_alternative<uint64_t>(test_common::ValueByName(line, result.data.Keys(), "n")));
+    CHECK(std::holds_alternative<double>(test_common::ValueByName(line, result.data.Keys(), "f")));
+    CHECK(std::holds_alternative<uint64_t>(test_common::ValueByName(line, result.data.Keys(), "z")));
 }
 
 TEST_CASE("Logfmt strips a leading BOM", "[logfmt_parser][bom]")
@@ -612,12 +615,12 @@ TEST_CASE(
     // With nothing consumed, the drain stays parked and rotation cannot finish. The parked worker finishes no pass,
     // so nothing observable marks the end of the quiet period and time is the only signal.
     test_common::SleepToProveAbsence(100ms);
-    CHECK(producer.RotationCount() == 0);
+    CHECK(TailingBytesProducerTestAccess::RotationCount(producer) == 0);
 
     const std::string expected = "start\n" + appended + "after\n";
     REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).size() >= expected.size(); }, 60s));
     CHECK(collected == expected);
-    CHECK(producer.RotationCount() >= 1);
+    CHECK(TailingBytesProducerTestAccess::RotationCount(producer) >= 1);
     producer.Stop();
 }
 
@@ -641,13 +644,13 @@ TEST_CASE("Tailing keeps a partial line while a rotated path is missing", "[Tail
     };
     // Each step waits for two worker passes, so the worker has read the file after the step and before the next one.
     append(path, "first half");
-    REQUIRE(test_common::WaitForPasses(producer, 2));
+    REQUIRE(test_common::WaitForPasses([&] { return TailingBytesProducerTestAccess::PollCount(producer); }, 2));
 
     // The worker sees the path missing while its handle can still read the file.
     std::filesystem::rename(path, rotated);
-    REQUIRE(test_common::WaitForPasses(producer, 2));
+    REQUIRE(test_common::WaitForPasses([&] { return TailingBytesProducerTestAccess::PollCount(producer); }, 2));
     append(rotated, ", second half\n");
-    REQUIRE(test_common::WaitForPasses(producer, 2));
+    REQUIRE(test_common::WaitForPasses([&] { return TailingBytesProducerTestAccess::PollCount(producer); }, 2));
     (void)dir.Write("app.log", "after\n");
 
     REQUIRE(WaitUntil([&] { return DrainTo(producer, collected).contains("after\n"); }, 60s));

@@ -24,6 +24,8 @@
 #include <loglib/time/time_zone_context.hpp>
 #include <loglib/time/timestamp_parsing.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
@@ -125,7 +127,7 @@ std::int64_t ParsedTimestampMicros(const std::string &content, const ParserOptio
     JsonParser{}.Parse(*sourcePtr, sink, options);
     const LogData data = sink.TakeData();
     REQUIRE(data.Lines().size() >= 1);
-    const LogValue value = data.Lines()[0].GetValue(data.Keys(), "ts");
+    const LogValue value = test_common::ValueByName(data.Lines()[0], data.Keys(), "ts");
     const auto *stamp = std::get_if<TimeStamp>(&value);
     REQUIRE(stamp != nullptr);
     return stamp->time_since_epoch().count();
@@ -194,8 +196,13 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
         FileLineSource *sourcePtr = source.get();
         KeyIndex keys;
         std::vector<LogLine> lines;
-        lines.emplace_back(
-            LogMap{{"ts", TimeStamp{std::chrono::microseconds{Micros(2026, 1, 15, 12, 0, 0)}}}}, keys, *sourcePtr, 0
+        lines.push_back(
+            test_common::MakeLine(
+                test_common::LogMap{{"ts", TimeStamp{std::chrono::microseconds{Micros(2026, 1, 15, 12, 0, 0)}}}},
+                keys,
+                *sourcePtr,
+                0
+            )
         );
         LogData data(std::move(source), std::move(lines), std::move(keys));
         ColumnLayout manager;
@@ -295,7 +302,7 @@ TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole p
         std::vector<std::int64_t> micros;
         for (const LogLine &line : data.Lines())
         {
-            const LogValue value = line.GetValue(data.Keys(), "ts");
+            const LogValue value = test_common::ValueByName(line, data.Keys(), "ts");
             const auto *stamp = std::get_if<TimeStamp>(&value);
             REQUIRE(stamp != nullptr);
             micros.push_back(stamp->time_since_epoch().count());
@@ -363,7 +370,7 @@ TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's b
         REQUIRE(lines.size() == 3);
         for (std::size_t i = 0; i < lines.size(); ++i)
         {
-            const LogValue value = lines[i]->GetValue(sink.Keys(), "n");
+            const LogValue value = test_common::ValueByName(*lines[i], sink.Keys(), "n");
             const auto *number = std::get_if<std::int64_t>(&value);
             REQUIRE(number != nullptr);
             CHECK(*number == static_cast<std::int64_t>(i + 1));
@@ -382,8 +389,8 @@ TEST_CASE("StreamLineSource hands unread bytes back in front of the producer's b
 
         const auto lines = sink.Lines();
         REQUIRE(lines.size() == 3);
-        const LogValue first = lines[0]->GetValue(sink.Keys(), "n");
-        const LogValue last = lines[2]->GetValue(sink.Keys(), "n");
+        const LogValue first = test_common::ValueByName(*lines[0], sink.Keys(), "n");
+        const LogValue last = test_common::ValueByName(*lines[2], sink.Keys(), "n");
         REQUIRE(std::get_if<std::int64_t>(&first) != nullptr);
         REQUIRE(std::get_if<std::int64_t>(&last) != nullptr);
         CHECK(*std::get_if<std::int64_t>(&first) == 1);
@@ -513,7 +520,7 @@ TEST_CASE("A print format that no value accepts is replaced on load and never th
         FileLineSource *sourcePtr = source.get();
         KeyIndex keys;
         std::vector<LogLine> lines;
-        lines.emplace_back(LogMap{{"ok", 1.5}}, keys, *sourcePtr, 0);
+        lines.push_back(test_common::MakeLine(test_common::LogMap{{"ok", 1.5}}, keys, *sourcePtr, 0));
         LogData data(std::move(source), std::move(lines), std::move(keys));
         loglib::LogTable table = test_common_lib::TableFromData(std::move(data), std::move(manager));
         REQUIRE(table.Layout().Columns()[1].printFormat == "{:d}");
@@ -648,7 +655,7 @@ struct TableFeedingSink final : LogParseSink
 
 std::int64_t TimestampMicros(const LogData &data, std::size_t row)
 {
-    const LogValue value = data.Lines()[row].GetValue(data.Keys(), "ts");
+    const LogValue value = test_common::ValueByName(data.Lines()[row], data.Keys(), "ts");
     const auto *stamp = std::get_if<TimeStamp>(&value);
     REQUIRE(stamp != nullptr);
     return stamp->time_since_epoch().count();
@@ -686,7 +693,7 @@ TEST_CASE(
     const auto lines = sink.Lines();
     REQUIRE(lines.size() == 2 * CLOCK_TEST_LINES_PER_BATCH);
     const auto micros = [&](std::size_t row) {
-        const LogValue value = lines[row]->GetValue(sink.Keys(), "ts");
+        const LogValue value = test_common::ValueByName(*lines[row], sink.Keys(), "ts");
         const auto *stamp = std::get_if<TimeStamp>(&value);
         REQUIRE(stamp != nullptr);
         return stamp->time_since_epoch().count();

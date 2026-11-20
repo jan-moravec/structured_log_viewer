@@ -12,6 +12,8 @@
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/log_configuration.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
@@ -118,10 +120,22 @@ TEST_CASE("RegexParser parses well-formed lines [regex]", "[regex_parser]")
     auto result = ParseSource(parser, MemorySource("info hello\nerror boom\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
-    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "message")) == std::string_view{"hello"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "level")) == std::string_view{"error"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "message")) == std::string_view{"boom"});
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "level")) ==
+        std::string_view{"info"}
+    );
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "message")) ==
+        std::string_view{"hello"}
+    );
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "level")) ==
+        std::string_view{"error"}
+    );
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "message")) ==
+        std::string_view{"boom"}
+    );
 }
 
 TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
@@ -141,14 +155,14 @@ TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(std::get<std::uint64_t>(row0.GetValue(result.data.Keys(), "code")) == 200U);
-    CHECK(std::get<double>(row0.GetValue(result.data.Keys(), "ratio")) == Catch::Approx(0.75));
-    CHECK(std::get<bool>(row0.GetValue(result.data.Keys(), "ok")) == true);
+    CHECK(std::get<std::uint64_t>(test_common::ValueByName(row0, result.data.Keys(), "code")) == 200U);
+    CHECK(std::get<double>(test_common::ValueByName(row0, result.data.Keys(), "ratio")) == Catch::Approx(0.75));
+    CHECK(std::get<bool>(test_common::ValueByName(row0, result.data.Keys(), "ok")) == true);
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "code")) == 404U);
-    CHECK(std::get<double>(row1.GetValue(result.data.Keys(), "ratio")) == Catch::Approx(-1.5));
-    CHECK(std::get<bool>(row1.GetValue(result.data.Keys(), "ok")) == false);
+    CHECK(std::get<std::uint64_t>(test_common::ValueByName(row1, result.data.Keys(), "code")) == 404U);
+    CHECK(std::get<double>(test_common::ValueByName(row1, result.data.Keys(), "ratio")) == Catch::Approx(-1.5));
+    CHECK(std::get<bool>(test_common::ValueByName(row1, result.data.Keys(), "ok")) == false);
 }
 
 TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_parser]")
@@ -209,13 +223,13 @@ TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
-    CHECK(std::holds_alternative<std::monostate>(row0.GetValue(result.data.Keys(), "pid")));
-    CHECK_FALSE(row0.Values(result.data.Keys()).contains("pid"));
+    CHECK(AsStringView(test_common::ValueByName(row0, result.data.Keys(), "program")) == std::string_view{"systemd"});
+    CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(row0, result.data.Keys(), "pid")));
+    CHECK_FALSE(test_common::ToMap(row0, result.data.Keys()).contains("pid"));
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "program")) == std::string_view{"configd"});
-    CHECK(std::get<std::uint64_t>(row1.GetValue(result.data.Keys(), "pid")) == 17U);
+    CHECK(AsStringView(test_common::ValueByName(row1, result.data.Keys(), "program")) == std::string_view{"configd"});
+    CHECK(std::get<std::uint64_t>(test_common::ValueByName(row1, result.data.Keys(), "pid")) == 17U);
 }
 
 TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template [regex]", "[regex_parser]")
@@ -233,11 +247,25 @@ TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template 
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     // Columns from the syslog template.
-    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-a"});
-    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-b"});
-    CHECK(AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "program")) == std::string_view{"CRON"});
-    CHECK(std::get<std::uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "pid")) == 1234U);
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "hostname")) ==
+        std::string_view{"host-a"}
+    );
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "program")) ==
+        std::string_view{"systemd"}
+    );
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "hostname")) ==
+        std::string_view{"host-b"}
+    );
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "program")) ==
+        std::string_view{"CRON"}
+    );
+    CHECK(
+        std::get<std::uint64_t>(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "pid")) == 1234U
+    );
 }
 
 TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]")
@@ -258,7 +286,10 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     // If Regex had won, there'd be no `level` JSON column.
-    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "level")) ==
+        std::string_view{"info"}
+    );
 }
 
 TEST_CASE("RegexParser captures named groups as values [regex]", "[regex_parser]")
@@ -270,8 +301,10 @@ TEST_CASE("RegexParser captures named groups as values [regex]", "[regex_parser]
     REQUIRE(result.data.Lines().size() == 1);
 
     const auto &line = result.data.Lines()[0];
-    CHECK(AsStringView(line.GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
-    CHECK(AsStringView(line.GetValue(result.data.Keys(), "message")) == std::string_view{"hello world"});
+    CHECK(AsStringView(test_common::ValueByName(line, result.data.Keys(), "level")) == std::string_view{"info"});
+    CHECK(
+        AsStringView(test_common::ValueByName(line, result.data.Keys(), "message")) == std::string_view{"hello world"}
+    );
 }
 
 TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[regex_parser]")
@@ -296,7 +329,10 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
     auto result = ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "hostname")) == std::string_view{"host-a"});
+    CHECK(
+        AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "hostname")) ==
+        std::string_view{"host-a"}
+    );
 }
 
 TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[regex_parser]")
@@ -1070,14 +1106,20 @@ TEST_CASE("RegexParser leaves optional groups that did not match empty [regex]",
     REQUIRE(result.data.Lines().size() == 2);
 
     const auto &row0 = result.data.Lines()[0];
-    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "program")) == std::string_view{"systemd"});
-    CHECK(AsStringView(row0.GetValue(result.data.Keys(), "message")) == std::string_view{"System starting"});
-    CHECK(std::holds_alternative<std::monostate>(row0.GetValue(result.data.Keys(), "pid")));
+    CHECK(AsStringView(test_common::ValueByName(row0, result.data.Keys(), "program")) == std::string_view{"systemd"});
+    CHECK(
+        AsStringView(test_common::ValueByName(row0, result.data.Keys(), "message")) ==
+        std::string_view{"System starting"}
+    );
+    CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(row0, result.data.Keys(), "pid")));
 
     const auto &row1 = result.data.Lines()[1];
-    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "program")) == std::string_view{"configd"});
-    CHECK(AsStringView(row1.GetValue(result.data.Keys(), "message")) == std::string_view{"network changed"});
-    CHECK_FALSE(std::holds_alternative<std::monostate>(row1.GetValue(result.data.Keys(), "pid")));
+    CHECK(AsStringView(test_common::ValueByName(row1, result.data.Keys(), "program")) == std::string_view{"configd"});
+    CHECK(
+        AsStringView(test_common::ValueByName(row1, result.data.Keys(), "message")) ==
+        std::string_view{"network changed"}
+    );
+    CHECK_FALSE(std::holds_alternative<std::monostate>(test_common::ValueByName(row1, result.data.Keys(), "pid")));
 }
 
 TEST_CASE(
@@ -1314,7 +1356,7 @@ TEST_CASE(
         {
             for (auto &l : b.lines)
             {
-                const auto value = l.GetValue(sink.Keys(), "message");
+                const auto value = test_common::ValueByName(l, sink.Keys(), "message");
                 const auto m = AsStringView(value);
                 REQUIRE(m.has_value());
                 joined.emplace_back(*m);
