@@ -981,9 +981,9 @@ public:
      * (`%FT%T`, `%F %T`), and the relative shortcuts `-Nh` /
      * `-Nm`. Naive inputs (no `%z` / `%Z` in the winning format)
      * are shifted from the table's display time zone to UTC before
-     * the search. Lands
-     * on the first matching row via `FindFirstRowAtOrAfter` +
-     * `SelectSourceRow`, or status-bar-hints if none qualifies.
+     * the search. Lands on the first matching row via
+     * `FindFirstRowAtOrAfter` + `SelectSourceRow`, or
+     * status-bar-hints if none qualifies.
      */
     void GotoTimestamp();
 

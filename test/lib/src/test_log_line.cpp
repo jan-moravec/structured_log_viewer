@@ -23,7 +23,8 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
         {"key3", static_cast<int64_t>(-12)},
         {"key4", 3.14},
         {"key5", true},
-        {"key6", std::monostate()}
+        {"key6", std::monostate()},
+        {"key7", TimeStamp{std::chrono::microseconds{1'714'298'402'123'456}}}
     };
 
     const TestLogFile testLogFile;
@@ -40,6 +41,10 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(std::get<double>(test_common::ValueByName(line, keys, "key4")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(test_common::ValueByName(line, keys, "key5")) == true);
     CHECK(std::holds_alternative<std::monostate>(test_common::ValueByName(line, keys, "key6")));
+    CHECK(
+        std::get<TimeStamp>(test_common::ValueByName(line, keys, "key7")) ==
+        TimeStamp{std::chrono::microseconds{1'714'298'402'123'456}}
+    );
 
     REQUIRE(line.Source() != nullptr);
     // `TestLogFile` resolves the fixture under a per-process scratch dir, so
@@ -57,6 +62,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(std::ranges::find(resultKeys, "key4") != resultKeys.end());
     CHECK(std::ranges::find(resultKeys, "key5") != resultKeys.end());
     CHECK(std::ranges::find(resultKeys, "key6") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key7") != resultKeys.end());
 
     const test_common::LogMap resultMap = test_common::ToMap(line, keys);
 
@@ -85,7 +91,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     }
 }
 
-TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]")
+TEST_CASE("KeyNames and ToMap are empty for an empty LogLine", "[log_line]")
 {
     const test_common::LogMap emptyMap;
 
@@ -281,7 +287,7 @@ TEST_CASE("AsEpochMicroseconds matches the TimeRangeRowPredicate slot acceptance
 // Fast path (`GetValue(KeyId)` over the sorted-by-id flat vector) and slow
 // path (`GetValue(string)` routing through the back-pointer) must observe
 // the same value regardless of which alternative the parser chose.
-TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alternatives", "[log_line][helpers]")
+TEST_CASE("LogLine GetValue and ValueByName agree under both string alternatives", "[log_line][helpers]")
 {
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();

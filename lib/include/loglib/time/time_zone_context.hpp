@@ -120,9 +120,9 @@ public:
     /**
      * @brief Returns the range of local times around a time that share its UTC offset.
      *
-     * Inside the window, subtracting utcOffset gives the same result as LocalToUtc without a zone lookup,
-     * which makes converting many nearby times cheap. The window stays away from clock changes, so it is empty when the
-     * time is close to one.
+     * Inside the window, subtracting utcOffset gives the same result as LocalToUtc without a zone lookup, which makes
+     * converting many nearby times cheap. The window stays away from clock changes, so it is empty when the time is
+     * close to one.
      */
     [[nodiscard]] LocalOffsetWindow OffsetWindowAt(std::int64_t localMicroseconds) const;
 
