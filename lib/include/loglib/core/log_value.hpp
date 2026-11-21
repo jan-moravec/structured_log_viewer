@@ -14,7 +14,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <variant>
 
 namespace loglib
@@ -31,9 +30,6 @@ using TimeStamp = std::chrono::time_point<std::chrono::system_clock, std::chrono
  */
 using LogValue =
     std::variant<std::string_view, std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
-
-/** @brief A row as a map from key name to value. Slow, so use it for tests and debug output only. */
-using LogMap = std::unordered_map<std::string, LogValue>;
 
 /**
  * @brief Passed to LogLine::SetValue to promise that a string_view value outlives the row, for example by pointing

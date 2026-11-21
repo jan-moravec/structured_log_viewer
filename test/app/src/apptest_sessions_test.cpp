@@ -31,6 +31,8 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
@@ -55,8 +57,6 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -472,7 +472,7 @@ private slots:
 
         // Build a config with two leaves: a valid enum on `level`
         // and a string leaf whose column keys don't match any
-        // column (so `ResolveLeafColumnByKeys` returns -1). Serialise
+        // column (so `FindColumnByKeys` finds nothing). Serialise
         // via Glaze so the load path sees the same wire format
         // `Save` emits.
         (void)columnCount;

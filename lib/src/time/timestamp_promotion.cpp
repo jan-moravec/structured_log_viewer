@@ -3,7 +3,7 @@
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/time/user_timestamp.hpp"
+#include "loglib/time/time_input.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -93,7 +93,7 @@ std::int64_t LocalToUtc(std::int64_t localMicros, const TimeZoneContext &timeZon
         window = timeZone.OffsetWindowAt(localMicros);
         if (!window.Contains(localMicros))
         {
-            return timeZone.LocalMicrosecondsToUtc(localMicros);
+            return timeZone.LocalToUtc(localMicros);
         }
     }
     return localMicros - window.utcOffset;

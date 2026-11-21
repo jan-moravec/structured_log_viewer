@@ -335,8 +335,8 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
 
 // Heterogeneous-lookup unit test. Exercises the no-alloc fast path: a
 // `string_view` query (built from a stack `char` buffer) must succeed
-// without the caller materialising a `std::string`. The instrumentation
-// counters are reset at the top and read at the end.
+// without the caller materialising a `std::string`. Lookups by `string_view`, by C string and by `std::string` all find
+// the same key.
 TEST_CASE(
     "KeyIndex heterogeneous lookup never requires the caller to materialise a std::string", "[key_index][heterogeneous]"
 )
@@ -344,10 +344,6 @@ TEST_CASE(
     KeyIndex index;
     const KeyId alphaId = index.GetOrInsert("alpha");
     const KeyId betaId = index.GetOrInsert("beta");
-
-    // Counters are process-global; reset right before the measured calls so
-    // any other test interleaving does not leak count noise into us.
-    KeyIndex::ResetInstrumentationCounters();
 
     // Build the query as a string_view over a stack-allocated char buffer so
     // there is no chance of an implicit std::string ever being constructed
@@ -369,12 +365,8 @@ TEST_CASE(
     CHECK(index.GetOrInsert(betaView) == betaId);
     CHECK(index.Size() == 2);
 
-    // Counter assertions: 3 Find calls, 2 GetOrInsert calls. If the
-    // implementation regressed and a heterogeneous find path now constructs
-    // a std::string, this test still passes — the counter only proves the
-    // public API was exercised the expected number of times. The non-
-    // allocation contract itself is enforced by the `[allocations]`
-    // benchmark's `string_view` fast-path fraction staying green.
-    CHECK(KeyIndex::LoadFindCount() == 3);
-    CHECK(KeyIndex::LoadGetOrInsertCount() == 2);
+    // A C string and a std::string find the same keys as the string_view does.
+    CHECK(index.Find("alpha") == alphaId);
+    CHECK(index.Find(std::string("beta")) == betaId);
+    CHECK(index.GetOrInsert(std::string("alpha")) == alphaId);
 }

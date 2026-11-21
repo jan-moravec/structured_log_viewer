@@ -9,9 +9,9 @@
  */
 #pragma once
 
+#include "loglib/config/column.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/row_batch.hpp"
-#include "loglib/schema/column_schema.hpp"
 
 #include <vector>
 

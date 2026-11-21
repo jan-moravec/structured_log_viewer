@@ -241,7 +241,7 @@ std::optional<ContinuationMode> ParseContinuationMode(std::string_view name) noe
 
 RegexTemplate ParseRegexTemplate(std::string_view content)
 {
-    constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
+    constexpr auto OPTS = loglib::internal::JSON_FILE_OPTIONS;
 
     RegexTemplate parsed;
     const auto error = glz::read<OPTS>(parsed, content);
@@ -254,7 +254,7 @@ RegexTemplate ParseRegexTemplate(std::string_view content)
 
 std::string SerializeRegexTemplate(const RegexTemplate &tmpl)
 {
-    constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
+    constexpr auto OPTS = loglib::internal::JSON_FILE_OPTIONS;
 
     std::string json;
     const auto error = glz::write<OPTS>(tmpl, json);

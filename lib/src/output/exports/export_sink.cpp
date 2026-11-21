@@ -6,11 +6,9 @@
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
-#include <cstring>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 
 #ifdef _WIN32
@@ -26,44 +24,10 @@ namespace loglib::exports
 namespace
 {
 
-// Portable, thread-safe errno formatting. strerror is not
-// thread-safe on some libc's and is deprecated on MSVC (C4996);
-// the _s / _r variants are the canonical replacements.
-std::string DescribeErrno(int err)
+/** @brief The system error code for an errno value. A zero value gives an empty code. */
+std::error_code ErrnoCode(int err) noexcept
 {
-    constexpr size_t BUF_SIZE = 256;
-    char buf[BUF_SIZE] = {0};
-#ifdef _WIN32
-    if (strerror_s(buf, BUF_SIZE, err) != 0)
-    {
-        return "unknown error";
-    }
-    return {buf};
-#else
-    // Two strerror_r shapes exist: the XSI variant returns
-    // int (0 on success, writes into buf); the GNU variant
-    // (glibc default) returns char * that may or may not point
-    // at buf. Dispatch on the return type via a generic lambda
-    // (a template) so both branches are only *instantiated* for
-    // the shape that actually returns the matching type; a plain
-    // if constexpr in a non-template context would parse-check
-    // both branches and reject result != nullptr on XSI.
-    auto describe = [&buf](auto result) -> std::string {
-        if constexpr (std::is_pointer_v<decltype(result)>)
-        {
-            return {result != nullptr ? result : "unknown error"};
-        }
-        else
-        {
-            if (result != 0)
-            {
-                return "unknown error";
-            }
-            return {buf};
-        }
-    };
-    return describe(strerror_r(err, buf, BUF_SIZE));
-#endif
+    return {err, std::generic_category()};
 }
 
 // MSVC deprecates plain fopen; the _wfopen_s overload is
@@ -141,7 +105,7 @@ FileSink::FileSink(std::filesystem::path destination)
 {
     if (mFile == nullptr)
     {
-        throw IoError("Failed to open '" + internal::PathToUtf8(mTempPath) + "' for writing: " + DescribeErrno(errno));
+        throw IoError("Failed to open '" + internal::PathToUtf8(mTempPath) + "' for writing", ErrnoCode(errno));
     }
 }
 
@@ -173,8 +137,7 @@ void FileSink::Write(std::string_view bytes)
     const size_t written = std::fwrite(bytes.data(), 1, bytes.size(), mFile);
     if (written != bytes.size())
     {
-        const std::string reason = DescribeErrno(errno);
-        throw IoError("Failed to write '" + internal::PathToUtf8(mTempPath) + "': " + reason);
+        throw IoError("Failed to write '" + internal::PathToUtf8(mTempPath) + "'", ErrnoCode(errno));
     }
 }
 
@@ -189,19 +152,19 @@ void FileSink::Finish()
     // only surface I/O errors at flush / close time.
     if (std::fflush(mFile) != 0)
     {
-        const std::string reason = DescribeErrno(errno);
+        const std::error_code code = ErrnoCode(errno);
         // Already throwing; close is just to release the handle.
         // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
         (void)std::fclose(mFile);
         mFile = nullptr;
-        throw IoError("Failed to flush '" + internal::PathToUtf8(mTempPath) + "': " + reason);
+        throw IoError("Failed to flush '" + internal::PathToUtf8(mTempPath) + "'", code);
     }
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     if (std::fclose(mFile) != 0)
     {
-        const std::string reason = DescribeErrno(errno);
+        const std::error_code code = ErrnoCode(errno);
         mFile = nullptr;
-        throw IoError("Failed to close '" + internal::PathToUtf8(mTempPath) + "': " + reason);
+        throw IoError("Failed to close '" + internal::PathToUtf8(mTempPath) + "'", code);
     }
     mFile = nullptr;
 
@@ -223,7 +186,8 @@ void FileSink::Finish()
                 std::filesystem::remove(mTempPath, cleanupEc);
                 throw IoError(
                     "Failed to move '" + internal::PathToUtf8(mTempPath) + "' to '" +
-                    internal::PathToUtf8(mDestination) + "': " + copyEc.message()
+                        internal::PathToUtf8(mDestination) + "'",
+                    copyEc
                 );
             }
             std::error_code removeEc;
@@ -235,7 +199,8 @@ void FileSink::Finish()
             std::filesystem::remove(mTempPath, cleanupEc);
             throw IoError(
                 "Failed to rename '" + internal::PathToUtf8(mTempPath) + "' to '" + internal::PathToUtf8(mDestination) +
-                "': " + ec.message()
+                    "'",
+                ec
             );
         }
     }
@@ -274,7 +239,7 @@ void StreamSink::Write(std::string_view bytes)
             bytes.remove_prefix(written);
             continue;
         }
-        throw IoError("Failed to write to stream: " + DescribeErrno(status.err));
+        throw IoError("Failed to write to stream", ErrnoCode(status.err));
     }
 }
 
@@ -292,7 +257,7 @@ void StreamSink::Finish()
         {
             throw BrokenPipe();
         }
-        throw IoError("Failed to flush stream: " + DescribeErrno(status.err));
+        throw IoError("Failed to flush stream", ErrnoCode(status.err));
     }
     mFinished = true;
 }

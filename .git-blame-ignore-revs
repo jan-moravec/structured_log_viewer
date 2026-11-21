@@ -23,3 +23,5 @@ fb2cd9b6aabdd67802bcc5bd69800b1e244376bf
 87846825badb3ba339666c7cb9259e1fcb84a7b8
 # Move the recents tests out of the session tests.
 4b5f69a8abc34ab37038f2ead82abcc8e0f670c2
+# Rename the schema module to config.
+1dc3d8ed90874c56a4acef8bf8f6d8ef7b73a7f9

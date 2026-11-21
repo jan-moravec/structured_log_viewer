@@ -1,9 +1,9 @@
-#include "loglib/schema/log_configuration.hpp"
+#include "loglib/config/log_configuration.hpp"
+#include "loglib/config/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/core/error.hpp"
 #include "loglib/core/internal/file_busy_retry.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
-#include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <fmt/format.h>
 #include <glaze/glaze.hpp>
@@ -171,8 +171,7 @@ void SaveConfiguration(
         std::error_code cleanupEc;
         std::filesystem::remove(tempPath, cleanupEc);
         throw IoError(
-            "Failed to rename '" + internal::PathToUtf8(tempPath) + "' to '" + internal::PathToUtf8(path) +
-            "': " + ec.message()
+            "Failed to rename '" + internal::PathToUtf8(tempPath) + "' to '" + internal::PathToUtf8(path) + "'", ec
         );
     }
 }

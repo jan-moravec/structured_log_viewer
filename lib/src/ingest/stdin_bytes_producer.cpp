@@ -1,4 +1,5 @@
 #include "loglib/ingest/stdin_bytes_producer.hpp"
+#include "loglib/ingest/internal/stdin_bytes_producer_test_access.hpp"
 
 #include "loglib/core/error.hpp"
 #include "loglib/ingest/internal/line_bytes_queue.hpp"

@@ -146,7 +146,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
     if (ec)
     {
-        throw IoError(fmt::format("temp_directory_path() failed: {}", ec.message()));
+        throw IoError("temp_directory_path() failed", ec);
     }
 
     // Mix random_device with steady_clock -- random_device alone
@@ -293,7 +293,10 @@ struct OpenExclusiveResult
             break;
         }
     }
-    throw IoError(fmt::format("Failed to create temp file '{}': errno {}", internal::PathToUtf8(lastPath), lastErrno));
+    throw IoError(
+        fmt::format("Failed to create temp file '{}'", internal::PathToUtf8(lastPath)),
+        std::error_code(lastErrno, std::generic_category())
+    );
 }
 
 void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::filesystem::path &tempPath)
@@ -922,7 +925,7 @@ DecompressingByteSource::DecompressingByteSource(
     const auto size = std::filesystem::file_size(mDisplayPath, ec);
     if (ec)
     {
-        throw IoError(fmt::format("Failed to stat '{}': {}", internal::PathToUtf8(mDisplayPath), ec.message()));
+        throw IoError(fmt::format("Failed to stat '{}'", internal::PathToUtf8(mDisplayPath)), ec);
     }
     mCompressedSize = static_cast<std::size_t>(size);
 
@@ -1056,7 +1059,8 @@ DecompressingByteSource::DecompressingByteSource(
         {
             const int savedErrno = errno;
             throw IoError(
-                fmt::format("Failed to flush temp file '{}': errno {}", internal::PathToUtf8(tempPath), savedErrno)
+                fmt::format("Failed to flush temp file '{}'", internal::PathToUtf8(tempPath)),
+                std::error_code(savedErrno, std::generic_category())
             );
         }
     }

@@ -11,6 +11,7 @@
 #include "benchmark_registry.hpp"
 #include "common.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/tcp_server_producer.hpp>
@@ -18,7 +19,6 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
@@ -150,8 +150,8 @@ double RunOnce(const Payload &payload, Transport transport)
 
     const std::shared_ptr<const LogConfiguration> configuration = MakeTimestampConfiguration();
     LogTable table{ColumnLayout(configuration->columns)};
-    table.SetDisplayTimeZone(ProcessDefaultTimeZone());
-    table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+    table.SetDisplayTimeZone(TestTimeZone());
+    table.SetDefaultSourceTimeZone(TestTimeZone());
     auto owned = std::make_unique<StreamLineSource>(std::filesystem::path("network"), std::move(producer));
     StreamLineSource &source = *owned;
     table.BeginStreaming(std::move(owned));

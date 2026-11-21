@@ -1,3 +1,5 @@
+#include <loglib/core/error.hpp>
+#include <loglib/ingest/internal/tailing_bytes_producer_test_access.hpp>
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 
 #include <test_common/wait.hpp>
@@ -18,6 +20,7 @@
 #include <vector>
 
 using loglib::TailingBytesProducer;
+using loglib::internal::TailingBytesProducerTestAccess;
 using namespace std::chrono_literals;
 
 namespace
@@ -175,7 +178,9 @@ TailingBytesProducer::Options FastPollOptions()
     const TailingBytesProducer &source, size_t target, std::chrono::milliseconds deadline
 )
 {
-    return test_common::WaitUntil([&] { return source.RotationCount() >= target; }, deadline);
+    return test_common::WaitUntil(
+        [&] { return TailingBytesProducerTestAccess::RotationCount(source) >= target; }, deadline
+    );
 }
 
 } // namespace
@@ -308,7 +313,7 @@ TEST_CASE(
     CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < 5000ms);
 
     // No pre-fill lines should surface. Two passes of the worker give any spurious bytes the time to land.
-    REQUIRE(test_common::WaitForPasses(source, 2));
+    REQUIRE(test_common::WaitForPasses([&] { return TailingBytesProducerTestAccess::PollCount(source); }, 2));
     std::array<char, 1024> buf{};
     const size_t drained = source.Read(std::span<char>(buf));
     CHECK(drained == 0);
@@ -431,7 +436,7 @@ TEST_CASE(
     CHECK(postLines[0] == "post1");
     CHECK(postLines[1] == "post2");
     CHECK(rotationFires.load(std::memory_order_acquire) >= 1);
-    CHECK(source.RotationCount() >= 1);
+    CHECK(TailingBytesProducerTestAccess::RotationCount(source) >= 1);
 }
 
 TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingBytesProducer][rotation][fs-events]")
@@ -484,7 +489,7 @@ TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytes
     const auto postLines = SplitLines(post);
     REQUIRE(!postLines.empty());
     CHECK(postLines[0] == "y1");
-    CHECK(source.RotationCount() >= 1);
+    CHECK(TailingBytesProducerTestAccess::RotationCount(source) >= 1);
 }
 
 TEST_CASE(
@@ -653,7 +658,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
 
     // RotationCount counts every detected rotation; the callback
     // collapses them into one per debounce window.
-    CHECK(source.RotationCount() >= 3);
+    CHECK(TailingBytesProducerTestAccess::RotationCount(source) >= 3);
     CHECK(rotationFires.load(std::memory_order_acquire) == 1);
 }
 
@@ -662,7 +667,7 @@ TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesP
     const TempDir dir;
     const auto path = dir.File("does_not_exist.log");
 
-    CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), std::system_error);
+    CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), loglib::IoError);
 }
 
 TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", "[TailingBytesProducer][fs-events]")
@@ -864,5 +869,5 @@ TEST_CASE(
     {
         REQUIRE(lines[static_cast<size_t>(i)] + "\n" == lineText(i));
     }
-    CHECK(source.RotationCount() >= static_cast<size_t>(ROUNDS - 1));
+    CHECK(TailingBytesProducerTestAccess::RotationCount(source) >= static_cast<size_t>(ROUNDS - 1));
 }

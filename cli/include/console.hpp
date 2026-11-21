@@ -74,7 +74,7 @@ public:
      * @brief Writes payload text to the output stream and flushes it.
      *
      * A failed write is reported as an `ExitCode::Output` failure. A closed
-     * pipe throws `loglib::exports::BrokenPipe`, which `main` treats as success.
+     * pipe throws `loglib::BrokenPipe`, which `main` treats as success.
      *
      * @param text Payload to write.
      * @return `ExitCode::Success`, or the exit code of the reported failure.

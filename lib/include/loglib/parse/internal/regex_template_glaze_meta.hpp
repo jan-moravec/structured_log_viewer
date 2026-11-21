@@ -8,8 +8,8 @@
  */
 #pragma once
 
+#include "loglib/config/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/parse/regex_templates.hpp"
-#include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <glaze/glaze.hpp>
 #include <array>

@@ -1,6 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/schema/log_configuration.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
@@ -318,7 +318,13 @@ std::filesystem::path FindTestTzdata()
     return {};
 }
 
+const loglib::TimeZoneContext &TestTimeZone()
+{
+    static const loglib::TimeZoneContext zone = loglib::TimeZoneContext::Load(FindTestTzdata());
+    return zone;
+}
+
 void InitializeTimezoneData()
 {
-    loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(FindTestTzdata()));
+    static_cast<void>(TestTimeZone());
 }

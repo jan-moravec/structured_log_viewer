@@ -42,8 +42,8 @@ add_library(
     src/ingest/udp_server_producer.cpp
     src/time/timestamp_promotion.cpp
     src/parse/parse_runtime.cpp
-    src/schema/column_layout.cpp
-    src/schema/log_configuration.cpp
+    src/config/column_layout.cpp
+    src/config/log_configuration.cpp
     src/query/column_projection.cpp
     src/table/column_key_id_cache.cpp
     src/table/column_type_health.cpp
@@ -52,7 +52,7 @@ add_library(
     src/query/log_compare.cpp
     src/core/log_data.cpp
     src/query/row_filter.cpp
-    src/query/log_filter_evaluator.cpp
+    src/query/row_filter_evaluation.cpp
     src/core/log_level.cpp
     src/core/log_line.cpp
     src/parse/log_parser.cpp
@@ -62,18 +62,18 @@ add_library(
     src/time/timestamp_formatter.cpp
     src/table/timestamp_backfill.cpp
     src/time/timestamp_parsing.cpp
-    src/time/user_timestamp.cpp
+    src/time/time_input.cpp
     src/table/log_table.cpp
     src/table/table_loader.cpp
     src/output/normalized_json_row.cpp
     src/query/query_parser.cpp
-    src/query/query_printer.cpp
+    src/query/query_format.cpp
     src/ingest/rotation_siblings.cpp
     src/ingest/source_plan.cpp
     src/core/stable_byte_arena.cpp
     src/support/tzdata_search.cpp
     src/support/user_paths.cpp
-    src/parse/worker_threads.cpp
+    src/core/worker_threads.cpp
     src/core/version.cpp
     src/query/row_ordering.cpp
     src/output/file_loading.cpp
@@ -100,13 +100,13 @@ add_library(
 # test/lib translation units can still include them via BASE_DIRS;
 # they are not members of this set and must not be installed.
 set(LOGLIB_PUBLIC_HEADERS
-    include/loglib/schema/anchor_entry.hpp
+    include/loglib/config/anchor_entry.hpp
     include/loglib/core/ascii_case.hpp
     include/loglib/parse/auto_detect_parser.hpp
     include/loglib/core/bytes_producer.hpp
     include/loglib/query/column_projection.hpp
-    include/loglib/schema/column_layout.hpp
-    include/loglib/schema/column_schema.hpp
+    include/loglib/config/column_layout.hpp
+    include/loglib/config/column.hpp
     include/loglib/table/column_type_health.hpp
     include/loglib/core/compact_log_value.hpp
     include/loglib/ingest/decompressing_byte_source.hpp
@@ -115,15 +115,15 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/output/exports/export_sink.hpp
     include/loglib/output/exports/row_exporter.hpp
     include/loglib/core/file_line_source.hpp
-    include/loglib/schema/filter_expression.hpp
+    include/loglib/config/filter_expression.hpp
     include/loglib/parse/format_detection.hpp
-    include/loglib/schema/highlight_rule.hpp
+    include/loglib/config/highlight_rule.hpp
     include/loglib/query/histogram_bucket_index.hpp
     include/loglib/core/key_index.hpp
     include/loglib/query/filter_compile.hpp
     include/loglib/core/line_source.hpp
     include/loglib/query/log_compare.hpp
-    include/loglib/schema/log_configuration.hpp
+    include/loglib/config/log_configuration.hpp
     include/loglib/core/log_data.hpp
     include/loglib/query/row_filter.hpp
     include/loglib/core/log_level.hpp
@@ -141,13 +141,14 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/parse/parsers/json_parser.hpp
     include/loglib/parse/parsers/logfmt_parser.hpp
     include/loglib/parse/parsers/regex_parser.hpp
+    include/loglib/query/query_format.hpp
     include/loglib/query/query_parser.hpp
     include/loglib/parse/regex_templates.hpp
     include/loglib/ingest/rotation_siblings.hpp
     include/loglib/query/row_ordering.hpp
     include/loglib/output/session_bundle.hpp
-    include/loglib/schema/session_view.hpp
-    include/loglib/schema/source_descriptor.hpp
+    include/loglib/config/session_view.hpp
+    include/loglib/config/source_descriptor.hpp
     include/loglib/ingest/source_plan.hpp
     include/loglib/ingest/stdin_bytes_producer.hpp
     include/loglib/ingest/stdin_peek.hpp
@@ -157,13 +158,12 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/tcp_server_producer.hpp
     include/loglib/support/theme.hpp
     include/loglib/time/time_zone_context.hpp
-    include/loglib/time/timestamp_parsing.hpp
     include/loglib/core/transparent_string_hash.hpp
     include/loglib/ingest/udp_server_producer.hpp
     include/loglib/support/tzdata_search.hpp
     include/loglib/support/user_paths.hpp
-    include/loglib/parse/worker_threads.hpp
-    include/loglib/time/user_timestamp.hpp
+    include/loglib/core/worker_threads.hpp
+    include/loglib/time/time_input.hpp
     include/loglib/core/version.hpp
 )
 

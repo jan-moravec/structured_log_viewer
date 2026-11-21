@@ -25,10 +25,11 @@
 
 #include <QUuid>
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 // Forward-declared so this header does not pull in `<date/tz.h>`
 // just for the Goto Timestamp helpers' zone argument.
@@ -236,14 +237,13 @@ public:
     ~MainWindow();
 
     /**
-     * @brief Locate the staged `tzdata/` directory and load loglib's
-     * process-default `TimeZoneContext` from it. Idempotent.
+     * @brief Locate the staged `tzdata/` directory and check that the
+     * time zone data can be loaded from it. Idempotent.
      *
      * `main()` calls this before constructing the primary window
      * and before the restore-on-launch flow; the test fixture
-     * mirrors the call in `initTestCase`. Formatting helpers that
-     * use `ProcessDefaultTimeZone()` then observe the display zone.
-     * Core conversion APIs still take an explicit context.
+     * mirrors the call in `initTestCase`. Each window then loads
+     * its own zone with `LoadSystemTimeZone`.
      *
      * Returns true on success. On failure logs a `qCritical`
      * diagnostic and returns false; `main()` propagates that as a
@@ -251,6 +251,20 @@ public:
      * @return The result described above.
      */
     [[nodiscard]] static bool InitializeTimezoneDatabase();
+
+    /**
+     * @brief Load the zone the computer is set to from the staged
+     * `tzdata/` directory. Returns UTC and logs a warning when the
+     * data is missing, so a window can still be built.
+     * @return The system time zone.
+     */
+    [[nodiscard]] static loglib::TimeZoneContext LoadSystemTimeZone();
+
+    /// The zone in which this window and its sessions show times.
+    [[nodiscard]] const loglib::TimeZoneContext &TimeZone() const noexcept
+    {
+        return mTimeZone;
+    }
 
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
@@ -966,10 +980,10 @@ public:
      * the current time column's `parseFormats`, two ISO fallbacks
      * (`%FT%T`, `%F %T`), and the relative shortcuts `-Nh` /
      * `-Nm`. Naive inputs (no `%z` / `%Z` in the winning format)
-     * are shifted from the table's display time zone
-     * (`ProcessDefaultTimeZone()`) to UTC before the search. Lands
-     * on the first matching row via `FindFirstRowAtOrAfter` +
-     * `SelectSourceRow`, or status-bar-hints if none qualifies.
+     * are shifted from the table's display time zone to UTC before
+     * the search. Lands on the first matching row via
+     * `FindFirstRowAtOrAfter` + `SelectSourceRow`, or
+     * status-bar-hints if none qualifies.
      */
     void GotoTimestamp();
 
@@ -2128,7 +2142,7 @@ private:
      * @brief Shared post-`exec` body of `GotoTimestamp`. Updates the
      * sticky-input mirror, parses via `ParseGotoTimestampInput`,
      * shifts naive results through
-     * `LocalMicrosecondsSinceEpochToUtc`, then hands off to
+     * `TimeZoneContext::LocalToUtc`, then hands off to
      * `FindFirstRowAtOrAfter` + `SelectSourceRow`. @p now is
      * pinned in tests, `system_clock::now()` in production.
      * @param input The input value.
@@ -3277,6 +3291,9 @@ private:
      * in this class check before dereferencing.
      */
     ThemeControl *mTheme;
+
+    /// The zone this window and its sessions show times in. It is passed to the models, parser options and editors.
+    loglib::TimeZoneContext mTimeZone = LoadSystemTimeZone();
 
     /**
      * @brief Non-owning alias into `mSession->Anchors()`. The `AnchorManager` itself is owned

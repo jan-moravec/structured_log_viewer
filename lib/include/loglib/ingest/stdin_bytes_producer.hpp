@@ -116,23 +116,4 @@ private:
     std::unique_ptr<internal::StdinBytesProducerImpl> mImpl;
 };
 
-namespace internal
-{
-
-/**
- * @brief Lets tests build a StdinBytesProducer on a pipe of their own. It is not part of the public API.
- *
- * Tests create a pipe and pass its read end to Create, and the producer owns and closes that end. On Windows the handle
- * is a HANDLE cast to a pointer. Elsewhere it is a file descriptor converted to an integer and then to a pointer.
- * Production code uses the public constructors.
- */
-struct StdinBytesProducerTestAccess
-{
-    [[nodiscard]] static std::unique_ptr<StdinBytesProducer> Create(
-        void *opaqueHandle, StdinBytesProducer::Options options
-    );
-};
-
-} // namespace internal
-
 } // namespace loglib

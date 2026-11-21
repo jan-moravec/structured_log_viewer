@@ -4,6 +4,9 @@
  * The time zone database is staged as a folder beside the executable or installed in a system location. This header
  * lists the places to look and returns the first folder that holds the data.
  *
+ * The support module holds Qt-free helpers that the desktop program and the command line tool share. They are not about
+ * logs. They live in loglib so that both programs link one library, and no other loglib module uses them.
+ *
  * This is part of the support module.
  */
 #pragma once

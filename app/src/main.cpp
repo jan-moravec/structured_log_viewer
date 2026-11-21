@@ -9,7 +9,7 @@
 #include "uuid_utils.hpp"
 #include "workspace_persistence.hpp"
 
-#include <loglib/parse/worker_threads.hpp>
+#include <loglib/core/worker_threads.hpp>
 
 #include <QApplication>
 #include <QAtomicInt>
@@ -503,6 +503,6 @@ private:
 int main(int argc, char *argv[])
 {
     const int code = RunApplication(argc, argv);
-    (void)loglib::JoinWorkerThreads();
+    (void)loglib::ShutdownWorkerThreads();
     return code;
 }

@@ -6,6 +6,8 @@
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
@@ -494,8 +496,8 @@ TEST_CASE(
     // Row 0: colon-fused. `logger` must be the class name, and
     // `message` must be the payload only (no logger prefix folded
     // in).
-    const auto row0logger = result.data.Lines()[0].GetValue(result.data.Keys(), "logger");
-    const auto row0message = result.data.Lines()[0].GetValue(result.data.Keys(), "message");
+    const auto row0logger = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "logger");
+    const auto row0message = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "message");
     REQUIRE(std::holds_alternative<std::string_view>(row0logger));
     CHECK(std::get<std::string_view>(row0logger) == std::string_view{"com.example.Worker$Inner"});
     REQUIRE(std::holds_alternative<std::string_view>(row0message));
@@ -503,8 +505,8 @@ TEST_CASE(
 
     // Row 1: dash-with-spaces, the Logback-default shape. Same
     // expectations — regression guard both shapes symmetrically.
-    const auto row1logger = result.data.Lines()[1].GetValue(result.data.Keys(), "logger");
-    const auto row1message = result.data.Lines()[1].GetValue(result.data.Keys(), "message");
+    const auto row1logger = test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "logger");
+    const auto row1message = test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "message");
     REQUIRE(std::holds_alternative<std::string_view>(row1logger));
     CHECK(std::get<std::string_view>(row1logger) == std::string_view{"com.example.App"});
     REQUIRE(std::holds_alternative<std::string_view>(row1message));
@@ -529,9 +531,9 @@ TEST_CASE("Apache error log splits module:level into module and level", "[regex_
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
-    const auto row0module = result.data.Lines()[0].GetValue(result.data.Keys(), "module");
-    const auto row0level = result.data.Lines()[0].GetValue(result.data.Keys(), "level");
-    const auto row0client = result.data.Lines()[0].GetValue(result.data.Keys(), "client");
+    const auto row0module = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "module");
+    const auto row0level = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "level");
+    const auto row0client = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "client");
     REQUIRE(std::holds_alternative<std::string_view>(row0module));
     CHECK(std::get<std::string_view>(row0module) == std::string_view{"authz_core"});
     REQUIRE(std::holds_alternative<std::string_view>(row0level));
@@ -540,8 +542,8 @@ TEST_CASE("Apache error log splits module:level into module and level", "[regex_
     CHECK(std::get<std::string_view>(row0client) == std::string_view{"198.51.100.9:43994"});
 
     // Legacy form: no module, the whole tag is the level.
-    const auto row1module = result.data.Lines()[1].GetValue(result.data.Keys(), "module");
-    const auto row1level = result.data.Lines()[1].GetValue(result.data.Keys(), "level");
+    const auto row1module = test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "module");
+    const auto row1level = test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "level");
     CHECK_FALSE(std::holds_alternative<std::string_view>(row1module));
     REQUIRE(std::holds_alternative<std::string_view>(row1level));
     CHECK(std::get<std::string_view>(row1level) == std::string_view{"error"});
@@ -570,9 +572,15 @@ TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][
         REQUIRE(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 2);
         CHECK_FALSE(
-            std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue(result.data.Keys(), "bytes"))
+            std::holds_alternative<std::monostate>(
+                test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "bytes")
+            )
         );
-        CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[1].GetValue(result.data.Keys(), "bytes")));
+        CHECK(
+            std::holds_alternative<std::monostate>(
+                test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "bytes")
+            )
+        );
     }
 }
 
@@ -636,7 +644,7 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
     REQUIRE(result.data.Lines().size() == 2);
 
     // Keep LogValue alive while its string_view is used.
-    const LogValue joined = result.data.Lines()[0].GetValue(result.data.Keys(), tc.lastField);
+    const LogValue joined = test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), tc.lastField);
     const auto joinedView = AsStringView(joined);
     REQUIRE(joinedView.has_value());
     for (const std::string_view needle : tc.expectedContainsInLastField)

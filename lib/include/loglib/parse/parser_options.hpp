@@ -9,9 +9,9 @@
  */
 #pragma once
 
+#include "loglib/config/column.hpp"
 #include "loglib/core/bytes_producer.hpp"
 #include "loglib/core/stop_token.hpp"
-#include "loglib/schema/column_schema.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <chrono>

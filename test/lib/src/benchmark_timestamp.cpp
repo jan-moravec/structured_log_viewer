@@ -10,8 +10,8 @@
 #include "common.hpp"
 
 #include <loglib/time/internal/generic_timestamp_parsing.hpp>
+#include <loglib/time/internal/timestamp_parsing.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/timestamp_parsing.hpp>
 
 #include <benchmark/benchmark.h>
 #include <date/date.h>
@@ -31,6 +31,7 @@ namespace
 {
 
 using namespace loglib;
+using namespace loglib::internal;
 
 constexpr std::size_t VALUE_COUNT = 10'000;
 

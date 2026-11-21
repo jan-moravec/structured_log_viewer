@@ -1,11 +1,11 @@
 #include "loglib/table/internal/enum_inference.hpp"
 
+#include "loglib/config/column_layout.hpp"
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/schema/column_layout.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <fmt/format.h>
 
@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 void EnumInference::MaybePromoteToLevel(LogData &data, ColumnLayout &layout, size_t columnIndex)
@@ -148,4 +148,4 @@ const std::vector<LogLevel> *EnumInference::LevelRankCache(
     return &it->second;
 }
 
-} // namespace loglib
+} // namespace loglib::internal

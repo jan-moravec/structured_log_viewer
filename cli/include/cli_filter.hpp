@@ -3,8 +3,8 @@
 #include "commands.hpp"
 #include "diagnostics.hpp"
 
+#include <loglib/config/filter_expression.hpp>
 #include <loglib/core/log_value.hpp>
-#include <loglib/schema/filter_expression.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <expected>

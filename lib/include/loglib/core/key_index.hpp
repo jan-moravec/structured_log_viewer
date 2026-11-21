@@ -8,17 +8,13 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-#include <atomic>
-#include <cstddef>
-#endif
 
 namespace loglib
 {
@@ -68,16 +64,6 @@ public:
     [[nodiscard]] std::string_view KeyOf(KeyId id) const;
 
     [[nodiscard]] size_t Size() const noexcept;
-
-#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-    /** @brief Test-only call counters compiled in by the unit-test target. */
-    static std::atomic<std::size_t> sGetOrInsertCallCount;
-    static std::atomic<std::size_t> sFindCallCount;
-
-    static void ResetInstrumentationCounters() noexcept;
-    static std::size_t LoadGetOrInsertCount() noexcept;
-    static std::size_t LoadFindCount() noexcept;
-#endif
 
 private:
     friend struct internal::MemoryStats;

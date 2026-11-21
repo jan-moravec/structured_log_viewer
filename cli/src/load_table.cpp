@@ -4,6 +4,7 @@
 #include "session_config.hpp"
 #include "text_util.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/source_plan.hpp>
@@ -14,7 +15,6 @@
 #include <loglib/parse/auto_detect_parser.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/regex_templates.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/user_paths.hpp>
 #include <loglib/table/table_loader.hpp>
 

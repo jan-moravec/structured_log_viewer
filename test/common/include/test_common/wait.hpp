@@ -50,19 +50,19 @@ template <class Predicate>
 }
 
 /**
- * @brief Waits until the worker of source has finished passes more passes, counted by its PollCount.
+ * @brief Waits until the worker of a producer has finished passes more passes, counted by pollCount.
  *
- * Use it to wait for a worker that polls, such as TailingBytesProducer, instead of sleeping. A pass that was already
- * running when the call began may have looked at the state before the caller changed it, so pass 2 when the worker must
- * have started a whole pass after the change.
+ * Use it to wait for a worker that polls, such as TailingBytesProducer, instead of sleeping. pollCount returns the
+ * number of passes the worker has finished so far. A pass that was already running when the call began may have looked
+ * at the state before the caller changed it, so pass 2 when the worker must have started a whole pass after the change.
  */
-template <class Source>
+template <class PollCount>
 [[nodiscard]] bool WaitForPasses(
-    const Source &source, std::size_t passes, std::chrono::milliseconds deadline = DEFAULT_WAIT_DEADLINE
+    PollCount pollCount, std::size_t passes, std::chrono::milliseconds deadline = DEFAULT_WAIT_DEADLINE
 )
 {
-    const std::size_t target = source.PollCount() + passes;
-    return WaitUntil([&] { return source.PollCount() >= target; }, deadline);
+    const std::size_t target = pollCount() + passes;
+    return WaitUntil([&] { return pollCount() >= target; }, deadline);
 }
 
 /**

@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/stop_token.hpp>
@@ -9,7 +10,6 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/temp_dir.hpp>
 #include <test_common/wait.hpp>

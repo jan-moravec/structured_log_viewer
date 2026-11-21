@@ -10,9 +10,9 @@
 #include "qstring_path.hpp"
 #include "row_order_proxy_model.hpp"
 
-#include <loglib/schema/log_configuration.hpp>
+#include <loglib/config/log_configuration.hpp>
+#include <loglib/time/time_input.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/user_timestamp.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
@@ -321,14 +321,14 @@ std::optional<LogSessionView::GotoTimestampParse> LogSessionView::ParseGotoTimes
 )
 {
     const QByteArray utf8 = input.toUtf8();
-    const auto parsed = loglib::ParseUserTimestamp(
+    const auto parsed = loglib::ParseTimeInput(
         std::string_view(utf8.constData(), static_cast<std::size_t>(utf8.size())), columnParseFormats, now
     );
     if (!parsed.has_value())
     {
         return std::nullopt;
     }
-    return GotoTimestampParse{.micros = parsed->micros, .isNaive = parsed->isNaive};
+    return GotoTimestampParse{.micros = parsed->microseconds, .isNaive = parsed->isNaive};
 }
 
 void LogSessionView::PromptGotoLine()
@@ -508,8 +508,8 @@ void LogSessionView::PromptGotoTimestamp()
         return;
     }
 
-    const int timeCol = loglib::FirstTimeColumnIndex(model->Layout());
-    if (timeCol < 0)
+    const std::optional<std::size_t> timeColumn = loglib::FirstTimeColumnIndex(model->Layout());
+    if (!timeColumn.has_value())
     {
         emit statusMessageRequested(tr("This log has no timestamp column."));
         return;
@@ -553,12 +553,13 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
         return;
     }
     const auto &layout = model->Layout();
-    const int timeCol = loglib::FirstTimeColumnIndex(layout);
-    if (timeCol < 0)
+    const std::optional<std::size_t> timeColumn = loglib::FirstTimeColumnIndex(layout);
+    if (!timeColumn.has_value())
     {
         emit statusMessageRequested(tr("This log has no timestamp column."));
         return;
     }
+    const int timeCol = static_cast<int>(*timeColumn);
 
     // Update the sticky input before the parse so a garbage value
     // the user wants to correct is retained on the next open.
@@ -574,9 +575,8 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
     // Stored cell timestamps are UTC, and a log value with no zone was
     // read in the display zone. Naive user input is a display-zone
     // wall-clock instant, so it needs the same local -> UTC shift.
-    // `LocalMicrosecondsSinceEpochToUtc` handles DST edge cases.
-    const int64_t targetMicros =
-        parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
+    // `TimeZoneContext::LocalToUtc` handles DST edge cases.
+    const int64_t targetMicros = parsed->isNaive ? model->TimeZone().LocalToUtc(parsed->micros) : parsed->micros;
 
     const int sourceRow = mSession->FindFirstRowAtOrAfterTimestamp(timeCol, targetMicros);
     if (sourceRow < 0)

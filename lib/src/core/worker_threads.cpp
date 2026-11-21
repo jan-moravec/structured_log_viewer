@@ -1,4 +1,4 @@
-#include "loglib/parse/worker_threads.hpp"
+#include "loglib/core/worker_threads.hpp"
 
 #include <oneapi/tbb/global_control.h>
 
@@ -7,7 +7,7 @@
 namespace loglib
 {
 
-bool JoinWorkerThreads() noexcept
+bool ShutdownWorkerThreads() noexcept
 {
     oneapi::tbb::task_scheduler_handle handle{oneapi::tbb::attach{}};
     return oneapi::tbb::finalize(handle, std::nothrow);

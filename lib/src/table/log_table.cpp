@@ -1,8 +1,8 @@
 #include "loglib/table/log_table.hpp"
 
+#include "loglib/config/internal/level_column_slot.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/schema/internal/level_column_slot.hpp"
 #include "loglib/table/internal/column_key_id_cache.hpp"
 #include "loglib/table/internal/enum_inference.hpp"
 #include "loglib/table/internal/timestamp_backfill.hpp"
@@ -101,13 +101,13 @@ bool TimeFormatPrints(const std::string &format)
 } // namespace
 
 LogTable::LogTable()
-    : mEnum(std::make_unique<EnumInference>())
+    : mEnum(std::make_unique<internal::EnumInference>())
 {
     mLayout.SetTimeFormatCheck(TimeFormatPrints);
 }
 
 LogTable::LogTable(ColumnLayout layout)
-    : mLayout(std::move(layout)), mEnum(std::make_unique<EnumInference>())
+    : mLayout(std::move(layout)), mEnum(std::make_unique<internal::EnumInference>())
 {
     mLayout.SetTimeFormatCheck(TimeFormatPrints);
     // Checks the Time formats, which the layout could not check before it had the check.
@@ -126,7 +126,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mLiveSource(other.mLiveSource),
       mColumnKeyIds(std::move(other.mColumnKeyIds)),
       mTableConvertedTimeKeys(std::move(other.mTableConvertedTimeKeys)),
-      mEnum(std::make_unique<EnumInference>(std::move(*other.mEnum)))
+      mEnum(std::make_unique<internal::EnumInference>(std::move(*other.mEnum)))
 {
     RewireSourceRegistries();
 }
@@ -342,13 +342,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
 
         if (firstObservation)
         {
-            BackfillTimestampColumn(
+            internal::BackfillTimestampColumn(
                 mData.Keys(),
                 column,
                 std::span<LogLine>(mData.Lines()),
                 mDefaultSourceTimeZone,
                 mReferenceTime,
-                BackfillErrors::Discard
+                internal::BackfillErrors::Discard
             );
             for (const KeyId id : columnKeyIds)
             {
@@ -370,8 +370,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
                 const std::span<LogLine> slice(
                     mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount
                 );
-                BackfillTimestampColumn(
-                    mData.Keys(), column, slice, mDefaultSourceTimeZone, mReferenceTime, BackfillErrors::Discard
+                internal::BackfillTimestampColumn(
+                    mData.Keys(),
+                    column,
+                    slice,
+                    mDefaultSourceTimeZone,
+                    mReferenceTime,
+                    internal::BackfillErrors::Discard
                 );
             }
         }
@@ -393,7 +398,7 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     }
 
     // Level values exist only if a dictionary was erased, and an erase is always recorded in demotedKeys.
-    std::unordered_map<KeyId, LevelValueMap> demotedValues;
+    std::unordered_map<KeyId, internal::LevelValueMap> demotedValues;
     const bool anyDemotion = !demotedKeys.empty();
     if (anyDemotion)
     {
@@ -436,13 +441,13 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     // A column that was promoted and demoted within the batch is invisible to the snapshot.
     for (const KeyId key : demotedKeys)
     {
-        const int columnIndex = FindColumnIndexByKey(key);
-        if (columnIndex < 0 || std::ranges::contains(demotedColumns, static_cast<size_t>(columnIndex)))
+        const std::optional<size_t> columnIndex = FindColumnIndexByKey(key);
+        if (!columnIndex.has_value() || std::ranges::contains(demotedColumns, *columnIndex))
         {
             continue;
         }
-        demotedColumns.push_back(static_cast<size_t>(columnIndex));
-        result.enumEvents.push_back({.column = static_cast<size_t>(columnIndex), .change = EnumColumnChange::Demoted});
+        demotedColumns.push_back(*columnIndex);
+        result.enumEvents.push_back({.column = *columnIndex, .change = EnumColumnChange::Demoted});
     }
 
     // Columns the back-fill turned into enumerations. A column that was already one is covered by the events above.
@@ -476,11 +481,9 @@ LogTable::AppendBatchResult LogTable::AppendBatch(RowBatch batch)
     }
     for (const KeyId key : levelBubbleKeys)
     {
-        if (const int columnIndex = FindColumnIndexByKey(key); columnIndex >= 0)
+        if (const std::optional<size_t> columnIndex = FindColumnIndexByKey(key); columnIndex.has_value())
         {
-            result.placements.push_back(
-                {.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = static_cast<size_t>(columnIndex)}
-            );
+            result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = *columnIndex});
         }
     }
     return result;
@@ -902,7 +905,7 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
             EnumColumnEvent event{.column = columnIndex, .change = EnumColumnChange::Demoted};
             if (before == ColumnType::Level)
             {
-                const KeyId key = CanonicalKeyOf(mData.Keys(), columnsAfter[columnIndex]);
+                const KeyId key = internal::CanonicalKeyOf(mData.Keys(), columnsAfter[columnIndex]);
                 if (const auto values = demotedValues.find(key); values != demotedValues.end())
                 {
                     event.levelValuesBeforeDemotion = std::move(values->second);
@@ -913,11 +916,9 @@ LogTable::FinalizeResult LogTable::FinalizeAutoDetection()
     }
     for (const KeyId key : levelBubbleKeys)
     {
-        if (const int columnIndex = FindColumnIndexByKey(key); columnIndex >= 0)
+        if (const std::optional<size_t> columnIndex = FindColumnIndexByKey(key); columnIndex.has_value())
         {
-            result.placements.push_back(
-                {.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = static_cast<size_t>(columnIndex)}
-            );
+            result.placements.push_back({.kind = ColumnPlacement::Kind::LevelToCanonicalSlot, .column = *columnIndex});
         }
     }
     return result;
@@ -959,13 +960,13 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             mLayout.SetColumnParseFormats(columnIndex, DefaultTimeParseFormats());
         }
-        BackfillTimestampColumn(
+        internal::BackfillTimestampColumn(
             mData.Keys(),
             mLayout.Columns()[columnIndex],
             std::span<LogLine>(mData.Lines()),
             mDefaultSourceTimeZone,
             mReferenceTime,
-            BackfillErrors::Discard
+            internal::BackfillErrors::Discard
         );
         break;
     }
@@ -983,11 +984,11 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
         {
             break;
         }
-        EnumColumnHealth &health = mEnum->HealthFor(canonical);
+        internal::EnumColumnHealth &health = mEnum->HealthFor(canonical);
         const bool previousWasEnumLike = previousType == ColumnType::Enumeration || previousType == ColumnType::Level;
         if (!previousWasEnumLike)
         {
-            health = EnumColumnHealth{};
+            health = internal::EnumColumnHealth{};
         }
         if (!mEnum->EncodeColumnRangeAsEnum(mData, mLayout.Columns()[columnIndex], 0U, mData.Lines().size(), health))
         {
@@ -1051,7 +1052,7 @@ std::optional<ColumnMove> LogTable::ResolvePlacement(const ColumnPlacement &plac
         }
         return ColumnMove{.from = from, .to = 0};
     case ColumnPlacement::Kind::LevelToCanonicalSlot:
-        if (!ShouldBubbleLevelColumn(mLayout, from))
+        if (!internal::ShouldBubbleLevelColumn(mLayout, from))
         {
             return std::nullopt;
         }
@@ -1076,11 +1077,11 @@ void LogTable::ApplyPlacements(std::span<const ColumnPlacement> placements)
     }
 }
 
-int LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
+std::optional<size_t> LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
 {
     if (kid == INVALID_KEY_ID)
     {
-        return -1;
+        return std::nullopt;
     }
     const auto &columns = mLayout.Columns();
     const auto &keys = mData.Keys();
@@ -1090,11 +1091,11 @@ int LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
         {
             if (keys.Find(key) == kid)
             {
-                return static_cast<int>(i);
+                return i;
             }
         }
     }
-    return -1;
+    return std::nullopt;
 }
 
 std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex) const noexcept

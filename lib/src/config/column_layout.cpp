@@ -1,6 +1,6 @@
-#include "loglib/schema/column_layout.hpp"
+#include "loglib/config/column_layout.hpp"
+#include "loglib/config/internal/level_column_slot.hpp"
 #include "loglib/core/ascii_case.hpp"
-#include "loglib/schema/internal/level_column_slot.hpp"
 
 #include <fmt/format.h>
 
@@ -210,6 +210,9 @@ void ColumnLayout::AppendKeys(const std::vector<std::string> &newKeys)
     }
 }
 
+namespace internal
+{
+
 bool ShouldBubbleLevelColumn(const ColumnLayout &layout, size_t columnIndex) noexcept
 {
     const auto &columns = layout.Columns();
@@ -234,6 +237,8 @@ bool ShouldBubbleLevelColumn(const ColumnLayout &layout, size_t columnIndex) noe
     }
     return true;
 }
+
+} // namespace internal
 
 void ColumnLayout::MoveColumn(size_t srcIndex, size_t destIndex)
 {
@@ -378,17 +383,17 @@ bool ColumnLayout::IsKeyInAnyColumnCached(const std::string &key) const
     return mKeysInColumns.contains(key);
 }
 
-int FirstTimeColumnIndex(const ColumnLayout &layout)
+std::optional<size_t> FirstTimeColumnIndex(const ColumnLayout &layout)
 {
     const auto &columns = layout.Columns();
     for (size_t i = 0; i < columns.size(); ++i)
     {
         if (columns[i].type == ColumnType::Time)
         {
-            return static_cast<int>(i);
+            return i;
         }
     }
-    return -1;
+    return std::nullopt;
 }
 
 std::vector<Column> TimeColumnsOf(const ColumnLayout &layout)

@@ -32,8 +32,7 @@ target_link_libraries(
 # Expose the test-only accessors on `logapp` classes (cache-size probes, column-move helpers, session-mode shims)
 # while we're building tests. The macro is set as a PUBLIC compile definition on `logapp` so both the library TU and
 # every test TU see the same decls. Gated by `BUILD_TESTING` at the top level via the `add_subdirectory(test/...)`
-# block, so `-DBUILD_TESTING=OFF` strips the helpers from shipped binaries. Mirrors the existing
-# `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
+# block, so `-DBUILD_TESTING=OFF` strips the helpers from shipped binaries.
 target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
 
 foreach(

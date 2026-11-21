@@ -3,9 +3,11 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
+#include <loglib/time/internal/timestamp_parsing.hpp>
 #include <loglib/time/internal/timestamp_promotion.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/timestamp_parsing.hpp>
+
+#include <test_common/log_line_debug.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -21,8 +23,11 @@
 
 using namespace loglib;
 using loglib::internal::LastTimestampBytesHit;
+using loglib::internal::LastValidTimestampParse;
 using loglib::internal::PromoteLineTimestamps;
 using loglib::internal::TimeColumnSpec;
+using loglib::internal::TimestampFormat;
+using loglib::internal::TimestampParseScratch;
 
 namespace
 {
@@ -71,7 +76,7 @@ struct PromotionState
 
 std::optional<std::int64_t> TimeOf(const LogLine &line, const KeyIndex &keys, std::string_view key)
 {
-    const LogValue value = line.GetValue(keys, key);
+    const LogValue value = test_common::ValueByName(line, keys, key);
     if (const auto *stamp = std::get_if<TimeStamp>(&value))
     {
         return stamp->time_since_epoch().count();
@@ -88,11 +93,13 @@ TEST_CASE("PromoteLineTimestamps replaces the text of a time column with a times
     const std::array<TimeColumnSpec, 1> specs{MakeSpec(keys, {"time"}, {"%F %T"})};
     PromotionState state(1);
 
-    LogLine line(LogMap{{"time", std::string("2024-05-01 12:30:45")}, {"msg", std::string("hi")}}, keys, *source, 0);
+    LogLine line = test_common::MakeLine(
+        test_common::LogMap{{"time", std::string("2024-05-01 12:30:45")}, {"msg", std::string("hi")}}, keys, *source, 0
+    );
     CHECK(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
 
     CHECK(TimeOf(line, keys, "time") == Micros(2024, 5, 1, 12, 30, 45));
-    CHECK(std::get<std::string>(line.GetValue(keys, "msg")) == "hi");
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "msg")) == "hi");
     REQUIRE(state.lastValid[0].has_value());
     CHECK(specs[0].formats[state.lastValid[0]->formatIndex].Text() == "%F %T");
 }
@@ -106,22 +113,23 @@ TEST_CASE("PromoteLineTimestamps leaves a line without a matching key or format 
 
     SECTION("no key")
     {
-        LogLine line(LogMap{{"other", std::string("2024-05-01 12:30:45")}}, keys, *source, 0);
+        LogLine line =
+            test_common::MakeLine(test_common::LogMap{{"other", std::string("2024-05-01 12:30:45")}}, keys, *source, 0);
         CHECK_FALSE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
-        CHECK(std::holds_alternative<std::string>(line.GetValue(keys, "other")));
+        CHECK(std::holds_alternative<std::string>(test_common::ValueByName(line, keys, "other")));
     }
     SECTION("text that no format reads")
     {
-        LogLine line(LogMap{{"time", std::string("yesterday")}}, keys, *source, 0);
+        LogLine line = test_common::MakeLine(test_common::LogMap{{"time", std::string("yesterday")}}, keys, *source, 0);
         CHECK_FALSE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
-        CHECK(std::get<std::string>(line.GetValue(keys, "time")) == "yesterday");
+        CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "time")) == "yesterday");
         CHECK_FALSE(state.lastValid[0].has_value());
     }
     SECTION("a value that is not text")
     {
-        LogLine line(LogMap{{"time", static_cast<int64_t>(5)}}, keys, *source, 0);
+        LogLine line = test_common::MakeLine(test_common::LogMap{{"time", static_cast<int64_t>(5)}}, keys, *source, 0);
         CHECK_FALSE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
-        CHECK(std::get<int64_t>(line.GetValue(keys, "time")) == 5);
+        CHECK(std::get<int64_t>(test_common::ValueByName(line, keys, "time")) == 5);
     }
 }
 
@@ -134,25 +142,29 @@ TEST_CASE("PromoteLineTimestamps tries the keys and the formats in order", "[tim
 
     SECTION("the first key that is present wins")
     {
-        LogLine line(
-            LogMap{{"ts", std::string("2024-05-01 01:00:00")}, {"time", std::string("2024-05-02 02:00:00")}},
+        LogLine line = test_common::MakeLine(
+            test_common::LogMap{
+                {"ts", std::string("2024-05-01 01:00:00")}, {"time", std::string("2024-05-02 02:00:00")}
+            },
             keys,
             *source,
             0
         );
         REQUIRE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
         CHECK(TimeOf(line, keys, "ts") == Micros(2024, 5, 1, 1, 0, 0));
-        CHECK(std::holds_alternative<std::string>(line.GetValue(keys, "time")));
+        CHECK(std::holds_alternative<std::string>(test_common::ValueByName(line, keys, "time")));
     }
     SECTION("the second key is used when the first is missing")
     {
-        LogLine line(LogMap{{"time", std::string("2024-05-02 02:00:00")}}, keys, *source, 0);
+        LogLine line =
+            test_common::MakeLine(test_common::LogMap{{"time", std::string("2024-05-02 02:00:00")}}, keys, *source, 0);
         REQUIRE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
         CHECK(TimeOf(line, keys, "time") == Micros(2024, 5, 2, 2, 0, 0));
     }
     SECTION("the second format is used when the first does not read the text")
     {
-        LogLine line(LogMap{{"ts", std::string("03/05/2024 03:00:00")}}, keys, *source, 0);
+        LogLine line =
+            test_common::MakeLine(test_common::LogMap{{"ts", std::string("03/05/2024 03:00:00")}}, keys, *source, 0);
         REQUIRE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
         CHECK(TimeOf(line, keys, "ts") == Micros(2024, 5, 3, 3, 0, 0));
         REQUIRE(state.lastValid[0].has_value());
@@ -167,7 +179,8 @@ TEST_CASE("PromoteLineTimestamps reuses the last format and the last text", "[ti
     const std::array<TimeColumnSpec, 1> specs{MakeSpec(keys, {"time"}, {"%d/%m/%Y %T", "%F %T"})};
     PromotionState state(1);
 
-    LogLine first(LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 0);
+    LogLine first =
+        test_common::MakeLine(test_common::LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 0);
     REQUIRE(PromoteLineTimestamps(first, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     REQUIRE(state.lastValid[0].has_value());
     CHECK(specs[0].formats[state.lastValid[0]->formatIndex].Text() == "%F %T");
@@ -175,12 +188,14 @@ TEST_CASE("PromoteLineTimestamps reuses the last format and the last text", "[ti
     CHECK(state.bytesHits[0].bytes == "2024-05-01 12:00:00");
 
     // The same text on the next line gives the same value from the remembered hit.
-    LogLine same(LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 1);
+    LogLine same =
+        test_common::MakeLine(test_common::LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 1);
     REQUIRE(PromoteLineTimestamps(same, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     CHECK(TimeOf(same, keys, "time") == Micros(2024, 5, 1, 12, 0, 0));
 
     // Different text is parsed again with the remembered format.
-    LogLine next(LogMap{{"time", std::string("2024-05-01 12:00:01")}}, keys, *source, 2);
+    LogLine next =
+        test_common::MakeLine(test_common::LogMap{{"time", std::string("2024-05-01 12:00:01")}}, keys, *source, 2);
     REQUIRE(PromoteLineTimestamps(next, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     CHECK(TimeOf(next, keys, "time") == Micros(2024, 5, 1, 12, 0, 1));
     CHECK(state.bytesHits[0].bytes == "2024-05-01 12:00:01");
@@ -193,10 +208,12 @@ TEST_CASE("PromoteLineTimestamps converts every time column and reports any succ
     const std::array<TimeColumnSpec, 2> specs{MakeSpec(keys, {"a"}, {"%F %T"}), MakeSpec(keys, {"b"}, {"%F %T"})};
     PromotionState state(2);
 
-    LogLine line(LogMap{{"a", std::string("2024-05-01 01:00:00")}, {"b", std::string("nonsense")}}, keys, *source, 0);
+    LogLine line = test_common::MakeLine(
+        test_common::LogMap{{"a", std::string("2024-05-01 01:00:00")}, {"b", std::string("nonsense")}}, keys, *source, 0
+    );
     CHECK(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     CHECK(TimeOf(line, keys, "a") == Micros(2024, 5, 1, 1, 0, 0));
-    CHECK(std::get<std::string>(line.GetValue(keys, "b")) == "nonsense");
+    CHECK(std::get<std::string>(test_common::ValueByName(line, keys, "b")) == "nonsense");
     CHECK(state.lastValid[0].has_value());
     CHECK_FALSE(state.lastValid[1].has_value());
 }
@@ -211,12 +228,14 @@ TEST_CASE("PromoteLineTimestamps reads a time without a zone in the column zone"
     PromotionState state(1);
 
     // Berlin is UTC+2 in May.
-    LogLine summer(LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 0);
+    LogLine summer =
+        test_common::MakeLine(test_common::LogMap{{"time", std::string("2024-05-01 12:00:00")}}, keys, *source, 0);
     REQUIRE(PromoteLineTimestamps(summer, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     CHECK(TimeOf(summer, keys, "time") == Micros(2024, 5, 1, 10, 0, 0));
 
     // Berlin is UTC+1 in January.
-    LogLine winter(LogMap{{"time", std::string("2024-01-15 12:00:00")}}, keys, *source, 1);
+    LogLine winter =
+        test_common::MakeLine(test_common::LogMap{{"time", std::string("2024-01-15 12:00:00")}}, keys, *source, 1);
     REQUIRE(PromoteLineTimestamps(winter, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     CHECK(TimeOf(winter, keys, "time") == Micros(2024, 1, 15, 11, 0, 0));
 }
@@ -230,7 +249,9 @@ TEST_CASE("PromoteLineTimestamps keeps an explicit offset and ignores the column
     specs[0].timeZone = TimeZoneContext::Load(FindTestTzdata(), "America/New_York");
     PromotionState state(1);
 
-    LogLine line(LogMap{{"time", std::string("2024-05-01T12:00:00+02:00")}}, keys, *source, 0);
+    LogLine line = test_common::MakeLine(
+        test_common::LogMap{{"time", std::string("2024-05-01T12:00:00+02:00")}}, keys, *source, 0
+    );
     REQUIRE(PromoteLineTimestamps(line, specs, state.lastValid, state.bytesHits, state.scratch, {}));
     CHECK(TimeOf(line, keys, "time") == Micros(2024, 5, 1, 10, 0, 0));
 }

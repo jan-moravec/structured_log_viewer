@@ -5,13 +5,13 @@
  * A desktop session owns one and slp builds one from its flags and its configuration file. Every part finds its column
  * by keys, so moving a column never changes it.
  *
- * This is part of the schema module. LogConfiguration saves a SessionView in a configuration file.
+ * This is part of the config module. LogConfiguration saves a SessionView in a configuration file.
  */
 #pragma once
 
-#include "loglib/schema/anchor_entry.hpp"
-#include "loglib/schema/filter_expression.hpp"
-#include "loglib/schema/highlight_rule.hpp"
+#include "loglib/config/anchor_entry.hpp"
+#include "loglib/config/filter_expression.hpp"
+#include "loglib/config/highlight_rule.hpp"
 
 #include <string>
 #include <vector>
@@ -21,7 +21,7 @@ namespace loglib
 
 /**
  * @brief The saved sort. The column is named by its keys, found the way filter leaves find theirs, so a column move
- * needs no update. Empty keys mean no sort. Use ResolveLeafColumnByKeys to get the column index.
+ * needs no update. Empty keys mean no sort. Use FindColumnByKeys to get the column index.
  */
 struct Sort
 {

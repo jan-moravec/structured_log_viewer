@@ -1,10 +1,10 @@
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/temp_dir.hpp>

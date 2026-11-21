@@ -13,8 +13,8 @@
 
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
+#include "loglib/time/internal/timestamp_parsing.hpp"
 #include "loglib/time/time_zone_context.hpp"
-#include "loglib/time/timestamp_parsing.hpp"
 
 #include <chrono>
 #include <cstddef>

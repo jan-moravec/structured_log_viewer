@@ -1,6 +1,7 @@
 #pragma once
 
-#include <loglib/schema/filter_expression.hpp>
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QDialog>
 #include <QString>
@@ -29,7 +30,8 @@ class AdvancedFilterEditor : public QDialog
     Q_OBJECT
 
 public:
-    explicit AdvancedFilterEditor(QWidget *parent = nullptr);
+    /// @p timeZone is the zone in which the query text reads times that carry no offset.
+    explicit AdvancedFilterEditor(loglib::TimeZoneContext timeZone, QWidget *parent = nullptr);
     ~AdvancedFilterEditor() override = default;
 
     AdvancedFilterEditor(const AdvancedFilterEditor &) = delete;
@@ -64,4 +66,5 @@ private:
     QLabel *mHelpLabel = nullptr;
     QPushButton *mOkButton = nullptr;
     std::optional<loglib::FilterExpression> mCachedResult;
+    loglib::TimeZoneContext mTimeZone;
 };

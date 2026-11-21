@@ -39,7 +39,7 @@ LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContras
 
 Theme ParseTheme(std::string_view content)
 {
-    constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
+    constexpr auto OPTS = loglib::internal::JSON_FILE_OPTIONS;
 
     Theme parsed;
     const auto error = glz::read<OPTS>(parsed, content);
@@ -52,7 +52,7 @@ Theme ParseTheme(std::string_view content)
 
 std::string SerializeTheme(const Theme &theme)
 {
-    constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
+    constexpr auto OPTS = loglib::internal::JSON_FILE_OPTIONS;
 
     std::string json;
     const auto error = glz::write<OPTS>(theme, json);

@@ -1,12 +1,12 @@
 #include "common.hpp"
 
+#include <loglib/config/column.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/column_schema.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>

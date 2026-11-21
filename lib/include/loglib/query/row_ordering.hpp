@@ -37,86 +37,55 @@ class RowOrdering
 {
 public:
     /**
-     * @brief Constructs an ordering over @p columnIndex.
-     *
-     * @param columnIndex Index into the columns of the table layout.
-     * @param direction Display order.
-     * @param rankForEnumColumn Precomputed enum ranks, or nullptr.
-     *     Required for the Enumeration fast path in Permute.
+     * @brief Orders by the column at columnIndex in the table's column layout. Give rankForEnumColumn, the borrowed
+     * ranks of the column's enumeration values, to sort an enumeration column by rank. Without it such a column is
+     * sorted by its text.
      */
     RowOrdering(
         std::size_t columnIndex, SortDirection direction, const EnumDictRank *rankForEnumColumn = nullptr
     ) noexcept;
 
-    /** @brief Returns the configured column index. */
+    /** @brief The column this ordering sorts on. */
     [[nodiscard]] std::size_t ColumnIndex() const noexcept
     {
         return mColumnIndex;
     }
 
-    /** @brief Returns the configured direction. */
+    /** @brief The direction this ordering sorts in. */
     [[nodiscard]] SortDirection Direction() const noexcept
     {
         return mDirection;
     }
 
-    /** @brief Returns whether the direction is Ascending. */
+    /** @brief True if the direction is ascending. */
     [[nodiscard]] bool Ascending() const noexcept
     {
         return mDirection == SortDirection::Ascending;
     }
 
-    /** @brief Returns the borrowed enum-rank table, or nullptr. */
+    /** @brief The enumeration ranks given at construction, or nullptr. */
     [[nodiscard]] const EnumDictRank *RankForEnumColumn() const noexcept
     {
         return mRankForEnumColumn;
     }
 
-    /**
-     * @brief Three-way-compares two log rows on this column.
-     *
-     * Delegates to CompareRows. Does not apply direction.
-     *
-     * @param table Table that owns the rows.
-     * @param lhsRow Left log-row index.
-     * @param rhsRow Right log-row index.
-     * @return Negative, zero, or positive as CompareRows.
-     */
+    /** @brief Compares two rows of the table on this column like CompareRows. The direction is not applied. */
     [[nodiscard]] int Compare(const LogTable &table, std::size_t lhsRow, std::size_t rhsRow) const;
 
     /**
-     * @brief Returns whether @p lhsRow sorts before @p rhsRow.
-     *
-     * Applies @p direction to CompareRows. Equal cells compare
-     * @p lhsTieKey and @p rhsTieKey ascending, matching
-     * SortPermutationByColumn.
-     *
-     * @param table Table that owns the rows.
-     * @param lhsRow Left log-row index.
-     * @param rhsRow Right log-row index.
-     * @param lhsTieKey Stable tie key for the left row.
-     * @param rhsTieKey Stable tie key for the right row.
-     * @return true when the left row belongs earlier in display order.
+     * @brief True if the left row belongs before the right row in display order. The direction is applied. Rows with
+     * equal cells are ordered by their tie keys, ascending, so the order is stable.
      */
     [[nodiscard]] bool LessThan(
         const LogTable &table, std::size_t lhsRow, std::size_t rhsRow, std::size_t lhsTieKey, std::size_t rhsTieKey
     ) const;
 
-    /**
-     * @brief Returns a stable permutation of @p logRows.
-     *
-     * Delegates to SortPermutationByColumn.
-     *
-     * @param table Table that owns the rows.
-     * @param logRows Log-row indices to order.
-     * @return Indices into @p logRows in display order.
-     */
+    /** @brief Sorts logRows as SortPermutationByColumn does. The result holds indices into logRows in display order. */
     [[nodiscard]] std::vector<std::size_t> Permute(const LogTable &table, std::span<const std::size_t> logRows) const;
 
     /**
-     * @brief Returns the part from position @p begin to position @p end of Permute, without sorting the rest.
-     *
-     * Delegates to SortPermutationWindowByColumn.
+     * @brief The part of the Permute result from position begin to position end, without sorting the rest. It works
+     * like SortPermutationWindowByColumn.
      */
     [[nodiscard]] std::vector<std::size_t> PermuteWindow(
         const LogTable &table, std::span<const std::size_t> logRows, std::size_t begin, std::size_t end

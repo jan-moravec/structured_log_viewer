@@ -161,11 +161,13 @@ QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level)
 /// Render @p ts as a local-time string using the same timezone
 /// context and format pipeline the table uses. Rounds to whole
 /// seconds (finest rung is 1 s).
-QString FormatLocalTimestampForZoom(loglib::TimeStamp ts, loglib::HistogramBucketSize size)
+QString FormatLocalTimestampForZoom(
+    loglib::TimeStamp ts, loglib::HistogramBucketSize size, const loglib::TimeZoneContext &timeZone
+)
 {
     const auto seconds = std::chrono::floor<std::chrono::seconds>(ts);
     const loglib::TimeStamp secondStamp = std::chrono::time_point_cast<std::chrono::microseconds>(seconds);
-    const std::string formatted = loglib::ProcessDefaultTimeZone().Format(secondStamp, DateFormatForZoom(size));
+    const std::string formatted = timeZone.Format(secondStamp, DateFormatForZoom(size));
     return QString::fromStdString(formatted);
 }
 
@@ -320,6 +322,7 @@ QString HistogramWidget::FormatDetailsLine() const
     }
     const auto &idx = mModel->Index();
     const QLocale locale = QLocale::system();
+    const loglib::TimeZoneContext timeZone = mModel->TimeZone();
 
     // Hovered-bucket branch: mirror the merged counts the paint
     // routine drew under the pointer. Falls through to the plot
@@ -337,8 +340,8 @@ QString HistogramWidget::FormatDetailsLine() const
             // last merged bucket.
             const auto stop = idx.BucketEnd(end - 1);
             QString body = QStringLiteral("%1 \u2013 %2  \u00b7  total: %3")
-                               .arg(FormatLocalTimestampForZoom(start, idx.BucketSize()))
-                               .arg(FormatLocalTimestampForZoom(stop, idx.BucketSize()))
+                               .arg(FormatLocalTimestampForZoom(start, idx.BucketSize(), timeZone))
+                               .arg(FormatLocalTimestampForZoom(stop, idx.BucketSize(), timeZone))
                                .arg(locale.toString(static_cast<qulonglong>(merged.Total())));
             for (const auto level : STACK_ORDER)
             {
@@ -365,8 +368,8 @@ QString HistogramWidget::FormatDetailsLine() const
         const auto first = idx.BucketStart(0);
         const auto last = idx.BucketEnd(idx.Buckets().size() - 1);
         rangePart = QStringLiteral("  %1 \u2013 %2")
-                        .arg(FormatLocalTimestampForZoom(first, idx.BucketSize()))
-                        .arg(FormatLocalTimestampForZoom(last, idx.BucketSize()));
+                        .arg(FormatLocalTimestampForZoom(first, idx.BucketSize(), timeZone))
+                        .arg(FormatLocalTimestampForZoom(last, idx.BucketSize(), timeZone));
     }
     return QStringLiteral("bucket: %1  \u00b7  rows: %2%3")
         .arg(bucketLabel)

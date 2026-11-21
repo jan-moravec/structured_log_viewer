@@ -35,7 +35,10 @@ foreach(fuzz_name IN LISTS LOGLIB_FUZZ_TARGETS)
 
     add_executable(fuzz_replay_${fuzz_name} "${fuzz_source}" replay_main.cpp)
     target_link_libraries(fuzz_replay_${fuzz_name} PRIVATE loglib project_warnings)
-    target_include_directories(fuzz_replay_${fuzz_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(
+        fuzz_replay_${fuzz_name}
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../common/include
+    )
     add_test(
         NAME fuzz_replay_${fuzz_name}
         COMMAND
@@ -60,7 +63,10 @@ foreach(fuzz_name IN LISTS LOGLIB_FUZZ_TARGETS)
     if(LOGLIB_FUZZ_BUILD)
         add_executable(fuzz_${fuzz_name} "${fuzz_source}")
         target_link_libraries(fuzz_${fuzz_name} PRIVATE loglib project_warnings)
-        target_include_directories(fuzz_${fuzz_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+        target_include_directories(
+            fuzz_${fuzz_name}
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../common/include
+        )
         target_compile_options(fuzz_${fuzz_name} PRIVATE -fsanitize=fuzzer,address,undefined)
         target_link_options(fuzz_${fuzz_name} PRIVATE -fsanitize=fuzzer,address,undefined)
     endif()

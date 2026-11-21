@@ -1,6 +1,6 @@
 #include "loglib/table/table_loader.hpp"
 
-#include "loglib/schema/log_configuration.hpp"
+#include "loglib/config/log_configuration.hpp"
 
 #include <algorithm>
 #include <format>

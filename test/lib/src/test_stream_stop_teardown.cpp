@@ -8,6 +8,7 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/ingest/internal/tailing_bytes_producer_test_access.hpp>
 #include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -159,7 +160,11 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes", "[str
     // Let the worker drain pre-fill and park in WaitForBytes so we measure the typical idle path (Stop is correct
     // either way). Two passes of the producer mean its pre-fill is queued and the parser has had them to read.
     REQUIRE(test_common::WaitUntil([&] { return sink.started.load(std::memory_order_acquire); }));
-    REQUIRE(test_common::WaitForPasses(*producerPtr, 2));
+    REQUIRE(
+        test_common::WaitForPasses(
+            [&] { return loglib::internal::TailingBytesProducerTestAccess::PollCount(*producerPtr); }, 2
+        )
+    );
 
     const auto stopStart = std::chrono::steady_clock::now();
     producerPtr->Stop();

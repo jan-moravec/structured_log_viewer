@@ -15,14 +15,14 @@
 #include "qt_streaming_log_sink.hpp"
 #include <loglib/query/filter_compile.hpp>
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <QSignalSpy>

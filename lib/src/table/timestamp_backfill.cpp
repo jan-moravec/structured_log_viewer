@@ -1,7 +1,7 @@
 #include "loglib/table/internal/timestamp_backfill.hpp"
 
+#include "loglib/time/internal/timestamp_parsing.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
-#include "loglib/time/timestamp_parsing.hpp"
 
 #include <fmt/format.h>
 
@@ -14,7 +14,7 @@
 #include <string_view>
 #include <utility>
 
-namespace loglib
+namespace loglib::internal
 {
 
 namespace
@@ -125,4 +125,4 @@ void BackfillTimestampColumn(
     BackfillColumnLoop(keyIndex, column, lines, timeZone, referenceTime, nullptr);
 }
 
-} // namespace loglib
+} // namespace loglib::internal

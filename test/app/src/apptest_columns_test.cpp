@@ -31,6 +31,8 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
@@ -55,8 +57,6 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -393,7 +393,7 @@ private slots:
         sink->OnBatch(MakeSyntheticBatch(streamSource, valueKey, 1, 3, true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
-        QCOMPARE(loglib::FirstTimeColumnIndex(model->Layout()), -1);
+        QVERIFY(!loglib::FirstTimeColumnIndex(model->Layout()).has_value());
 
         mWindow->statusBar()->clearMessage();
         mWindow->ExecuteGotoTimestampForTest(
@@ -901,8 +901,7 @@ private slots:
         );
 
         constexpr std::int64_t MICROS_2024_04_28_10_00_02 = 1'714'298'402'000'000;
-        const std::int64_t expectedUtc =
-            loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(MICROS_2024_04_28_10_00_02);
+        const std::int64_t expectedUtc = TestTimeZone().LocalToUtc(MICROS_2024_04_28_10_00_02);
         QCOMPARE(
             static_cast<std::int64_t>(
                 model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong()
@@ -2906,7 +2905,7 @@ private slots:
 
         // Parse `svc:auth` -- ParseQuery emits a single-key
         // binding matching the identifier the user typed.
-        auto parsed = loglib::ParseQuery("svc:auth", loglib::ProcessDefaultTimeZone());
+        auto parsed = loglib::ParseQuery("svc:auth", TestTimeZone());
         QVERIFY2(parsed.has_value(), "ParseQuery must accept a well-formed simple leaf");
         const auto *parsedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&parsed->node);
         QVERIFY2(parsedLeaf != nullptr, "parsed root must be a Leaf");

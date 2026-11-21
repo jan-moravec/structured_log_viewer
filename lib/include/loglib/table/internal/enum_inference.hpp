@@ -10,12 +10,12 @@
  */
 #pragma once
 
+#include "loglib/config/column.hpp"
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/row_batch.hpp"
 #include "loglib/core/transparent_string_hash.hpp"
-#include "loglib/schema/column_schema.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -28,9 +28,12 @@
 
 namespace loglib
 {
-
-class LogData;
 class ColumnLayout;
+class LogData;
+} // namespace loglib
+
+namespace loglib::internal
+{
 
 /** @brief For each level, the raw dictionary values that mapped to it. */
 using LevelValueMap = std::unordered_map<LogLevel, std::vector<std::string>>;
@@ -323,4 +326,4 @@ private:
     std::vector<ParseError> mPendingErrors;
 };
 
-} // namespace loglib
+} // namespace loglib::internal

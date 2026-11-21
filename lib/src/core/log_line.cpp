@@ -179,21 +179,6 @@ LogLine::LogLine(
     mValues.Borrow(slots, count);
 }
 
-LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId)
-    : mSource(&source)
-{
-    assert(lineId <= CompactLineFields::MAX_SPARE);
-    mValues.SetSpare(lineId);
-    std::vector<loglib::CompactLogValue> staging;
-    staging.reserve(values.size());
-    for (const auto &[key, value] : values)
-    {
-        staging.push_back(MakeCompactFromVariant(source, lineId, value).WithKey(keys.GetOrInsert(key)));
-    }
-    std::ranges::sort(staging, [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
-    mValues.AssignSorted(staging.data(), static_cast<uint32_t>(staging.size()));
-}
-
 const loglib::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
 {
     // Linear scan; lines are tiny and sorted, with an early bail.
@@ -260,45 +245,6 @@ LogValue LogLine::GetValue(KeyId id) const
         return LogValue{std::monostate{}};
     }
     return compact->Materialise(mSource, LineId(), id);
-}
-
-LogValue LogLine::GetValue(const KeyIndex &keys, std::string_view key) const
-{
-    if (key.empty())
-    {
-        return LogValue{std::monostate{}};
-    }
-    const KeyId id = keys.Find(key);
-    if (id == INVALID_KEY_ID)
-    {
-        return LogValue{std::monostate{}};
-    }
-    return GetValue(id);
-}
-
-std::vector<std::string> LogLine::GetKeys(const KeyIndex &keys) const
-{
-    std::vector<std::string> names;
-    names.reserve(mValues.Size());
-    for (uint32_t i = 0; i < mValues.Size(); ++i)
-    {
-        assert(mValues.Data()[i].Key() < keys.Size() && "GetKeys: the key id is not in this index");
-        names.emplace_back(keys.KeyOf(mValues.Data()[i].Key()));
-    }
-    return names;
-}
-
-LogMap LogLine::Values(const KeyIndex &keys) const
-{
-    LogMap snapshot;
-    snapshot.reserve(mValues.Size());
-    for (uint32_t i = 0; i < mValues.Size(); ++i)
-    {
-        const auto &entry = mValues.Data()[i];
-        assert(entry.Key() < keys.Size() && "Values: the key id is not in this index");
-        snapshot.emplace(std::string(keys.KeyOf(entry.Key())), entry.Materialise(mSource, LineId(), entry.Key()));
-    }
-    return snapshot;
 }
 
 void LogLine::SetValue(KeyId id, const LogValue &value)

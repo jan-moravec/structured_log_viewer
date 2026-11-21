@@ -2,18 +2,21 @@
 #include "log_value_helpers.hpp"
 #include "parse_only.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/internal/parse_runtime.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
+
+#include <test_common/log_line_debug.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
@@ -21,6 +24,7 @@
 #include <tsl/robin_map.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -291,7 +295,11 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")));
+        CHECK(
+            std::holds_alternative<std::monostate>(
+                test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")
+            )
+        );
         REQUIRE(SortedKeys(result.data).size() == 1);
         CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -314,7 +322,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
         CHECK(
-            loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) ==
+            loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) ==
             std::string_view{"value"}
         );
         REQUIRE(SortedKeys(result.data).size() == 1);
@@ -335,7 +343,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == LARGE_UINT);
+        CHECK(
+            std::get<uint64_t>(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) ==
+            LARGE_UINT
+        );
         REQUIRE(SortedKeys(result.data).size() == 1);
         CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -354,7 +365,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::get<int64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == -12);
+        CHECK(std::get<int64_t>(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) == -12);
         REQUIRE(SortedKeys(result.data).size() == 1);
         CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -373,7 +384,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
-        CHECK(std::get<double>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == Catch::Approx(3.14));
+        CHECK(
+            std::get<double>(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) ==
+            Catch::Approx(3.14)
+        );
         REQUIRE(SortedKeys(result.data).size() == 1);
         CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -392,7 +406,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         );
         REQUIRE(result.errors.empty());
         CHECK(result.data.Lines().size() == 1);
-        CHECK(std::get<bool>(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == true);
+        CHECK(std::get<bool>(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) == true);
         REQUIRE(SortedKeys(result.data).size() == 1);
         CHECK(SortedKeys(result.data)[0] == "key");
         REQUIRE(result.data.Sources().size() == 1);
@@ -420,7 +434,7 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values.at("null")));
     CHECK(loglib::AsStringView(values.at("string")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values.at("uinteger")) == LARGE_UINT);
@@ -462,7 +476,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values.at("1")));
     CHECK(loglib::AsStringView(values.at("2")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values.at("3")) == LARGE_UINT);
@@ -470,7 +484,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(std::get<double>(values.at("5")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values.at("6")) == true);
 
-    const auto values1 = result.data.Lines()[1].Values(result.data.Keys());
+    const auto values1 = test_common::ToMap(result.data.Lines()[1], result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values1.at("6")));
     CHECK(loglib::AsStringView(values1.at("1")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values1.at("2")) == LARGE_UINT);
@@ -478,7 +492,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     CHECK(std::get<double>(values1.at("4")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values1.at("5")) == true);
 
-    const auto values2 = result.data.Lines()[2].Values(result.data.Keys());
+    const auto values2 = test_common::ToMap(result.data.Lines()[2], result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values2.at("5")));
     CHECK(loglib::AsStringView(values2.at("6")) == std::string_view{"value"});
     CHECK(std::get<uint64_t>(values2.at("1")) == LARGE_UINT);
@@ -511,10 +525,12 @@ TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == testFile.RecordCount());
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key1")) ==
+        std::string_view{"value1"}
     );
     CHECK(
-        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "key2")) ==
+        std::string_view{"value2"}
     );
     const auto sortedKeys = SortedKeys(result.data);
     REQUIRE(sortedKeys.size() == 2);
@@ -541,10 +557,12 @@ TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]"
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key1")) ==
+        std::string_view{"value1"}
     );
     CHECK(
-        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "key2")) ==
+        std::string_view{"value2"}
     );
 
     REQUIRE(result.data.Sources().size() == 1);
@@ -572,10 +590,12 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     CHECK(result.errors.size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key1")) ==
+        std::string_view{"value1"}
     );
     CHECK(
-        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "key2")) ==
+        std::string_view{"value2"}
     );
     const auto sortedKeys = SortedKeys(result.data);
     REQUIRE(sortedKeys.size() == 2);
@@ -608,10 +628,12 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
     CHECK(result.errors.size() == 2);
     REQUIRE(SortedKeys(result.data).size() == 2);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key1")) == std::string_view{"value1"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key1")) ==
+        std::string_view{"value1"}
     );
     CHECK(
-        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "key2")) == std::string_view{"value2"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "key2")) ==
+        std::string_view{"value2"}
     );
     REQUIRE(result.data.Sources().size() == 1);
     REQUIRE(result.data.Lines().size() == 2);
@@ -685,67 +707,46 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
         const auto &rhs = multiResult.data.Lines()[row];
         for (const auto &key : singleKeys)
         {
-            const auto lv = lhs.GetValue(singleResult.data.Keys(), key);
-            const auto rv = rhs.GetValue(multiResult.data.Keys(), key);
+            const auto lv = test_common::ValueByName(lhs, singleResult.data.Keys(), key);
+            const auto rv = test_common::ValueByName(rhs, multiResult.data.Keys(), key);
             INFO("row=" << row << " key=" << key);
             CHECK(LogValueEquivalent(lv, rv));
         }
     }
 }
 
-#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-
-TEST_CASE(
-    "Per-worker key cache holds canonical KeyIndex::GetOrInsert calls to threads x keys",
-    "[json_parser][per_worker_cache]"
-)
+TEST_CASE("PerWorkerKeyCache interns each key once and keeps its id stable", "[json_parser][per_worker_cache]")
 {
-    // 100 lines, 5 fixed keys: the per-worker tsl::robin_map cache means
-    // `KeyIndex::LoadGetOrInsertCount() <= effectiveThreads × 5`. A
-    // disabled cache would balloon the count toward `lines × keys` = 500.
     using namespace loglib;
+    using namespace loglib::internal;
 
-    constexpr size_t LINE_COUNT = 100;
-    constexpr unsigned int THREADS = 4;
+    constexpr size_t ROUNDS = 100;
+    const std::array<std::string_view, 5> names{"key1", "key2", "key3", "key4", "key5"};
 
-    // Vary values so lines aren't byte-identical, but lock the key surface
-    // to {key1..key5}.
-    std::vector<test_common::LogRecord> records;
-    records.reserve(LINE_COUNT);
-    for (size_t i = 0; i < LINE_COUNT; ++i)
+    KeyIndex keys;
+    PerWorkerKeyCache cache;
+    std::array<KeyId, 5> ids{};
+    for (size_t i = 0; i < names.size(); ++i)
     {
-        glz::generic_sorted_u64 json;
-        json["key1"] = static_cast<int64_t>(i);
-        json["key2"] = std::string("value_") + std::to_string(i);
-        json["key3"] = static_cast<int64_t>(i * 2);
-        json["key4"] = (i % 2 == 0);
-        json["key5"] = static_cast<double>(i) * 0.5;
-        records.emplace_back(std::move(json));
+        ids[i] = InternKeyVia(names[i], keys, cache);
     }
-    const MemoryStructuredLog testFile(std::move(records), test_common::JsonLines());
 
-    const JsonParser parser;
-    ParserOptions opts;
-    opts.threads = THREADS;
+    // Seeing the same keys again, as every later line of a batch does, finds them in the cache and gives the same ids.
+    for (size_t round = 0; round < ROUNDS; ++round)
+    {
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            REQUIRE(InternKeyVia(names[i], keys, cache) == ids[i]);
+        }
+    }
 
-    KeyIndex::ResetInstrumentationCounters();
-    const auto cachedResult = ParseWithSink(testFile.OpenSource(), opts);
-    const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
-
-    REQUIRE(cachedResult.errors.empty());
-    REQUIRE(cachedResult.data.Lines().size() == LINE_COUNT);
-
-    // Upper bound: every Stage B worker may pay one canonical lookup per fresh key before its
-    // local cache is populated. effectiveThreads × keys is the worst case; the actual number is
-    // typically smaller because not every worker runs and not every worker sees every key.
-    INFO("cached run cachedCalls=" << cachedCalls << " bound=" << (THREADS * 5));
-    CHECK(cachedCalls <= static_cast<std::size_t>(THREADS) * 5);
-
-    // Sanity: at least the keys themselves were registered exactly once per unique key.
-    CHECK(SortedKeys(cachedResult.data).size() == 5);
+    CHECK(cache.map.size() == names.size());
+    CHECK(keys.Size() == names.size());
+    for (size_t i = 0; i < names.size(); ++i)
+    {
+        CHECK(keys.KeyOf(ids[i]) == names[i]);
+    }
 }
-
-#endif // LOGLIB_KEY_INDEX_INSTRUMENTATION
 
 namespace
 {

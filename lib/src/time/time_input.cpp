@@ -1,6 +1,6 @@
-#include "loglib/time/user_timestamp.hpp"
+#include "loglib/time/time_input.hpp"
 
-#include "loglib/time/timestamp_parsing.hpp"
+#include "loglib/time/internal/timestamp_parsing.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -51,7 +51,7 @@ namespace
            std::ranges::equal(text, NOW, [](char a, char b) { return AsciiToLower(a) == b; });
 }
 
-[[nodiscard]] std::optional<UserTimestampParse> TryParseRelativeShortcut(
+[[nodiscard]] std::optional<TimeInput> TryParseRelativeShortcut(
     std::string_view text, std::chrono::system_clock::time_point now
 )
 {
@@ -115,7 +115,7 @@ namespace
 
     const std::int64_t offsetMicros = static_cast<std::int64_t>(n) * microsPerUnit;
     const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    return UserTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
+    return TimeInput{.microseconds = nowMicros - offsetMicros, .isNaive = false};
 }
 
 /**
@@ -167,12 +167,17 @@ bool IsNaiveTimestamp(std::string_view text, std::string_view format) noexcept
     return !FormatHasZoneSpecifier(format) && !EndsWithUtcDesignator(text);
 }
 
+namespace internal
+{
+
 bool IsNaiveTimestamp(std::string_view text, const TimestampFormat &format) noexcept
 {
     return !format.HasZone() && !EndsWithUtcDesignator(text);
 }
 
-std::optional<UserTimestampParse> ParseUserTimestamp(
+} // namespace internal
+
+std::optional<TimeInput> ParseTimeInput(
     std::string_view input, std::span<const std::string> columnParseFormats, std::chrono::system_clock::time_point now
 )
 {
@@ -185,7 +190,7 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
     if (IsNowKeyword(trimmed))
     {
         const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-        return UserTimestampParse{.micros = nowMicros, .isNaive = false};
+        return TimeInput{.microseconds = nowMicros, .isNaive = false};
     }
 
     if (const auto relative = TryParseRelativeShortcut(trimmed, now); relative.has_value())
@@ -207,16 +212,16 @@ std::optional<UserTimestampParse> ParseUserTimestamp(
         }
     }
 
-    TimestampParseScratch scratch;
+    internal::TimestampParseScratch scratch;
     for (const auto &fmt : candidates)
     {
-        const TimestampFormat format(fmt);
+        const internal::TimestampFormat format(fmt);
         TimeStamp parsed{};
         if (format.Parse(trimmed, scratch, now, parsed))
         {
-            return UserTimestampParse{
-                .micros = parsed.time_since_epoch().count(),
-                .isNaive = IsNaiveTimestamp(trimmed, format),
+            return TimeInput{
+                .microseconds = parsed.time_since_epoch().count(),
+                .isNaive = internal::IsNaiveTimestamp(trimmed, format),
             };
         }
     }
