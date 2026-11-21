@@ -31,11 +31,13 @@ struct JsonFileOptions : glz::opts
 // MSVC requires designated initializers to follow the declaration order of the members.
 // null_terminated is off because the readers take a string_view, which has no terminator, and Glaze would read one byte
 // past its end.
-constexpr JsonFileOptions JSON_FILE_OPTIONS{{
-    .null_terminated = false,
-    .error_on_unknown_keys = true,
-    .prettify = true,
-}};
+constexpr JsonFileOptions JSON_FILE_OPTIONS{
+    {
+        .null_terminated = false,
+        .error_on_unknown_keys = true,
+        .prettify = true,
+    },
+};
 
 /**
  * @brief The JSON options for configuration files and the configuration inside a session bundle.
