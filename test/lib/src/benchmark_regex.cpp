@@ -53,9 +53,7 @@ StreamingFixture MakeTemplateFixture(
     {
         throw std::runtime_error("regex template not found: " + std::string(templateName));
     }
-    const std::string pattern{tmpl->pattern};
-    const ContinuationMode continuation = tmpl->continuationMode;
-    const std::string headerAnchor{tmpl->headerAnchor};
+    const RegexSettings settings = tmpl->regex;
     return StreamingFixture{
         .logFile = std::make_unique<TestStructuredLogFile>(
             StreamedRecords{
@@ -67,9 +65,9 @@ StreamingFixture MakeTemplateFixture(
             test_common::RecordSchema{},
             fileName
         ),
-        .parser = [pattern, continuation, headerAnchor](
-                      FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                  ) { RegexParser{pattern, continuation, headerAnchor}.Parse(source, sink, options); },
+        .parser = [settings](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+            RegexParser{settings}.Parse(source, sink, options);
+        },
     };
 }
 
@@ -178,13 +176,16 @@ public:
     TracebackTemplateHolder(std::string name, std::string headerAnchor)
         : mTemplate{
               .name = std::move(name),
-              .pattern = PYTHON_TRACEBACK_PATTERN,
+              .regex =
+                  {
+                      .pattern = PYTHON_TRACEBACK_PATTERN,
+                      .continuation = ContinuationMode::UntilNextHeader,
+                      .headerAnchor = std::move(headerAnchor),
+                  },
               .sampleLines = {"INFO: hello"},
               .autoDetect = false,
               .priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY,
               .description = "",
-              .continuationMode = ContinuationMode::UntilNextHeader,
-              .headerAnchor = std::move(headerAnchor),
           }
     {
     }
@@ -215,10 +216,9 @@ StreamingFixture MakePythonTracebackFixture(
             test_common::RecordSchema{},
             fileName
         ),
-        .parser =
-            [guard, &extra](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.Parse(source, sink, options);
-            },
+        .parser = [guard, &extra](
+                      FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                  ) { RegexParser{extra.regex}.Parse(source, sink, options); },
         .keepAlive = guard,
     };
 }
@@ -316,12 +316,12 @@ void RegisterRegexBenchmarks()
 
     RegisterStreaming("Stream 1'000'000 Java multi-line (indented) records to LogTable", [] {
         const RegexTemplate *tmpl = FindTemplateByName("Java / log4j / SLF4J Logback");
-        if (tmpl == nullptr || tmpl->continuationMode != ContinuationMode::Indented)
+        if (tmpl == nullptr || tmpl->regex.continuation != ContinuationMode::Indented)
         {
             throw std::runtime_error("the Java template is missing or not indented");
         }
-        const std::string pattern{tmpl->pattern};
-        const std::string headerAnchor{tmpl->headerAnchor};
+        const std::string pattern{tmpl->regex.pattern};
+        const std::string headerAnchor{tmpl->regex.headerAnchor};
         return StreamingFixture{
             .logFile = std::make_unique<TestStructuredLogFile>(
                 StreamedRecords{
@@ -335,7 +335,9 @@ void RegisterRegexBenchmarks()
             ),
             .parser = [pattern,
                        headerAnchor](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{pattern, ContinuationMode::Indented, headerAnchor}.Parse(source, sink, options);
+                RegexParser{
+                    {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = headerAnchor}
+                }.Parse(source, sink, options);
             },
         };
     });

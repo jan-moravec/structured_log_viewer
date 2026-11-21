@@ -40,20 +40,20 @@ namespace
     return MakeFailure(code, {}, sentence);
 }
 
-[[nodiscard]] std::optional<loglib::Source::Format> ToSourceFormat(InputFormat format) noexcept
+[[nodiscard]] std::optional<loglib::LogFormat> ToSourceFormat(InputFormat format) noexcept
 {
     switch (format)
     {
     case InputFormat::Auto:
         return std::nullopt;
     case InputFormat::Json:
-        return loglib::Source::Format::Json;
+        return loglib::LogFormat::Json;
     case InputFormat::Logfmt:
-        return loglib::Source::Format::Logfmt;
+        return loglib::LogFormat::Logfmt;
     case InputFormat::Csv:
-        return loglib::Source::Format::Csv;
+        return loglib::LogFormat::Csv;
     case InputFormat::Regex:
-        return loglib::Source::Format::Regex;
+        return loglib::LogFormat::Regex;
     }
     return std::nullopt;
 }
@@ -63,24 +63,14 @@ namespace
     return global.templateDir ? *global.templateDir : loglib::UserRegexTemplateDirectory();
 }
 
-/** @brief The pattern named by `--regex` or `--regex-template`. */
-/** @brief The regex settings of a template: its pattern, continuation mode and header anchor. */
-[[nodiscard]] loglib::FormatOptions RegexOptionsOf(const loglib::RegexTemplate &tmpl)
-{
-    return loglib::FormatOptions{
-        .regexPattern = tmpl.pattern,
-        .regexContinuationMode = tmpl.continuationMode,
-        .regexHeaderAnchor = tmpl.headerAnchor,
-    };
-}
-
-[[nodiscard]] std::expected<loglib::FormatOptions, Failure> ResolveRegexPattern(
+/** @brief The regex settings named by `--regex` or `--regex-template`. */
+[[nodiscard]] std::expected<loglib::RegexSettings, Failure> ResolveRegexPattern(
     const GlobalOptions &global, const InputOptions &input, const loglib::RegexTemplateCatalog &catalog
 )
 {
     if (input.regex)
     {
-        return loglib::FormatOptions{.regexPattern = *input.regex};
+        return loglib::RegexSettings{.pattern = *input.regex};
     }
     if (!input.regexTemplate)
     {
@@ -93,7 +83,7 @@ namespace
     {
         if (EqualsIgnoreCase(slugs[i], slug))
         {
-            return RegexOptionsOf(catalog.Builtins()[i]);
+            return catalog.Builtins()[i].regex;
         }
     }
 
@@ -108,7 +98,7 @@ namespace
             buffer << file.rdbuf();
             try
             {
-                return RegexOptionsOf(loglib::ParseRegexTemplate(buffer.str()));
+                return loglib::ParseRegexTemplate(buffer.str()).regex;
             }
             catch (const std::exception &ex)
             {
@@ -122,7 +112,7 @@ namespace
         {
             if (EqualsIgnoreCase(tmpl.name, slug))
             {
-                return RegexOptionsOf(tmpl);
+                return tmpl.regex;
             }
         }
     }
@@ -223,9 +213,7 @@ public:
         constexpr auto PEEK_TIMEOUT = std::chrono::milliseconds(500);
         std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, PEEK_TIMEOUT);
         const std::string_view sniff = peek;
-        auto format = ResolveFormat(
-            FormatProbe{.label = "-", .sample = sniff}
-        );
+        auto format = ResolveFormat(FormatProbe{.label = "-", .sample = sniff});
         if (!format)
         {
             return std::move(format.error());
@@ -338,24 +326,22 @@ private:
      *
      * A pinned `--format` must accept the probe; otherwise the probe detects it.
      */
-    [[nodiscard]] std::expected<loglib::DetectedFormat, Failure> ResolveFormat(const FormatProbe &probe)
+    [[nodiscard]] std::expected<loglib::FormatSpec, Failure> ResolveFormat(const FormatProbe &probe)
     {
-        loglib::DetectedFormat resolved;
+        loglib::FormatSpec resolved;
         if (const auto pinned = ToSourceFormat(mInput->format))
         {
             resolved.format = *pinned;
-            if (*pinned == loglib::Source::Format::Regex)
+            if (*pinned == loglib::LogFormat::Regex)
             {
                 auto regex = ResolveRegexPattern(*mGlobal, *mInput, mCatalog);
                 if (!regex)
                 {
                     return std::unexpected(std::move(regex.error()));
                 }
-                resolved.regexPattern = std::move(regex->regexPattern);
-                resolved.regexContinuationMode = regex->regexContinuationMode;
-                resolved.regexHeaderAnchor = std::move(regex->regexHeaderAnchor);
+                resolved.regex = std::move(*regex);
             }
-            if (!loglib::SampleFitsFormat(probe.sample, resolved.format, resolved.Options()))
+            if (!loglib::SampleFitsFormat(probe.sample, resolved))
             {
                 return std::unexpected(LoadFail(
                     ExitCode::Input,
@@ -365,14 +351,15 @@ private:
         }
         else
         {
-            resolved = loglib::DetectFormat(probe.sample, mCatalog).value_or(loglib::DetectedFormat{});
-            if (resolved.format == loglib::Source::Format::Regex && resolved.regexPattern.empty())
+            resolved = loglib::DetectFormat(probe.sample, mCatalog).value_or(loglib::FormatSpec{});
+            if (resolved.format == loglib::LogFormat::Regex && resolved.regex.pattern.empty())
             {
                 return std::unexpected(
                     LoadFail(ExitCode::Input, std::format("could not detect a parser for source '{}'.", probe.label))
                 );
             }
         }
+        resolved.logfmtMultiline = !mInput->noMultilineLogfmt;
         if (!mLoaded.format)
         {
             mLoaded.format = resolved;
@@ -389,9 +376,9 @@ private:
         }
     }
 
-    template <typename Source> void Parse(const loglib::DetectedFormat &format, std::unique_ptr<Source> source)
+    template <typename Source> void Parse(const loglib::FormatSpec &format, std::unique_ptr<Source> source)
     {
-        const auto parser = loglib::MakeParserForFormat(format.format, format.Options(!mInput->noMultilineLogfmt));
+        const auto parser = loglib::MakeParser(format);
         loglib::ParseOutcome outcome = loglib::ParseIntoTable(
             mLoaded.table,
             *parser,
@@ -431,17 +418,17 @@ private:
 
 } // namespace
 
-std::string_view FormatName(loglib::Source::Format format) noexcept
+std::string_view FormatName(loglib::LogFormat format) noexcept
 {
     switch (format)
     {
-    case loglib::Source::Format::Json:
+    case loglib::LogFormat::Json:
         return "json";
-    case loglib::Source::Format::Logfmt:
+    case loglib::LogFormat::Logfmt:
         return "logfmt";
-    case loglib::Source::Format::Csv:
+    case loglib::LogFormat::Csv:
         return "csv";
-    case loglib::Source::Format::Regex:
+    case loglib::LogFormat::Regex:
         return "regex";
     }
     return "unknown";
@@ -538,22 +525,21 @@ std::expected<std::unique_ptr<loglib::LogParser>, Failure> MakeStreamParser(
         return std::make_unique<loglib::AutoDetectParser>(
             loglib::PROBE_BYTES_BUDGET,
             loglib::AutoDetectParser::DEFAULT_PEEK_TIMEOUT,
-            loglib::FormatOptions{.multilineLogfmt = !input.noMultilineLogfmt},
+            !input.noMultilineLogfmt,
             catalog
         );
     }
-    loglib::FormatOptions options;
-    if (*pinned == loglib::Source::Format::Regex)
+    loglib::FormatSpec spec{.format = *pinned, .logfmtMultiline = !input.noMultilineLogfmt};
+    if (*pinned == loglib::LogFormat::Regex)
     {
         auto resolved = ResolveRegexPattern(global, input, catalog);
         if (!resolved)
         {
             return std::unexpected(std::move(resolved.error()));
         }
-        options = std::move(*resolved);
+        spec.regex = std::move(*resolved);
     }
-    options.multilineLogfmt = !input.noMultilineLogfmt;
-    return loglib::MakeParserForFormat(*pinned, options);
+    return loglib::MakeParser(spec);
 }
 
 loglib::ParserOptions MakeParserOptions(

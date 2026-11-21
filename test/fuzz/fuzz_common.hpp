@@ -14,8 +14,8 @@
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/row_batch.hpp"
-#include "loglib/parse/log_parse_sink.hpp"
 #include "loglib/parse/format_detection.hpp"
+#include "loglib/parse/log_parse_sink.hpp"
 #include "loglib/parse/log_parser.hpp"
 #include "loglib/parse/parser_options.hpp"
 

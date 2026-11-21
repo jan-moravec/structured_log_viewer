@@ -78,6 +78,7 @@ add_library(
     src/output/file_loading.cpp
     src/output/session_bundle_writer.cpp
     src/output/session_bundle_reader.cpp
+    src/config/format_spec.cpp
     src/parse/parsers/csv_parser.cpp
     src/parse/parsers/json_parser.cpp
     src/parse/parsers/logfmt_parser.cpp
@@ -116,6 +117,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/output/exports/row_exporter.hpp
     include/loglib/core/file_line_source.hpp
     include/loglib/config/filter_expression.hpp
+    include/loglib/config/format_spec.hpp
     include/loglib/parse/format_detection.hpp
     include/loglib/config/highlight_rule.hpp
     include/loglib/query/histogram_bucket_index.hpp

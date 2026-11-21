@@ -56,7 +56,7 @@ ParseResult ParseLinesWith(std::string_view pattern, std::span<const std::string
     const MemoryLogFile file{std::string(filePath)};
     file.Write(content);
 
-    const RegexParser parser{std::string(pattern)};
+    const RegexParser parser({.pattern = std::string(pattern)});
     return ParseSource(parser, file.OpenSource());
 }
 
@@ -106,7 +106,9 @@ TEST_CASE("Built-in regex templates compile and parse their sample lines [regex_
         // pinned-pattern RegexParser directly so single-sample
         // templates still parse.
         const ParseResult result = ParseLinesWith(
-            t.pattern, std::span<const std::string>(t.sampleLines), "regex_templates_" + SlugifyName(t.name) + ".log"
+            t.regex.pattern,
+            std::span<const std::string>(t.sampleLines),
+            "regex_templates_" + SlugifyName(t.name) + ".log"
         );
         CHECK(result.errors.empty());
         CHECK(result.data.Lines().size() == t.sampleLines.size());
@@ -142,10 +144,7 @@ TEST_CASE("Detect identifies Apache CLF samples [regex_templates]", "[regex_temp
     CHECK(detected->name == "Apache/nginx Common Log Format");
 }
 
-TEST_CASE(
-    "Detect identifies every built-in template's sample lines [regex_templates]",
-    "[regex_templates]"
-)
+TEST_CASE("Detect identifies every built-in template's sample lines [regex_templates]", "[regex_templates]")
 {
     // Exercise full registry detection for every built-in sample.
     // `KNOWN_SHADOWS` records cases where a higher-precedence
@@ -205,7 +204,7 @@ TEST_CASE(
         if (!isShadowed)
         {
             const ParseResult result = ParseLinesWith(
-                detected->pattern,
+                detected->regex.pattern,
                 std::span<const std::string>(t.sampleLines),
                 "regex_templates_sweep_" + SlugifyName(t.name) + ".log"
             );
@@ -223,7 +222,7 @@ TEST_CASE("FindByPattern round-trips every built-in entry [regex_templates]", "[
     for (const RegexTemplate &t : RegexTemplateCatalog::Builtin().Builtins())
     {
         INFO("template: " << t.name);
-        const RegexTemplate *found = RegexTemplateCatalog::Builtin().FindByPattern(t.pattern);
+        const RegexTemplate *found = RegexTemplateCatalog::Builtin().FindByPattern(t.regex.pattern);
         REQUIRE(found != nullptr);
         CHECK(found->name == t.name);
     }
@@ -296,7 +295,7 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
     // the registration.
     const RegexTemplate hiddenCatchAll{
         .name = "Hidden catch-all",
-        .pattern = R"(^(?<line>.*)$)",
+        .regex = {.pattern = R"(^(?<line>.*)$)"},
         .sampleLines = {"any line"},
         .autoDetect = false,
         .priority = 1,
@@ -312,7 +311,6 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
     const auto detected = DetectTemplate(file.GetFilePath(), catalog);
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
-
 }
 
 TEST_CASE(
@@ -325,7 +323,7 @@ TEST_CASE(
     // mismatch syslog samples used elsewhere.
     const RegexTemplate userTemplate{
         .name = "User priority test",
-        .pattern = R"(^FOO\s+(?<id>\d+)\s+(?<msg>.*)$)",
+        .regex = {.pattern = R"(^FOO\s+(?<id>\d+)\s+(?<msg>.*)$)"},
         .sampleLines = {"FOO 1 hello"},
         .autoDetect = true,
         .priority = 5,
@@ -341,7 +339,6 @@ TEST_CASE(
     const auto detected = DetectTemplate(file.GetFilePath(), catalog);
     REQUIRE(detected.has_value());
     CHECK(detected->name == "User priority test");
-
 }
 
 TEST_CASE("FindByPattern round-trips built-in and user templates [regex_templates]", "[regex_templates]")
@@ -354,14 +351,14 @@ TEST_CASE("FindByPattern round-trips built-in and user templates [regex_template
     for (const RegexTemplate &t : RegexTemplateCatalog::Builtin().Builtins())
     {
         INFO("built-in template: " << t.name);
-        const RegexTemplate *found = RegexTemplateCatalog::Builtin().FindByPattern(t.pattern);
+        const RegexTemplate *found = RegexTemplateCatalog::Builtin().FindByPattern(t.regex.pattern);
         REQUIRE(found != nullptr);
         CHECK(found->name == t.name);
     }
 
     const RegexTemplate userTemplateA{
         .name = "FindByPattern-A",
-        .pattern = R"(^ALPHA\s+(?<v>\d+)$)",
+        .regex = {.pattern = R"(^ALPHA\s+(?<v>\d+)$)"},
         .sampleLines = {"ALPHA 1"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
@@ -369,7 +366,7 @@ TEST_CASE("FindByPattern round-trips built-in and user templates [regex_template
     };
     const RegexTemplate userTemplateB{
         .name = "FindByPattern-B",
-        .pattern = R"(^BETA\s+(?<v>\w+)$)",
+        .regex = {.pattern = R"(^BETA\s+(?<v>\w+)$)"},
         .sampleLines = {"BETA hello"},
         .autoDetect = true,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
@@ -377,15 +374,14 @@ TEST_CASE("FindByPattern round-trips built-in and user templates [regex_template
     };
     const RegexTemplateCatalog catalog = CatalogWith({userTemplateA, userTemplateB});
 
-    const RegexTemplate *foundA = catalog.FindByPattern(userTemplateA.pattern);
+    const RegexTemplate *foundA = catalog.FindByPattern(userTemplateA.regex.pattern);
     REQUIRE(foundA != nullptr);
     CHECK(foundA->name == userTemplateA.name);
-    const RegexTemplate *foundB = catalog.FindByPattern(userTemplateB.pattern);
+    const RegexTemplate *foundB = catalog.FindByPattern(userTemplateB.regex.pattern);
     REQUIRE(foundB != nullptr);
     CHECK(foundB->name == userTemplateB.name);
 
     CHECK(catalog.FindByPattern("definitely not a built-in or user pattern") == nullptr);
-
 }
 
 TEST_CASE("Every shipped JSON declares a description [regex_templates]", "[regex_templates]")
@@ -416,7 +412,7 @@ TEST_CASE("Built-ins probe before user templates regardless of priority [regex_t
     // so it would definitely win if the probe ordering broke.
     const RegexTemplate userCatchAll{
         .name = "User catch-all with low priority",
-        .pattern = R"(^.*$)",
+        .regex = {.pattern = R"(^.*$)"},
         .sampleLines = {"any line"},
         .autoDetect = true,
         .priority = 1,
@@ -432,7 +428,6 @@ TEST_CASE("Built-ins probe before user templates regardless of priority [regex_t
     const auto detected = DetectTemplate(file.GetFilePath(), catalog);
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
-
 }
 
 TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_templates]", "[regex_templates]")
@@ -447,7 +442,7 @@ TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_tem
     // anchored syslog template win.
     const RegexTemplate userUnanchored{
         .name = "User unanchored substring",
-        .pattern = R"(USER\s+(?<id>\d+))",
+        .regex = {.pattern = R"(USER\s+(?<id>\d+))"},
         .sampleLines = {"USER 42"},
         .autoDetect = true,
         .priority = 1,
@@ -466,7 +461,6 @@ TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_tem
     const auto detected = DetectTemplate(file.GetFilePath(), catalog);
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
-
 }
 
 TEST_CASE(
@@ -494,12 +488,12 @@ TEST_CASE(
     {
         if (t.name == "Java / log4j / SLF4J Logback")
         {
-            javaPattern = t.pattern;
+            javaPattern = t.regex.pattern;
             break;
         }
     }
     REQUIRE_FALSE(javaPattern.empty());
-    const RegexParser parser{javaPattern};
+    const RegexParser parser({.pattern = javaPattern});
 
     const MemoryLogFile file{"regex_templates_java_colon_fused.log"};
     file.Write(
@@ -537,7 +531,7 @@ TEST_CASE("Apache error log splits module:level into module and level", "[regex_
     // keep the column from resolving to canonical log levels.
     const RegexTemplate *tmpl = FindTemplateByName("Apache error log");
     REQUIRE(tmpl != nullptr);
-    const RegexParser parser{tmpl->pattern};
+    const RegexParser parser{tmpl->regex};
 
     const MemoryLogFile file{"regex_templates_apache_error_module_level.log"};
     file.Write(
@@ -576,7 +570,7 @@ TEST_CASE("Apache access logs leave a '-' byte count empty", "[regex_templates][
         CAPTURE(name);
         const RegexTemplate *tmpl = FindTemplateByName(name);
         REQUIRE(tmpl != nullptr);
-        const RegexParser parser{tmpl->pattern};
+        const RegexParser parser{tmpl->regex};
 
         const MemoryLogFile file{"regex_templates_apache_dash_bytes.log"};
         const std::string tail = name.contains("Combined") ? R"( "-" "curl/8.5.0")" : "";
@@ -635,7 +629,7 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
     INFO("template: " << tc.templateName);
 
     const RegexTemplate &t = LookupBuiltin(tc.templateName);
-    CHECK(t.continuationMode == tc.expectedMode);
+    CHECK(t.regex.continuation == tc.expectedMode);
 
     std::string content;
     content.append(tc.header);
@@ -651,7 +645,7 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
     const MemoryLogFile file{"regex_templates_multiline_" + SlugifyName(tc.templateName) + ".log"};
     file.Write(content);
 
-    const RegexParser parser{t.pattern, t.continuationMode, t.headerAnchor};
+    const RegexParser parser{t.regex};
     const ParseResult result = ParseSource(parser, file.OpenSource());
 
     for (const auto &e : result.errors)
@@ -856,13 +850,13 @@ TEST_CASE(
     for (const RegexTemplate &t : RegexTemplateCatalog::Builtin().Builtins())
     {
         INFO("template: " << t.name);
-        if (t.continuationMode != ContinuationMode::None)
+        if (t.regex.continuation != ContinuationMode::None)
         {
-            CHECK(t.pattern.contains("(?<"));
+            CHECK(t.regex.pattern.contains("(?<"));
         }
-        if (!t.headerAnchor.empty())
+        if (!t.regex.headerAnchor.empty())
         {
-            CHECK(t.continuationMode == ContinuationMode::UntilNextHeader);
+            CHECK(t.regex.continuation == ContinuationMode::UntilNextHeader);
         }
     }
 }
@@ -873,7 +867,7 @@ TEST_CASE("Every shipped template's headerAnchor compiles [regex_templates]", "[
     {
         INFO("template: " << t.name);
         std::string err;
-        CHECK(ValidateHeaderAnchor(t.headerAnchor, err));
+        CHECK(ValidateHeaderAnchor(t.regex.headerAnchor, err));
         CHECK(err.empty());
     }
 }
@@ -884,7 +878,7 @@ TEST_CASE("Several threads can detect with the same new catalog at once [regex_t
     // race for that first use.
     const RegexTemplate userTemplate{
         .name = "Concurrent user template",
-        .pattern = R"(^(?<word>zzz\w+)$)",
+        .regex = {.pattern = R"(^(?<word>zzz\w+)$)"},
         .sampleLines = {"zzzone", "zzztwo"},
         .autoDetect = true,
         .priority = 200,
@@ -930,7 +924,10 @@ TEST_CASE("Several threads can detect with the same new catalog at once [regex_t
     CHECK(wrongDetections.load() == 0);
 }
 
-TEST_CASE("RegexTemplateCatalog lists built-ins in priority order and extras after them [regex_templates]", "[regex_templates]")
+TEST_CASE(
+    "RegexTemplateCatalog lists built-ins in priority order and extras after them [regex_templates]",
+    "[regex_templates]"
+)
 {
     const RegexTemplateCatalog &builtin = RegexTemplateCatalog::Builtin();
     REQUIRE_FALSE(builtin.Builtins().empty());
@@ -941,15 +938,15 @@ TEST_CASE("RegexTemplateCatalog lists built-ins in priority order and extras aft
 
     RegexTemplate low;
     low.name = "low";
-    low.pattern = R"(^(?<a>low.*)$)";
+    low.regex.pattern = R"(^(?<a>low.*)$)";
     low.priority = 150;
     RegexTemplate highFirst;
     highFirst.name = "high first";
-    highFirst.pattern = R"(^(?<a>hf.*)$)";
+    highFirst.regex.pattern = R"(^(?<a>hf.*)$)";
     highFirst.priority = 1;
     RegexTemplate highSecond;
     highSecond.name = "high second";
-    highSecond.pattern = R"(^(?<a>hs.*)$)";
+    highSecond.regex.pattern = R"(^(?<a>hs.*)$)";
     highSecond.priority = 1;
 
     const RegexTemplateCatalog merged = builtin.WithExtras({low, highFirst, highSecond});
@@ -985,7 +982,7 @@ TEST_CASE("Copies of a catalog share their templates and keep working [regex_tem
 {
     RegexTemplate custom;
     custom.name = "Copy test";
-    custom.pattern = R"(^(?<a>cpy\d+)$)";
+    custom.regex.pattern = R"(^(?<a>cpy\d+)$)";
     custom.priority = 5;
 
     std::optional<RegexTemplateCatalog> original = CatalogWith({custom});
@@ -998,7 +995,7 @@ TEST_CASE("Copies of a catalog share their templates and keep working [regex_tem
     const RegexTemplate *found = copy.Detect("cpy3\ncpy4\n");
     REQUIRE(found != nullptr);
     CHECK(found->name == "Copy test");
-    CHECK(copy.FindByPattern(custom.pattern) == found);
+    CHECK(copy.FindByPattern(custom.regex.pattern) == found);
 }
 
 TEST_CASE("Detect returns nothing for an empty sample and for a single line [regex_templates]", "[regex_templates]")

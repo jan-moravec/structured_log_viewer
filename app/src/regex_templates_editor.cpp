@@ -587,7 +587,7 @@ void RegexTemplatesEditor::OnDuplicateClicked()
 
     mSuppressDirtySignals = true;
     mNameEdit->setText(candidate);
-    mPatternEdit->setPlainText(QString::fromStdString(base.pattern));
+    mPatternEdit->setPlainText(QString::fromStdString(base.regex.pattern));
     {
         QString samples;
         for (const std::string &line : base.sampleLines)
@@ -603,10 +603,10 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     mAutoDetectCheck->setChecked(base.autoDetect);
     mPrioritySpin->setValue(base.priority);
     {
-        const int modeIdx = mContinuationModeCombo->findData(static_cast<int>(base.continuationMode));
+        const int modeIdx = mContinuationModeCombo->findData(static_cast<int>(base.regex.continuation));
         mContinuationModeCombo->setCurrentIndex(modeIdx >= 0 ? modeIdx : 0);
     }
-    mHeaderAnchorEdit->setText(QString::fromStdString(base.headerAnchor));
+    mHeaderAnchorEdit->setText(QString::fromStdString(base.regex.headerAnchor));
     mDescriptionEdit->setPlainText(QString::fromStdString(base.description));
     mSourceLabel->setText(tr("Duplicating \"%1\" -- pick a name and Save").arg(sourceName));
     mSuppressDirtySignals = false;
@@ -647,7 +647,7 @@ void RegexTemplatesEditor::OnSaveClicked()
     // Save without a prior Validate can't put a broken pattern
     // on disk.
     std::string regexError;
-    if (!loglib::ValidateRegexPattern(tmpl.pattern, regexError))
+    if (!loglib::ValidateRegexPattern(tmpl.regex.pattern, regexError))
     {
         ShowStatus(
             tr("Pattern does not compile: %1").arg(QString::fromStdString(regexError)),
@@ -656,7 +656,7 @@ void RegexTemplatesEditor::OnSaveClicked()
         return;
     }
 
-    if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
+    if (!loglib::ValidateHeaderAnchor(tmpl.regex.headerAnchor, regexError))
     {
         ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
         return;
@@ -797,7 +797,7 @@ void RegexTemplatesEditor::OnValidateClicked()
     }
 
     std::string regexError;
-    if (!loglib::ValidateRegexPattern(tmpl.pattern, regexError))
+    if (!loglib::ValidateRegexPattern(tmpl.regex.pattern, regexError))
     {
         ShowStatus(
             tr("Pattern does not compile: %1").arg(QString::fromStdString(regexError)),
@@ -806,7 +806,7 @@ void RegexTemplatesEditor::OnValidateClicked()
         return;
     }
 
-    if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
+    if (!loglib::ValidateHeaderAnchor(tmpl.regex.headerAnchor, regexError))
     {
         ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
         return;
@@ -825,7 +825,7 @@ void RegexTemplatesEditor::OnValidateClicked()
     bool sawFailure = false;
     for (std::size_t i = 0; i < tmpl.sampleLines.size(); ++i)
     {
-        if (loglib::PatternMatchesLine(tmpl.pattern, tmpl.sampleLines[i]))
+        if (loglib::PatternMatchesLine(tmpl.regex.pattern, tmpl.sampleLines[i]))
         {
             ++passed;
         }
@@ -953,7 +953,7 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
 
     const loglib::RegexTemplate &t = *loaded;
     mNameEdit->setText(QString::fromStdString(t.name));
-    mPatternEdit->setPlainText(QString::fromStdString(t.pattern));
+    mPatternEdit->setPlainText(QString::fromStdString(t.regex.pattern));
     {
         QString samples;
         for (const std::string &line : t.sampleLines)
@@ -969,10 +969,10 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
     mAutoDetectCheck->setChecked(t.autoDetect);
     mPrioritySpin->setValue(t.priority);
     {
-        const int modeIdx = mContinuationModeCombo->findData(static_cast<int>(t.continuationMode));
+        const int modeIdx = mContinuationModeCombo->findData(static_cast<int>(t.regex.continuation));
         mContinuationModeCombo->setCurrentIndex(modeIdx >= 0 ? modeIdx : 0);
     }
-    mHeaderAnchorEdit->setText(QString::fromStdString(t.headerAnchor));
+    mHeaderAnchorEdit->setText(QString::fromStdString(t.regex.headerAnchor));
     mDescriptionEdit->setPlainText(QString::fromStdString(t.description));
     mSourceLabel->setText(isUser ? tr("User template (editable in place)") : tr("Built-in template (read-only)"));
 
@@ -1022,7 +1022,7 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
     }
 
     t.name = name.toStdString();
-    t.pattern = pattern.toStdString();
+    t.regex.pattern = pattern.toStdString();
 
     const QStringList lines = mSampleLinesEdit->toPlainText().split(QLatin1Char('\n'));
     t.sampleLines.reserve(static_cast<std::size_t>(lines.size()));
@@ -1039,15 +1039,15 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
 
     t.autoDetect = mAutoDetectCheck->isChecked();
     t.priority = mPrioritySpin->value();
-    t.continuationMode = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
+    t.regex.continuation = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
     // Do not persist anchors ignored by the current mode.
-    if (t.continuationMode == loglib::ContinuationMode::UntilNextHeader)
+    if (t.regex.continuation == loglib::ContinuationMode::UntilNextHeader)
     {
-        t.headerAnchor = mHeaderAnchorEdit->text().trimmed().toStdString();
+        t.regex.headerAnchor = mHeaderAnchorEdit->text().trimmed().toStdString();
     }
     else
     {
-        t.headerAnchor.clear();
+        t.regex.headerAnchor.clear();
     }
     t.description = mDescriptionEdit->toPlainText().toStdString();
     return t;

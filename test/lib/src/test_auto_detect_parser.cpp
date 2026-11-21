@@ -168,7 +168,7 @@ TEST_CASE("AutoDetectParser uses the catalog it is given", "[AutoDetectParser]")
     // The pattern is not a built-in template, so only the catalog passed to the parser can make the bytes a regex.
     loglib::RegexTemplate custom;
     custom.name = "Custom";
-    custom.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)";
+    custom.regex.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)";
     const std::string bytes = "2026 | first line\n2027 | second line\n";
 
     auto producer = std::make_unique<InMemoryBytesProducer>(bytes, 64);
@@ -178,7 +178,7 @@ TEST_CASE("AutoDetectParser uses the catalog it is given", "[AutoDetectParser]")
     const AutoDetectParser parser(
         loglib::PROBE_BYTES_BUDGET,
         std::chrono::milliseconds(0),
-        loglib::FormatOptions{},
+        true,
         loglib::RegexTemplateCatalog::Builtin().WithExtras({custom})
     );
     RunStreaming(parser, source, sink, {}, std::chrono::seconds(2));

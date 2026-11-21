@@ -13,7 +13,7 @@
  */
 #pragma once
 
-#include "loglib/config/source_descriptor.hpp"
+#include "loglib/config/format_spec.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -34,12 +34,6 @@ namespace loglib
  * both sides for users who want to order their own. The template file schema and the editor both use this value.
  */
 inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
-
-/** @brief The name used for a mode in template JSON files. */
-[[nodiscard]] std::string_view ContinuationModeName(ContinuationMode mode) noexcept;
-
-/** @brief Reads a mode from its JSON name. Returns nullopt for an unknown name. */
-[[nodiscard]] std::optional<ContinuationMode> ParseContinuationMode(std::string_view name) noexcept;
 
 /**
  * @brief A named PCRE2 pattern that splits one log line into columns.
@@ -62,10 +56,11 @@ struct RegexTemplate
     std::string name;
 
     /**
-     * @brief The PCRE2 pattern. It is compiled once and shared by all parser threads, and each thread keeps its own
-     * match data.
+     * @brief The pattern and continuation settings of the template. The PCRE2 pattern is compiled once and shared by
+     * all parser threads, and each thread keeps its own match data. A template file that does not set the continuation
+     * mode gets None.
      */
-    std::string pattern;
+    RegexSettings regex;
 
     /**
      * @brief Lines the pattern is known to match. Detection uses them when autoDetect is true, and tests use them as
@@ -96,15 +91,6 @@ struct RegexTemplate
      * file is checked against these credits. It may be empty.
      */
     std::string description;
-
-    /** @brief How continuation lines are recognized. A template file that does not set it gets None. */
-    ContinuationMode continuationMode = ContinuationMode::None;
-
-    /**
-     * @brief The pattern that recognizes a record's first line when continuationMode is UntilNextHeader. If empty,
-     * pattern is used. Other modes ignore it.
-     */
-    std::string headerAnchor;
 };
 
 /**
@@ -125,8 +111,8 @@ struct RegexTemplate
  * @brief An immutable list of regex templates in the order detection tries them.
  *
  * Built-in templates come first, sorted by priority, and the extra templates follow, also sorted by priority. The two
- * groups are never mixed, so a careless user priority cannot take a match from a shipped template. The compiled patterns
- * that detection needs are built on the first call to Detect and shared by every copy of the catalog.
+ * groups are never mixed, so a careless user priority cannot take a match from a shipped template. The compiled
+ * patterns that detection needs are built on the first call to Detect and shared by every copy of the catalog.
  *
  * Pointers returned by a catalog stay valid as long as the catalog or any copy of it lives.
  */

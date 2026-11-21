@@ -9,8 +9,8 @@
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/parse/regex_templates.hpp>
 #include <loglib/parse/parser_options.hpp>
+#include <loglib/parse/regex_templates.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <cstdint>
@@ -40,12 +40,12 @@ struct LoadedTable
     std::vector<loglib::ParseError> parseErrors;
     /** @brief How many parse errors all sources had. A source stores only its first ones in parseErrors. */
     std::uint64_t parseErrorCount = 0;
-    std::optional<loglib::DetectedFormat> format;
+    std::optional<loglib::FormatSpec> format;
     std::uint64_t linesConsumed = 0;
 };
 
 /** @brief Lower-case name of @p format, as `--format` spells it. */
-[[nodiscard]] std::string_view FormatName(loglib::Source::Format format) noexcept;
+[[nodiscard]] std::string_view FormatName(loglib::LogFormat format) noexcept;
 
 /**
  * @brief Loads and parses `input.sources` into one table, in the order given.

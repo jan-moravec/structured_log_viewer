@@ -54,12 +54,12 @@ std::unique_ptr<LogParser> ParserForHead(
     const std::string &head, const std::filesystem::path &file, const RegexTemplateCatalog &catalog
 )
 {
-    const std::optional<DetectedFormat> detected = DetectFormat(head, catalog);
+    const std::optional<FormatSpec> detected = DetectFormat(head, catalog);
     if (!detected)
     {
         throw FormatError(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
-    return MakeParserForFormat(detected->format, detected->Options());
+    return MakeParser(*detected);
 }
 
 } // namespace

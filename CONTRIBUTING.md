@@ -131,7 +131,7 @@ The Qt-side classes that wrap `loglib` are:
 - `LogModel` (`app/include/log_model.hpp`) — a `QAbstractTableModel` that owns the `LogTable`, the `QtStreamingLogSink`, the active parser `QFutureWatcher`, and (in Stream Mode) the live `BytesProducer`. Exposes a custom `EnumValueRole` (kept for external readers; the filter proxy now drives predicates directly off the table) and emits `enumColumnsChanged` for each event of the `LogTable::AppendBatch` and `FinalizeAutoDetection` reports (a column grew, became an enumeration or level column, or stopped being one) so `MainWindow` can rebuild the filter editor's column list and `LogFilterModel` can drop its cached enum sort ranks. Population is always streaming-driven through one of two entry points:
 
   - `BeginStreaming(unique_ptr<FileLineSource>, parseCallable)` / `AppendStreaming(...)` for the static `File → Open…` queue.
-  - `BeginStreaming(unique_ptr<StreamLineSource>, ParserOptions, LogParserFactory = {})` for live-tail and network sessions. The factory constructs JSON, logfmt, CSV, or regex parsers from the persisted `Source::Format`; an empty factory defaults to JSON. Source-status and rotation events return to the GUI through queued signals.
+  - `BeginStreaming(unique_ptr<StreamLineSource>, ParserOptions, LogParserFactory = {})` for live-tail and network sessions. The factory constructs JSON, logfmt, CSV, or regex parsers from the persisted `FormatSpec`; an empty factory defaults to JSON. Source-status and rotation events return to the GUI through queued signals.
     Both paths converge on `AppendBatch(RowBatch)`. With a non-zero `RetentionCap()` (Stream Mode), `AppendBatch` FIFO-evicts the visible row prefix before insertion and head-trims over-cap batches first so per-batch eviction stays O(cap). `Reset()` runs the full teardown (`BytesProducer::Stop()` → sink `RequestStop()` → worker join → paused-buffer flush → `DropPendingBatches()`); `StopAndKeepRows()` runs the same teardown but preserves the visible rows so the user can keep working on them after Stop.
 
 - `QtStreamingLogSink` (`app/include/qt_streaming_log_sink.hpp`) — the bridge that turns a `loglib::LogParseSink` callback running on a TBB / streaming worker thread into a `LogModel::AppendBatch` call on the GUI thread. `OnBatch` enqueues into a bounded SPSC `BoundedBatchQueue` (default capacity 32) and, on the queue's empty-to-non-empty edge, posts a single `Drain` lambda via `Qt::QueuedConnection`; subsequent enqueues until the lambda runs are coalesced under a `mDrainScheduled` atomic. The drain pulls everything pending and applies it to the model in one `AppendBatch` call. The queue gives end-to-end back-pressure: once it fills, `WaitEnqueue` parks the worker, which propagates through `BatchCoalescer` → TBB Stage C → Stage A so the parser runs at the GUI's pace and resident in-flight rows stay bounded regardless of file size. The sink owns a generation counter so a fresh `Arm()` (or a `RequestStop()`) drops any still-queued batches from a previous parse, and a separate bounded paused buffer with `Pause` / `Resume` / `SetRetentionCap` / `TakePausedBuffer` for the Stream-Mode toolbar (`Resume` coalesces the buffered batches into a single queued post). `PausedDropCount()` reports how many lines were FIFO-evicted from the paused buffer for the status bar's `… , X dropped while paused` suffix.
@@ -193,13 +193,14 @@ A configuration file is JSON that `loglib::LoadConfiguration` reads and `loglib:
 }
 ```
 
-The field names follow the C++ members of `LogConfiguration`, `Column`, `SessionView` and `Source`.
+The field names follow the C++ members of `LogConfiguration`, `Column`, `SessionView` and `SourceDescriptor`.
 
 - `version` is required and must be 1. Any other value, or a missing version, is a `FormatError` that names the file.
 - Unknown keys are errors at every level. The error names the key and the file.
 - `header` and `keys` of a column and the top-level `version` and `columns` are required. Every other field is optional and takes the default of its C++ member, which is documented on the member.
 - A column's `type` is written only if the user chose it. A column the detector owns (`autoDetect` is true) is written without a type. On load, a column without a type is a column with `autoDetect` true and type `any`, and it is detected again. A column with a type has `autoDetect` false. So a saved file holds the choices of the user, and the detected types stay with the table. A column that `AppendKeys` makes a Time column because of its key name counts as chosen.
 - The sort names its column by `columnKeys`, found the way filter leaves find theirs with `LeafRule::columnKeys`. Empty keys mean no sort.
+- The `format` of a source is one object: `{ "type": "regex", "regex": { "pattern": "...", "continuation": "untilNextHeader", "headerAnchor": "..." }, "logfmtMultiline": true }`. `type` is `json`, `logfmt`, `csv` or `regex`. The `regex` object is written for the regex format only. A regex template file is a separate format and keeps its flat `pattern`, `continuationMode` and `headerAnchor` keys.
 - `SaveScope::Columns` writes `version` and `columns` only. `SaveScope::Full` also writes `view` and `source`.
 
 ### Session tabs
@@ -231,7 +232,7 @@ Both drivers share the same **multi-line record** contract:
 - Static Stage C holds back each batch's tail row. It uses `ExtendContinuationTarget` within a batch and `SpliceCrossBatchContinuation` across batches. `RowBatch::multiLineSpans` is registered only after line offsets, so `FileLineSource::RawLine(headerId)` returns the original header-through-last-continuation byte range.
 - Blank lines are attached only when a later continuation proves they are inside the record; trailing or between-record blanks remain separators.
 
-`RegexTemplate::continuationMode` accepts `none`, `indented`, or `untilNextHeader`; `headerAnchor` can replace the full-pattern header probe in the last mode. Logfmt uses indented continuation by default and can disable it with `LogfmtParser(false)`, or `FormatOptions::multilineLogfmt = false` when the parser comes from `MakeParserForFormat`. JSON and CSV never return `Continue`.
+`RegexSettings::continuation` (`continuationMode` in a template file) accepts `none`, `indented`, or `untilNextHeader`; `headerAnchor` can replace the full-pattern header probe in the last mode. Logfmt uses indented continuation by default and can disable it with `LogfmtParser(false)`, or `FormatOptions::multilineLogfmt = false` when the parser comes from `MakeParserForFormat`. JSON and CSV never return `Continue`.
 
 ### Network producers (TCP / UDP)
 
@@ -372,11 +373,11 @@ To teach the viewer a new format (syslog, alternative-delimiter CSV, ...):
 
 1. **Register the parser in format detection** (`lib/include/loglib/parse/format_detection.hpp` + `lib/src/parse/format_detection.cpp`):
 
-   - Add a value to `Source::Format`.
-   - Add a branch to `MakeParserForFormat` to instantiate it.
+   - Add a value to `LogFormat` (`lib/include/loglib/config/format_spec.hpp`), and any settings the format needs to `FormatSpec`.
+   - Add a branch to `MakeParser` to instantiate it.
    - Add a `LooksLike<Format>(std::string_view)` check, a bounded content probe, and call it from `DetectFormat` and `SampleFitsFormat` in the intended probe order.
 
-1. **GUI affordance.** Static files, live-tail files, stdin, and network streams all resolve a parser at open time. File paths call `loglib::DetectFormat` on `loglib::ReadProbeHead`; stdin peeks with `StdinPeek` and calls `DetectFormat`; every detection takes the `RegexTemplateCatalog` of the `RegexTemplateRegistry`; network Auto-detect delegates through `AutoDetectParser`. `LogModel::BeginStreaming` accepts a `LogParserFactory` thunk so the worker constructs the parser without `LogModel` knowing its concrete type. Adding a format requires a `Source::Format` value, Glaze metadata, a `MakeParserForFormat` branch, and any relevant dialog entry.
+1. **GUI affordance.** Static files, live-tail files, stdin, and network streams all resolve a parser at open time. File paths call `loglib::DetectFormat` on `loglib::ReadProbeHead`; stdin peeks with `StdinPeek` and calls `DetectFormat`; every detection takes the `RegexTemplateCatalog` of the `RegexTemplateRegistry`; network Auto-detect delegates through `AutoDetectParser`. `LogModel::BeginStreaming` accepts a `LogParserFactory` thunk so the worker constructs the parser without `LogModel` knowing its concrete type. Adding a format requires a `LogFormat` value, Glaze metadata, a `MakeParser` branch, and any relevant dialog entry.
 
 1. **Generator + fixtures.** Every format plugs into one canonical, format-agnostic record type so the same synthetic data can be emitted in any format. Add a `test_common::LogFormat` serializer factory for your format in [`test/common/src/log_format.cpp`](test/common/src/log_format.cpp) (declared in [`test/common/include/test_common/log_format.hpp`](test/common/include/test_common/log_format.hpp)): a `writeLine` that serializes one `test_common::LogRecord` (and, for schema-bearing formats like CSV, a `writeHeader` over the `RecordSchema`). Schemaless-on-the-wire formats that need out-of-band configuration (like a regex-template pattern) pair a serializer factory with a well-known template name — e.g. `SyslogRfc3164Format()` alongside the shipped `"Syslog (RFC3164)"` `RegexTemplate` — so the benchmark and round-trip tests look the pattern up out-of-band via `FindTemplateByName` (see [`test/lib/include/common.hpp`](test/lib/include/common.hpp)). The RNG-driven generators in [`test/common/src/log_generator.cpp`](test/common/src/log_generator.cpp) already produce `LogRecord`s, so once the serializer exists you get three things for free:
 

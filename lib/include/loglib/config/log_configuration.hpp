@@ -37,7 +37,7 @@ struct LogConfiguration
     SessionView view;
 
     /** @brief Where the log came from. Empty when the configuration is not tied to a source. */
-    std::optional<Source> source;
+    std::optional<SourceDescriptor> source;
 };
 
 /** @brief Chooses what a save writes. */

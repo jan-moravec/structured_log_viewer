@@ -1,8 +1,8 @@
 /**
  * @brief Base class for log format parsers.
  *
- * A parser reads a static file or a live stream and sends the rows to a sink. New formats derive from LogParser. LoadFile in output/file_loading.hpp and ParseIntoTable in
- * table/table_loader.hpp run a parser and fill a table.
+ * A parser reads a static file or a live stream and sends the rows to a sink. New formats derive from LogParser.
+ * LoadFile in output/file_loading.hpp and ParseIntoTable in table/table_loader.hpp run a parser and fill a table.
  *
  * This is part of the parse module.
  */

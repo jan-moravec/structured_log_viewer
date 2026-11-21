@@ -23,7 +23,7 @@ const loglib::RegexTemplate &MultiLineTemplate()
     static const loglib::RegexTemplate FOUND = [] {
         for (const loglib::RegexTemplate &candidate : loglib::RegexTemplateCatalog::Builtin().Builtins())
         {
-            if (candidate.name == TEMPLATE_NAME && candidate.continuationMode == loglib::ContinuationMode::Indented)
+            if (candidate.name == TEMPLATE_NAME && candidate.regex.continuation == loglib::ContinuationMode::Indented)
             {
                 return candidate;
             }
@@ -41,7 +41,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
     // Built once: compiling the pattern for every input would cost more than most parses.
     static const loglib::RegexParser PARSER = [] {
         const loglib::RegexTemplate &tmpl = MultiLineTemplate();
-        return loglib::RegexParser(tmpl.pattern, tmpl.continuationMode, tmpl.headerAnchor);
+        return loglib::RegexParser(tmpl.regex);
     }();
     loglib::fuzz::ParseBytes(PARSER, data, size);
     return 0;

@@ -50,7 +50,7 @@ struct ConfigurationDocument
     std::uint32_t version = 0;
     std::vector<ColumnDocument> columns;
     std::optional<SessionView> view;
-    std::optional<Source> source;
+    std::optional<SourceDescriptor> source;
 };
 
 /** @brief The document to write for a configuration. A Columns scope leaves out the view and the source. */
@@ -176,16 +176,16 @@ template <> struct glz::meta<loglib::LeafRule::Match>
 
 // The types of HighlightRule are aliases of the LeafRule ones, so they use the specializations above.
 
-template <> struct glz::meta<loglib::Source::Kind>
+template <> struct glz::meta<loglib::SourceDescriptor::Kind>
 {
-    using enum loglib::Source::Kind;
+    using enum loglib::SourceDescriptor::Kind;
     static constexpr std::array keys{"file", "networkStream", "stdin"};
     static constexpr std::array value{File, NetworkStream, Stdin};
 };
 
-template <> struct glz::meta<loglib::Source::Format>
+template <> struct glz::meta<loglib::LogFormat>
 {
-    using enum loglib::Source::Format;
+    using enum loglib::LogFormat;
     static constexpr std::array keys{"json", "logfmt", "csv", "regex"};
     static constexpr std::array value{Json, Logfmt, Csv, Regex};
 };
@@ -198,11 +198,36 @@ template <> struct glz::meta<loglib::ContinuationMode>
     static constexpr std::array value{None, Indented, UntilNextHeader};
 };
 
+template <> struct glz::meta<loglib::RegexSettings> : loglib::internal::AllKeysOptional
+{
+    using T = loglib::RegexSettings;
+    static constexpr auto value =
+        object("pattern", &T::pattern, "continuation", &T::continuation, "headerAnchor", &T::headerAnchor);
+};
+
+template <> struct glz::meta<loglib::FormatSpec> : loglib::internal::AllKeysOptional
+{
+    using T = loglib::FormatSpec;
+
+    // The regex settings are written only for the regex format.
+    static constexpr auto readRegex = [](T &self, loglib::RegexSettings value) { self.regex = std::move(value); };
+    static constexpr auto writeRegex = [](const T &self) -> std::optional<loglib::RegexSettings> {
+        if (self.regex == loglib::RegexSettings{})
+        {
+            return std::nullopt;
+        }
+        return self.regex;
+    };
+
+    static constexpr auto value =
+        object("type", &T::format, "regex", glz::custom<readRegex, writeRegex>, "logfmtMultiline", &T::logfmtMultiline);
+};
+
 // The saved field names of the nested types are listed explicitly. Renaming a member then fails to compile and cannot
 // silently change the saved format.
-template <> struct glz::meta<loglib::Source> : loglib::internal::AllKeysOptional
+template <> struct glz::meta<loglib::SourceDescriptor> : loglib::internal::AllKeysOptional
 {
-    using T = loglib::Source;
+    using T = loglib::SourceDescriptor;
 
     static constexpr auto readDisplayPaths = [](T &self, std::vector<std::string> paths) {
         self.ReplaceDisplayPaths(std::move(paths));
@@ -222,12 +247,6 @@ template <> struct glz::meta<loglib::Source> : loglib::internal::AllKeysOptional
         glz::custom<readDisplayPaths, writeDisplayPaths>,
         "locatorDedupKeys",
         glz::custom<readDedupKeys, writeDedupKeys>,
-        "regexPattern",
-        &T::regexPattern,
-        "regexContinuationMode",
-        &T::regexContinuationMode,
-        "regexHeaderAnchor",
-        &T::regexHeaderAnchor,
         "followRotationSiblings",
         &T::followRotationSiblings
     );

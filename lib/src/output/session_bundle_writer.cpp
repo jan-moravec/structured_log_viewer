@@ -674,11 +674,10 @@ void WriteBundle(
     const std::string displayLocator = internal::PathToUtf8(destination);
     const std::string dedupLocator = CanonicalizeSourceLocator(destination, options);
     RemapAnchors(embedded, lines, dedupLocator, options);
-    embedded.source = Source{
-        .kind = Source::Kind::File,
-        .format = Source::Format::Json,
+    embedded.source = SourceDescriptor{
+        .kind = SourceDescriptor::Kind::File,
+        .format = {.format = LogFormat::Json},
         .locators = {{displayLocator, dedupLocator}},
-        .regexPattern = {},
     };
 
     const std::string configJson = SerializeConfiguration(embedded, SaveScope::Full, ConfigurationLayout::Compact);

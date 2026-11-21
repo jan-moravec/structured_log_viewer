@@ -420,11 +420,11 @@ void NetworkStreamDialog::OnRegexTemplateChanged()
 
 void NetworkStreamDialog::ShowTemplate(const loglib::RegexTemplate &tmpl)
 {
-    mRegexPattern->setText(QString::fromStdString(tmpl.pattern));
+    mRegexPattern->setText(QString::fromStdString(tmpl.regex.pattern));
     mRegexContinuation->setCurrentIndex(
-        std::max(0, mRegexContinuation->findData(QVariant(static_cast<int>(tmpl.continuationMode))))
+        std::max(0, mRegexContinuation->findData(QVariant(static_cast<int>(tmpl.regex.continuation))))
     );
-    mRegexHeaderAnchor->setText(QString::fromStdString(tmpl.headerAnchor));
+    mRegexHeaderAnchor->setText(QString::fromStdString(tmpl.regex.headerAnchor));
 }
 
 void NetworkStreamDialog::BrowseCertChain()

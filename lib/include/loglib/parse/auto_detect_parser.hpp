@@ -52,14 +52,14 @@ public:
      * detector uses.
      * @param peekTimeout The time limit for reading, counted from the first byte. Zero or less turns the limit off,
      * which tests use to read the whole producer. Reading also stops early once the bytes are enough to decide.
-     * @param formatOptions Settings for the parser it picks. Only multilineLogfmt is used, because detection chooses
-     * the regex pattern.
+     * @param logfmtMultiline Whether the logfmt parser it may pick joins continuation lines. Detection chooses the
+     * regex settings itself.
      * @param catalog The regex templates detection tries. The parser keeps its own copy.
      */
     explicit AutoDetectParser(
         std::size_t peekBytes = PROBE_BYTES_BUDGET,
         std::chrono::milliseconds peekTimeout = DEFAULT_PEEK_TIMEOUT,
-        FormatOptions formatOptions = {},
+        bool logfmtMultiline = true,
         RegexTemplateCatalog catalog = RegexTemplateCatalog::Builtin()
     );
 
@@ -79,7 +79,7 @@ public:
 private:
     std::size_t mPeekBytes;
     std::chrono::milliseconds mPeekTimeout;
-    FormatOptions mFormatOptions;
+    bool mLogfmtMultiline;
     RegexTemplateCatalog mCatalog;
 };
 

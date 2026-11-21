@@ -106,9 +106,9 @@ namespace
         AnchorEntry{.locator = "c:/logs/app.json", .lineId = 7, .colorIndex = 2, .note = "start"}
     );
 
-    Source source;
-    source.kind = Source::Kind::File;
-    source.format = Source::Format::Json;
+    SourceDescriptor source;
+    source.kind = SourceDescriptor::Kind::File;
+    source.format.format = loglib::LogFormat::Json;
     source.locators = {{"C:/Logs/App.json", "c:/logs/app.json"}};
     configuration.source = source;
     return configuration;
@@ -164,7 +164,7 @@ TEST_CASE("A full configuration round-trips through a file", "[log_configuration
     CHECK(loaded.view.highlightRules == original.view.highlightRules);
     CHECK(loaded.view.anchors == original.view.anchors);
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->kind == Source::Kind::File);
+    CHECK(loaded.source->kind == SourceDescriptor::Kind::File);
     CHECK(loaded.source->DisplayPaths() == original.source->DisplayPaths());
     CHECK(loaded.source->DedupKeys() == original.source->DedupKeys());
 }
@@ -489,12 +489,13 @@ TEST_CASE("Moving a column keeps the sort on the same column without any remappi
 
 TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configuration][source]")
 {
-    for (const Source::Kind kind : {Source::Kind::File, Source::Kind::NetworkStream, Source::Kind::Stdin})
+    for (const SourceDescriptor::Kind kind :
+         {SourceDescriptor::Kind::File, SourceDescriptor::Kind::NetworkStream, SourceDescriptor::Kind::Stdin})
     {
         LogConfiguration configuration;
-        Source source;
+        SourceDescriptor source;
         source.kind = kind;
-        source.format = Source::Format::Logfmt;
+        source.format.format = loglib::LogFormat::Logfmt;
         source.locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}};
         source.followRotationSiblings = false;
         configuration.source = source;
@@ -502,7 +503,7 @@ TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configura
         const LogConfiguration loaded = ParseConfiguration(SerializeConfiguration(configuration));
         REQUIRE(loaded.source.has_value());
         CHECK(loaded.source->kind == kind);
-        CHECK(loaded.source->format == Source::Format::Logfmt);
+        CHECK(loaded.source->format.format == loglib::LogFormat::Logfmt);
         CHECK_FALSE(loaded.source->followRotationSiblings);
         CHECK(loaded.source->DisplayPaths() == source.DisplayPaths());
     }
@@ -511,20 +512,20 @@ TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configura
 TEST_CASE("Source round-trips a multi-file descriptor and a regex pattern", "[log_configuration][source]")
 {
     LogConfiguration configuration;
-    Source source;
-    source.kind = Source::Kind::File;
-    source.format = Source::Format::Regex;
+    SourceDescriptor source;
+    source.kind = SourceDescriptor::Kind::File;
+    source.format.format = loglib::LogFormat::Regex;
     source.locators = {{"C:/Logs/a.log", "c:/logs/a.log"}, {"C:/Logs/b.log", "c:/logs/b.log"}};
-    source.regexPattern = "(?<msg>.*)";
-    source.regexContinuationMode = ContinuationMode::Indented;
+    source.format.regex.pattern = "(?<msg>.*)";
+    source.format.regex.continuation = ContinuationMode::Indented;
     configuration.source = source;
 
     const LogConfiguration loaded = ParseConfiguration(SerializeConfiguration(configuration));
     REQUIRE(loaded.source.has_value());
     CHECK(loaded.source->DisplayPaths() == source.DisplayPaths());
     CHECK(loaded.source->DedupKeys() == source.DedupKeys());
-    CHECK(loaded.source->regexPattern == "(?<msg>.*)");
-    CHECK(loaded.source->regexContinuationMode == ContinuationMode::Indented);
+    CHECK(loaded.source->format.regex.pattern == "(?<msg>.*)");
+    CHECK(loaded.source->format.regex.continuation == ContinuationMode::Indented);
 }
 
 TEST_CASE("Source zips locators with locatorDedupKeys regardless of key order", "[log_configuration][source]")
@@ -543,7 +544,7 @@ TEST_CASE("Source zips locators with locatorDedupKeys regardless of key order", 
 TEST_CASE("An empty list of locators round-trips as an empty array", "[log_configuration][source]")
 {
     LogConfiguration configuration;
-    configuration.source = Source{};
+    configuration.source = SourceDescriptor{};
     const std::string raw = SerializeConfiguration(configuration);
     CHECK(raw.contains("\"locators\": []"));
     const LogConfiguration loaded = ParseConfiguration(raw);
@@ -553,7 +554,7 @@ TEST_CASE("An empty list of locators round-trips as an empty array", "[log_confi
 
 TEST_CASE("ReplaceDedupKeys stages keys until display paths arrive", "[log_configuration][source]")
 {
-    Source source;
+    SourceDescriptor source;
     source.ReplaceDedupKeys({"k1", "k2"});
     CHECK(source.locators.empty());
     source.ReplaceDisplayPaths({"p1", "p2"});
@@ -677,3 +678,52 @@ TEST_CASE("SaveConfiguration gives up when the destination stays busy", "[log_co
     CHECK_NOTHROW(SaveConfiguration(LogConfiguration{}, destination, SaveScope::Full, std::chrono::milliseconds{60}));
 }
 #endif
+
+TEST_CASE("A format spec round-trips for every format and continuation mode", "[log_configuration][source]")
+{
+    std::vector<loglib::FormatSpec> specs = {
+        {.format = loglib::LogFormat::Json},
+        {.format = loglib::LogFormat::Logfmt, .logfmtMultiline = false},
+        {.format = loglib::LogFormat::Csv},
+    };
+    for (const ContinuationMode mode :
+         {ContinuationMode::None, ContinuationMode::Indented, ContinuationMode::UntilNextHeader})
+    {
+        specs.push_back(
+            {.format = loglib::LogFormat::Regex,
+             .regex = {.pattern = "^(?<a>\d+) (?<b>.*)$", .continuation = mode, .headerAnchor = "^\d+"}}
+        );
+    }
+
+    for (const loglib::FormatSpec &spec : specs)
+    {
+        CAPTURE(static_cast<int>(spec.format), static_cast<int>(spec.regex.continuation));
+        LogConfiguration configuration;
+        SourceDescriptor source;
+        source.format = spec;
+        source.locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}};
+        configuration.source = source;
+
+        const std::string json = SerializeConfiguration(configuration);
+        // The regex settings are written for the regex format only.
+        CHECK((json.find("\"regex\"") != std::string::npos) == (spec.format == loglib::LogFormat::Regex));
+        const LogConfiguration loaded = ParseConfiguration(json);
+        REQUIRE(loaded.source.has_value());
+        CHECK(loaded.source->format == spec);
+    }
+}
+
+TEST_CASE("An unknown key inside a source format is rejected and named", "[log_configuration][source]")
+{
+    const auto parse = [](std::string_view format) {
+        return ParseConfiguration(
+            std::string(R"({"version":1,"columns":[],"source":{"kind":"file","format":)") + std::string(format) + "}}"
+        );
+    };
+    CHECK_NOTHROW(parse(R"j({"type":"regex","regex":{"pattern":"(?<a>.*)"}})j"));
+    CHECK_THROWS_WITH(parse(R"({"type":"json","bogusKey":1})"), Catch::Matchers::ContainsSubstring("bogusKey"));
+    CHECK_THROWS_WITH(
+        parse(R"j({"type":"regex","regex":{"pattern":"(?<a>.*)","bogusRegexKey":1}})j"),
+        Catch::Matchers::ContainsSubstring("bogusRegexKey")
+    );
+}

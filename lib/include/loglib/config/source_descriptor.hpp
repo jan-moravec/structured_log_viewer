@@ -1,13 +1,15 @@
 /**
  * @brief Description of where a log came from.
  *
- * A Source records the kind of source, such as a file or a network stream, its format, and the locations to reopen it
- * from. Each location keeps the path shown to the user and a normalized key used to tell whether two paths are the same
- * file.
+ * A SourceDescriptor records the kind of source, such as a file or a network stream, its format and settings, and the
+ * locations to reopen it from. Each location keeps the path shown to the user and a normalized key used to tell whether
+ * two paths are the same file.
  *
  * This is part of the config module.
  */
 #pragma once
+
+#include "loglib/config/format_spec.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -18,23 +20,6 @@
 
 namespace loglib
 {
-
-/**
- * @brief How a regex template recognizes continuation lines.
- *
- * - None: every line is parsed on its own.
- * - Indented: lines that start with a space or tab continue the previous record.
- * - UntilNextHeader: lines that do not match the header pattern continue the previous record.
- *
- * With any mode but None, the continuation text is appended to the last named capture of the pattern, which must be a
- * string.
- */
-enum class ContinuationMode : uint8_t
-{
-    None = 0,
-    Indented,
-    UntilNextHeader,
-};
 
 /**
  * @brief One saved source path, with the form to show and a normalized form to compare.
@@ -76,7 +61,7 @@ struct SourceLocator
  * Locators hold each path together with its comparison key, so the two cannot get out of step. The saved file keeps
  * them as two parallel lists, locators and locatorDedupKeys, which ReplaceDisplayPaths and ReplaceDedupKeys fill.
  */
-struct Source
+struct SourceDescriptor
 {
     /** @brief What the source reads from. */
     enum class Kind
@@ -90,46 +75,17 @@ struct Source
         Stdin,
     };
 
+    Kind kind = Kind::File;
     /**
-     * @brief The parser a source was opened with.
+     * @brief The parser the source was opened with, and its settings.
      *
      * It is saved because a network stream has nothing to look at when it is restored, and a live session chooses its
-     * parser before the first byte arrives. A new Source uses Json. In the saved file it is a string such as json,
-     * logfmt or csv. New values go at the end and the order never changes.
+     * parser before the first byte arrives. The regex settings are saved with the pattern, so a restored session parses
+     * multi-line records as it did, whether or not a template for the pattern still exists. The name of the matching
+     * template, if there is one, is looked up for display with RegexTemplateCatalog::FindByPattern.
      */
-    enum class Format
-    {
-        Json,
-        Logfmt,
-        Csv,
-        /** @brief The regex parser. It needs regexPattern and refuses to run without one. */
-        Regex,
-    };
-
-    Kind kind = Kind::File;
-    Format format = Format::Json;
+    FormatSpec format;
     std::vector<SourceLocator> locators;
-    /**
-     * @brief The PCRE2 pattern, with named groups written as (?<Name>...), for the Regex format. Empty for other
-     * formats.
-     *
-     * It is saved so a reopened session or stream parses with the same template. The name of the matching template, if
-     * there is one, is looked up for display with RegexTemplateCatalog::FindByPattern.
-     */
-    std::string regexPattern;
-
-    /**
-     * @brief How the regex parser joins continuation lines to the record before them. It is saved with the pattern, so
-     * a restored session parses multi-line records as it did, whether or not a template for the pattern still exists.
-     */
-    ContinuationMode regexContinuationMode = ContinuationMode::None;
-
-    /**
-     * @brief The pattern that recognizes the first line of a record when regexContinuationMode is UntilNextHeader. If
-     * empty, the main pattern is used.
-     */
-    std::string regexHeaderAnchor;
-
     /**
      * @brief Whether files added later also bring in their rotated companions. A restore opens the saved locators as
      * they are and does not search again. Configurations saved without this value get true.
@@ -166,7 +122,7 @@ struct Source
 };
 
 /** @brief True if there is a source with at least one locator, so that it can be opened. */
-[[nodiscard]] inline bool HasLocators(const std::optional<Source> &source) noexcept
+[[nodiscard]] inline bool HasLocators(const std::optional<SourceDescriptor> &source) noexcept
 {
     return source.has_value() && !source->locators.empty();
 }
@@ -175,20 +131,20 @@ struct Source
  * @brief Adds a locator to a source. Callers pass the comparison key, because the library does not know how to
  * normalize paths in the way the application does.
  */
-inline void AppendLocator(Source &target, std::string displayPath, std::string dedupKey)
+inline void AppendLocator(SourceDescriptor &target, std::string displayPath, std::string dedupKey)
 {
     target.locators.emplace_back(std::move(displayPath), std::move(dedupKey));
 }
 
 /** @brief Removes all locators. */
-inline void ClearLocators(Source &target)
+inline void ClearLocators(SourceDescriptor &target)
 {
     target.locators.clear();
     target.pendingDedupKeys.clear();
 }
 
 /** @brief True if the key is the comparison key of any locator. */
-[[nodiscard]] inline bool ContainsDedupKey(const Source &source, std::string_view key) noexcept
+[[nodiscard]] inline bool ContainsDedupKey(const SourceDescriptor &source, std::string_view key) noexcept
 {
     return std::ranges::any_of(source.locators, [key](const SourceLocator &locator) {
         return locator.dedupKey == key;

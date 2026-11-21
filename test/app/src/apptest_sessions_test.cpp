@@ -787,7 +787,7 @@ private slots:
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
         mWindow->SetCurrentSourceForTest(
-            loglib::Source{.kind = loglib::Source::Kind::File, .locators = {syntheticSource}}
+            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {syntheticSource}}
         );
 
         const QTemporaryDir savedDir;
@@ -802,7 +802,7 @@ private slots:
             probe.source.has_value(),
             "SaveScope::Full must persist the source descriptor for a streamed-then-finished file"
         );
-        QCOMPARE(static_cast<int>(probe.source->kind), static_cast<int>(loglib::Source::Kind::File));
+        QCOMPARE(static_cast<int>(probe.source->kind), static_cast<int>(loglib::SourceDescriptor::Kind::File));
         QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
             QString::fromStdString(probe.source->locators.front().displayPath), QString::fromStdString(syntheticSource)
@@ -2137,7 +2137,7 @@ private slots:
         loglib::ColumnLayout builderLayout;
         builderLayout.AppendKeys({"category", "msg"});
         loglib::LogConfiguration builder{.columns = builderLayout.Columns()};
-        builder.source = loglib::Source{};
+        builder.source = loglib::SourceDescriptor{};
 
         loglib::LeafRule filter;
         filter.type = loglib::LeafRule::Type::String;
@@ -2378,7 +2378,7 @@ private slots:
 
         const auto &source = wired->CurrentSourceForTest();
         QVERIFY(source.has_value());
-        QCOMPARE(source->kind, loglib::Source::Kind::File);
+        QCOMPARE(source->kind, loglib::SourceDescriptor::Kind::File);
         QCOMPARE(source->DisplayPaths(), std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
         QCOMPARE(source->DedupKeys(), std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
@@ -2534,7 +2534,7 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 2);
         QCOMPARE(QString::fromStdString(wired->Model()->Layout().Columns().at(0).header), QString("Active"));
         QVERIFY(wired->CurrentSourceForTest().has_value());
-        QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::Source::Kind::File);
+        QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::SourceDescriptor::Kind::File);
         QCOMPARE(wired->CurrentSourceForTest()->locators.size(), static_cast<size_t>(2));
     }
 
@@ -2965,7 +2965,7 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
-                loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"/tmp/live.log"}}
+                loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"/tmp/live.log"}}
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -2981,7 +2981,9 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
-                loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}}
+                loglib::SourceDescriptor{
+                    .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+                }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -3016,8 +3018,9 @@ private slots:
             builderLayout.AppendKeys({"msg"});
             builder.columns = builderLayout.Columns();
         }
-        builder.source =
-            (loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}});
+        builder.source = (loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+        });
         loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
@@ -3059,8 +3062,9 @@ private slots:
             builderLayout.AppendKeys({"msg"});
             builder.columns = builderLayout.Columns();
         }
-        builder.source =
-            (loglib::Source{.kind = loglib::Source::Kind::File, .locators = {fixture.Path().toStdString()}});
+        builder.source = (loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File, .locators = {fixture.Path().toStdString()}
+        });
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         loglib::SaveConfiguration(builder, adhocPath.toStdString(), loglib::SaveScope::Full);
 
@@ -3215,7 +3219,9 @@ private slots:
         // `WriteSnapshot` so the entry lives in the index; without
         // it, `Touch` would short-circuit and mask the gate.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+        };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
         const QString jsonPath = manager.PathForUuid(uuid);
@@ -3249,7 +3255,9 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}
+        };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
@@ -3283,7 +3291,9 @@ private slots:
         // Corrupt the JSON so the pre-flight parse fails. Post-fix
         // the corrupt entry is removed from the index.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}
+        };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 

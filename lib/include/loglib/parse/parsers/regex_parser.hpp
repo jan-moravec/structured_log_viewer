@@ -40,25 +40,20 @@ class StreamLineSource;
  * - A pattern matches one physical line. With a continuation mode other than None, the parser joins more lines into
  *   one record. The default mode is None, which keeps every line on its own.
  * - The pattern is configuration and not part of the file, so detection only finds files that match a template in a
- *   RegexTemplateCatalog. A file that needs a custom pattern that is not in the catalog can be opened as a network stream
- *   with a custom pattern, or by restoring a session whose source is already set to the regex format with that pattern.
+ *   RegexTemplateCatalog. A file that needs a custom pattern that is not in the catalog can be opened as a network
+ * stream with a custom pattern, or by restoring a session whose source is already set to the regex format with that
+ * pattern.
  */
 class RegexParser : public LogParser
 {
 public:
     /**
-     * @brief Creates a parser for a pattern.
+     * @brief Creates a parser for the given settings.
      *
-     * An empty pattern is accepted and makes Parse report one error.
-     *
-     * @param pattern The PCRE2 pattern, with named groups written as (?<Name>...).
-     * @param continuationMode How lines after the first line of a record are recognized.
-     * @param headerAnchor The pattern that recognizes the first line of a record when continuationMode is
-     * UntilNextHeader. If empty, the main pattern is used. It must compile, or Parse reports one error.
+     * An empty pattern is accepted and makes Parse report one error. The header anchor, when set, must compile, or
+     * Parse reports one error.
      */
-    explicit RegexParser(
-        std::string pattern, ContinuationMode continuationMode = ContinuationMode::None, std::string headerAnchor = {}
-    );
+    explicit RegexParser(RegexSettings settings);
 
     /** @brief Parses a static file with the pattern given to the constructor. */
     void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;

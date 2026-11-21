@@ -302,11 +302,10 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     };
     configuration.view.expression = SingleLeafExpression(filter);
     configuration.view.sort = {.columnKeys = {"service"}, .descending = true};
-    configuration.source = loglib::Source{
-        .kind = loglib::Source::Kind::NetworkStream,
-        .format = loglib::Source::Format::Regex,
+    configuration.source = loglib::SourceDescriptor{
+        .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+        .format = {.format = loglib::LogFormat::Regex, .regex = {.pattern = "(?<service>.*)"}},
         .locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}},
-        .regexPattern = "(?<service>.*)",
     };
     configuration.view.highlightRules = {
         {.name = "Auth",
@@ -346,15 +345,15 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     CHECK(restored.view.highlightRules == configuration.view.highlightRules);
 
     REQUIRE(restored.source.has_value());
-    CHECK(restored.source->kind == loglib::Source::Kind::File);
-    CHECK(restored.source->format == loglib::Source::Format::Json);
+    CHECK(restored.source->kind == loglib::SourceDescriptor::Kind::File);
+    CHECK(restored.source->format.format == loglib::LogFormat::Json);
     // With no canonicalizer set, both `locators` and
     // `locatorDedupKeys` use `internal::PathToUtf8()`, so this
     // default-options test expects them to match. The canonicalizer
     // contract is exercised in the dedicated test below.
     CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
     CHECK(restored.source->DedupKeys() == std::vector<std::string>{bundle.Path().string()});
-    CHECK(restored.source->regexPattern.empty());
+    CHECK(restored.source->format.regex.pattern.empty());
 }
 
 TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]")
@@ -375,11 +374,10 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
     const loglib::LogTable table = ParseTable(source.Path());
 
     loglib::LogConfiguration configuration;
-    configuration.source = loglib::Source{
-        .kind = loglib::Source::Kind::Stdin,
-        .format = loglib::Source::Format::Logfmt,
+    configuration.source = loglib::SourceDescriptor{
+        .kind = loglib::SourceDescriptor::Kind::Stdin,
+        .format = {.format = loglib::LogFormat::Logfmt},
         .locators = {{"<stdin>", "<stdin>"}},
-        .regexPattern = {},
     };
 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
@@ -388,7 +386,7 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
         loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration;
 
     REQUIRE(restored.source.has_value());
-    CHECK(restored.source->kind == loglib::Source::Kind::File);
+    CHECK(restored.source->kind == loglib::SourceDescriptor::Kind::File);
     CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
     CHECK(restored.source->DedupKeys() == std::vector<std::string>{bundle.Path().string()});
 }

@@ -686,8 +686,8 @@ private slots:
         LogSession session;
         QVERIFY(!session.CurrentSource().has_value());
 
-        loglib::Source src;
-        src.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor src;
+        src.kind = loglib::SourceDescriptor::Kind::File;
         src.locators = {{"logs/app.log", "logs/app.log"}};
         session.SetCurrentSource(src);
         QVERIFY(session.CurrentSource().has_value());
@@ -875,8 +875,8 @@ private slots:
         // path so we exercise the basename-extraction branch that
         // splits `shortLabel` (tab title, no path) from `tooltip`
         // and `sourceLabel` (full source).
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -938,8 +938,8 @@ private slots:
         session.SetFirstStreamingBatchSeen(true);
 
         // Stdin source overrides the Static/LiveTail projection.
-        loglib::Source stdinSource;
-        stdinSource.kind = loglib::Source::Kind::Stdin;
+        loglib::SourceDescriptor stdinSource;
+        stdinSource.kind = loglib::SourceDescriptor::Kind::Stdin;
         stdinSource.locators = {std::string{"<stdin>"}};
         session.MutableCurrentSource() = stdinSource;
         session.SetMode(LogSession::Mode::Static);
@@ -950,8 +950,8 @@ private slots:
         }
 
         // Network streams project the Network source mode.
-        loglib::Source networkSource;
-        networkSource.kind = loglib::Source::Kind::NetworkStream;
+        loglib::SourceDescriptor networkSource;
+        networkSource.kind = loglib::SourceDescriptor::Kind::NetworkStream;
         networkSource.locators = {std::string{"tcp://logs.example.com:5514"}};
         session.MutableCurrentSource() = networkSource;
         session.SetMode(LogSession::Mode::LiveTail);
@@ -1020,14 +1020,14 @@ private slots:
         // descriptor. Pin the priority order: Stdin/Network >
         // Bundle > LiveTail > MultiFile > Compressed > StaticFile.
         LogSession session;
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
 
         // Multi-file static open (rotation history): mode == MultiFile.
-        loglib::Source multiSource = fileSource;
+        loglib::SourceDescriptor multiSource = fileSource;
         multiSource.locators = {
             std::string{"C:/logs/app.log"},
             std::string{"C:/logs/app.log.1"},
@@ -1099,8 +1099,8 @@ private slots:
         // a bundle in practice; the projection still respects the
         // source-kind override).
         session.SetApplyEmbeddedBundleConfigForPath(QStringLiteral("C:/logs/bundle.slvbundle"));
-        loglib::Source stdinSource;
-        stdinSource.kind = loglib::Source::Kind::Stdin;
+        loglib::SourceDescriptor stdinSource;
+        stdinSource.kind = loglib::SourceDescriptor::Kind::Stdin;
         stdinSource.locators = {std::string{"<stdin>"}};
         session.MutableCurrentSource() = stdinSource;
         {
@@ -1117,8 +1117,8 @@ private slots:
         // that case `shortLabel` must fall back to the seed string
         // rather than surfacing an empty tab title.
         LogSession session;
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -1134,8 +1134,8 @@ private slots:
         // display name has not been set yet (restore and config
         // load assign `CurrentSource` without `StreamingFileName`).
         LogSession session;
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}, std::string{"C:/logs/app.log.1"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -1154,8 +1154,8 @@ private slots:
         QCOMPARE(snap.tooltip, QStringLiteral("tcp://127.0.0.1:9000"));
         QCOMPARE(snap.sourceLabel, QStringLiteral("tcp://127.0.0.1:9000"));
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         const auto bound = session.PresentationSnapshot();
@@ -1166,8 +1166,8 @@ private slots:
     static void TestPresentationSnapshotCustomLabelOverridesAutomaticName()
     {
         LogSession session;
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetCustomTabLabel(QStringLiteral("Incident 42"));
@@ -1190,8 +1190,8 @@ private slots:
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Idle));
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         QVERIFY(session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
@@ -1204,8 +1204,8 @@ private slots:
         LogSession session;
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Silent);
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -1221,8 +1221,8 @@ private slots:
         session.SetAutoSaveUuid(QStringLiteral("11111111-2222-3333-4444-555555555555"));
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -1231,15 +1231,15 @@ private slots:
         session.SetMode(LogSession::Mode::LiveTail);
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
 
-        loglib::Source stdinSource;
-        stdinSource.kind = loglib::Source::Kind::Stdin;
+        loglib::SourceDescriptor stdinSource;
+        stdinSource.kind = loglib::SourceDescriptor::Kind::Stdin;
         stdinSource.locators = {std::string{"<stdin>"}};
         session.MutableCurrentSource() = stdinSource;
         session.SetMode(LogSession::Mode::Static);
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
 
-        loglib::Source networkSource;
-        networkSource.kind = loglib::Source::Kind::NetworkStream;
+        loglib::SourceDescriptor networkSource;
+        networkSource.kind = loglib::SourceDescriptor::Kind::NetworkStream;
         networkSource.locators = {std::string{"tcp://127.0.0.1:1234"}};
         session.MutableCurrentSource() = networkSource;
         session.SetMode(LogSession::Mode::LiveTail);
@@ -1254,8 +1254,8 @@ private slots:
         LogSession session(nullptr, &manager, nullptr);
         session.MarkFiltersDirty();
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -1295,8 +1295,8 @@ private slots:
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
         LogSession autosaveable(nullptr, &manager, nullptr);
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         autosaveable.MutableCurrentSource() = fileSource;
         autosaveable.SetMode(LogSession::Mode::Static);
@@ -1328,8 +1328,8 @@ private slots:
         // No source -> Effective mirrors Should.
         QVERIFY(session.EffectiveAutoDetectRotationHistory());
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         fileSource.followRotationSiblings = true;
         session.MutableCurrentSource() = fileSource;
@@ -1369,16 +1369,16 @@ private slots:
         QCOMPARE(session.RestorableSessionUuid(), pinned);
 
         // (3) pinned uuid + File source -> pinned uuid.
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         QCOMPARE(session.RestorableSessionUuid(), pinned);
 
         // (4) pinned uuid + Stream source -> empty (stream sources
         // cannot be re-bound from a saved locator).
-        loglib::Source streamSource;
-        streamSource.kind = loglib::Source::Kind::Stdin;
+        loglib::SourceDescriptor streamSource;
+        streamSource.kind = loglib::SourceDescriptor::Kind::Stdin;
         streamSource.locators = {std::string{"stdin"}};
         session.MutableCurrentSource() = streamSource;
         QVERIFY(session.RestorableSessionUuid().isEmpty());
@@ -1388,8 +1388,8 @@ private slots:
         // leave the descriptor in this state; the shell must fall
         // back to the empty-window path rather than asking the
         // loader to re-open nothing.
-        loglib::Source emptyFileSource;
-        emptyFileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor emptyFileSource;
+        emptyFileSource.kind = loglib::SourceDescriptor::Kind::File;
         // locators intentionally empty.
         session.MutableCurrentSource() = emptyFileSource;
         QVERIFY(session.RestorableSessionUuid().isEmpty());
@@ -2021,8 +2021,8 @@ private slots:
         // an intentional pragmatic trade-off documented on the
         // implementation. `ResetCurrentSource` uses the cheaper
         // `has_value()` short-circuit.
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.SetCurrentSource(fileSource);
         QCOMPARE(spy.count(), ++expected);
@@ -2066,8 +2066,8 @@ private slots:
         QSignalSpy spy(&session, &LogSession::presentationChanged);
         QVERIFY(spy.isValid());
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
 
         // Whole-value overwrite through the raw accessor: no fan.
@@ -2098,16 +2098,16 @@ private slots:
         QSignalSpy spy(&session, &LogSession::presentationChanged);
         QVERIFY(spy.isValid());
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
 
         // Whole-value overwrite via helper: fans once.
-        session.MutateCurrentSource([&fileSource](std::optional<loglib::Source> &src) { src = fileSource; });
+        session.MutateCurrentSource([&fileSource](std::optional<loglib::SourceDescriptor> &src) { src = fileSource; });
         QCOMPARE(spy.count(), 1);
 
         // Field mutation via helper: fans once.
-        session.MutateCurrentSource([](std::optional<loglib::Source> &src) {
+        session.MutateCurrentSource([](std::optional<loglib::SourceDescriptor> &src) {
             if (src.has_value())
             {
                 src->followRotationSiblings = true;
@@ -2118,7 +2118,7 @@ private slots:
         // Even a no-op lambda fans (the helper's contract is
         // unconditional; diff-guard is the caller's job if they
         // want one).
-        session.MutateCurrentSource([](std::optional<loglib::Source> &) {});
+        session.MutateCurrentSource([](std::optional<loglib::SourceDescriptor> &) {});
         QCOMPARE(spy.count(), 3);
     }
 
@@ -2229,8 +2229,8 @@ private slots:
         // strip would advertise a state the autosave gate will
         // silently refuse to persist.
         LogSession session;
-        loglib::Source emptyFile;
-        emptyFile.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor emptyFile;
+        emptyFile.kind = loglib::SourceDescriptor::Kind::File;
         // locators intentionally empty
         session.MutableCurrentSource() = emptyFile;
         session.SetMode(LogSession::Mode::Static);
@@ -2254,8 +2254,8 @@ private slots:
         // must project 0 for both counters when the model is empty
         // regardless of the source descriptor / mode state.
         LogSession session;
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -2278,8 +2278,8 @@ private slots:
         LogSession session;
         QVERIFY(session.HistoryManager() == nullptr);
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         QVERIFY(session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
@@ -2287,14 +2287,14 @@ private slots:
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
         QVERIFY(!session.CanPersistRestorableSnapshot());
 
-        loglib::Source stdinSource;
-        stdinSource.kind = loglib::Source::Kind::Stdin;
+        loglib::SourceDescriptor stdinSource;
+        stdinSource.kind = loglib::SourceDescriptor::Kind::Stdin;
         stdinSource.locators = {std::string{"<stdin>"}};
         session.MutableCurrentSource() = stdinSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
 
-        loglib::Source emptyFileSource;
-        emptyFileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor emptyFileSource;
+        emptyFileSource.kind = loglib::SourceDescriptor::Kind::File;
         session.MutableCurrentSource() = emptyFileSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
     }

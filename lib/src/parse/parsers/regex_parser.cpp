@@ -598,8 +598,10 @@ void EmitErrorAndFinish(LogParseSink &sink, std::string_view message, bool strea
 // RegexParser public surface.
 // ---------------------------------------------------------------------
 
-RegexParser::RegexParser(std::string pattern, ContinuationMode continuationMode, std::string headerAnchor)
-    : mPattern(std::move(pattern)), mContinuationMode(continuationMode), mHeaderAnchor(std::move(headerAnchor))
+RegexParser::RegexParser(RegexSettings settings)
+    : mPattern(std::move(settings.pattern)),
+      mContinuationMode(settings.continuation),
+      mHeaderAnchor(std::move(settings.headerAnchor))
 {
 }
 

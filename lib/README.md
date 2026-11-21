@@ -69,7 +69,7 @@ Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit an
 
 1. **Choose the files.** `ingest/source_plan.hpp` turns the selected paths into the files to open, adding rotated siblings if wanted. `ingest/decompressing_byte_source.hpp` unpacks compressed files first. `output/file_loading.hpp` does this and the next step for a path in OpenFileSource, and LoadFile goes all the way to a table.
 1. **Map the bytes.** `core/file_line_source.hpp` memory-maps the file, or holds bytes given from memory, and serves them. For a live source, `ingest/tailing_bytes_producer.hpp` or another producer delivers bytes and `core/stream_line_source.hpp` keeps the lines.
-1. **Pick the format.** `DetectFormat` in `parse/format_detection.hpp` sniffs the first bytes and tries the regex templates of a `RegexTemplateCatalog` that you pass in; `MakeParserForFormat` builds the parser from `parse/parsers/`. The built-in catalog is an immutable value, and `WithExtras` adds your own templates without changing it.
+1. **Pick the format.** `DetectFormat` in `parse/format_detection.hpp` sniffs the first bytes and tries the regex templates of a `RegexTemplateCatalog` that you pass in; `MakeParser` builds the parser for the resulting `FormatSpec` from `parse/parsers/`. The built-in catalog is an immutable value, and `WithExtras` adds your own templates without changing it.
 1. **Parse.** For a file, `parse/internal/static_parser_pipeline.hpp` splits the bytes into batches and decodes them on worker threads. For a live stream, `parse/internal/streaming_parse_loop.hpp` does the same on one thread. Each line becomes a `core/log_line.hpp` made of `core/compact_log_value.hpp` fields, with keys interned by `core/key_index.hpp`. Time columns are converted on the way with `time/timestamp_parsing.hpp`. The parser does not touch the table. It writes rows, copied text and keys to three different places, described in [Data flow and threads](#data-flow-and-threads).
 1. **Deliver.** `parse/internal/batch_coalescer.hpp` groups lines into `core/row_batch.hpp` batches and hands them to a `parse/log_parse_sink.hpp`.
 1. **Fill the table.** The sink passes each batch to `table/log_table.hpp`, which appends it. `table/table_loader.hpp` has the sink that `slp` and LoadFile use (TableSink) and ParseIntoTable, which adds a source to a table and parses it. `table/internal/enum_inference.hpp` (internal) turns columns with few distinct values into enumerations, and LogTable fixes time columns after the fact when a column becomes a time column.
@@ -102,7 +102,7 @@ Typical composition:
 
 1. Construct a `TimeZoneContext` (default UTC, or `Load(tzdataPath[, zone])`).
 1. Load a file into a `LogTable` with `LoadFile`. It opens plain, compressed and bundle files, detects the format, parses and finishes type detection.
-1. Or take the steps yourself: `OpenFileSource`, `MakeParserForFormat`, then `ParseIntoTable` and `FinishLoading` for each source.
+1. Or take the steps yourself: `OpenFileSource`, `MakeParser`, then `ParseIntoTable` and `FinishLoading` for each source.
 
 There is no default zone for the process: every function that needs a zone takes a `TimeZoneContext`. A parse gets its zone as `ParserOptions::defaultSourceTimeZone`, a `LogTable` has its own display zone and default source zone, and `ParseQuery` takes a zone. All of them are UTC unless the caller sets one. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 

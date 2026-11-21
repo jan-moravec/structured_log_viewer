@@ -58,8 +58,8 @@ std::vector<std::string> CollectProbeLines(std::string_view sample)
 namespace
 {
 
-// PatternMatchesLine in regex_pattern_checks.cpp anchors the same way, and the two must agree, or a template that passes
-// its own check could fail detection.
+// PatternMatchesLine in regex_pattern_checks.cpp anchors the same way, and the two must agree, or a template that
+// passes its own check could fail detection.
 bool MatchesWholeLine(const CompiledPattern &pattern, std::string_view line)
 {
     const Pcre2MatchDataPtr matchData = pattern.NewMatchData();
@@ -167,7 +167,7 @@ struct RegexTemplateCatalog::Data
                 CompiledProbe probe;
                 probe.source = &tmpl;
                 std::string error;
-                (void)probe.compiled.Compile(tmpl.pattern, error);
+                (void)probe.compiled.Compile(tmpl.regex.pattern, error);
                 // A pattern that does not compile cannot match anything. Dropping it keeps detection working for the
                 // rest.
                 if (probe.compiled.IsReady())
@@ -268,7 +268,7 @@ const RegexTemplate *RegexTemplateCatalog::FindByPattern(std::string_view patter
 {
     for (const RegexTemplate &tmpl : mData->templates)
     {
-        if (tmpl.pattern == pattern)
+        if (tmpl.regex.pattern == pattern)
         {
             return &tmpl;
         }

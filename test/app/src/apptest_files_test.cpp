@@ -964,9 +964,9 @@ private slots:
         );
 
         // Use an unrelated source so deduplication cannot mask the opt-out.
-        loglib::Source spoof;
-        spoof.kind = loglib::Source::Kind::File;
-        spoof.format = loglib::Source::Format::Json;
+        loglib::SourceDescriptor spoof;
+        spoof.kind = loglib::SourceDescriptor::Kind::File;
+        spoof.format.format = loglib::LogFormat::Json;
         spoof.locators = {dir.filePath(QStringLiteral("unrelated.log")).toStdString()};
         spoof.followRotationSiblings = false;
         mWindow->SetCurrentSourceForTest(spoof);
@@ -1722,9 +1722,9 @@ private slots:
 
         // Keep the global preference on while the bound source opts out.
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
-        loglib::Source optedOut{
-            .kind = loglib::Source::Kind::File,
-            .format = loglib::Source::Format::Json,
+        loglib::SourceDescriptor optedOut{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .format = {.format = loglib::LogFormat::Json},
             .locators =
                 {{logapp::CanonicalDisplayPath(otherPath).toStdString(),
                   logapp::CanonicalLocator(otherPath).toStdString()}},
@@ -2041,7 +2041,7 @@ private slots:
         );
         // Format sniff runs on the DECOMPRESSED bytes -- extension
         // (`.jsonl.gz`) must not fool the classifier.
-        QCOMPARE(probe.source->format, loglib::Source::Format::Json);
+        QCOMPARE(probe.source->format.format, loglib::LogFormat::Json);
     }
 
     // Regression: appending during an in-flight decompression must

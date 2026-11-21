@@ -22,12 +22,25 @@
 template <> struct glz::meta<loglib::RegexTemplate>
 {
     using T = loglib::RegexTemplate;
+
+    // A template file keeps its flat keys. They map onto the nested settings of the template.
+    static constexpr auto readPattern = [](T &self, std::string value) { self.regex.pattern = std::move(value); };
+    static constexpr auto writePattern = [](const T &self) { return self.regex.pattern; };
+    static constexpr auto readContinuation = [](T &self, loglib::ContinuationMode value) {
+        self.regex.continuation = value;
+    };
+    static constexpr auto writeContinuation = [](const T &self) { return self.regex.continuation; };
+    static constexpr auto readHeaderAnchor = [](T &self, std::string value) {
+        self.regex.headerAnchor = std::move(value);
+    };
+    static constexpr auto writeHeaderAnchor = [](const T &self) { return self.regex.headerAnchor; };
+
     // A field missing from the file keeps the default that RegexTemplate declares.
     static constexpr auto value = object(
         "name",
         &T::name,
         "pattern",
-        &T::pattern,
+        glz::custom<readPattern, writePattern>,
         "sampleLines",
         &T::sampleLines,
         "autoDetect",
@@ -37,9 +50,9 @@ template <> struct glz::meta<loglib::RegexTemplate>
         "description",
         &T::description,
         "continuationMode",
-        &T::continuationMode,
+        glz::custom<readContinuation, writeContinuation>,
         "headerAnchor",
-        &T::headerAnchor
+        glz::custom<readHeaderAnchor, writeHeaderAnchor>
     );
 };
 // NOLINTEND(readability-identifier-naming)

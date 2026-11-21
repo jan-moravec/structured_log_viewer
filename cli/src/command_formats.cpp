@@ -111,7 +111,7 @@ struct ListedTemplate
 
 [[nodiscard]] std::string ContinuationOf(const loglib::RegexTemplate &tmpl)
 {
-    return std::string(loglib::ContinuationModeName(tmpl.continuationMode));
+    return std::string(loglib::ContinuationModeName(tmpl.regex.continuation));
 }
 
 [[nodiscard]] std::vector<ListedTemplate> BuiltinList()

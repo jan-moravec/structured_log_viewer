@@ -149,13 +149,13 @@ ParseResult ParseFile(const std::filesystem::path &file)
         throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
 
-    const std::optional<DetectedFormat> detected = DetectFormat(head);
+    const std::optional<FormatSpec> detected = DetectFormat(head);
     if (!detected)
     {
         throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
 
-    const std::unique_ptr<LogParser> parser = MakeParserForFormat(detected->format, detected->Options());
+    const std::unique_ptr<LogParser> parser = MakeParser(*detected);
     return ParseFile(*parser, file);
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)

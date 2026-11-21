@@ -553,8 +553,8 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 
 // Shared format detection keeps file, stdin, and network opens
 // consistent.
-using loglib::DetectedFormat;
-using loglib::MakeParserForFormat;
+using loglib::FormatSpec;
+using loglib::MakeParser;
 
 /// The templates detection tries: the registry's when there is one, otherwise the built-in ones.
 const loglib::RegexTemplateCatalog &CatalogOf(const RegexTemplateRegistry *registry)
@@ -563,9 +563,9 @@ const loglib::RegexTemplateCatalog &CatalogOf(const RegexTemplateRegistry *regis
 }
 
 /// Detects the format of a file from its head. JSON when nothing matches, so a parser can always be made.
-DetectedFormat DetectFileFormat(const std::filesystem::path &file, const loglib::RegexTemplateCatalog &catalog)
+FormatSpec DetectFileFormat(const std::filesystem::path &file, const loglib::RegexTemplateCatalog &catalog)
 {
-    return loglib::DetectFormat(loglib::ReadProbeHead(file), catalog).value_or(DetectedFormat{});
+    return loglib::DetectFormat(loglib::ReadProbeHead(file), catalog).value_or(FormatSpec{});
 }
 
 /**
@@ -580,17 +580,10 @@ loglib::ParserOptions MakeParserOptionsFor(const loglib::ColumnLayout &layout, c
     return options;
 }
 
-/** @brief The settings that build a source's parser: the saved regex pattern, continuation mode and header anchor. */
-loglib::FormatOptions FormatOptionsOf(const std::optional<loglib::Source> &source)
+/** @brief The format that builds a source's parser. A missing source reads as JSON. */
+FormatSpec FormatSpecOf(const std::optional<loglib::SourceDescriptor> &source)
 {
-    loglib::FormatOptions options;
-    if (source.has_value())
-    {
-        options.regexPattern = source->regexPattern;
-        options.regexContinuationMode = source->regexContinuationMode;
-        options.regexHeaderAnchor = source->regexHeaderAnchor;
-    }
-    return options;
+    return source.has_value() ? source->format : FormatSpec{};
 }
 
 } // namespace
@@ -3690,7 +3683,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     // analyser cannot trace through the helper.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto &source = *mSession->MutableCurrentSource();
-    if (source.kind != loglib::Source::Kind::File)
+    if (source.kind != loglib::SourceDescriptor::Kind::File)
     {
         // Network and stdin locators cannot be reopened. Stdin can
         // still reach this branch through a manually created or older bundle.
@@ -3700,7 +3693,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
             if (!mSuppressDialogsForTest)
 #endif
             {
-                const bool isStdin = source.kind == loglib::Source::Kind::Stdin;
+                const bool isStdin = source.kind == loglib::SourceDescriptor::Kind::Stdin;
                 const QString title =
                     isStdin ? QStringLiteral("Standard Input Session") : QStringLiteral("Network Stream Session");
                 const QString body =
@@ -4683,14 +4676,11 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     auto &currentSource = origin->MutableCurrentSource();
     if (isFirstFileInSession)
     {
-        DetectedFormat detected = DetectFileFormat(effectivePath, CatalogOf(mRegexTemplateRegistry));
-        currentSource = loglib::Source{
-            .kind = loglib::Source::Kind::File,
-            .format = detected.format,
+        FormatSpec detected = DetectFileFormat(effectivePath, CatalogOf(mRegexTemplateRegistry));
+        currentSource = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .format = std::move(detected),
             .locators = {{displayPath, dedupKey}},
-            .regexPattern = std::move(detected.regexPattern),
-            .regexContinuationMode = detected.regexContinuationMode,
-            .regexHeaderAnchor = std::move(detected.regexHeaderAnchor),
         };
         // Seed the source from the global preference and CLI override.
         currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
@@ -4699,7 +4689,7 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
             SyncRotationHistoryActionCheckedState();
         }
     }
-    else if (currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File)
+    else if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File)
     {
         const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
         if (!alreadyPresent)
@@ -4735,8 +4725,8 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     // Per-file parser detection runs against the effective (possibly
     // decompressed) path so the sniff sees the actual bytes.
     // `origin->MutableCurrentSource()` still stores the first file's session-level format.
-    const DetectedFormat detectedPerFile = DetectFileFormat(effectivePath, CatalogOf(mRegexTemplateRegistry));
-    std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(detectedPerFile.format, detectedPerFile.Options());
+    const FormatSpec detectedPerFile = DetectFileFormat(effectivePath, CatalogOf(mRegexTemplateRegistry));
+    std::shared_ptr<loglib::LogParser> parser = MakeParser(detectedPerFile);
 
     // False positive: `parseCallable` is moved into the model and invoked.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
@@ -6351,14 +6341,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
-        DetectedFormat detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
-        currentSource = loglib::Source{
-            .kind = loglib::Source::Kind::File,
-            .format = detected.format,
+        FormatSpec detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
+        currentSource = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .format = std::move(detected),
             .locators = {{displayPath, dedupKey}},
-            .regexPattern = std::move(detected.regexPattern),
-            .regexContinuationMode = detected.regexContinuationMode,
-            .regexHeaderAnchor = std::move(detected.regexHeaderAnchor),
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6379,10 +6366,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
-    const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
-        return MakeParserForFormat(format, formatOptions);
-    };
+    auto parserFactory = [spec = FormatSpecOf(currentSource)] { return MakeParser(spec); };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
 
@@ -6455,7 +6439,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     auto &currentSource = origin->MutableCurrentSource();
     // Append the primary onto the session's locator list so the
     // full [siblings..., primary] set persists.
-    if (currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File)
+    if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File)
     {
         const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
         if (!alreadyPresent)
@@ -6466,14 +6450,11 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     else
     {
         // No sibling seeded a source; detect and seed from the primary.
-        DetectedFormat detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
-        currentSource = loglib::Source{
-            .kind = loglib::Source::Kind::File,
-            .format = detected.format,
+        FormatSpec detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
+        currentSource = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .format = std::move(detected),
             .locators = {{displayPath, dedupKey}},
-            .regexPattern = std::move(detected.regexPattern),
-            .regexContinuationMode = detected.regexContinuationMode,
-            .regexHeaderAnchor = std::move(detected.regexHeaderAnchor),
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6514,10 +6495,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     loglib::ParserOptions options = MakeParserOptionsFor(model->Layout(), mTimeZone);
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
-    const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
-        return MakeParserForFormat(format, formatOptions);
-    };
+    auto parserFactory = [spec = FormatSpecOf(currentSource)] { return MakeParser(spec); };
     // The rescue path may have no initialized stream to append to.
     if (model->IsStreamingActive() || model->rowCount() > 0)
     {
@@ -6654,15 +6632,11 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     // to JSON (matches `DetectFileFormat`'s "nothing matched"
     // branch), which is a safe default: an empty stdin session
     // produces zero rows either way.
-    const loglib::DetectedFormat detected = loglib::DetectFormat(peek, CatalogOf(mRegexTemplateRegistry)).value_or(loglib::DetectedFormat{});
-    const auto format = detected.format;
-    mSession->MutableCurrentSource() = loglib::Source{
-        .kind = loglib::Source::Kind::Stdin,
-        .format = format,
+    const FormatSpec detected = loglib::DetectFormat(peek, CatalogOf(mRegexTemplateRegistry)).value_or(FormatSpec{});
+    mSession->MutableCurrentSource() = loglib::SourceDescriptor{
+        .kind = loglib::SourceDescriptor::Kind::Stdin,
+        .format = detected,
         .locators = {{displayName, displayName}},
-        .regexPattern = detected.regexPattern,
-        .regexContinuationMode = detected.regexContinuationMode,
-        .regexHeaderAnchor = detected.regexHeaderAnchor,
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6679,9 +6653,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
     // Give the peeked bytes back to the source so the stream is delivered in full (peek + subsequent bytes).
     streamSource->UnreadBytes(std::move(peek));
-    auto parserFactory = [format, formatOptions = detected.Options()] {
-        return loglib::MakeParserForFormat(format, formatOptions);
-    };
+    auto parserFactory = [detected] { return loglib::MakeParser(detected); };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 
     // Explain the Recent Sessions exclusion.
@@ -6809,28 +6781,34 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
     // AutoDetect is session-only. Keep `Json` in the source metadata
     // until `AutoDetectParser` resolves the stream.
     const bool autoDetect = cfg.format == NetworkStreamDialog::Format::AutoDetect;
-    const loglib::Source::Format dialogFormat = [&] {
+    const loglib::LogFormat dialogFormat = [&] {
         switch (cfg.format)
         {
         case NetworkStreamDialog::Format::Logfmt:
-            return loglib::Source::Format::Logfmt;
+            return loglib::LogFormat::Logfmt;
         case NetworkStreamDialog::Format::Csv:
-            return loglib::Source::Format::Csv;
+            return loglib::LogFormat::Csv;
         case NetworkStreamDialog::Format::Regex:
-            return loglib::Source::Format::Regex;
+            return loglib::LogFormat::Regex;
         case NetworkStreamDialog::Format::Json:
         case NetworkStreamDialog::Format::AutoDetect:
             break;
         }
-        return loglib::Source::Format::Json;
+        return loglib::LogFormat::Json;
     }();
-    mSession->MutableCurrentSource() = loglib::Source{
-        .kind = loglib::Source::Kind::NetworkStream,
-        .format = dialogFormat,
+    mSession->MutableCurrentSource() = loglib::SourceDescriptor{
+        .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+        .format =
+            {
+                .format = dialogFormat,
+                .regex =
+                    {
+                        .pattern = cfg.regex.pattern.toStdString(),
+                        .continuation = cfg.regex.continuationMode,
+                        .headerAnchor = cfg.regex.headerAnchor.toStdString(),
+                    },
+            },
         .locators = {{displayName, displayName}},
-        .regexPattern = cfg.regex.pattern.toStdString(),
-        .regexContinuationMode = cfg.regex.continuationMode,
-        .regexHeaderAnchor = cfg.regex.headerAnchor.toStdString(),
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6855,7 +6833,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
             return std::make_unique<loglib::AutoDetectParser>(
                 loglib::PROBE_BYTES_BUDGET,
                 loglib::AutoDetectParser::DEFAULT_PEEK_TIMEOUT,
-                loglib::FormatOptions{},
+                /*logfmtMultiline=*/true,
                 catalog
             );
         };
@@ -6863,10 +6841,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
         return;
     }
     const auto &currentSource = mSession->CurrentSource();
-    const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
-    auto parserFactory = [format, formatOptions = FormatOptionsOf(currentSource)] {
-        return MakeParserForFormat(format, formatOptions);
-    };
+    auto parserFactory = [spec = FormatSpecOf(currentSource)] { return MakeParser(spec); };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
 
@@ -6968,7 +6943,7 @@ constexpr auto SETTINGS_GEOMETRY_KEY = "ui/mainWindow/geometry";
 constexpr auto SETTINGS_STATE_KEY = "ui/mainWindow/state";
 
 // Keep file source names compact while preserving stream labels.
-QString CurrentSourceLabel(const std::optional<loglib::Source> &source, const QString &streamingName)
+QString CurrentSourceLabel(const std::optional<loglib::SourceDescriptor> &source, const QString &streamingName)
 {
     if (!source.has_value() || source->locators.empty())
     {
@@ -6981,7 +6956,7 @@ QString CurrentSourceLabel(const std::optional<loglib::Source> &source, const QS
     // Bundles surface as `Kind::File` (the receiver rewrites the
     // embedded locator to the current path in
     // `OnDecompressionFinished`), so this branch covers them too.
-    if (source->kind == loglib::Source::Kind::File)
+    if (source->kind == loglib::SourceDescriptor::Kind::File)
     {
         QString basename = QFileInfo(first).fileName();
         if (!basename.isEmpty())
@@ -7118,9 +7093,9 @@ void MainWindow::UpdateWindowTitle()
     // are producer URIs, not paths). Bundles reach here as
     // `Kind::File` with the locator rebased to the local `.slvbundle`,
     // so the glyph resolves for them too.
-    if (const auto &currentSource = mSession->CurrentSource(); currentSource.has_value() &&
-                                                               currentSource->kind == loglib::Source::Kind::File &&
-                                                               !currentSource->locators.empty())
+    if (const auto &currentSource = mSession->CurrentSource();
+        currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File &&
+        !currentSource->locators.empty())
     {
         setWindowFilePath(QString::fromStdString(currentSource->locators.front().displayPath));
     }
@@ -7291,7 +7266,7 @@ QString MainWindow::NetworkDropExplanation()
 std::size_t MainWindow::NetworkDroppedBytes(const LogSession *session)
 {
     if (session == nullptr || !session->CurrentSource().has_value() ||
-        session->CurrentSource()->kind != loglib::Source::Kind::NetworkStream || session->Model() == nullptr)
+        session->CurrentSource()->kind != loglib::SourceDescriptor::Kind::NetworkStream || session->Model() == nullptr)
     {
         return 0;
     }
@@ -7320,7 +7295,7 @@ void MainWindow::UpdateStreamingStatus()
     }
     else if (
         mSession->IsSourceWaiting() && mSession->CurrentSource().has_value() &&
-        mSession->CurrentSource()->kind == loglib::Source::Kind::NetworkStream
+        mSession->CurrentSource()->kind == loglib::SourceDescriptor::Kind::NetworkStream
     )
     {
         // Network producers wait only until the first sender delivers bytes.
@@ -8347,7 +8322,7 @@ int MainWindow::LastDroppedFilterCountForTest() const
     return mLastDroppedFilterCountForTest;
 }
 
-void MainWindow::SetCurrentSourceForTest(std::optional<loglib::Source> source)
+void MainWindow::SetCurrentSourceForTest(std::optional<loglib::SourceDescriptor> source)
 {
     mSession->MutableCurrentSource() = std::move(source);
     // Test fixtures often omit dedup keys; backfill so downstream
@@ -8355,7 +8330,7 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::Source> source)
     logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
 }
 
-const std::optional<loglib::Source> &MainWindow::CurrentSourceForTest() const noexcept
+const std::optional<loglib::SourceDescriptor> &MainWindow::CurrentSourceForTest() const noexcept
 {
     return mSession->CurrentSource();
 }
@@ -8527,10 +8502,10 @@ loglib::LogConfiguration MainWindow::SnapshotConfiguration(LogSession *session)
     // (the next launch resumes the complete set rather than a
     // strict subset). Dedup via canonical keys.
     const auto &currentSource = session->CurrentSource();
-    if (currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File &&
+    if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File &&
         !session->MutablePendingOpenFiles().isEmpty())
     {
-        loglib::Source mirrored = *currentSource;
+        loglib::SourceDescriptor mirrored = *currentSource;
         // Seed `seen` with existing dedup keys (case-insensitive on
         // Windows) so pending duplicates of already-streamed paths
         // are skipped.
@@ -8706,11 +8681,11 @@ logapp::persistence::SourceMode SourceModeFor(const LogSession *session)
         return session->RestorableSessionUuid().isEmpty() ? SourceMode::Empty : SourceMode::ConfigOnly;
     }
     const auto kind = src->kind;
-    if (kind == loglib::Source::Kind::Stdin)
+    if (kind == loglib::SourceDescriptor::Kind::Stdin)
     {
         return SourceMode::Stdin;
     }
-    if (kind == loglib::Source::Kind::NetworkStream)
+    if (kind == loglib::SourceDescriptor::Kind::NetworkStream)
     {
         return SourceMode::Network;
     }
@@ -9242,7 +9217,7 @@ bool MainWindow::SaveSession()
     // source field entirely.
     loglib::SaveScope effectiveScope = loglib::SaveScope::Full;
     if (const auto &currentSource = mSession->CurrentSource();
-        currentSource.has_value() && currentSource->kind == loglib::Source::Kind::Stdin)
+        currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::Stdin)
     {
 #ifdef LOGAPP_BUILD_TESTING
         if (mSuppressDialogsForTest)

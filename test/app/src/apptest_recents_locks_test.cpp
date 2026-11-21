@@ -181,7 +181,7 @@ private slots:
         QVERIFY(foreign.tryLock(100));
 
         loglib::LogConfiguration cfg;
-        loglib::Source src;
+        loglib::SourceDescriptor src;
         src.locators = {"C:/logs/locked.json"};
         cfg.source = src;
 
@@ -213,7 +213,9 @@ private slots:
         // Seed an entry so the `Touch` pre-check passes and the
         // call reaches the cross-process lock.
         loglib::LogConfiguration cfg;
-        cfg.source = loglib::Source{.kind = loglib::Source::Kind::File, .locators = {"C:/logs/contended.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/contended.json"}
+        };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 

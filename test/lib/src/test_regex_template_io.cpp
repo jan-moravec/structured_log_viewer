@@ -15,13 +15,13 @@ RegexTemplate MakeExampleTemplate()
 {
     RegexTemplate t;
     t.name = "Example template";
-    t.pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    t.regex.pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     t.sampleLines = {"info hello", "warn world"};
     t.autoDetect = true;
     t.priority = 25;
     t.description = "Hand-written for the round-trip test.";
-    t.continuationMode = ContinuationMode::Indented;
-    t.headerAnchor = R"(^\w+)";
+    t.regex.continuation = ContinuationMode::Indented;
+    t.regex.headerAnchor = R"(^\w+)";
     return t;
 }
 
@@ -35,15 +35,15 @@ TEST_CASE("RegexTemplate JSON round-trip preserves every field", "[regex_templat
     const RegexTemplate reloaded = ParseRegexTemplate(json);
 
     CHECK(reloaded.name == original.name);
-    CHECK(reloaded.pattern == original.pattern);
+    CHECK(reloaded.regex.pattern == original.regex.pattern);
     REQUIRE(reloaded.sampleLines.size() == original.sampleLines.size());
     CHECK(reloaded.sampleLines[0] == original.sampleLines[0]);
     CHECK(reloaded.sampleLines[1] == original.sampleLines[1]);
     CHECK(reloaded.autoDetect == original.autoDetect);
     CHECK(reloaded.priority == original.priority);
     CHECK(reloaded.description == original.description);
-    CHECK(reloaded.continuationMode == original.continuationMode);
-    CHECK(reloaded.headerAnchor == original.headerAnchor);
+    CHECK(reloaded.regex.continuation == original.regex.continuation);
+    CHECK(reloaded.regex.headerAnchor == original.regex.headerAnchor);
 }
 
 TEST_CASE("ContinuationMode name / parse helpers round-trip", "[regex_templates][io]")
@@ -71,14 +71,14 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
 
     const RegexTemplate parsed = ParseRegexTemplate(K_MINIMAL_JSON);
     CHECK(parsed.name == "Minimal template");
-    CHECK(parsed.pattern == "^(?<msg>.*)$");
+    CHECK(parsed.regex.pattern == "^(?<msg>.*)$");
     REQUIRE(parsed.sampleLines.size() == 1);
     CHECK(parsed.sampleLines[0] == "one line");
     CHECK(parsed.autoDetect == true);
     CHECK(parsed.priority == USER_TEMPLATE_DEFAULT_PRIORITY);
     CHECK(parsed.description.empty());
-    CHECK(parsed.continuationMode == ContinuationMode::None);
-    CHECK(parsed.headerAnchor.empty());
+    CHECK(parsed.regex.continuation == ContinuationMode::None);
+    CHECK(parsed.regex.headerAnchor.empty());
 }
 
 TEST_CASE("RegexTemplate JSON parse rejects an unknown key and names it", "[regex_templates][io]")
@@ -113,22 +113,38 @@ TEST_CASE("WithExtras exposes user entries to FindByPattern", "[regex_templates]
     // pattern, and the catalog it was made from does not.
     const RegexTemplate extra{
         .name = "User-defined demo",
-        .pattern = R"(^USER\s+(?<id>\d+)$)",
+        .regex = {.pattern = R"(^USER\s+(?<id>\d+)$)"},
         .sampleLines = {"USER 1"},
         .autoDetect = false,
         .priority = 50,
         .description = "",
     };
 
-    REQUIRE(RegexTemplateCatalog::Builtin().FindByPattern(extra.pattern) == nullptr);
+    REQUIRE(RegexTemplateCatalog::Builtin().FindByPattern(extra.regex.pattern) == nullptr);
 
     const RegexTemplateCatalog withExtra = RegexTemplateCatalog::Builtin().WithExtras({extra});
 
-    const RegexTemplate *found = withExtra.FindByPattern(extra.pattern);
+    const RegexTemplate *found = withExtra.FindByPattern(extra.regex.pattern);
     REQUIRE(found != nullptr);
     CHECK(found->name == extra.name);
     CHECK(found->autoDetect == false);
     CHECK(found->priority == 50);
 
-    CHECK(RegexTemplateCatalog::Builtin().FindByPattern(extra.pattern) == nullptr);
+    CHECK(RegexTemplateCatalog::Builtin().FindByPattern(extra.regex.pattern) == nullptr);
+}
+
+TEST_CASE("A regex template file keeps its flat keys", "[regex_templates][io]")
+{
+    RegexTemplate tmpl;
+    tmpl.name = "Flat";
+    tmpl.regex = {.pattern = R"(^(?<a>.*)$)", .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = "^x"};
+
+    const std::string json = SerializeRegexTemplate(tmpl);
+    CHECK(json.contains("\"pattern\""));
+    CHECK(json.contains("\"continuationMode\""));
+    CHECK(json.contains("\"headerAnchor\""));
+    CHECK_FALSE(json.contains("\"regex\""));
+
+    const RegexTemplate parsed = ParseRegexTemplate(json);
+    CHECK(parsed.regex == tmpl.regex);
 }

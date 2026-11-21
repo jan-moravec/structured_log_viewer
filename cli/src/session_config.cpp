@@ -120,11 +120,11 @@ namespace
  * Paths are made absolute with forward slashes, matching the GUI's
  * locator form. Stdin is skipped.
  */
-[[nodiscard]] std::optional<loglib::Source> BuildSavedSource(
+[[nodiscard]] std::optional<loglib::SourceDescriptor> BuildSavedSource(
     const InputOptions &input, const GlobalOptions &global, const LoadedTable &loaded
 )
 {
-    loglib::Source source;
+    loglib::SourceDescriptor source;
     for (const SourceSpec &spec : input.sources)
     {
         if (spec.kind != SourceKind::Path && spec.kind != SourceKind::Bundle)
@@ -139,16 +139,10 @@ namespace
     {
         return std::nullopt;
     }
-    source.kind = loglib::Source::Kind::File;
+    source.kind = loglib::SourceDescriptor::Kind::File;
     if (loaded.format)
     {
-        source.format = loaded.format->format;
-        if (source.format == loglib::Source::Format::Regex)
-        {
-            source.regexPattern = loaded.format->regexPattern;
-            source.regexContinuationMode = loaded.format->regexContinuationMode;
-            source.regexHeaderAnchor = loaded.format->regexHeaderAnchor;
-        }
+        source.format = *loaded.format;
     }
     source.followRotationSiblings = !global.noRotationHistory;
     return source;

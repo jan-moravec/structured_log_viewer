@@ -41,7 +41,7 @@ std::string ReadProbeHead(const std::filesystem::path &file, std::size_t budget)
     return head;
 }
 
-std::optional<DetectedFormat> DetectFormat(std::string_view sample, const RegexTemplateCatalog &catalog)
+std::optional<FormatSpec> DetectFormat(std::string_view sample, const RegexTemplateCatalog &catalog)
 {
     if (sample.empty())
     {
@@ -51,46 +51,42 @@ std::optional<DetectedFormat> DetectFormat(std::string_view sample, const RegexT
     // Probe specific formats before generic CSV: JSON, logfmt, regex templates, then CSV.
     if (LooksLikeJson(sample))
     {
-        return DetectedFormat{.format = Source::Format::Json};
+        return FormatSpec{.format = LogFormat::Json};
     }
     if (LooksLikeLogfmt(sample))
     {
-        return DetectedFormat{.format = Source::Format::Logfmt};
+        return FormatSpec{.format = LogFormat::Logfmt};
     }
     if (const RegexTemplate *tmpl = catalog.Detect(sample); tmpl != nullptr)
     {
-        return DetectedFormat{
-            .format = Source::Format::Regex,
-            .regexPattern = tmpl->pattern,
-            .regexContinuationMode = tmpl->continuationMode,
-            .regexHeaderAnchor = tmpl->headerAnchor,
-        };
+        return FormatSpec{.format = LogFormat::Regex, .regex = tmpl->regex};
     }
     if (LooksLikeCsv(sample))
     {
-        return DetectedFormat{.format = Source::Format::Csv};
+        return FormatSpec{.format = LogFormat::Csv};
     }
     return std::nullopt;
 }
 
-bool SampleFitsFormat(std::string_view sample, Source::Format format, const FormatOptions &options)
+bool SampleFitsFormat(std::string_view sample, const FormatSpec &spec)
 {
-    switch (format)
+    switch (spec.format)
     {
-    case Source::Format::Json:
+    case LogFormat::Json:
         return LooksLikeJson(sample);
-    case Source::Format::Logfmt:
+    case LogFormat::Logfmt:
         return LooksLikeLogfmt(sample);
-    case Source::Format::Csv:
+    case LogFormat::Csv:
         return LooksLikeCsv(sample);
-    case Source::Format::Regex: {
-        if (options.regexPattern.empty())
+    case LogFormat::Regex:
+    {
+        if (spec.regex.pattern.empty())
         {
             return false;
         }
         internal::CompiledPattern compiled;
         std::string error;
-        if (!compiled.Compile(options.regexPattern, error))
+        if (!compiled.Compile(spec.regex.pattern, error))
         {
             return false;
         }
@@ -101,19 +97,17 @@ bool SampleFitsFormat(std::string_view sample, Source::Format format, const Form
     return false;
 }
 
-std::unique_ptr<LogParser> MakeParserForFormat(Source::Format format, const FormatOptions &options)
+std::unique_ptr<LogParser> MakeParser(const FormatSpec &spec)
 {
-    switch (format)
+    switch (spec.format)
     {
-    case Source::Format::Logfmt:
-        return std::make_unique<LogfmtParser>(options.multilineLogfmt);
-    case Source::Format::Csv:
+    case LogFormat::Logfmt:
+        return std::make_unique<LogfmtParser>(spec.logfmtMultiline);
+    case LogFormat::Csv:
         return std::make_unique<CsvParser>();
-    case Source::Format::Regex:
-        return std::make_unique<RegexParser>(
-            options.regexPattern, options.regexContinuationMode, options.regexHeaderAnchor
-        );
-    case Source::Format::Json:
+    case LogFormat::Regex:
+        return std::make_unique<RegexParser>(spec.regex);
+    case LogFormat::Json:
         return std::make_unique<JsonParser>();
     }
     return std::make_unique<JsonParser>();

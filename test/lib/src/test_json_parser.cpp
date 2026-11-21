@@ -10,9 +10,9 @@
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/internal/parse_runtime.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -192,7 +192,6 @@ TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
 // running absolute line cursor and composes "Error on line N: <body>" itself.
 TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[json_parser][error_line_numbers]")
 {
-
     constexpr size_t VALID_LINES = 1000;
     constexpr size_t INVALID_LINE_NUMBER_A = 1500;
     constexpr size_t INVALID_LINE_NUMBER_B = 2500;
@@ -646,7 +645,6 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     // and per-cell value equivalence under `LogValueEquivalent` (which folds
     // `string` / `string_view` distinctions into one bytes comparison).
     using namespace loglib;
-
 
     // Generate a fixture sized to span multiple Stage A batches (1 MiB default) so the
     // multi-threaded run actually exercises more than one worker. ~5'000 lines × ~200 bytes

@@ -2,8 +2,8 @@
  * @brief The matching rule that regex detection uses on a sample.
  *
  * Detection looks at the first non-blank lines of a sample and asks whether a pattern matches enough of them. The
- * catalog uses this rule to pick a template, and SampleFitsFormat uses it to check a pattern the caller chose, so the two
- * always agree. Only library sources include this header, because it pulls in the PCRE2 C API.
+ * catalog uses this rule to pick a template, and SampleFitsFormat uses it to check a pattern the caller chose, so the
+ * two always agree. Only library sources include this header, because it pulls in the PCRE2 C API.
  *
  * This is part of the parse module.
  */

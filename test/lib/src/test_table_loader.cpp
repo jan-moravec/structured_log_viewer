@@ -582,6 +582,6 @@ TEST_CASE("Rows of every parser resolve their keys through the table's KeyIndex 
     }
     SECTION("regex")
     {
-        check(RegexParser(R"(^(?<level>\w+)$)"), "info\nwarn\n");
+        check(RegexParser({.pattern = R"(^(?<level>\w+)$)"}), "info\nwarn\n");
     }
 }

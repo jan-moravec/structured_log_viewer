@@ -80,14 +80,14 @@ TEST_CASE("Detection does not claim JSON files as regex [regex]", "[regex_parser
     CHECK_FALSE(DetectTemplate(file.GetFilePath()).has_value());
     const auto format = DetectFormat(ReadProbeHead(file.GetFilePath()));
     REQUIRE(format.has_value());
-    CHECK(format->format == Source::Format::Json);
+    CHECK(format->format == loglib::LogFormat::Json);
 }
 
 TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[regex_parser]")
 {
     // A RegexParser with an empty pattern fails closed.
     // Parsing must not crash; it surfaces one error and ends cleanly.
-    const RegexParser parser{std::string{}};
+    const RegexParser parser{RegexSettings{}};
 
     auto result = ParseSource(
         parser,
@@ -103,7 +103,7 @@ TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[rege
 
 TEST_CASE("RegexParser unparsable pattern surfaces error [regex]", "[regex_parser]")
 {
-    const RegexParser parser(R"((?<a)"); // dangling group
+    const RegexParser parser({.pattern = R"((?<a)"}); // dangling group
 
     auto result = ParseSource(parser, MemorySource("anything\nat all\n"));
     REQUIRE(result.errors.size() == 1);
@@ -115,7 +115,7 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
 {
     // Anonymous groups don't map to columns; refuse rather than
     // producing schemaless rows.
-    const RegexParser parser(R"(^(\w+)\s+(.*)$)");
+    const RegexParser parser({.pattern = R"(^(\w+)\s+(.*)$)"});
 
     auto result = ParseSource(parser, MemorySource("a b\nc d\n"));
     REQUIRE(result.errors.size() == 1);
@@ -126,7 +126,7 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
 TEST_CASE("RegexParser parses well-formed lines [regex]", "[regex_parser]")
 {
     // Simple `LEVEL message` shape; named groups map to columns.
-    const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
+    const RegexParser parser({.pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)"});
 
     auto result = ParseSource(parser, MemorySource("info hello\nerror boom\n"));
     CHECK(result.errors.empty());
@@ -153,7 +153,7 @@ TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
 {
     // `ClassifyBareScalar` promotes numeric / bool captures the
     // same way it does for CSV / logfmt bare cells.
-    const RegexParser parser(R"(^(?<level>\w+)\s+(?<code>\d+)\s+(?<ratio>\S+)\s+(?<ok>\S+)$)");
+    const RegexParser parser({.pattern = R"(^(?<level>\w+)\s+(?<code>\d+)\s+(?<ratio>\S+)\s+(?<ok>\S+)$)"});
 
     auto result = ParseSource(
         parser,
@@ -179,7 +179,7 @@ TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
 TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_parser]")
 {
     // Non-match is per-line; the rest of the file still parses.
-    const RegexParser parser(R"(^(?<level>\w+):(?<message>.+)$)");
+    const RegexParser parser({.pattern = R"(^(?<level>\w+):(?<message>.+)$)"});
 
     auto result = ParseSource(
         parser,
@@ -199,7 +199,7 @@ TEST_CASE("RegexParser reports invalid UTF-8 for a pattern that turns on UTF mod
 {
     // A leading (*UTF) makes the pattern a UTF pattern. A line that is not valid UTF-8 must give an error for that line
     // and not be read as if it were valid.
-    const RegexParser parser(R"((*UTF)^(?<level>\w+):(?<message>.+)$)");
+    const RegexParser parser({.pattern = R"((*UTF)^(?<level>\w+):(?<message>.+)$)"});
 
     auto result = ParseSource(
         parser,
@@ -221,7 +221,7 @@ TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_
     // Captures that didn't participate in the match drop to
     // monostate (not the empty string), matching CSV's "missing
     // trailing cell" behaviour.
-    const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
+    const RegexParser parser({.pattern = R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)"});
 
     auto result = ParseSource(
         parser,
@@ -305,7 +305,7 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
 
 TEST_CASE("RegexParser captures named groups as values [regex]", "[regex_parser]")
 {
-    const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
+    const RegexParser parser({.pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)"});
 
     auto result = ParseSource(parser, MemorySource("info hello world\n"));
     REQUIRE(result.errors.empty());
@@ -354,7 +354,7 @@ TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[rege
     // pattern-source index. A pattern with `message` declared
     // before `level` must intern `message` first, not the
     // alphabetical permutation.
-    const RegexParser parser(R"(^(?<message>[^|]*)\|(?<level>\w+)$)");
+    const RegexParser parser({.pattern = R"(^(?<message>[^|]*)\|(?<level>\w+)$)"});
 
     auto result = ParseSource(parser, MemorySource("hello world|info\n"));
     REQUIRE(result.errors.empty());
@@ -412,7 +412,7 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
+    const RegexParser parser({.pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)"});
 
     const std::string payload = "info hello\n"
                                 "warn world\n"
@@ -482,7 +482,7 @@ std::vector<loglib::ParseError> FlattenSinkErrors(const CollectingStreamSink &si
 /// makes it obvious in stack traces which test tripped.
 std::vector<loglib::ParseError> RunStreamingParseCollectingErrors(std::string_view pattern, std::string_view payload)
 {
-    const RegexParser parser{std::string{pattern}};
+    const RegexParser parser({.pattern = std::string{pattern}});
     StreamLineSource source(
         std::filesystem::path("regex_stream_error.log"), std::make_unique<InMemoryBytesProducer>(std::string{payload})
     );
@@ -503,7 +503,7 @@ TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][strea
     // empty and the parser must fail closed before decoding any
     // line. The streaming overload reports this error through
     // `EmitErrorAndFinish` with the streaming flush thresholds.
-    const RegexParser parser{std::string{}};
+    const RegexParser parser{RegexSettings{}};
     StreamLineSource source(
         std::filesystem::path("regex_stream_empty_pattern.log"), std::make_unique<InMemoryBytesProducer>("one\ntwo\n")
     );
@@ -553,16 +553,14 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-indented-multiline",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::Indented,
-        .headerAnchor = "",
     };
 
-    const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
+    const RegexParser parser{extra.regex};
 
     const std::string payload = "error boom\n"
                                 "\tat com.example.Foo.bar(Foo.java:42)\n"
@@ -618,16 +616,14 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-stream-multiline-blank",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::Indented,
-        .headerAnchor = "",
     };
 
-    const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
+    const RegexParser parser{extra.regex};
 
     const std::string payload = "error boom\n"
                                 "\n"
@@ -677,16 +673,14 @@ TEST_CASE(
     const std::string pattern = R"(^\[(?<level>\w+)\]\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-header-multiline",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = ""},
         .sampleLines = {"[ERROR] boom"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = "",
     };
 
-    const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
+    const RegexParser parser{extra.regex};
 
     const std::string payload = "[ERROR] boom\n"
                                 "Traceback (most recent call last):\n"
@@ -730,16 +724,14 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-legacy-singleline",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::None, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::None,
-        .headerAnchor = "",
     };
 
-    const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
+    const RegexParser parser{extra.regex};
 
     const std::string payload = "error boom\n"
                                 "\tat com.example.Foo.bar(Foo.java:42)\n"
@@ -775,16 +767,14 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-static-indented",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::Indented,
-        .headerAnchor = "",
     };
 
-    const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
+    const RegexParser parser{extra.regex};
 
     auto result = ParseSource(
         parser,
@@ -830,13 +820,11 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-static-crossbatch",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::Indented,
-        .headerAnchor = "",
     };
 
     ParserOptions options;
@@ -855,7 +843,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.Parse(*sourcePtr, sink, options);
+    RegexParser{extra.regex}.Parse(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -904,13 +892,11 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-crossbatch-blank-leading",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::Indented,
-        .headerAnchor = "",
     };
 
     ParserOptions options;
@@ -928,7 +914,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.Parse(*sourcePtr, sink, options);
+    RegexParser{extra.regex}.Parse(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -970,13 +956,11 @@ TEST_CASE(
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate extra{
         .name = "test-crossbatch-blank-no-cont",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = ""},
         .sampleLines = {"info hello"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::Indented,
-        .headerAnchor = "",
     };
 
     ParserOptions options;
@@ -993,7 +977,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.Parse(*sourcePtr, sink, options);
+    RegexParser{extra.regex}.Parse(*sourcePtr, sink, options);
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -1099,7 +1083,7 @@ TEST_CASE("RegexParser leaves optional groups that did not match empty [regex]",
     // as monostate. The syslog-style optional `[pid]` group is
     // the natural fixture: line 1 leaves `pid` absent, line 2
     // fills it.
-    const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
+    const RegexParser parser({.pattern = R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)"});
 
     auto result = ParseSource(
         parser,
@@ -1137,16 +1121,14 @@ TEST_CASE(
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate anchored{
         .name = "test-header-anchor-streaming",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = R"(^\d{4}-)"},
         .sampleLines = {"2026-01-01 INFO ok"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = R"(^\d{4}-)",
     };
 
-    const RegexParser parser{anchored.pattern, anchored.continuationMode, anchored.headerAnchor};
+    const RegexParser parser{anchored.regex};
 
     const std::string payload = "2026-01-01 ERROR boom\n"
                                 "Traceback (most recent call last):\n"
@@ -1199,13 +1181,11 @@ TEST_CASE(
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate anchored{
         .name = "test-header-anchor-static",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = R"(^\d{4}-)"},
         .sampleLines = {"2026-01-01 INFO ok"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = R"(^\d{4}-)",
     };
 
     ParserOptions options;
@@ -1225,7 +1205,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser{anchored.pattern, anchored.continuationMode, anchored.headerAnchor}.Parse(*sourcePtr, sink, options);
+    RegexParser{anchored.regex}.Parse(*sourcePtr, sink, options);
 
     LogData data = sink.TakeData();
     const std::vector<loglib::ParseError> errors = sink.TakeErrors();
@@ -1257,16 +1237,14 @@ TEST_CASE(
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate bad{
         .name = "test-header-anchor-bad-streaming",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = R"((?<a)"},
         .sampleLines = {"2026-01-01 INFO ok"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = R"((?<a)",
     };
 
-    const RegexParser parser{bad.pattern, bad.continuationMode, bad.headerAnchor};
+    const RegexParser parser{bad.regex};
 
     const std::string payload = "2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n";
     StreamLineSource source(
@@ -1298,13 +1276,11 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
     const RegexTemplate bad{
         .name = "test-header-anchor-bad-static",
-        .pattern = pattern,
+        .regex = {.pattern = pattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = R"((?<a)"},
         .sampleLines = {"2026-01-01 INFO ok"},
         .autoDetect = false,
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
-        .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = R"((?<a)",
     };
 
     const MemoryLogFile file("regex_header_anchor_bad_static.log");
@@ -1314,7 +1290,7 @@ TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[r
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser{bad.pattern, bad.continuationMode, bad.headerAnchor}.Parse(*sourcePtr, sink, ParserOptions{});
+    RegexParser{bad.regex}.Parse(*sourcePtr, sink, ParserOptions{});
 
     LogData data = sink.TakeData();
     const std::vector<loglib::ParseError> errors = sink.TakeErrors();
@@ -1339,16 +1315,14 @@ TEST_CASE(
     auto runOnce = [&](const std::string &anchor) {
         const RegexTemplate extra{
             .name = "test-header-anchor-ignored",
-            .pattern = pattern,
+            .regex = {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = anchor},
             .sampleLines = {"info ok"},
             .autoDetect = false,
             .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
             .description = "",
-            .continuationMode = ContinuationMode::Indented,
-            .headerAnchor = anchor,
         };
 
-        const RegexParser parser{extra.pattern, extra.continuationMode, extra.headerAnchor};
+        const RegexParser parser{extra.regex};
         StreamLineSource source(
             std::filesystem::path("anchor_ignored.log"), std::make_unique<InMemoryBytesProducer>(payload)
         );
