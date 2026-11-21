@@ -630,10 +630,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
                 "Check that you can write to the destination folder and that the target file is not read-only."
             );
         }
-        throw IoError(
-            "Session bundle: atomic replacement of '" + destUtf8 + "' failed with Windows error " +
-            std::to_string(win32Error)
-        );
+        throw IoError("Session bundle: atomic replacement of '" + destUtf8 + "' failed", moveError);
     }
 #else
     std::error_code error;
@@ -641,8 +638,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
     if (error)
     {
         throw IoError(
-            "Session bundle: atomic replacement of '" + internal::PathToUtf8(destination) +
-            "' failed: " + error.message()
+            "Session bundle: atomic replacement of '" + internal::PathToUtf8(destination) + "' failed", error
         );
     }
 #endif

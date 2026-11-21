@@ -11,13 +11,13 @@
 #include "text_table.hpp"
 #include "text_util.hpp"
 
+#include <loglib/config/filter_expression.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/query/filter_compile.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
 
 #include <algorithm>
 #include <array>
@@ -420,7 +420,7 @@ struct TimeHistogram
         TimeBucket bucket{
             .bucketStartMicros = start.time_since_epoch().count(),
             .bucketWidthMicros = report.bucketWidthMicros,
-            .bucketStartLocal = runtime.timeZone.FormatTimeStamp(start),
+            .bucketStartLocal = runtime.timeZone.FormatDateTime(start),
             .total = buckets[index].Total(),
             .levels = {},
         };
@@ -479,8 +479,8 @@ struct TimeHistogram
     {
         span = std::format(
             "span: {} .. {} ({} row(s))",
-            runtime.timeZone.FormatTimeStamp(*histogram.minTs),
-            runtime.timeZone.FormatTimeStamp(*histogram.maxTs),
+            runtime.timeZone.FormatDateTime(*histogram.minTs),
+            runtime.timeZone.FormatDateTime(*histogram.maxTs),
             report.rowCount
         );
     }

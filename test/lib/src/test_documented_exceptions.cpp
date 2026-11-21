@@ -1,5 +1,7 @@
 #include <loglib/core/error.hpp>
+#include <loglib/ingest/internal/stdin_bytes_producer_test_access.hpp>
 #include <loglib/ingest/stdin_bytes_producer.hpp>
+#include <loglib/ingest/tailing_bytes_producer.hpp>
 #include <loglib/ingest/tcp_server_producer.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/parse/regex_templates.hpp>
@@ -14,6 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 #include "common.hpp"
 
@@ -43,6 +46,20 @@ TEST_CASE("TimeZoneContext::Load throws only the documented exceptions", "[error
     CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), FormatError);
 }
 
+TEST_CASE("TimeZoneContext::Load accepts one tzdata folder for the whole process", "[errors][time_zone]")
+{
+    InitializeTimezoneData();
+    const test_common::TempDir otherFolder("documented_exceptions_other_tzdata");
+
+    // A second, different folder is an error, whichever zone is asked for.
+    CHECK_THROWS_AS(TimeZoneContext::Load(otherFolder.Path()), FormatError);
+    CHECK_THROWS_AS(TimeZoneContext::Load(otherFolder.Path(), "Europe/Berlin"), FormatError);
+
+    // The same folder again, for another zone, works.
+    const TimeZoneContext tokyo = TimeZoneContext::Load(FindTestTzdata(), "Asia/Tokyo");
+    CHECK(tokyo.IanaName() == "Asia/Tokyo");
+}
+
 TEST_CASE("Network and stdin producers throw IoError for resources they cannot open", "[errors][network]")
 {
     SECTION("a TLS certificate that does not exist")
@@ -61,5 +78,68 @@ TEST_CASE("Network and stdin producers throw IoError for resources they cannot o
         CHECK_THROWS_AS(
             internal::StdinBytesProducerTestAccess::Create(invalidHandle, StdinBytesProducer::Options{}), IoError
         );
+    }
+}
+
+TEST_CASE("IoError carries the system error code when it has one", "[errors]")
+{
+    SECTION("without a code")
+    {
+        const IoError error("cannot open");
+        CHECK_FALSE(error.Code());
+        CHECK(std::string(error.what()) == "cannot open");
+    }
+    SECTION("with a code")
+    {
+        const IoError error("cannot open", std::make_error_code(std::errc::no_such_file_or_directory));
+        CHECK(error.Code() == std::errc::no_such_file_or_directory);
+        CHECK(std::string(error.what()).starts_with("cannot open: "));
+    }
+}
+
+TEST_CASE("A tailed file that does not exist and a bind failure throw IoError with a code", "[errors][network]")
+{
+    SECTION("a missing tailed file")
+    {
+        const test_common::TempDir dir("documented_exceptions_tail");
+        try
+        {
+            const TailingBytesProducer producer(dir.Path() / "missing.log", 100);
+            FAIL("expected IoError");
+        }
+        catch (const IoError &error)
+        {
+            CHECK(error.Code());
+        }
+    }
+    SECTION("an address that cannot be parsed")
+    {
+        TcpServerProducer::Options options;
+        options.bindAddress = "not-a-host";
+        try
+        {
+            const TcpServerProducer producer(options);
+            FAIL("expected IoError");
+        }
+        catch (const IoError &error)
+        {
+            CHECK(error.Code());
+        }
+    }
+    SECTION("a port that is already in use")
+    {
+        TcpServerProducer::Options options;
+        options.bindAddress = "127.0.0.1";
+        const TcpServerProducer first(options);
+        options.port = first.BoundPort();
+        try
+        {
+            const TcpServerProducer second(options);
+            FAIL("expected IoError");
+        }
+        catch (const IoError &error)
+        {
+            CHECK(error.Code());
+        }
     }
 }

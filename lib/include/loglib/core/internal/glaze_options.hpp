@@ -3,7 +3,7 @@
  *
  * Configuration, regex template, theme and session bundle files are written with indentation so people can read them.
  * Every reader rejects unknown keys. A key that is missing keeps the default of its member, except in configuration
- * files, where the types say which keys are required. The schema, parse, support and output modules all use these
+ * files, where the types say which keys are required. The config, parse, support and output modules all use these
  * options, which is why the header is in core.
  *
  * This is part of the core module.
@@ -18,18 +18,26 @@ namespace loglib::internal
 {
 
 /**
- * @brief The JSON options used for regex template and theme files.
+ * @brief The JSON options for every JSON file the library reads and writes, except configuration files.
+ *
+ * Regex template, theme and session bundle files use these.
  *
  * Output is indented with 4 spaces. Unknown keys are errors, and a missing key keeps the default of its member.
  */
-struct LogConfigOpts : glz::opts
+struct JsonFileOptions : glz::opts
 {
     uint8_t indentation_width = 4; // NOLINT(readability-identifier-naming)
 };
 // MSVC requires designated initializers to follow the declaration order of the members.
 // null_terminated is off because the readers take a string_view, which has no terminator, and Glaze would read one byte
 // past its end.
-constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unknown_keys = true, .prettify = true}};
+constexpr JsonFileOptions JSON_FILE_OPTIONS{
+    {
+        .null_terminated = false,
+        .error_on_unknown_keys = true,
+        .prettify = true,
+    },
+};
 
 /**
  * @brief The JSON options for configuration files and the configuration inside a session bundle.
@@ -37,9 +45,9 @@ constexpr LogConfigOpts LOG_CONFIG_OPTS{{.null_terminated = false, .error_on_unk
  * Unknown keys are errors. A key is required only where a type says so, through its requires_key function, so a missing
  * optional key keeps the default of its member. Output is indented.
  */
-constexpr LogConfigOpts MakeConfigurationOpts(bool prettify)
+constexpr JsonFileOptions MakeConfigurationOpts(bool prettify)
 {
-    LogConfigOpts opts{};
+    JsonFileOptions opts{};
     opts.null_terminated = false;
     opts.error_on_unknown_keys = true;
     opts.error_on_missing_keys = true;
@@ -48,9 +56,9 @@ constexpr LogConfigOpts MakeConfigurationOpts(bool prettify)
 }
 
 /** @brief The options for configuration files, with indented output. */
-constexpr LogConfigOpts CONFIGURATION_OPTS = MakeConfigurationOpts(true);
+constexpr JsonFileOptions CONFIGURATION_OPTS = MakeConfigurationOpts(true);
 
 /** @brief The same rules as CONFIGURATION_OPTS, with the output on one line. */
-constexpr LogConfigOpts CONFIGURATION_COMPACT_OPTS = MakeConfigurationOpts(false);
+constexpr JsonFileOptions CONFIGURATION_COMPACT_OPTS = MakeConfigurationOpts(false);
 
 } // namespace loglib::internal

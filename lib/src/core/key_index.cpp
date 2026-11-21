@@ -66,10 +66,6 @@ KeyIndex &KeyIndex::operator=(KeyIndex &&) noexcept = default;
 
 KeyId KeyIndex::GetOrInsert(std::string_view key)
 {
-#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-    sGetOrInsertCallCount.fetch_add(1, std::memory_order_relaxed);
-#endif
-
     Impl::Shard &shard = mImpl->shards[Impl::ShardIndex(key)];
 
     {
@@ -103,10 +99,6 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
 
 KeyId KeyIndex::Find(std::string_view key) const
 {
-#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-    sFindCallCount.fetch_add(1, std::memory_order_relaxed);
-#endif
-
     const Impl::Shard &shard = mImpl->shards[Impl::ShardIndex(key)];
     const std::shared_lock<std::shared_mutex> lock(shard.mutex);
     if (auto it = shard.map.find(key); it != shard.map.end())
@@ -165,26 +157,5 @@ size_t KeyIndex::EstimatedMemoryBytes() const
     }
     return bytes;
 }
-
-#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-std::atomic<std::size_t> KeyIndex::sGetOrInsertCallCount{0};
-std::atomic<std::size_t> KeyIndex::sFindCallCount{0};
-
-void KeyIndex::ResetInstrumentationCounters() noexcept
-{
-    sGetOrInsertCallCount.store(0, std::memory_order_relaxed);
-    sFindCallCount.store(0, std::memory_order_relaxed);
-}
-
-std::size_t KeyIndex::LoadGetOrInsertCount() noexcept
-{
-    return sGetOrInsertCallCount.load(std::memory_order_relaxed);
-}
-
-std::size_t KeyIndex::LoadFindCount() noexcept
-{
-    return sFindCallCount.load(std::memory_order_relaxed);
-}
-#endif
 
 } // namespace loglib

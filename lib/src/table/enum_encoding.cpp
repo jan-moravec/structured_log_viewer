@@ -1,11 +1,11 @@
 #include "loglib/table/internal/enum_inference.hpp"
 
+#include "loglib/config/column_layout.hpp"
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/schema/column_layout.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <oneapi/tbb/parallel_for.h>
 
@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 namespace
@@ -400,4 +400,4 @@ void EnumInference::DemoteColumnFromEnum(LogData &data, ColumnLayout &layout, si
     }
 }
 
-} // namespace loglib
+} // namespace loglib::internal

@@ -1,9 +1,11 @@
+#include "loglib/query/query_format.hpp"
+
 #include "loglib/query/query_parser.hpp"
 
 #include "loglib/core/ascii_case.hpp"
 #include "loglib/query/internal/query_lexer.hpp"
 
-#include "loglib/schema/filter_expression.hpp"
+#include "loglib/config/filter_expression.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <algorithm>

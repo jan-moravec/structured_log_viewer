@@ -235,7 +235,7 @@ void RequireBrokenPipe(const auto &action)
     {
         action();
     }
-    catch (const loglib::exports::BrokenPipe &)
+    catch (const loglib::BrokenPipe &)
     {
         return;
     }
@@ -287,7 +287,7 @@ TEST_CASE("StreamSink writes exact bytes and creates no temp file", "[exports][s
 
 TEST_CASE("StreamSink closed read end throws BrokenPipe", "[exports][stream_sink]")
 {
-    STATIC_REQUIRE_FALSE(std::is_base_of_v<std::runtime_error, loglib::exports::BrokenPipe>);
+    STATIC_REQUIRE_FALSE(std::is_base_of_v<std::runtime_error, loglib::BrokenPipe>);
 
 #ifndef _WIN32
     [[maybe_unused]] const IgnoreSigpipe ignoreSigpipe;

@@ -17,7 +17,7 @@ class Console;
  * @brief Process-wide state shared by every command.
  *
  * `stop` is the signal-handler token. `timeZone` is the resolved
- * `--tz` context; callers also install it as the process default.
+ * `--tz` context, which every command passes on explicitly.
  */
 struct RuntimeContext
 {

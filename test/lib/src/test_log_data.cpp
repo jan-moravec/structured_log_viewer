@@ -6,6 +6,8 @@
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 
+#include <test_common/log_line_debug.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <memory>
@@ -24,8 +26,10 @@ TEST_CASE(
 
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
-    testLines.emplace_back(LogMap{{"key2", int64_t{42}}}, testKeys, *sourcePtr, 0);
+    testLines.push_back(
+        test_common::MakeLine(test_common::LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0)
+    );
+    testLines.push_back(test_common::MakeLine(test_common::LogMap{{"key2", int64_t{42}}}, testKeys, *sourcePtr, 0));
 
     LogData data(std::move(source), std::move(testLines), std::move(testKeys));
 
@@ -35,8 +39,8 @@ TEST_CASE(
     REQUIRE(data.FrontFileSource()->Path() == testLogFile.GetFilePath());
 
     REQUIRE(data.Lines().size() == 2);
-    CHECK(std::get<std::string>(data.Lines()[0].GetValue(data.Keys(), "key1")) == "value1");
-    CHECK(std::get<int64_t>(data.Lines()[1].GetValue(data.Keys(), "key2")) == 42);
+    CHECK(std::get<std::string>(test_common::ValueByName(data.Lines()[0], data.Keys(), "key1")) == "value1");
+    CHECK(std::get<int64_t>(test_common::ValueByName(data.Lines()[1], data.Keys(), "key2")) == 42);
 
     const auto sortedKeys = SortedKeys(data);
     REQUIRE(sortedKeys.size() == 2);

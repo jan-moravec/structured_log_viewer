@@ -1,3 +1,4 @@
+#include <loglib/ingest/internal/stdin_bytes_producer_test_access.hpp>
 #include <loglib/ingest/stdin_bytes_producer.hpp>
 
 #include <test_common/pipe.hpp>

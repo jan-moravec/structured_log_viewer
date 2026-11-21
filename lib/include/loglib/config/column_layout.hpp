@@ -6,14 +6,15 @@
  * the filter, sort, anchors and highlight rules belong to the session that shows the table and find their columns by
  * keys, so editing the layout never has to touch them.
  *
- * This is part of the schema module. LogConfiguration saves the columns of a layout to a file.
+ * This is part of the config module. LogConfiguration saves the columns of a layout to a file.
  */
 #pragma once
 
-#include "loglib/schema/column_schema.hpp"
+#include "loglib/config/column.hpp"
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -69,7 +70,7 @@ public:
     /**
      * @brief Sets the check that validates the print formats of Time columns.
      *
-     * The schema module cannot read time formats itself, so the table that owns the layout supplies the check. With a
+     * The config module cannot read time formats itself, so the table that owns the layout supplies the check. With a
      * check set, a Time column whose format fails it gets the default time format, and the replacement is reported once
      * through TakeWarnings, like any other replaced print format. Without a check, Time formats are left alone.
      */
@@ -143,10 +144,10 @@ private:
 };
 
 /**
- * @brief The index of the first Time column, or -1. That column is the one used as the timestamp of a row, for example
- * for summaries and time filters.
+ * @brief The index of the first Time column, or nullopt. That column is the one used as the timestamp of a row, for
+ * example for summaries and time filters.
  */
-[[nodiscard]] int FirstTimeColumnIndex(const ColumnLayout &layout);
+[[nodiscard]] std::optional<size_t> FirstTimeColumnIndex(const ColumnLayout &layout);
 
 /**
  * @brief The columns of type Time, in column order. A parser gets these as ParserOptions::timeColumns and converts them

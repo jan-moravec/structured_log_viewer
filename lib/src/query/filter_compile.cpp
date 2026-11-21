@@ -1,11 +1,11 @@
 #include "loglib/query/filter_compile.hpp"
 
+#include "loglib/config/filter_expression.hpp"
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/query/log_string_matcher.hpp"
 #include "loglib/query/row_filter.hpp"
-#include "loglib/schema/filter_expression.hpp"
-#include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/log_table.hpp"
 
 #include <algorithm>
@@ -24,11 +24,13 @@
 namespace loglib
 {
 
-int ResolveLeafColumnByKeys(const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns) noexcept
+std::optional<std::size_t> FindColumnByKeys(
+    const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns
+) noexcept
 {
     if (keys.empty())
     {
-        return -1;
+        return std::nullopt;
     }
     // Subset match: every rule key must appear in the column's keys.
     for (std::size_t i = 0; i < columns.size(); ++i)
@@ -39,10 +41,10 @@ int ResolveLeafColumnByKeys(const std::vector<std::string> &keys, const std::vec
         });
         if (allPresent)
         {
-            return static_cast<int>(i);
+            return i;
         }
     }
-    return -1;
+    return std::nullopt;
 }
 
 loglib::LeafRule ToLeafRule(const loglib::HighlightRule &rule)
@@ -64,16 +66,16 @@ loglib::LeafRule ToLeafRule(const loglib::HighlightRule &rule)
 
 std::optional<loglib::RowPredicate> CompileLeaf(
     const loglib::LeafRule &rule,
-    int resolvedColumn,
+    std::optional<std::size_t> resolvedColumn,
     const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 )
 {
-    if (resolvedColumn < 0)
+    if (!resolvedColumn.has_value())
     {
         return std::nullopt;
     }
-    const auto column = static_cast<std::size_t>(resolvedColumn);
+    const std::size_t column = *resolvedColumn;
     using T = loglib::LeafRule::Type;
     switch (rule.type)
     {
@@ -244,7 +246,7 @@ void CollectFilterProblems(
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)
             {
-                if (!n.rule.columnKeys.empty() && ResolveLeafColumnByKeys(n.rule.columnKeys, columns) < 0)
+                if (!n.rule.columnKeys.empty() && !FindColumnByKeys(n.rule.columnKeys, columns).has_value())
                 {
                     out.push_back("unknown column '" + n.rule.columnKeys.front() + "'");
                 }
@@ -310,13 +312,13 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)
             {
-                const int resolved = ResolveLeafColumnByKeys(n.rule.columnKeys, columns);
+                const std::optional<std::size_t> resolved = FindColumnByKeys(n.rule.columnKeys, columns);
                 auto predicate = CompileLeaf(n.rule, resolved, columns, table);
                 if (!predicate.has_value())
                 {
                     return std::nullopt;
                 }
-                referencedColumns.push_back(static_cast<std::size_t>(resolved));
+                referencedColumns.push_back(*resolved);
                 loglib::CompiledFilterExpression compiled;
                 compiled.node = loglib::CompiledFilterExpression::Leaf{std::move(*predicate)};
                 return compiled;

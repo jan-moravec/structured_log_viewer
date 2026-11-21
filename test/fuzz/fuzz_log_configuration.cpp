@@ -2,8 +2,8 @@
 
 #include "fuzz_common.hpp"
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/error.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <cstddef>
 #include <cstdint>

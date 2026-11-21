@@ -574,7 +574,7 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
     // unbounded (the user may uncheck the checkbox and start picking):
     // unbounded side reuses the other side's value, both-unbounded
     // falls back to "now".
-    auto pickSeed = [](std::optional<qint64> primary, std::optional<qint64> fallback) -> QDateTime {
+    const auto pickSeed = [this](std::optional<qint64> primary, std::optional<qint64> fallback) -> QDateTime {
         if (primary.has_value())
         {
             return ConvertToQDateTime(*primary);
@@ -637,15 +637,19 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
     mEndUnboundedCheckBox->setChecked(!end.has_value());
 }
 
-QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp)
+QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp) const
 {
-    return QDateTime::fromMSecsSinceEpoch(UtcMicrosecondsToLocalMilliseconds(timestamp), QTimeZone::utc());
+    // Qt counts milliseconds, the library microseconds.
+    constexpr qint64 MICROSECONDS_PER_MILLISECOND = 1000;
+    const qint64 localMicroseconds = mModel.TimeZone().UtcToLocal(timestamp);
+    return QDateTime::fromMSecsSinceEpoch(localMicroseconds / MICROSECONDS_PER_MILLISECOND, QTimeZone::utc());
 }
 
-qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
+qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time) const
 {
+    constexpr qint64 MICROSECONDS_PER_MILLISECOND = 1000;
     const QDateTime wallClock(date, time, QTimeZone::utc());
-    return LocalMillisecondsSinceEpochToTimeStamp(wallClock.toMSecsSinceEpoch()).time_since_epoch().count();
+    return mModel.TimeZone().LocalToUtc(wallClock.toMSecsSinceEpoch() * MICROSECONDS_PER_MILLISECOND);
 }
 
 void FilterEditor::OnOkClicked()

@@ -2,10 +2,8 @@
  * @brief Time zone rules for converting between UTC and local wall-clock time.
  *
  * A TimeZoneContext loads a zone from the tzdata files and converts timestamps both ways, including the ambiguous and
- * missing hours around daylight saving changes. Callers pass a context explicitly. A process-wide default exists for
- * applications that want one display zone, but the library never reads it: only the helpers without a context
- * argument use it, and no other library code calls them. The header also holds the small conversion helpers built on
- * it.
+ * missing hours around daylight saving changes. Callers pass a context explicitly to every function that needs a zone.
+ * An application that shows one zone keeps one context and hands it to the objects that need it.
  *
  * This is part of the time module.
  */
@@ -72,11 +70,9 @@ struct ZoneSpan
  * and there is no separate initialization. Copies share the same data and can be used by several threads at once for
  * converting and formatting.
  *
- * Loading time zone data is process-wide, so loading from different data paths in one process is not supported. The
+ * Loading time zone data is process-wide: the first Load installs a tzdata folder for the whole process, and a later
+ * Load from a different folder throws FormatError. Loading again from the same folder, for another zone, is fine. The
  * selected zone belongs to each context. A default-constructed context is UTC and needs no time zone data.
- *
- * Conversion functions take a context as an argument. SetProcessDefaultTimeZone also sets one process-wide context for
- * the formatting helpers that do not take one, such as TimeStampToDateTimeString.
  */
 class TimeZoneContext
 {
@@ -88,14 +84,15 @@ public:
      * @brief Loads time zone data from a folder and selects the zone the computer is set to.
      *
      * The folder must exist and hold IANA time zone data. Throws IoError if the folder does not exist and FormatError
-     * if the zone cannot be found.
+     * if the zone cannot be found or if a different folder was already used by an earlier Load.
      */
     [[nodiscard]] static TimeZoneContext Load(const std::filesystem::path &tzdataPath);
 
     /**
      * @brief Loads time zone data from a folder and selects a zone by its IANA name, such as Europe/Berlin.
      *
-     * Throws IoError if the folder does not exist and FormatError if the zone is not available.
+     * Throws IoError if the folder does not exist and FormatError if the zone is not available or if a different folder
+     * was already used by an earlier Load.
      */
     [[nodiscard]] static TimeZoneContext Load(const std::filesystem::path &tzdataPath, std::string_view zoneName);
 
@@ -118,27 +115,19 @@ public:
      * occur when the clocks go forward gives the moment of the change. If the conversion fails, because the date is too
      * far in the future or the zone data is damaged, the value is returned unchanged.
      */
-    [[nodiscard]] std::int64_t LocalMicrosecondsToUtc(std::int64_t localMicroseconds) const;
+    [[nodiscard]] std::int64_t LocalToUtc(std::int64_t localMicroseconds) const;
 
     /**
      * @brief Returns the range of local times around a time that share its UTC offset.
      *
-     * Inside the window, subtracting utcOffset gives the same result as LocalMicrosecondsToUtc without a zone lookup,
-     * which makes converting many nearby times cheap. The window stays away from clock changes, so it is empty when the
-     * time is close to one.
+     * Inside the window, subtracting utcOffset gives the same result as LocalToUtc without a zone lookup, which makes
+     * converting many nearby times cheap. The window stays away from clock changes, so it is empty when the time is
+     * close to one.
      */
     [[nodiscard]] LocalOffsetWindow OffsetWindowAt(std::int64_t localMicroseconds) const;
 
-    /** @brief Converts UTC microseconds since the epoch to local milliseconds. */
-    [[nodiscard]] std::int64_t UtcMicrosecondsToLocalMilliseconds(std::int64_t microseconds) const;
-
-    /**
-     * @brief Reads local milliseconds as a time in this zone and returns the UTC time.
-     *
-     * Times that occur twice or not at all, and failures, are handled as in LocalMicrosecondsToUtc. On failure the
-     * milliseconds are taken as UTC.
-     */
-    [[nodiscard]] TimeStamp LocalMillisecondsToUtc(std::int64_t milliseconds) const;
+    /** @brief Converts UTC microseconds since the epoch to local microseconds, the wall-clock reading in this zone. */
+    [[nodiscard]] std::int64_t UtcToLocal(std::int64_t utcMicroseconds) const;
 
     /** @brief Formats a time in this zone with a strftime-style format, rounded to milliseconds. */
     [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format) const;
@@ -170,11 +159,8 @@ public:
      */
     [[nodiscard]] std::optional<ZoneSpan> ZoneSpanAt(std::int64_t utcMicroseconds) const;
 
-    /** @brief Formats UTC microseconds as local time in this zone, as year-month-day hours:minutes:seconds. */
-    [[nodiscard]] std::string FormatUtcMicroseconds(std::int64_t microseconds) const;
-
     /** @brief Formats a time as local time in this zone, as year-month-day hours:minutes:seconds. */
-    [[nodiscard]] std::string FormatTimeStamp(TimeStamp timeStamp) const;
+    [[nodiscard]] std::string FormatDateTime(TimeStamp timeStamp) const;
 
 private:
     struct Impl;
@@ -183,50 +169,5 @@ private:
 
     std::shared_ptr<const Impl> mImpl;
 };
-
-/**
- * @brief Sets the process-wide context used by the formatting functions that do not take one.
- *
- * It starts as UTC. The application should call it once at startup, after loading the time zone data. Functions that
- * take a context do not depend on it.
- */
-void SetProcessDefaultTimeZone(TimeZoneContext context);
-
-/** @brief The context set by SetProcessDefaultTimeZone, or UTC if none was set. */
-[[nodiscard]] TimeZoneContext ProcessDefaultTimeZone();
-
-/**
- * @brief Converts UTC microseconds since the epoch to local milliseconds. The overload without a context uses the
- * process-wide one.
- */
-int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone);
-int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
-
-/**
- * @brief Reads local milliseconds since the epoch as a time in a zone and returns the UTC time. The overload without a
- * context uses the process-wide one.
- */
-TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone);
-TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
-
-/**
- * @brief Reads local microseconds as a time in a zone and returns UTC microseconds since the epoch.
- *
- * A time that occurs twice when the clocks go back gives the earlier instant. A time that does not occur when the
- * clocks go forward gives the first instant after the gap. If the date is too far ahead or the zone data is damaged,
- * the value is returned unchanged, so callers do not need to handle exceptions. A UTC context returns the value as it
- * is.
- */
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone);
-
-/** @brief Same as above, with the process-wide context. */
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
-
-/**
- * @brief Formats UTC microseconds since the epoch as local time, as year-month-day hours:minutes:seconds. The overload
- * without a context uses the process-wide one.
- */
-std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone);
-std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
 
 } // namespace loglib

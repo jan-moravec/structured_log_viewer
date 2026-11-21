@@ -1,7 +1,7 @@
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/ingest/stdin_peek.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/pipe.hpp>
 #include <test_common/wait.hpp>

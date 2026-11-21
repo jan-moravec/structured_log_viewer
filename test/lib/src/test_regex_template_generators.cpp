@@ -25,6 +25,7 @@
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
+#include <test_common/log_line_debug.hpp>
 #include <test_common/log_record.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -124,11 +125,11 @@ TEST_CASE(
     size_t withModule = 0;
     for (const LogLine &line : result.data.Lines())
     {
-        const LogValue level = line.GetValue(result.data.Keys(), "level");
+        const LogValue level = test_common::ValueByName(line, result.data.Keys(), "level");
         const auto levelView = AsStringView(level);
         REQUIRE(levelView.has_value());
         CHECK_FALSE(levelView->contains(':'));
-        if (std::holds_alternative<std::string_view>(line.GetValue(result.data.Keys(), "module")))
+        if (std::holds_alternative<std::string_view>(test_common::ValueByName(line, result.data.Keys(), "module")))
         {
             ++withModule;
         }

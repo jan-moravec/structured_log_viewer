@@ -1,5 +1,6 @@
 #include "loglib/ingest/udp_server_producer.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/ingest/internal/queued_producer_state.hpp"
 
 #include <asio.hpp>
@@ -75,22 +76,22 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
     const asio::ip::address bindAddr = asio::ip::make_address(mOptions.bindAddress, ec);
     if (ec)
     {
-        throw std::system_error(ec, "UdpServerProducer: invalid bind address '" + mOptions.bindAddress + "'");
+        throw IoError("UdpServerProducer: invalid bind address '" + mOptions.bindAddress + "'", ec);
     }
 
     const asio::ip::udp::endpoint endpoint(bindAddr, mOptions.port);
     mSocket.open(endpoint.protocol(), ec);
     if (ec)
     {
-        throw std::system_error(ec, "UdpServerProducer: socket open failed");
+        throw IoError("UdpServerProducer: socket open failed", ec);
     }
     // SO_REUSEADDR is left unset. On Linux it lets a second UDP socket bind a port that is in use and split the
     // datagrams, and on Windows it does the same. Without it a busy port fails to bind on every platform.
     mSocket.bind(endpoint, ec);
     if (ec)
     {
-        throw std::system_error(
-            ec, "UdpServerProducer: bind failed for " + mOptions.bindAddress + ":" + std::to_string(mOptions.port)
+        throw IoError(
+            "UdpServerProducer: bind failed for " + mOptions.bindAddress + ":" + std::to_string(mOptions.port), ec
         );
     }
 

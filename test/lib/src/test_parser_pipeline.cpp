@@ -1,5 +1,7 @@
 #include "common.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -9,9 +11,9 @@
 #include <loglib/parse/internal/streaming_parse_loop.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/time/internal/timestamp_promotion.hpp>
+
+#include <test_common/log_line_debug.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -688,7 +690,7 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
     std::ranges::sort(allNewKeys);
     REQUIRE(allNewKeys == std::vector<std::string>{"index", "level", "msg"});
 
-    LogValue lastIndex = sink.batches.back().lines.back().GetValue(sink.Keys(), "index");
+    LogValue lastIndex = test_common::ValueByName(sink.batches.back().lines.back(), sink.Keys(), "index");
     REQUIRE(std::holds_alternative<std::string>(lastIndex));
     REQUIRE(std::get<std::string>(lastIndex) == std::to_string(RECORD_COUNT - 1));
 }
@@ -871,7 +873,7 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
         for (const auto &line : b.lines)
         {
             ++totalLines;
-            LogValue v = line.GetValue(sink.Keys(), "ts");
+            LogValue v = test_common::ValueByName(line, sink.Keys(), "ts");
             if (std::holds_alternative<loglib::TimeStamp>(v))
             {
                 ++promoted;
@@ -920,7 +922,7 @@ TEST_CASE(
     }
     REQUIRE(allLines.size() == 2);
 
-    LogValue msgA = allLines[0]->GetValue(sink.Keys(), "msg");
+    LogValue msgA = test_common::ValueByName(*allLines[0], sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msgA));
     const std::string &msgAStr = std::get<std::string>(msgA);
     INFO("record A msg: " << msgAStr);
@@ -928,7 +930,7 @@ TEST_CASE(
     CHECK(msgAStr.contains("frame A1"));
     CHECK(msgAStr.contains("frame A2"));
 
-    LogValue msgB = allLines[1]->GetValue(sink.Keys(), "msg");
+    LogValue msgB = test_common::ValueByName(*allLines[1], sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msgB));
     const std::string &msgBStr = std::get<std::string>(msgB);
     INFO("record B msg: " << msgBStr);
@@ -978,7 +980,7 @@ TEST_CASE(
     }
     REQUIRE(allLines.size() == 2);
 
-    LogValue msgA = allLines[0]->GetValue(sink.Keys(), "msg");
+    LogValue msgA = test_common::ValueByName(*allLines[0], sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msgA));
     const std::string &msgAStr = std::get<std::string>(msgA);
     CHECK(msgAStr.contains("first"));
@@ -1063,7 +1065,7 @@ TEST_CASE("Mock parser (multiline): final multi-line record commits at EOF", "[m
     }
     REQUIRE(allLines.size() == 1);
 
-    LogValue msg = allLines[0]->GetValue(sink.Keys(), "msg");
+    LogValue msg = test_common::ValueByName(*allLines[0], sink.Keys(), "msg");
     REQUIRE(std::holds_alternative<std::string>(msg));
     const std::string &msgStr = std::get<std::string>(msg);
     INFO("record msg: " << msgStr);

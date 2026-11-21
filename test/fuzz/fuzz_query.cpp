@@ -4,6 +4,7 @@
 
 #include "fuzz_common.hpp"
 
+#include "loglib/query/query_format.hpp"
 #include "loglib/query/query_parser.hpp"
 #include "loglib/time/time_zone_context.hpp"
 

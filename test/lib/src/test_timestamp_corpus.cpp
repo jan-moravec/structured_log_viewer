@@ -1,5 +1,5 @@
 #include <loglib/core/log_value.hpp>
-#include <loglib/time/timestamp_parsing.hpp>
+#include <loglib/time/internal/timestamp_parsing.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -10,6 +10,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace loglib::internal;
 
 namespace
 {

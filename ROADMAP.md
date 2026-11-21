@@ -191,7 +191,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 
 ### 10. ~~Complete `loglib`'s Qt-independence~~
 
-> **Shipped.** Row export lives in `loglib::exports`. `RowOrdering`, `ColumnProjection`, and `ParseUserTimestamp` are public `loglib` APIs with Catch2 coverage. `app/` and `test/app/` include only supported `loglib` headers (`scripts/check-loglib-internal-includes.py`). Workspace restore stays in `app/` as `logapp::persistence`.
+> **Shipped.** Row export lives in `loglib::exports`. `RowOrdering`, `ColumnProjection`, and `ParseTimeInput` are public `loglib` APIs with Catch2 coverage. `app/` and `test/app/` include only supported `loglib` headers (`scripts/check-loglib-internal-includes.py`). Workspace restore stays in `app/` as `logapp::persistence`.
 
 **Why.** `loglib` was designed Qt-free and most of the machinery — parsers, decompression, streaming, filter evaluation, session bundles, exports — already lives in the library. A handful of *view* semantics still bleed into `app/`, though: `LogFilterModel`'s display-order sort comparator, the visible-column whitelist, the relative-time / ISO fallback parser behind Goto Timestamp, and the `slv::exports` files that physically live in `app/` despite having zero Qt includes. Before we tag `v1.0` the library should be a clean, self-contained, well-tested triage core — (a) fewer things silently regress when the GUI is refactored, (b) `loglib`'s own tests can exercise sort / projection / timestamp parsing directly without a `QTest` harness, and (c) future sibling hosts (the [`slp` CLI](#31-sibling-slp-cli), a hypothetical read-only web viewer) do not need to fork logic that already exists.
 
@@ -200,7 +200,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 - Relocate the export layer (`export_sink`, `row_exporter`, and the `slv::exports` namespace) from `app/` to `lib/`. No behavioural change; `app/` links against it through `loglib`.
 - Extract `LogFilterModel`'s sort comparator into a `loglib::RowOrdering` type that the Qt proxy consumes.
 - Extract the visible-column projection into a `loglib::ColumnProjection`.
-- Extract the user-facing timestamp parser (relative shortcuts `-1h` / `-30m`, ISO fallbacks, TZ handling) from the Goto Timestamp dialog into `loglib::ParseUserTimestamp`.
+- Extract the user-facing timestamp parser (relative shortcuts `-1h` / `-30m`, ISO fallbacks, TZ handling) from the Goto Timestamp dialog into `loglib::ParseTimeInput`.
 - Audit `app/` for other spots where `loglib`-shaped logic still lives on the Qt side. Anything that fits the "no Qt types in the signature" bar should follow.
 - Add / expand `loglib` unit tests so each extracted piece has direct Catch2 coverage independent of `QTest`, and cover previously GUI-only edge cases (mixed-column sort stability, timestamp TZ round-trips, projection with missing keys) at the library layer.
 
@@ -210,7 +210,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 
 **Acceptance bar.** Every existing test still passes (Qt smoke tests, Catch2 unit tests, `clang-asan-ubsan`, `clang-tsan`, `clang-coverage`). Coverage of the extracted logic goes up under `clang-coverage`; each extracted `loglib` type has at least one dedicated Catch2 file. `app/` no longer contains files with `slv::` namespaces. `loglib` public headers stay Qt-free — an `rg '#include\s*<Q' lib/include/` returns zero matches, same as today.
 
-**Touches.** `lib/`: new `include/loglib/exports/`, `include/loglib/row_ordering.hpp`, `include/loglib/column_projection.hpp`, `include/loglib/user_timestamp.hpp` (or equivalent), plus a moved-in `src/exports/`. `app/`: include-path updates and thin adapters where Qt classes project onto the new `loglib` types (e.g. `LogFilterModel::lessThan` delegates to `loglib::RowOrdering`). `test/lib/`: new Catch2 tests per extracted piece. `test/app/`: unchanged expectations, adjust includes only if necessary.
+**Touches.** `lib/`: new `include/loglib/exports/`, `include/loglib/row_ordering.hpp`, `include/loglib/column_projection.hpp`, `include/loglib/time_input.hpp` (or equivalent), plus a moved-in `src/exports/`. `app/`: include-path updates and thin adapters where Qt classes project onto the new `loglib` types (e.g. `LogFilterModel::lessThan` delegates to `loglib::RowOrdering`). `test/lib/`: new Catch2 tests per extracted piece. `test/app/`: unchanged expectations, adjust includes only if necessary.
 
 ## Tier 2 — `v1.x` strong differentiators
 

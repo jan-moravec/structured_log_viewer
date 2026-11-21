@@ -107,6 +107,13 @@ public:
     );
     ~LogModel() override;
 
+    /// Sets the zone in which the model shows times and reads times that carry no offset. A model starts in UTC.
+    /// The owner of the model passes the application's zone. Call it before rows arrive.
+    void SetTimeZone(loglib::TimeZoneContext timeZone);
+
+    /// The zone the model shows times in.
+    [[nodiscard]] const loglib::TimeZoneContext &TimeZone() const noexcept;
+
     /// `(canonical locator, lineId)` for @p row, or nullopt if @p row
     /// is out of range or its `LogLine` has no source.
     ///

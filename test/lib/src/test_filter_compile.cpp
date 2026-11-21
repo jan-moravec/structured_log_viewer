@@ -1,8 +1,8 @@
 // Port of the leaf-rule compile QTest. Covers absent leaves and combinator propagation.
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/query/filter_compile.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -98,13 +98,13 @@ using Leaf = loglib::LeafRule;
 TEST_CASE("ResolveEmptyKeysReturnsMinusOne", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
-    REQUIRE(loglib::ResolveLeafColumnByKeys({}, columns) == -1);
+    REQUIRE_FALSE(loglib::FindColumnByKeys({}, columns).has_value());
 }
 
 TEST_CASE("ResolveKeysNoMatchReturnsMinusOne", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
-    REQUIRE(loglib::ResolveLeafColumnByKeys({"missing"}, columns) == -1);
+    REQUIRE(loglib::FindColumnByKeys({"missing"}, columns) == std::nullopt);
 }
 
 TEST_CASE("ResolveKeysSubsetMatchesFirstColumn", "[filter_compile]")
@@ -114,7 +114,7 @@ TEST_CASE("ResolveKeysSubsetMatchesFirstColumn", "[filter_compile]")
     withAlias.keys = {"level", "log.level"};
     withAlias.type = loglib::ColumnType::String;
     const std::vector<Column> columns{withAlias};
-    REQUIRE(loglib::ResolveLeafColumnByKeys({"level"}, columns) == 0);
+    REQUIRE(loglib::FindColumnByKeys({"level"}, columns) == 0);
 }
 
 TEST_CASE("ResolveKeysReturnsFirstMatchIndex", "[filter_compile]")
@@ -123,14 +123,14 @@ TEST_CASE("ResolveKeysReturnsFirstMatchIndex", "[filter_compile]")
         MakeColumn("service", "service", loglib::ColumnType::String),
         MakeColumn("level", "level", loglib::ColumnType::String),
     };
-    REQUIRE(loglib::ResolveLeafColumnByKeys({"level"}, columns) == 1);
+    REQUIRE(loglib::FindColumnByKeys({"level"}, columns) == 1);
 }
 
 TEST_CASE("CompileLeafUnresolvedColumnAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("level", Leaf::Match::Contains, "warn");
-    REQUIRE_FALSE(loglib::CompileLeaf(rule, /*resolvedColumn=*/-1, columns, /*table=*/nullptr).has_value());
+    REQUIRE_FALSE(loglib::CompileLeaf(rule, /*resolvedColumn=*/std::nullopt, columns, /*table=*/nullptr).has_value());
 }
 
 TEST_CASE("CompileTimeLeafNoBoundsAbsent", "[filter_compile]")

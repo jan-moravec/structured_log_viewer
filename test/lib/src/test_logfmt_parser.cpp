@@ -12,6 +12,7 @@
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
+#include <test_common/log_line_debug.hpp>
 #include <test_common/log_record.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -83,7 +84,8 @@ TEST_CASE("Parse single bare key/value pair [logfmt]", "[logfmt_parser]")
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == std::string_view{"value"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) ==
+        std::string_view{"value"}
     );
 }
 
@@ -95,7 +97,7 @@ TEST_CASE("Parse typed bare values [logfmt]", "[logfmt_parser]")
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     CHECK(std::get<int64_t>(values.at("i")) == -12);
     CHECK(std::get<uint64_t>(values.at("u")) == 10000000000000000000ULL);
     CHECK(std::get<double>(values.at("d")) == Catch::Approx(3.14));
@@ -113,7 +115,7 @@ TEST_CASE("Quoted values stay strings [logfmt]", "[logfmt_parser]")
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     CHECK(loglib::AsStringView(values.at("pid")) == std::string_view{"42"});
     CHECK(loglib::AsStringView(values.at("msg")) == std::string_view{"hello world"});
 }
@@ -126,7 +128,7 @@ TEST_CASE("Quoted value with C-style escapes [logfmt]", "[logfmt_parser]")
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     const std::string expected = "a \"quoted\" word\nnew line\ttab\\back";
     CHECK(loglib::AsStringView(values.at("msg")) == std::string_view{expected});
 }
@@ -148,7 +150,7 @@ TEST_CASE("Bare key with no '=' is treated as null [logfmt]", "[logfmt_parser]")
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     CHECK(std::holds_alternative<std::monostate>(values.at("flag")));
     CHECK(loglib::AsStringView(values.at("level")) == std::string_view{"info"});
 }
@@ -161,7 +163,8 @@ TEST_CASE("Repeated keys: last write wins [logfmt]", "[logfmt_parser]")
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == std::string_view{"third"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) ==
+        std::string_view{"third"}
     );
 }
 
@@ -181,15 +184,17 @@ TEST_CASE("Multiple lines parse independently [logfmt]", "[logfmt_parser]")
     REQUIRE(result.data.Lines().size() == 3);
 
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "level")) == std::string_view{"info"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "level")) ==
+        std::string_view{"info"}
     );
     CHECK(
-        loglib::AsStringView(result.data.Lines()[1].GetValue(result.data.Keys(), "msg")) ==
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "msg")) ==
         std::string_view{"second line"}
     );
-    CHECK(std::get<uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "code")) == 42u);
+    CHECK(std::get<uint64_t>(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "code")) == 42u);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[2].GetValue(result.data.Keys(), "level")) == std::string_view{"error"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[2], result.data.Keys(), "level")) ==
+        std::string_view{"error"}
     );
 }
 
@@ -201,7 +206,8 @@ TEST_CASE("Blank lines are skipped [logfmt]", "[logfmt_parser]")
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "key")) == std::string_view{"value"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "key")) ==
+        std::string_view{"value"}
     );
 }
 
@@ -212,8 +218,8 @@ TEST_CASE("Last line lacks trailing newline [logfmt]", "[logfmt_parser]")
     auto result = loglib::ParseSource(parser, MemorySource("a=1\nb=2"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue(result.data.Keys(), "a")) == 1u);
-    CHECK(std::get<uint64_t>(result.data.Lines()[1].GetValue(result.data.Keys(), "b")) == 2u);
+    CHECK(std::get<uint64_t>(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "a")) == 1u);
+    CHECK(std::get<uint64_t>(test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "b")) == 2u);
 }
 
 TEST_CASE("Plain text is parsed permissively as null-valued bare keys [logfmt]", "[logfmt_parser]")
@@ -226,8 +232,16 @@ TEST_CASE("Plain text is parsed permissively as null-valued bare keys [logfmt]",
     auto result = loglib::ParseSource(parser, MemorySource("level=info\nplain text line\nlevel=error\n"));
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 3);
-    CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[1].GetValue(result.data.Keys(), "plain")));
-    CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[1].GetValue(result.data.Keys(), "text")));
+    CHECK(
+        std::holds_alternative<std::monostate>(
+            test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "plain")
+        )
+    );
+    CHECK(
+        std::holds_alternative<std::monostate>(
+            test_common::ValueByName(result.data.Lines()[1], result.data.Keys(), "text")
+        )
+    );
 }
 
 TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_parser]")
@@ -252,10 +266,15 @@ TEST_CASE("Parses bare and quoted values [logfmt]", "[logfmt_parser]")
     REQUIRE(result.data.Lines().size() == 1);
 
     const auto &line = result.data.Lines()[0];
-    CHECK(loglib::AsStringView(line.GetValue(result.data.Keys(), "level")) == std::string_view{"info"});
-    CHECK(loglib::AsStringView(line.GetValue(result.data.Keys(), "msg")) == std::string_view{"hello world"});
-    CHECK(std::get<uint64_t>(line.GetValue(result.data.Keys(), "code")) == 42);
-    CHECK(std::get<double>(line.GetValue(result.data.Keys(), "ratio")) == 3.14);
+    CHECK(
+        loglib::AsStringView(test_common::ValueByName(line, result.data.Keys(), "level")) == std::string_view{"info"}
+    );
+    CHECK(
+        loglib::AsStringView(test_common::ValueByName(line, result.data.Keys(), "msg")) ==
+        std::string_view{"hello world"}
+    );
+    CHECK(std::get<uint64_t>(test_common::ValueByName(line, result.data.Keys(), "code")) == 42);
+    CHECK(std::get<double>(test_common::ValueByName(line, result.data.Keys(), "ratio")) == 3.14);
 }
 
 TEST_CASE("Parse file via FactoryParser auto-detect [logfmt]", "[logfmt_parser]")
@@ -266,7 +285,8 @@ TEST_CASE("Parse file via FactoryParser auto-detect [logfmt]", "[logfmt_parser]"
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(
-        loglib::AsStringView(result.data.Lines()[0].GetValue(result.data.Keys(), "msg")) == std::string_view{"hello"}
+        loglib::AsStringView(test_common::ValueByName(result.data.Lines()[0], result.data.Keys(), "msg")) ==
+        std::string_view{"hello"}
     );
 }
 
@@ -308,7 +328,7 @@ TEST_CASE(
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
-    const auto values = result.data.Lines()[0].Values(result.data.Keys());
+    const auto values = test_common::ToMap(result.data.Lines()[0], result.data.Keys());
     CHECK(AsStringView(values.at("bare")) == std::string_view{"info"});
     CHECK(AsStringView(values.at("spaced")) == std::string_view{"hello world"});
     CHECK(AsStringView(values.at("dquote")) == std::string_view{"a\"b"});
@@ -360,7 +380,7 @@ TEST_CASE(
     for (std::size_t i = 0; i < LINE_COUNT; ++i)
     {
         INFO("row " << i);
-        const auto values = result.data.Lines()[i].Values(result.data.Keys());
+        const auto values = test_common::ToMap(result.data.Lines()[i], result.data.Keys());
         const auto &record = fixtureRecords[i];
         REQUIRE(record.is_object());
 

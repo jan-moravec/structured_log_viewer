@@ -5,7 +5,7 @@
  * from. Each location keeps the path shown to the user and a normalized key used to tell whether two paths are the same
  * file.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

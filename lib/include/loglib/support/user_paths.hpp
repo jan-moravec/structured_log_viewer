@@ -5,6 +5,9 @@
  * location. The folder names match those of the desktop program so that both share one location. Nothing here creates
  * folders.
  *
+ * The support module holds Qt-free helpers that the desktop program and the command line tool share. They are not about
+ * logs. They live in loglib so that both programs link one library, and no other loglib module uses them.
+ *
  * This is part of the support module.
  */
 #pragma once

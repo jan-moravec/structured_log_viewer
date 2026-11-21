@@ -25,6 +25,12 @@
 namespace apptest_support
 {
 
+const loglib::TimeZoneContext &TestTimeZone()
+{
+    static const loglib::TimeZoneContext ZONE = MainWindow::LoadSystemTimeZone();
+    return ZONE;
+}
+
 void AppTestBase::initTestCase()
 {
     // Redirect `QStandardPaths::writableLocation(...)` to a per-user test-only subdirectory so a run never touches the
@@ -203,7 +209,7 @@ QString AppTestBase::InvokeAndReadClipboardWithRetry(
 
 qint64 AppTestBase::NaiveToUtcUs(qint64 wallClockUs)
 {
-    return loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(wallClockUs);
+    return TestTimeZone().LocalToUtc(wallClockUs);
 }
 
 void AppTestBase::AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount)
@@ -359,6 +365,7 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme)
 {
     StreamingRun run;
     run.model = std::make_unique<LogModel>(nullptr, theme);
+    run.model->SetTimeZone(TestTimeZone());
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
     auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
@@ -391,6 +398,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme)
 {
     StreamingRun run;
     run.model = std::make_unique<LogModel>(nullptr, theme);
+    run.model->SetTimeZone(TestTimeZone());
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
     auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());
@@ -421,6 +429,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme)
 std::unique_ptr<LogModel> RunStaticLoadInModel(const QString &fixturePath, const loglib::LogParser &parser)
 {
     auto model = std::make_unique<LogModel>(nullptr, nullptr);
+    model->SetTimeZone(TestTimeZone());
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
 
     auto fileSource = std::make_unique<loglib::FileLineSource>(fixturePath.toStdString());

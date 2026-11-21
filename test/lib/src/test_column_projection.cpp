@@ -2,6 +2,8 @@
 
 #include "table_from_data.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
@@ -12,9 +14,9 @@
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/query/column_projection.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
+
+#include <test_common/log_line_debug.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -74,11 +76,11 @@ loglib::LogTable BuildSparseTable()
     auto *sourcePtr = stream.get();
 
     loglib::KeyIndex keys;
-    loglib::LogMap map;
+    test_common::LogMap map;
     map["a"] = std::string("x");
     map["c"] = std::string("z");
     std::vector<loglib::LogLine> lines;
-    lines.emplace_back(map, keys, *sourcePtr, 1);
+    lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, 1));
 
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 

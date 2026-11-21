@@ -3,8 +3,9 @@
 #include "advanced_filter_highlighter.hpp"
 #include "theme_control.hpp"
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/query/query_format.hpp>
 #include <loglib/query/query_parser.hpp>
-#include <loglib/schema/filter_expression.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
 #include <QColor>
@@ -126,8 +127,8 @@ struct RegexIssue
 
 } // namespace
 
-AdvancedFilterEditor::AdvancedFilterEditor(QWidget *parent)
-    : QDialog(parent)
+AdvancedFilterEditor::AdvancedFilterEditor(loglib::TimeZoneContext timeZone, QWidget *parent)
+    : QDialog(parent), mTimeZone(std::move(timeZone))
 {
     setObjectName(QStringLiteral("advancedFilterEditor"));
     setWindowTitle(tr("Advanced Filter"));
@@ -234,7 +235,7 @@ void AdvancedFilterEditor::ReparseAndUpdate()
 {
     const QString queryText = mQueryEdit->toPlainText();
     const std::string source = queryText.toStdString();
-    auto parsed = loglib::ParseQuery(source, loglib::ProcessDefaultTimeZone());
+    auto parsed = loglib::ParseQuery(source, mTimeZone);
     if (parsed.has_value())
     {
         // Second-stage regex validity check: `ParseQuery` extracts

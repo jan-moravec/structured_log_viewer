@@ -21,6 +21,7 @@
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/log_generator.hpp>
+#include <test_common/log_line_debug.hpp>
 
 #include <benchmark/benchmark.h>
 
@@ -289,7 +290,7 @@ void RegisterLookupBenchmarks()
             std::size_t found = 0;
             for (const std::string &key : LOOKUP_KEYS)
             {
-                found += !std::holds_alternative<std::monostate>(line.GetValue(data.Keys(), key));
+                found += !std::holds_alternative<std::monostate>(test_common::ValueByName(line, data.Keys(), key));
             }
             return found;
         });
@@ -418,8 +419,8 @@ void RegisterEnumBenchmark()
         {
             run.table.reset();
             run.table = std::make_unique<loglib::LogTable>(ColumnLayout(fixture.configuration->columns));
-            run.table->SetDisplayTimeZone(ProcessDefaultTimeZone());
-            run.table->SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+            run.table->SetDisplayTimeZone(TestTimeZone());
+            run.table->SetDefaultSourceTimeZone(TestTimeZone());
 
             auto sourceForTable = std::make_unique<FileLineSource>(fixture.file->GetFilePath());
             FileLineSource *parseSource = sourceForTable.get();

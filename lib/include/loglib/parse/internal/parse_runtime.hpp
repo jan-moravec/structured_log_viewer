@@ -9,10 +9,10 @@
  */
 #pragma once
 
+#include "loglib/config/column.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
 #include "loglib/core/transparent_string_hash.hpp"
-#include "loglib/schema/column_schema.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <tsl/robin_map.h>

@@ -1,10 +1,10 @@
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/enum_inference.hpp>
 
 #include "common.hpp"
@@ -18,6 +18,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace loglib::internal;
 
 TEST_CASE("RouteNoStringBail picks a terminal type from tag counts", "[enum_inference]")
 {

@@ -2,10 +2,10 @@
 
 #include "log_model.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <QApplication>
@@ -244,9 +244,9 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     content.formattedJson = FormatRawLineForDisplay(rawLineBytes);
 
     QString summary = RecordDetailWidget::tr("Row %1").arg(sourceRow + 1);
-    if (const int timeCol = loglib::FirstTimeColumnIndex(layout); timeCol >= 0)
+    if (const std::optional<size_t> timeColumn = loglib::FirstTimeColumnIndex(layout); timeColumn.has_value())
     {
-        const QString timeText = QString::fromStdString(table.GetFormattedValue(row, static_cast<size_t>(timeCol)));
+        const QString timeText = QString::fromStdString(table.GetFormattedValue(row, *timeColumn));
         if (!timeText.isEmpty())
         {
             summary = QStringLiteral("%1 \u00B7 %2").arg(summary, timeText);

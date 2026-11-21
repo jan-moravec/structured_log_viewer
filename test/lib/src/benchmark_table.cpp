@@ -7,6 +7,10 @@
 #include "common.hpp"
 #include "table_fixture.hpp"
 
+#include <loglib/config/column.hpp>
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -17,10 +21,6 @@
 #include <loglib/query/filter_compile.hpp>
 #include <loglib/query/log_compare.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/column_schema.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
@@ -113,8 +113,8 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
     const ColumnLayout manager(configuration.columns);
     result->table = std::make_unique<LogTable>(manager);
     LogTable &table = *result->table;
-    table.SetDisplayTimeZone(ProcessDefaultTimeZone());
-    table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+    table.SetDisplayTimeZone(TestTimeZone());
+    table.SetDefaultSourceTimeZone(TestTimeZone());
     auto source = std::make_unique<FileLineSource>(result->file->GetFilePath());
     FileLineSource &sourceRef = *source;
     table.BeginStreaming(std::move(source));

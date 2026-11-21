@@ -1,5 +1,6 @@
 #include "loglib/ingest/tailing_bytes_producer.hpp"
 
+#include "loglib/core/error.hpp"
 #include "loglib/core/internal/path_encoding.hpp"
 #include "loglib/ingest/internal/file_identity.hpp"
 
@@ -397,7 +398,7 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
 #else
         const std::error_code ec(errno, std::generic_category());
 #endif
-        throw std::system_error(ec, "TailingBytesProducer: failed to open '" + mDisplayName + "'");
+        throw IoError("TailingBytesProducer: failed to open '" + mDisplayName + "'", ec);
     }
     mIdentityAtOpen = FromOpenHandle(mHandle);
 

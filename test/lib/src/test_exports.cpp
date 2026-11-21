@@ -1,6 +1,8 @@
 
 #include "table_from_data.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/line_source.hpp>
@@ -11,9 +13,9 @@
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
+
+#include <test_common/log_line_debug.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <fmt/format.h>
@@ -243,7 +245,7 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
     }
     for (std::size_t i = 0; i < rowCount; ++i)
     {
-        loglib::LogMap map;
+        test_common::LogMap map;
         map["ts"] = loglib::TimeStamp{t0 + std::chrono::microseconds(static_cast<std::int64_t>(i * 1000))};
         const auto levelSlot = i % 3;
         const char *levelText = "error";
@@ -266,7 +268,7 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
             map["extra_b"] = std::string("b");
             map["extra_a"] = std::string("a");
         }
-        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+        lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, i + 1));
     }
 
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
@@ -543,9 +545,9 @@ TEST_CASE("exports: CSV formula-injection cells are quoted and prefixed", "[expo
     };
     for (std::size_t i = 0; i < payloads.size(); ++i)
     {
-        loglib::LogMap map;
+        test_common::LogMap map;
         map["message"] = payloads[i];
-        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+        lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, i + 1));
     }
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 
@@ -595,9 +597,9 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
     const std::array<double, 4> values = {0.0, 1.0, -3.0, 2.5};
     for (std::size_t i = 0; i < values.size(); ++i)
     {
-        loglib::LogMap map;
+        test_common::LogMap map;
         map["value"] = values[i];
-        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+        lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, i + 1));
     }
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 
@@ -701,12 +703,12 @@ TEST_CASE("exports: JSON Lines escapes strings and writes numbers as JSON requir
     std::vector<loglib::LogLine> lines;
     for (std::size_t i = 0; i < texts.size(); ++i)
     {
-        loglib::LogMap map;
+        test_common::LogMap map;
         map["a_text"] = texts[i];
         map["b_signed"] = (i % 2 == 0) ? std::numeric_limits<std::int64_t>::min() : std::int64_t{-7};
         map["c_unsigned"] = std::numeric_limits<std::uint64_t>::max();
         map["d_flag"] = i % 2 == 0;
-        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+        lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, i + 1));
     }
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 
@@ -757,9 +759,9 @@ TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][r
 
     loglib::KeyIndex keys;
     std::vector<loglib::LogLine> lines;
-    loglib::LogMap map;
+    test_common::LogMap map;
     map["message"] = std::string("a | b\nnewline");
-    lines.emplace_back(map, keys, *sourcePtr, 1);
+    lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, 1));
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 
     loglib::LogConfiguration config;
@@ -819,9 +821,9 @@ TEST_CASE("exports: Snapshot skips unavailable source rows", "[exports][row_expo
     std::vector<loglib::LogLine> lines;
     for (std::size_t i = 0; i < 4; ++i)
     {
-        loglib::LogMap map;
+        test_common::LogMap map;
         map["message"] = std::string("payload ") + std::to_string(i);
-        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+        lines.push_back(test_common::MakeLine(map, keys, *sourcePtr, i + 1));
     }
     loglib::LogData data(std::move(source), std::move(lines), std::move(keys));
 

@@ -1,10 +1,10 @@
 #include "common.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/temp_dir.hpp>
 
@@ -479,11 +479,11 @@ TEST_CASE("Moving a column keeps the sort on the same column without any remappi
 
     const LogConfiguration configuration = MakeFullConfiguration();
     const auto &keys = configuration.view.sort.columnKeys;
-    CHECK(ResolveLeafColumnByKeys(keys, layout.Columns()) == 1);
+    CHECK(FindColumnByKeys(keys, layout.Columns()) == 1);
     layout.MoveColumn(1, 3);
-    CHECK(ResolveLeafColumnByKeys(keys, layout.Columns()) == 3);
+    CHECK(FindColumnByKeys(keys, layout.Columns()) == 3);
     layout.MoveColumn(3, 0);
-    CHECK(ResolveLeafColumnByKeys(keys, layout.Columns()) == 0);
+    CHECK(FindColumnByKeys(keys, layout.Columns()) == 0);
     CHECK(layout.Columns()[0].keys == std::vector<std::string>{"ts"});
 }
 

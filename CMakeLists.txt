@@ -74,8 +74,7 @@ if(SLV_BUILD_CLI)
     add_subdirectory(cli)
 endif()
 
-# `BUILD_TESTING` (from `include(CTest)`, default ON) also scopes
-# `LOGLIB_KEY_INDEX_INSTRUMENTATION` from `test/lib` to test builds.
+# `BUILD_TESTING` comes from `include(CTest)` and is ON by default.
 include(CTest)
 if(BUILD_TESTING)
     # Test presets can point TEMP here to keep scratch files in the build tree.

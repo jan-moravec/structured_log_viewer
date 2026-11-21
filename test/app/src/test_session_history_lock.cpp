@@ -2,7 +2,7 @@
 
 #include "session_history_manager.hpp"
 
-#include <loglib/schema/log_configuration.hpp>
+#include <loglib/config/log_configuration.hpp>
 
 #include <QDir>
 #include <QList>

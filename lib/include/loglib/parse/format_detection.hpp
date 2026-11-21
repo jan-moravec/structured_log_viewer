@@ -11,8 +11,8 @@
  */
 #pragma once
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/parse/log_parser.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <filesystem>
 #include <memory>

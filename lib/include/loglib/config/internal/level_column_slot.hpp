@@ -5,15 +5,15 @@
  * ShouldBubbleLevelColumn is that rule on its own. LogTable applies it when it resolves a placement, and the tests of
  * the column layout use it to check the rotation.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 
-#include "loglib/schema/column_layout.hpp"
+#include "loglib/config/column_layout.hpp"
 
 #include <cstddef>
 
-namespace loglib
+namespace loglib::internal
 {
 
 /**
@@ -22,4 +22,4 @@ namespace loglib
  */
 [[nodiscard]] bool ShouldBubbleLevelColumn(const ColumnLayout &layout, size_t columnIndex) noexcept;
 
-} // namespace loglib
+} // namespace loglib::internal

@@ -1,7 +1,7 @@
 #pragma once
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/row_batch.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <QString>
 

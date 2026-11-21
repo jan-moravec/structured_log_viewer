@@ -31,6 +31,8 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
@@ -55,8 +57,6 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -1656,7 +1656,7 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // `ParseGotoTimestampInput` + `LocalMicrosecondsSinceEpochToUtc`
+    // `ParseGotoTimestampInput` + `TimeZoneContext::LocalToUtc`
     // compose correctly: naive parses get TZ-shifted, zoned ones
     // do NOT (double-shift regression pin). Shift bound is +/-14h
     // to stay TZ-agnostic across CI hosts.
@@ -1670,7 +1670,7 @@ private slots:
         QVERIFY(naiveParse->isNaive);
 
         const int64_t naiveMicros = naiveParse->micros;
-        const int64_t shiftedMicros = loglib::LocalMicrosecondsSinceEpochToUtc(naiveMicros);
+        const int64_t shiftedMicros = mWindow->TimeZone().LocalToUtc(naiveMicros);
 
         // Shift is exactly the UTC offset at that instant. Bound it
         // to +/-14 h (max real-world offset today) so the assertion

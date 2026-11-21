@@ -8,8 +8,8 @@
  */
 #pragma once
 
+#include "loglib/config/column_layout.hpp"
 #include "loglib/core/key_index.hpp"
-#include "loglib/schema/column_layout.hpp"
 
 #include <string>
 #include <string_view>

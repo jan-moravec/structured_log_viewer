@@ -4,9 +4,9 @@
 #include "diagnostics.hpp"
 #include "text_util.hpp"
 
+#include <loglib/config/filter_expression.hpp>
 #include <loglib/query/column_projection.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/schema/filter_expression.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -261,13 +261,11 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
         }
         session.sort = *parsed;
     }
-    else if (
-        const auto &persisted = session.configuration.view.sort;
-        loglib::ResolveLeafColumnByKeys(persisted.columnKeys, columns) >= 0
-    )
+    else if (const auto persistedColumn = loglib::FindColumnByKeys(session.configuration.view.sort.columnKeys, columns))
     {
+        const auto &persisted = session.configuration.view.sort;
         session.sort = SortChoice{
-            .columnIndex = static_cast<std::size_t>(loglib::ResolveLeafColumnByKeys(persisted.columnKeys, columns)),
+            .columnIndex = *persistedColumn,
             .direction = persisted.descending ? loglib::SortDirection::Descending : loglib::SortDirection::Ascending
         };
     }

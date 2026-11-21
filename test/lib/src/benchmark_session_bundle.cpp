@@ -7,13 +7,13 @@
 #include "benchmark_registry.hpp"
 #include "common.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/log_format.hpp>

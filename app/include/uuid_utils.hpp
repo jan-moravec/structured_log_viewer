@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/schema/log_configuration.hpp>
+#include <loglib/config/log_configuration.hpp>
 
 #include <QDir>
 #include <QFileInfo>

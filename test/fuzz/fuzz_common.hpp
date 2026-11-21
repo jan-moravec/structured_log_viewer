@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include <test_common/log_line_debug.hpp>
+
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/row_batch.hpp"
@@ -68,7 +70,7 @@ public:
                     Fold(*owned);
                 }
             }
-            for (const std::string &name : line.GetKeys(mKeys))
+            for (const std::string &name : test_common::KeyNames(line, mKeys))
             {
                 Fold(name);
             }

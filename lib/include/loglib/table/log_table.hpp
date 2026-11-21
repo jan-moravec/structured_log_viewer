@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include "loglib/config/column_layout.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/key_index.hpp"
@@ -17,7 +18,6 @@
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/row_batch.hpp"
-#include "loglib/schema/column_layout.hpp"
 #include "loglib/table/column_type_health.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
@@ -41,8 +41,8 @@ class BytesProducer;
 namespace internal
 {
 struct LogTableTestAccess;
-} // namespace internal
 class EnumInference;
+} // namespace internal
 
 /** @brief What happened to the dictionary or type of an enumeration column. */
 enum class EnumColumnChange
@@ -470,9 +470,9 @@ private:
     /** @brief Replaces the clock the table reads for the "now" of timestamp formats without a year. */
     void SetClock(std::function<std::chrono::system_clock::time_point()> clock);
 
-    /** @brief The index of the first column that uses kid, or -1. The search is linear, which is fine for a few dozen
-     * columns. */
-    [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
+    /** @brief The index of the first column that uses kid, or nullopt. The search is linear, which is fine for a few
+     * dozen columns. */
+    [[nodiscard]] std::optional<size_t> FindColumnIndexByKey(KeyId kid) const noexcept;
 
     /**
      * @brief Formats a cell with the column's print format and the display zone. It does not throw: a print format that
@@ -529,7 +529,7 @@ private:
      * @brief Type inference, enumeration encoding and the level cache. It owns the dictionaries, which LineSources
      * borrow.
      */
-    std::unique_ptr<EnumInference> mEnum;
+    std::unique_ptr<internal::EnumInference> mEnum;
 
     /** @brief Scratch for AppendBatch, kept between calls so a steady stream does not allocate. */
     std::vector<EnumColumnSnapshot> mEnumSnapshot;

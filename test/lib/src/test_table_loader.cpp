@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -7,9 +8,10 @@
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>
+
+#include <test_common/log_line_debug.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -560,9 +562,9 @@ TEST_CASE("Rows of every parser resolve their keys through the table's KeyIndex 
         const LogLine &first = movedAgain.Data().Lines()[0];
         const LogLine &second = movedAgain.Data().Lines()[1];
         const KeyIndex &keys = movedAgain.Keys();
-        CHECK(AsStringView(first.GetValue(keys, "level")) == std::string_view{"info"});
-        CHECK(AsStringView(second.GetValue(keys, "level")) == std::string_view{"warn"});
-        const std::vector<std::string> names = first.GetKeys(keys);
+        CHECK(AsStringView(test_common::ValueByName(first, keys, "level")) == std::string_view{"info"});
+        CHECK(AsStringView(test_common::ValueByName(second, keys, "level")) == std::string_view{"warn"});
+        const std::vector<std::string> names = test_common::KeyNames(first, keys);
         CHECK(std::ranges::find(names, "level") != names.end());
     };
 

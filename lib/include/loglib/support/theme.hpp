@@ -5,6 +5,9 @@
  * overrides. It is a plain value that can be loaded from and saved to JSON. The library only stores themes. Applying
  * them is up to the application.
  *
+ * The support module holds Qt-free helpers that the desktop program and the command line tool share. They are not about
+ * logs. They live in loglib so that both programs link one library, and no other loglib module uses them.
+ *
  * This is part of the support module.
  */
 #pragma once

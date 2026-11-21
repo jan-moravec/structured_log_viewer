@@ -1,6 +1,7 @@
 
 #include "parse_only.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/internal/path_encoding.hpp>
 #include <loglib/core/log_value.hpp>
@@ -8,11 +9,11 @@
 #include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>
 
+#include <test_common/log_line_debug.hpp>
 #include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -232,12 +233,15 @@ TEST_CASE("session bundle v1 exports documented metadata and typed normalized JS
     REQUIRE(restored.errors.empty());
     REQUIRE(restored.data.Lines().size() == 1);
     const loglib::LogLine &row = restored.data.Lines().front();
-    CHECK(std::get<std::int64_t>(row.GetValue(restored.data.Keys(), "signed")) == -7);
-    CHECK(std::get<std::uint64_t>(row.GetValue(restored.data.Keys(), "unsigned")) == UINT64_MAX);
-    CHECK(std::get<double>(row.GetValue(restored.data.Keys(), "whole")) == Catch::Approx(2.0));
-    CHECK(std::get<double>(row.GetValue(restored.data.Keys(), "fraction")) == Catch::Approx(2.5));
-    CHECK(std::get<bool>(row.GetValue(restored.data.Keys(), "ok")));
-    CHECK(loglib::AsStringView(row.GetValue(restored.data.Keys(), "msg")) == "quote: \" slash: \\ newline:\n");
+    CHECK(std::get<std::int64_t>(test_common::ValueByName(row, restored.data.Keys(), "signed")) == -7);
+    CHECK(std::get<std::uint64_t>(test_common::ValueByName(row, restored.data.Keys(), "unsigned")) == UINT64_MAX);
+    CHECK(std::get<double>(test_common::ValueByName(row, restored.data.Keys(), "whole")) == Catch::Approx(2.0));
+    CHECK(std::get<double>(test_common::ValueByName(row, restored.data.Keys(), "fraction")) == Catch::Approx(2.5));
+    CHECK(std::get<bool>(test_common::ValueByName(row, restored.data.Keys(), "ok")));
+    CHECK(
+        loglib::AsStringView(test_common::ValueByName(row, restored.data.Keys(), "msg")) ==
+        "quote: \" slash: \\ newline:\n"
+    );
 }
 
 TEST_CASE("session bundle metadata names an unknown configuration key", "[SessionBundle]")
@@ -781,9 +785,9 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     // Confirm the source table contains typed timestamps.
     REQUIRE(table.Data().Lines().size() == 2);
     const loglib::TimeStamp originalRow0 =
-        std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue(table.Data().Keys(), "ts"));
+        std::get<loglib::TimeStamp>(test_common::ValueByName(table.Data().Lines()[0], table.Data().Keys(), "ts"));
     const loglib::TimeStamp originalRow1 =
-        std::get<loglib::TimeStamp>(table.Data().Lines()[1].GetValue(table.Data().Keys(), "ts"));
+        std::get<loglib::TimeStamp>(test_common::ValueByName(table.Data().Lines()[1], table.Data().Keys(), "ts"));
 
     loglib::WriteSessionBundle(table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path());
 
@@ -795,10 +799,14 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     const loglib::LogTable reloaded = ParseTable(decoded.EffectivePath());
     REQUIRE(reloaded.Data().Lines().size() == 2);
     CHECK(
-        std::get<loglib::TimeStamp>(reloaded.Data().Lines()[0].GetValue(reloaded.Data().Keys(), "ts")) == originalRow0
+        std::get<loglib::TimeStamp>(
+            test_common::ValueByName(reloaded.Data().Lines()[0], reloaded.Data().Keys(), "ts")
+        ) == originalRow0
     );
     CHECK(
-        std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue(reloaded.Data().Keys(), "ts")) == originalRow1
+        std::get<loglib::TimeStamp>(
+            test_common::ValueByName(reloaded.Data().Lines()[1], reloaded.Data().Keys(), "ts")
+        ) == originalRow1
     );
 }
 

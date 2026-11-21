@@ -2,11 +2,11 @@
 
 #include "log_session_presentation.hpp"
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
+#include <loglib/config/session_view.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/output/file_loading.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
-#include <loglib/schema/session_view.hpp>
 
 #include <QAtomicInteger>
 #include <QElapsedTimer>
