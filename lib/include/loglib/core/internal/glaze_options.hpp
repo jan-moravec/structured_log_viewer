@@ -3,7 +3,7 @@
  *
  * Configuration, regex template, theme and session bundle files are written with indentation so people can read them.
  * Every reader rejects unknown keys. A key that is missing keeps the default of its member, except in configuration
- * files, where the types say which keys are required. The schema, parse, support and output modules all use these
+ * files, where the types say which keys are required. The config, parse, support and output modules all use these
  * options, which is why the header is in core.
  *
  * This is part of the core module.

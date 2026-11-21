@@ -5,7 +5,7 @@
  * A desktop session owns one and slp builds one from its flags and its configuration file. Every part finds its column
  * by keys, so moving a column never changes it.
  *
- * This is part of the schema module. LogConfiguration saves a SessionView in a configuration file.
+ * This is part of the config module. LogConfiguration saves a SessionView in a configuration file.
  */
 #pragma once
 

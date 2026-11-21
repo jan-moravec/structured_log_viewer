@@ -5,7 +5,7 @@
  * ShouldBubbleLevelColumn is that rule on its own. LogTable applies it when it resolves a placement, and the tests of
  * the column layout use it to check the rotation.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

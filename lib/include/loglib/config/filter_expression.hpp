@@ -5,7 +5,7 @@
  * key, not by position, so a rule keeps working when columns are moved or added. Compiling an expression into something
  * fast to run is the job of the query module.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

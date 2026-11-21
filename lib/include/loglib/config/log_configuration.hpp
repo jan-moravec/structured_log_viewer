@@ -9,7 +9,7 @@
  * a table and SessionView holds the live session state, and a caller builds a LogConfiguration from them when it saves.
  * A column is saved with its type only when the user chose it.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

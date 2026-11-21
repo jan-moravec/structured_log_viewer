@@ -4,7 +4,7 @@
  * A HighlightRule matches rows the same way a filter leaf does, but it only changes how rows look. Rules belong to the
  * configuration, so they follow the column layout across sessions, while filters belong to one session.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

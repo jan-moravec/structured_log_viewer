@@ -5,7 +5,7 @@
  * index into the theme's anchor palette and an optional one-line note. Anchors are stored in the configuration so they
  * survive reopening the log.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

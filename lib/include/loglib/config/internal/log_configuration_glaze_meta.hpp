@@ -1,11 +1,11 @@
 /**
  * @brief JSON field names, enum spellings and the document shape of a configuration file.
  *
- * This header tells the JSON library how to read and write each schema type, and defines the document that a
+ * This header tells the JSON library how to read and write each config type, and defines the document that a
  * configuration file and the metadata line of a session bundle hold. It is only included where the configuration is
  * serialized, so the public headers stay free of the JSON library.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 

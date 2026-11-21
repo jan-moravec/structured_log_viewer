@@ -42,7 +42,7 @@ The library is one static target, `loglib`. Its files sit in nine module folders
                                 |          \
                               parse       ingest
                              /  |  \       /
-                       schema  time  \    /
+                       config  time  \    /
                                  \    \  /
                                    core
 ```
@@ -50,7 +50,7 @@ The library is one static target, `loglib`. Its files sit in nine module folders
 | Module  | Its one job                                  | Main headers                                                                                                                                                                     |
 | ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | core    | What a log row is, and where its bytes live  | `log_line`, `log_value`, `compact_log_value`, `key_index`, `enum_dictionary`, `line_source`, `file_line_source`, `stream_line_source`, `bytes_producer`, `row_batch`, `log_data` |
-| schema  | What the user configured, as saveable values | `log_configuration`, `column_schema`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                 |
+| config  | What the user configured, as saveable values | `log_configuration`, `column`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                        |
 | time    | Reading timestamps and converting time zones | `time_zone_context`, `time_input`                                                                                                                                                |
 | ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                  |
 | parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                               |
@@ -73,7 +73,7 @@ Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit an
 1. **Parse.** For a file, `parse/internal/static_parser_pipeline.hpp` splits the bytes into batches and decodes them on worker threads. For a live stream, `parse/internal/streaming_parse_loop.hpp` does the same on one thread. Each line becomes a `core/log_line.hpp` made of `core/compact_log_value.hpp` fields, with keys interned by `core/key_index.hpp`. Time columns are converted on the way with `time/timestamp_parsing.hpp`. The parser does not touch the table. It writes rows, copied text and keys to three different places, described in [Data flow and threads](#data-flow-and-threads).
 1. **Deliver.** `parse/internal/batch_coalescer.hpp` groups lines into `core/row_batch.hpp` batches and hands them to a `parse/log_parse_sink.hpp`.
 1. **Fill the table.** The sink passes each batch to `table/log_table.hpp`, which appends it. `table/table_loader.hpp` has the sink that `slp` and LoadFile use (TableSink) and ParseIntoTable, which adds a source to a table and parses it. `table/internal/enum_inference.hpp` (internal) turns columns with few distinct values into enumerations, and LogTable fixes time columns after the fact when a column becomes a time column.
-1. **Filter and sort.** Rules from `schema/filter_expression.hpp`, or text parsed by `query/query_parser.hpp`, are compiled by `query/filter_compile.hpp` and run by `query/row_filter.hpp`. `query/row_ordering.hpp` and `query/log_compare.hpp` order the rows.
+1. **Filter and sort.** Rules from `config/filter_expression.hpp`, or text parsed by `query/query_parser.hpp`, are compiled by `query/filter_compile.hpp` and run by `query/row_filter.hpp`. `query/row_ordering.hpp` and `query/log_compare.hpp` order the rows.
 1. **Write out.** `query/column_projection.hpp` picks the visible columns, `output/exports/row_exporter.hpp` writes the rows to an `output/exports/export_sink.hpp`, and `output/session_bundle.hpp` saves a whole session.
 
 ## Data flow and threads
@@ -124,7 +124,7 @@ The rules are in [CONTRIBUTING.md](../CONTRIBUTING.md), section Error handling. 
 | Module  | What it throws                                                                                                                                                                                                                                                        |
 | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | core    | `IoError` when a file cannot be opened or mapped. `LimitError` when a log has too many distinct keys or too much owned text. `OperationCancelled` from `stop_token`. `StreamLineSource` throws `std::out_of_range` for a line that was evicted or does not exist yet. |
-| schema  | `IoError` when a configuration cannot be read or written, `FormatError` when its content is invalid.                                                                                                                                                                  |
+| config  | `IoError` when a configuration cannot be read or written, `FormatError` when its content is invalid.                                                                                                                                                                  |
 | time    | `IoError` when the tzdata folder does not exist, `FormatError` when a zone is not available.                                                                                                                                                                          |
 | ingest  | `IoError`, `FormatError` and `LimitError` while unpacking compressed files. `IoError` for standard input, TLS files, a socket that cannot be bound and a tailed file that cannot be opened.                                                                           |
 | parse   | `FormatError` for a regex template whose JSON is invalid. Parsing log lines does not throw.                                                                                                                                                                           |

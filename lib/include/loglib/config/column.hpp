@@ -5,7 +5,7 @@
  * how the column is detected, sorted and filtered. The header also defines the default time formats. Everything here is
  * a plain value that can be saved to and loaded from JSON.
  *
- * This is part of the schema module.
+ * This is part of the config module.
  */
 #pragma once
 
