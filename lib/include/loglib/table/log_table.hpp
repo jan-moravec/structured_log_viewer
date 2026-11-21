@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include "loglib/config/column_layout.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/key_index.hpp"
@@ -17,7 +18,6 @@
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/row_batch.hpp"
-#include "loglib/schema/column_layout.hpp"
 #include "loglib/table/column_type_health.hpp"
 #include "loglib/time/time_zone_context.hpp"
 

@@ -2,6 +2,8 @@
 #include "parse_only.hpp"
 #include "table_fixture.hpp"
 #include "table_from_data.hpp"
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
@@ -22,8 +24,6 @@
 #include <loglib/query/histogram_bucket_index.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <loglib/table/log_table.hpp>
 

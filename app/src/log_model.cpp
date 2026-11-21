@@ -9,6 +9,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/line_source.hpp>
@@ -17,7 +18,6 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
 #include <QApplication>

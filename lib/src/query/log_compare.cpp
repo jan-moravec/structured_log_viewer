@@ -1,9 +1,9 @@
 #include "loglib/query/log_compare.hpp"
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/log_level.hpp"
 #include "loglib/core/log_value.hpp"
-#include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/log_table.hpp"
 
 #include <oneapi/tbb/blocked_range.h>

@@ -1,10 +1,10 @@
 #include "common.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/temp_dir.hpp>
 

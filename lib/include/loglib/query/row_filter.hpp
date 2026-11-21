@@ -9,9 +9,9 @@
  */
 #pragma once
 
+#include "loglib/config/filter_expression.hpp"
 #include "loglib/core/enum_dictionary.hpp"
 #include "loglib/core/transparent_string_hash.hpp"
-#include "loglib/schema/filter_expression.hpp"
 
 #include <cstddef>
 #include <cstdint>

@@ -18,6 +18,8 @@
 #include "session_history_manager.hpp"
 #include "theme_control.hpp"
 
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/key_index.hpp>
@@ -25,8 +27,6 @@
 #include <loglib/output/file_loading.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <QAction>
 #include <QByteArray>

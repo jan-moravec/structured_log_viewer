@@ -2,6 +2,8 @@
 #include "log_value_helpers.hpp"
 #include "parse_only.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -13,8 +15,6 @@
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/log_line_debug.hpp>
 

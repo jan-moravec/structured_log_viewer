@@ -2,6 +2,7 @@
 #include "parse_only.hpp"
 #include "table_fixture.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_data.hpp>
@@ -9,7 +10,6 @@
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/csv_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/log_format.hpp>

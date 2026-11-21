@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/schema/source_descriptor.hpp>
+#include <loglib/config/source_descriptor.hpp>
 
 #include <QDialog>
 #include <QString>

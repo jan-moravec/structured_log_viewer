@@ -1,5 +1,6 @@
 #include "loglib/parse/parsers/regex_parser.hpp"
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/internal/pcre2_support.hpp"
@@ -14,7 +15,6 @@
 #include "loglib/parse/internal/streaming_parse_loop.hpp"
 #include "loglib/parse/log_parser.hpp"
 #include "loglib/parse/regex_templates.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <fmt/format.h>
 

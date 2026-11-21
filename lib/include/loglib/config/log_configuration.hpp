@@ -13,9 +13,9 @@
  */
 #pragma once
 
-#include "loglib/schema/column_schema.hpp"
-#include "loglib/schema/session_view.hpp"
-#include "loglib/schema/source_descriptor.hpp"
+#include "loglib/config/column.hpp"
+#include "loglib/config/session_view.hpp"
+#include "loglib/config/source_descriptor.hpp"
 
 #include <chrono>
 #include <filesystem>

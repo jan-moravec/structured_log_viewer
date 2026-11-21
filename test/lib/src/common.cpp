@@ -1,6 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/schema/log_configuration.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>
 

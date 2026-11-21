@@ -2,9 +2,9 @@
 
 #include "text_util.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/query/query_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/time/time_input.hpp>
 
 #include <algorithm>

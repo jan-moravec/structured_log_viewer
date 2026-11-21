@@ -1,6 +1,7 @@
 
 #include "parse_only.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/internal/path_encoding.hpp>
 #include <loglib/core/log_value.hpp>
@@ -8,7 +9,6 @@
 #include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>

@@ -7,11 +7,11 @@
 #include "session_config.hpp"
 #include "text_util.hpp"
 
+#include <loglib/config/filter_expression.hpp>
 #include <loglib/output/session_bundle.hpp>
 #include <loglib/query/column_projection.hpp>
 #include <loglib/query/filter_compile.hpp>
 #include <loglib/query/row_filter.hpp>
-#include <loglib/schema/filter_expression.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <algorithm>

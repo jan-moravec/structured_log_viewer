@@ -13,6 +13,7 @@
 #include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/stop_token.hpp>
@@ -20,7 +21,6 @@
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
 #include <QAbstractItemModel>

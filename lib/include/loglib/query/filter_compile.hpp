@@ -9,10 +9,10 @@
  */
 #pragma once
 
+#include "loglib/config/filter_expression.hpp"
+#include "loglib/config/highlight_rule.hpp"
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/query/row_filter.hpp"
-#include "loglib/schema/filter_expression.hpp"
-#include "loglib/schema/highlight_rule.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <cstddef>
 #include <optional>

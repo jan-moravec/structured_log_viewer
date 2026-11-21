@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include "loglib/schema/column_layout.hpp"
+#include "loglib/config/column_layout.hpp"
 
 #include <cstddef>
 

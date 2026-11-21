@@ -10,7 +10,7 @@
  */
 #pragma once
 
-#include "loglib/schema/column_schema.hpp"
+#include "loglib/config/column.hpp"
 
 #include <cstddef>
 #include <functional>

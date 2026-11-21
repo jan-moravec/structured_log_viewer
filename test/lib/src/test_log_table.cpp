@@ -2,6 +2,9 @@
 #include "table_fixture.hpp"
 #include "table_from_data.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/filter_expression.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/enum_dictionary.hpp>
@@ -12,9 +15,6 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/filter_expression.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>

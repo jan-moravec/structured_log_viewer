@@ -10,7 +10,7 @@
 #include "qstring_path.hpp"
 #include "row_order_proxy_model.hpp"
 
-#include <loglib/schema/log_configuration.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/time/time_input.hpp>
 #include <loglib/time/time_zone_context.hpp>
 

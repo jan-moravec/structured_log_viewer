@@ -4,12 +4,12 @@
 #include "diagnostics.hpp"
 #include "options.hpp"
 
+#include <loglib/config/session_view.hpp>
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
-#include <loglib/schema/session_view.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <cstdint>

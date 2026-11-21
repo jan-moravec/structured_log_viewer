@@ -29,13 +29,13 @@ SOURCE_ROOT = LIB_ROOT / "src"
 # Module -> modules it may include. Keep in step with lib/README.md.
 MODULE_DEPENDENCIES: dict[str, frozenset[str]] = {
     "core": frozenset(),
-    "schema": frozenset({"core"}),
+    "config": frozenset({"core"}),
     "time": frozenset({"core"}),
     "ingest": frozenset({"core"}),
-    "parse": frozenset({"core", "schema", "time"}),
-    "table": frozenset({"core", "schema", "time", "parse"}),
-    "query": frozenset({"core", "schema", "time", "table"}),
-    "output": frozenset({"core", "schema", "time", "parse", "table", "query", "ingest"}),
+    "parse": frozenset({"core", "config", "time"}),
+    "table": frozenset({"core", "config", "time", "parse"}),
+    "query": frozenset({"core", "config", "time", "table"}),
+    "output": frozenset({"core", "config", "time", "parse", "table", "query", "ingest"}),
     "support": frozenset({"core"}),
 }
 SOURCE_SUFFIXES = {".hpp", ".h", ".cpp", ".cc"}

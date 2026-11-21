@@ -1,6 +1,6 @@
-#include "loglib/schema/column_layout.hpp"
+#include "loglib/config/column_layout.hpp"
+#include "loglib/config/internal/level_column_slot.hpp"
 #include "loglib/core/ascii_case.hpp"
-#include "loglib/schema/internal/level_column_slot.hpp"
 
 #include <fmt/format.h>
 

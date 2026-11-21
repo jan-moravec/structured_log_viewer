@@ -10,8 +10,8 @@
  */
 #pragma once
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/stop_token.hpp"
-#include "loglib/schema/log_configuration.hpp"
 
 #include <cstddef>
 #include <cstdint>

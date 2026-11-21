@@ -18,6 +18,8 @@
 #include "fixture_params.hpp"
 #include "row_memory.hpp"
 #include "table_fixture.hpp"
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/enum_dictionary.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/internal/memory_stats.hpp>
@@ -26,8 +28,6 @@
 #include <loglib/output/file_loading.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <loglib/table/log_table.hpp>
 

@@ -25,9 +25,9 @@
 
 #include <QUuid>
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/time/time_zone_context.hpp>
 

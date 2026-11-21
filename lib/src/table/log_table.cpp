@@ -1,8 +1,8 @@
 #include "loglib/table/log_table.hpp"
 
+#include "loglib/config/internal/level_column_slot.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
-#include "loglib/schema/internal/level_column_slot.hpp"
 #include "loglib/table/internal/column_key_id_cache.hpp"
 #include "loglib/table/internal/enum_inference.hpp"
 #include "loglib/table/internal/timestamp_backfill.hpp"

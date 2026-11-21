@@ -1,6 +1,8 @@
 #include "common.hpp"
 #include "parse_only.hpp"
 
+#include <loglib/config/column.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/row_batch.hpp>
@@ -19,8 +21,6 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
-#include <loglib/schema/column_schema.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/internal/timestamp_parsing.hpp>
 

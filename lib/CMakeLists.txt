@@ -42,8 +42,8 @@ add_library(
     src/ingest/udp_server_producer.cpp
     src/time/timestamp_promotion.cpp
     src/parse/parse_runtime.cpp
-    src/schema/column_layout.cpp
-    src/schema/log_configuration.cpp
+    src/config/column_layout.cpp
+    src/config/log_configuration.cpp
     src/query/column_projection.cpp
     src/table/column_key_id_cache.cpp
     src/table/column_type_health.cpp
@@ -100,13 +100,13 @@ add_library(
 # test/lib translation units can still include them via BASE_DIRS;
 # they are not members of this set and must not be installed.
 set(LOGLIB_PUBLIC_HEADERS
-    include/loglib/schema/anchor_entry.hpp
+    include/loglib/config/anchor_entry.hpp
     include/loglib/core/ascii_case.hpp
     include/loglib/parse/auto_detect_parser.hpp
     include/loglib/core/bytes_producer.hpp
     include/loglib/query/column_projection.hpp
-    include/loglib/schema/column_layout.hpp
-    include/loglib/schema/column_schema.hpp
+    include/loglib/config/column_layout.hpp
+    include/loglib/config/column.hpp
     include/loglib/table/column_type_health.hpp
     include/loglib/core/compact_log_value.hpp
     include/loglib/ingest/decompressing_byte_source.hpp
@@ -115,15 +115,15 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/output/exports/export_sink.hpp
     include/loglib/output/exports/row_exporter.hpp
     include/loglib/core/file_line_source.hpp
-    include/loglib/schema/filter_expression.hpp
+    include/loglib/config/filter_expression.hpp
     include/loglib/parse/format_detection.hpp
-    include/loglib/schema/highlight_rule.hpp
+    include/loglib/config/highlight_rule.hpp
     include/loglib/query/histogram_bucket_index.hpp
     include/loglib/core/key_index.hpp
     include/loglib/query/filter_compile.hpp
     include/loglib/core/line_source.hpp
     include/loglib/query/log_compare.hpp
-    include/loglib/schema/log_configuration.hpp
+    include/loglib/config/log_configuration.hpp
     include/loglib/core/log_data.hpp
     include/loglib/query/row_filter.hpp
     include/loglib/core/log_level.hpp
@@ -147,8 +147,8 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/rotation_siblings.hpp
     include/loglib/query/row_ordering.hpp
     include/loglib/output/session_bundle.hpp
-    include/loglib/schema/session_view.hpp
-    include/loglib/schema/source_descriptor.hpp
+    include/loglib/config/session_view.hpp
+    include/loglib/config/source_descriptor.hpp
     include/loglib/ingest/source_plan.hpp
     include/loglib/ingest/stdin_bytes_producer.hpp
     include/loglib/ingest/stdin_peek.hpp

@@ -11,9 +11,9 @@
  */
 #pragma once
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/schema/log_configuration.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <chrono>

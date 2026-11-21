@@ -3,9 +3,9 @@
 
 #include "fuzz_common.hpp"
 
+#include "loglib/config/source_descriptor.hpp"
 #include "loglib/parse/parsers/regex_parser.hpp"
 #include "loglib/parse/regex_templates.hpp"
-#include "loglib/schema/source_descriptor.hpp"
 
 #include <cstddef>
 #include <cstdint>

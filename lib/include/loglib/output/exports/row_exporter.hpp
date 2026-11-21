@@ -8,9 +8,9 @@
  */
 #pragma once
 
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/stop_token.hpp"
 #include "loglib/output/exports/export_sink.hpp"
-#include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/log_table.hpp"
 
 #include <cstddef>

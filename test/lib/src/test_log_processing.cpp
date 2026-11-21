@@ -1,12 +1,12 @@
 #include "common.hpp"
 
+#include <loglib/config/column.hpp>
+#include <loglib/config/filter_expression.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/query/query_parser.hpp>
-#include <loglib/schema/column_schema.hpp>
-#include <loglib/schema/filter_expression.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/time/internal/generic_timestamp_parsing.hpp>
 #include <loglib/time/internal/timestamp_parsing.hpp>

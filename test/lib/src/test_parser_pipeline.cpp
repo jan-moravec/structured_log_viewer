@@ -1,5 +1,7 @@
 #include "common.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/compact_log_value.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -9,8 +11,6 @@
 #include <loglib/parse/internal/streaming_parse_loop.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/time/internal/timestamp_promotion.hpp>
 
 #include <test_common/log_line_debug.hpp>

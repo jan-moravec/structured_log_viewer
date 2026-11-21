@@ -27,6 +27,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/ascii_case.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/enum_dictionary.hpp>
@@ -54,7 +55,6 @@
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/query/column_projection.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/time/time_zone_context.hpp>

@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
@@ -7,7 +8,6 @@
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/table/table_loader.hpp>
 

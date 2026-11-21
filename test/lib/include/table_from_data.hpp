@@ -10,9 +10,9 @@
  */
 #pragma once
 
+#include "loglib/config/column_layout.hpp"
+#include "loglib/config/log_configuration.hpp"
 #include "loglib/core/log_data.hpp"
-#include "loglib/schema/column_layout.hpp"
-#include "loglib/schema/log_configuration.hpp"
 #include "loglib/table/log_table.hpp"
 
 namespace test_common_lib

@@ -3,9 +3,9 @@
 #include "advanced_filter_highlighter.hpp"
 #include "theme_control.hpp"
 
+#include <loglib/config/filter_expression.hpp>
 #include <loglib/query/query_format.hpp>
 #include <loglib/query/query_parser.hpp>
-#include <loglib/schema/filter_expression.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
 #include <QColor>

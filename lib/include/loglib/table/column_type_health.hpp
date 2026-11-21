@@ -8,10 +8,10 @@
  */
 #pragma once
 
+#include "loglib/config/column.hpp"
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/schema/column_schema.hpp"
 
 #include <span>
 

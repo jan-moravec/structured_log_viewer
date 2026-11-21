@@ -1,6 +1,7 @@
 #include "common.hpp"
 #include "parse_only.hpp"
 
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_data.hpp>
@@ -10,7 +11,6 @@
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
-#include <loglib/schema/log_configuration.hpp>
 
 #include <test_common/log_line_debug.hpp>
 

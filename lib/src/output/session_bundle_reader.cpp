@@ -1,8 +1,8 @@
 #include "loglib/output/session_bundle.hpp"
 
+#include "loglib/config/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/core/error.hpp"
 #include "loglib/core/internal/glaze_options.hpp"
-#include "loglib/schema/internal/log_configuration_glaze_meta.hpp"
 
 #include <glaze/glaze.hpp>
 

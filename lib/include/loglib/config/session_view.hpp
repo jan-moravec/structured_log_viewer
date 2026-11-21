@@ -9,9 +9,9 @@
  */
 #pragma once
 
-#include "loglib/schema/anchor_entry.hpp"
-#include "loglib/schema/filter_expression.hpp"
-#include "loglib/schema/highlight_rule.hpp"
+#include "loglib/config/anchor_entry.hpp"
+#include "loglib/config/filter_expression.hpp"
+#include "loglib/config/highlight_rule.hpp"
 
 #include <string>
 #include <vector>

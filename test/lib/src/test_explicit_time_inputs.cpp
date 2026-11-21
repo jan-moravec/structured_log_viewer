@@ -2,6 +2,8 @@
 #include "parse_only.hpp"
 #include "table_from_data.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/key_index.hpp>
@@ -17,8 +19,6 @@
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
 #include <loglib/parse/regex_templates.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/log_table_test_access.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/internal/timestamp_parsing.hpp>

@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include "loglib/schema/filter_expression.hpp"
+#include "loglib/config/filter_expression.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
 #include <cstddef>

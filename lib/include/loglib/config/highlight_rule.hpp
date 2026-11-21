@@ -8,7 +8,7 @@
  */
 #pragma once
 
-#include "loglib/schema/filter_expression.hpp"
+#include "loglib/config/filter_expression.hpp"
 
 #include <cstdint>
 #include <optional>

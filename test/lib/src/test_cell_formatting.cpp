@@ -1,13 +1,13 @@
 #include "table_from_data.hpp"
 
+#include <loglib/config/column_layout.hpp>
+#include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/core/stream_line_source.hpp>
-#include <loglib/schema/column_layout.hpp>
-#include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <test_common/log_line_debug.hpp>
