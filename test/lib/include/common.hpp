@@ -5,6 +5,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/parse/regex_templates.hpp>
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -308,6 +309,10 @@ private:
 };
 
 void InitializeTimezoneData();
+
+/// The zone that tests and benchmarks use for display, loaded from the staged tzdata on first use. It follows the
+/// machine's zone, as the application does.
+[[nodiscard]] const loglib::TimeZoneContext &TestTimeZone();
 
 [[nodiscard]] std::filesystem::path FindTestTzdata();
 

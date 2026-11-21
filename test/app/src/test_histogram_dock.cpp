@@ -235,8 +235,8 @@ class HistogramDockTest : public QObject
     Q_OBJECT
 
 private slots:
-    /// Load tzdata into the process-default `TimeZoneContext` so
-    /// histogram labels format in the display zone.
+    /// Load the staged tzdata so windows can format histogram labels
+    /// in the display zone.
     void initTestCase()
     {
         QVERIFY2(
@@ -312,7 +312,7 @@ private slots:
         const std::int64_t maxUs = range->max.time_since_epoch().count();
         // The fixture has no zone, so its start is a display-zone wall clock.
         QVERIFY2(
-            minUs >= loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(YEAR_2026_EPOCH_US),
+            minUs >= MainWindow::LoadSystemTimeZone().LocalToUtc(YEAR_2026_EPOCH_US),
             "observed min timestamp fell before 2026 -- histogram is likely reading a non-time column"
         );
         QVERIFY(maxUs >= minUs);

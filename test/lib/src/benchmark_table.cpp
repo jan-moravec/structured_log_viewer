@@ -113,8 +113,8 @@ std::unique_ptr<MixedTable> BuildMixedTable(std::size_t rows, const char *fileNa
     const ColumnLayout manager(configuration.columns);
     result->table = std::make_unique<LogTable>(manager);
     LogTable &table = *result->table;
-    table.SetDisplayTimeZone(ProcessDefaultTimeZone());
-    table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+    table.SetDisplayTimeZone(TestTimeZone());
+    table.SetDefaultSourceTimeZone(TestTimeZone());
     auto source = std::make_unique<FileLineSource>(result->file->GetFilePath());
     FileLineSource &sourceRef = *source;
     table.BeginStreaming(std::move(source));

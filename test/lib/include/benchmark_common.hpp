@@ -441,8 +441,8 @@ inline StreamingRunResult RunStreamingFlow(
     {
         loglib::LogTable table{loglib::ColumnLayout(configuration->columns)};
         // The benchmarks measure parsing in the machine's zone, as the application does.
-        table.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
-        table.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());
+        table.SetDisplayTimeZone(TestTimeZone());
+        table.SetDefaultSourceTimeZone(TestTimeZone());
 
         // Mirror MainWindow::OpenJsonStreaming: the parser borrows the
         // same FileLineSource the table owns, so Stage C's offsets and

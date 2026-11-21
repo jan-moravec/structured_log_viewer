@@ -51,7 +51,7 @@ The library is one static target, `loglib`. Its files sit in nine module folders
 | ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | core    | What a log row is, and where its bytes live  | `log_line`, `log_value`, `compact_log_value`, `key_index`, `enum_dictionary`, `line_source`, `file_line_source`, `stream_line_source`, `bytes_producer`, `row_batch`, `log_data` |
 | schema  | What the user configured, as saveable values | `log_configuration`, `column_schema`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                 |
-| time    | Reading timestamps and converting time zones | `time_zone_context`, `timestamp_parsing`, `user_timestamp`                                                                                                                       |
+| time    | Reading timestamps and converting time zones | `time_zone_context`, `time_input`                                                                                                                                                |
 | ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                  |
 | parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                               |
 | table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                              |
@@ -104,14 +104,14 @@ Typical composition:
 1. Load a file into a `LogTable` with `LoadFile`. It opens plain, compressed and bundle files, detects the format, parses and finishes type detection.
 1. Or take the steps yourself: `OpenFileSource`, `MakeParserForFormat`, then `ParseIntoTable` and `FinishLoading` for each source.
 
-`SetProcessDefaultTimeZone` is a documented process-wide convenience for applications and for formatting helpers such as `UtcMicrosecondsToDateTimeString`. The library never reads it, and `scripts/check-loglib-internal-includes.py` enforces that. A parse gets its zone as `ParserOptions::defaultSourceTimeZone`, a `LogTable` has its own display zone and default source zone, and `ParseQuery` takes a zone. All of them are UTC unless the caller sets one. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
+There is no default zone for the process: every function that needs a zone takes a `TimeZoneContext`. A parse gets its zone as `ParserOptions::defaultSourceTimeZone`, a `LogTable` has its own display zone and default source zone, and `ParseQuery` takes a zone. All of them are UTC unless the caller sets one. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 
 ## Process-wide state
 
 The library keeps little state outside the objects that use it. What remains is listed here, and nothing else is global.
 
 - **Regex template catalog.** The built-in templates and the extra templates set with `SetExtraRegexTemplates` form one registry for the whole process. The application sets the extras once from the user's files, and the call replaces the whole set. It is safe to read from any thread, also while another thread replaces the extras, because every reader works from a snapshot taken under a shared lock. The compiled patterns that format detection uses are a cache of this registry and are rebuilt when the extras change.
-- **Default time zone.** `SetProcessDefaultTimeZone`, described above. The library never reads it. `TimeZoneContext::Load` also points the date library at the tzdata folder, which that library keeps globally.
+- **Tzdata folder.** `TimeZoneContext::Load` points the date library at a tzdata folder, which that library keeps for the whole process. Loading from a second, different folder throws `FormatError`; loading again from the same folder for another zone works.
 - **Unique name counters.** The temporary file names of decompression and of bundle writing come from atomic counters, so two threads never pick the same name.
 - **Per-thread scratch buffers.** A few functions on the filter and compare path reuse thread-local buffers. They hold no state between calls.
 

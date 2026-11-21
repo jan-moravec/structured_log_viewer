@@ -127,8 +127,8 @@ struct RegexIssue
 
 } // namespace
 
-AdvancedFilterEditor::AdvancedFilterEditor(QWidget *parent)
-    : QDialog(parent)
+AdvancedFilterEditor::AdvancedFilterEditor(loglib::TimeZoneContext timeZone, QWidget *parent)
+    : QDialog(parent), mTimeZone(std::move(timeZone))
 {
     setObjectName(QStringLiteral("advancedFilterEditor"));
     setWindowTitle(tr("Advanced Filter"));
@@ -235,7 +235,7 @@ void AdvancedFilterEditor::ReparseAndUpdate()
 {
     const QString queryText = mQueryEdit->toPlainText();
     const std::string source = queryText.toStdString();
-    auto parsed = loglib::ParseQuery(source, loglib::ProcessDefaultTimeZone());
+    auto parsed = loglib::ParseQuery(source, mTimeZone);
     if (parsed.has_value())
     {
         // Second-stage regex validity check: `ParseQuery` extracts

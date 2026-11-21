@@ -58,20 +58,23 @@
 namespace
 {
 
-// Load the `tzdata/` found along the CWD ancestor chain as the
-// process-default `TimeZoneContext`.
-void StageTimezoneData()
+// The zone the computer is set to, loaded from the `tzdata/` found along the CWD ancestor chain on first use. UTC when
+// the data is missing.
+const loglib::TimeZoneContext &BenchmarkTimeZone()
 {
-    std::vector<std::filesystem::path> searched;
-    const loglib::TzdataSearchRoots roots{.startDirectory = std::filesystem::current_path()};
-    if (const auto tzdata = loglib::FindTzdataDirectory(roots, searched); !tzdata.empty())
-    {
-        loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata));
-        return;
-    }
-    qWarning() << "tzdata/ not found in CWD ancestors; timestamp promotion disabled "
-                  "for this run. Invoke from the directory holding the staged tzdata "
-                  "folder (typically build/<preset>/bin/<config>/).";
+    static const loglib::TimeZoneContext zone = [] {
+        std::vector<std::filesystem::path> searched;
+        const loglib::TzdataSearchRoots roots{.startDirectory = std::filesystem::current_path()};
+        if (const auto tzdata = loglib::FindTzdataDirectory(roots, searched); !tzdata.empty())
+        {
+            return loglib::TimeZoneContext::Load(tzdata);
+        }
+        qWarning() << "tzdata/ not found in CWD ancestors; timestamp promotion disabled "
+                      "for this run. Invoke from the directory holding the staged tzdata "
+                      "folder (typically build/<preset>/bin/<config>/).";
+        return loglib::TimeZoneContext{};
+    }();
+    return zone;
 }
 
 // Write `count` random records to `path` as JSONL; returns the file size.
@@ -101,6 +104,7 @@ struct RunResult
 RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
 {
     auto model = std::make_unique<LogModel>();
+    model->SetTimeZone(BenchmarkTimeZone());
     auto rowProxy = std::make_unique<RowOrderProxyModel>();
     rowProxy->setSourceModel(model.get());
     rowProxy->SetReversed(reversed);
@@ -161,7 +165,7 @@ class MainWindowBench : public QObject
 private slots:
     void initTestCase()
     {
-        StageTimezoneData();
+        static_cast<void>(BenchmarkTimeZone());
 
         // Single shared 1'000'000-line fixture for all three runs.
         // 1 M / ~170 MiB matches the lib's `[large]` benchmark so the
@@ -600,6 +604,7 @@ private:
     {
         ProxyChain chain;
         chain.model = std::make_unique<LogModel>();
+        chain.model->SetTimeZone(BenchmarkTimeZone());
         chain.rowProxy = std::make_unique<RowOrderProxyModel>();
         chain.rowProxy->setSourceModel(chain.model.get());
         chain.filterProxy = std::make_unique<LogFilterModel>();

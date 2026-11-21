@@ -420,7 +420,7 @@ struct TimeHistogram
         TimeBucket bucket{
             .bucketStartMicros = start.time_since_epoch().count(),
             .bucketWidthMicros = report.bucketWidthMicros,
-            .bucketStartLocal = runtime.timeZone.FormatTimeStamp(start),
+            .bucketStartLocal = runtime.timeZone.FormatDateTime(start),
             .total = buckets[index].Total(),
             .levels = {},
         };
@@ -479,8 +479,8 @@ struct TimeHistogram
     {
         span = std::format(
             "span: {} .. {} ({} row(s))",
-            runtime.timeZone.FormatTimeStamp(*histogram.minTs),
-            runtime.timeZone.FormatTimeStamp(*histogram.maxTs),
+            runtime.timeZone.FormatDateTime(*histogram.minTs),
+            runtime.timeZone.FormatDateTime(*histogram.maxTs),
             report.rowCount
         );
     }

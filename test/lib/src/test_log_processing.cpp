@@ -9,9 +9,9 @@
 #include <loglib/schema/filter_expression.hpp>
 #include <loglib/table/internal/timestamp_backfill.hpp>
 #include <loglib/time/internal/generic_timestamp_parsing.hpp>
+#include <loglib/time/internal/timestamp_parsing.hpp>
+#include <loglib/time/time_input.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/timestamp_parsing.hpp>
-#include <loglib/time/user_timestamp.hpp>
 
 #include <test_common/log_line_debug.hpp>
 
@@ -67,7 +67,7 @@ TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_
 TEST_CASE("TimeZoneContext::Load accepts the staged tzdata directory", "[log_processing]")
 {
     InitializeTimezoneData();
-    CHECK_FALSE(ProcessDefaultTimeZone().IanaName().empty());
+    CHECK_FALSE(TestTimeZone().IanaName().empty());
 }
 
 TEST_CASE("Converting time columns reports an error for each value that does not parse", "[log_processing]")
@@ -663,7 +663,7 @@ TEST_CASE("Default parse formats accept Apache error log timestamps", "[log_proc
     }
 }
 
-TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
+TEST_CASE("TimeZoneContext::UtcToLocal adds the offset of the zone", "[log_processing]")
 {
     InitializeTimezoneData();
 
@@ -681,50 +681,38 @@ TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
             std::chrono::microseconds{microseconds}
         };
         auto info = tz->get_info(testTime);
-        const int64_t expectedOffset = std::chrono::duration_cast<std::chrono::milliseconds>(info.offset).count();
-        const int64_t utcMilliseconds = microseconds / 1000;
-        const int64_t expectedMilliseconds = utcMilliseconds + expectedOffset;
+        const int64_t expectedOffset = std::chrono::duration_cast<std::chrono::microseconds>(info.offset).count();
 
-        const int64_t result = UtcMicrosecondsToLocalMilliseconds(microseconds);
-        CHECK(result == expectedMilliseconds);
+        CHECK(TestTimeZone().UtcToLocal(microseconds) == microseconds + expectedOffset);
     }
 }
 
-TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
+TEST_CASE("TimeZoneContext::LocalToUtc undoes UtcToLocal outside daylight saving changes", "[log_processing]")
 {
-    InitializeTimezoneData();
+    const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
 
-    const std::vector<TimeStamp> testTimestamps = {
-        std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
-            std::chrono::microseconds{1672574400000000} // 2023-01-01 12:00:00 UTC
-        },
-        std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{std::chrono::microseconds{0}},
-        std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
-            std::chrono::microseconds{-3600000000} // 1 hour before epoch
-        }
+    // Midday in January and in July, far from the changes in March and October.
+    const std::vector<int64_t> utcMicroseconds = {
+        1672574400000000LL, // 2023-01-01 12:00:00 UTC
+        1688212800000000LL, // 2023-07-01 12:00:00 UTC
+        0,
+        -3600000000LL,
     };
 
-    for (const auto &originalTimestamp : testTimestamps)
+    for (const int64_t utc : utcMicroseconds)
     {
-        const int64_t localMilliseconds =
-            UtcMicrosecondsToLocalMilliseconds(originalTimestamp.time_since_epoch().count());
-        const TimeStamp convertedTimestamp = LocalMillisecondsSinceEpochToTimeStamp(localMilliseconds);
-
-        const int64_t originalMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(originalTimestamp.time_since_epoch()).count();
-        const int64_t convertedMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(convertedTimestamp.time_since_epoch()).count();
-
-        // Round-trip is millisecond-precision (the int64_t carrier).
-        CHECK(originalMs == convertedMs);
+        INFO("utc=" << utc);
+        CHECK(berlin.UtcToLocal(utc) != utc);
+        CHECK(berlin.LocalToUtc(berlin.UtcToLocal(utc)) == utc);
     }
+    CHECK(TimeZoneContext::Utc().UtcToLocal(1672574400000000LL) == 1672574400000000LL);
 }
 
-// `LocalMicrosecondsSinceEpochToUtc` under `Europe/Berlin` (a
-// pinned IANA zone rather than the process default for deterministic
+// `TimeZoneContext::LocalToUtc` under `Europe/Berlin` (a
+// pinned IANA zone rather than the machine's zone for deterministic
 // CI). Covers ordinary, fall-back, spring-forward, UTC identity,
 // and far-future inputs.
-TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_processing]")
+TEST_CASE("TimeZoneContext::LocalToUtc handles DST transitions", "[log_processing]")
 {
     InitializeTimezoneData();
     const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
@@ -746,7 +734,7 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
         // 2024-04-01 12:00 Berlin (CEST +02:00) -> 10:00 UTC.
         const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
         const int64_t expectedUtcMicros = naiveLocalMicros(2024, 4, 1, 10, 0, 0);
-        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
+        const int64_t got = berlin.LocalToUtc(localMicros);
         CHECK(got == expectedUtcMicros);
     }
 
@@ -756,7 +744,7 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
         // picks CEST (+02:00) -> 00:30 UTC.
         const int64_t localMicros = naiveLocalMicros(2024, 10, 27, 2, 30, 0);
         const int64_t earlierUtcMicros = naiveLocalMicros(2024, 10, 27, 0, 30, 0);
-        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
+        const int64_t got = berlin.LocalToUtc(localMicros);
         CHECK(got == earlierUtcMicros);
     }
 
@@ -769,14 +757,14 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
         // library changing this semantic.
         const int64_t localMicros = naiveLocalMicros(2024, 3, 31, 2, 30, 0);
         const int64_t transitionBoundaryUtc = naiveLocalMicros(2024, 3, 31, 1, 0, 0);
-        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
+        const int64_t got = berlin.LocalToUtc(localMicros);
         CHECK(got == transitionBoundaryUtc);
     }
 
     SECTION("UTC context passes the value through unchanged")
     {
         const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
-        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, TimeZoneContext::Utc());
+        const int64_t got = TimeZoneContext::Utc().LocalToUtc(localMicros);
         CHECK(got == localMicros);
     }
 
@@ -787,13 +775,13 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
         // exception-safe by yielding the naive value. Either way
         // the shift stays within +/-14 h.
         const int64_t farFutureMicros = naiveLocalMicros(9999, 12, 31, 23, 59, 59);
-        const int64_t gotFuture = LocalMicrosecondsSinceEpochToUtc(farFutureMicros, berlin);
+        const int64_t gotFuture = berlin.LocalToUtc(farFutureMicros);
         constexpr int64_t MAX_ZONE_OFFSET_MICROS = 14LL * 3600LL * 1'000'000LL;
         CHECK(std::llabs(gotFuture - farFutureMicros) <= MAX_ZONE_OFFSET_MICROS);
     }
 }
 
-TEST_CASE("TimeZoneContext::LocalMillisecondsToUtc handles DST transitions", "[log_processing]")
+TEST_CASE("TimeZoneContext::LocalToUtc gives time stamps for DST transitions", "[log_processing]")
 {
     InitializeTimezoneData();
     const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
@@ -806,8 +794,10 @@ TEST_CASE("TimeZoneContext::LocalMillisecondsToUtc handles DST transitions", "[l
             sysDays + std::chrono::hours{hour} + std::chrono::minutes{minute} + std::chrono::seconds{second};
         return std::chrono::duration_cast<std::chrono::microseconds>(wallClock.time_since_epoch()).count();
     };
-    const auto naiveLocalMillis = [&](int year, unsigned month, unsigned day, int hour, int minute, int second) {
-        return naiveLocalMicros(year, month, day, hour, minute, second) / 1000;
+    const auto berlinUtc = [&](int year, unsigned month, unsigned day, int hour, int minute, int second) {
+        return TimeStamp{
+            std::chrono::microseconds{berlin.LocalToUtc(naiveLocalMicros(year, month, day, hour, minute, second))}
+        };
     };
     const auto utcStamp = [&](int year, unsigned month, unsigned day, int hour, int minute, int second) {
         return TimeStamp{std::chrono::microseconds{naiveLocalMicros(year, month, day, hour, minute, second)}};
@@ -815,29 +805,28 @@ TEST_CASE("TimeZoneContext::LocalMillisecondsToUtc handles DST transitions", "[l
 
     SECTION("Ordinary hour round-trips through the zone offset")
     {
-        const TimeStamp got = berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 4, 1, 12, 0, 0));
+        const TimeStamp got = berlinUtc(2024, 4, 1, 12, 0, 0);
         CHECK(got == utcStamp(2024, 4, 1, 10, 0, 0));
     }
 
     SECTION("Fall-back ambiguous hour resolves to the earlier candidate")
     {
-        CHECK_NOTHROW(berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 10, 27, 2, 30, 0)));
-        const TimeStamp got = berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 10, 27, 2, 30, 0));
+        CHECK_NOTHROW(berlinUtc(2024, 10, 27, 2, 30, 0));
+        const TimeStamp got = berlinUtc(2024, 10, 27, 2, 30, 0);
         CHECK(got == utcStamp(2024, 10, 27, 0, 30, 0));
     }
 
     SECTION("Spring-forward gap hour snaps to the transition boundary")
     {
-        CHECK_NOTHROW(berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 3, 31, 2, 30, 0)));
-        const TimeStamp got = berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 3, 31, 2, 30, 0));
+        CHECK_NOTHROW(berlinUtc(2024, 3, 31, 2, 30, 0));
+        const TimeStamp got = berlinUtc(2024, 3, 31, 2, 30, 0);
         CHECK(got == utcStamp(2024, 3, 31, 1, 0, 0));
     }
 
     SECTION("UTC context passes the value through unchanged")
     {
-        const int64_t localMillis = naiveLocalMillis(2024, 4, 1, 12, 0, 0);
-        const TimeStamp got = TimeZoneContext::Utc().LocalMillisecondsToUtc(localMillis);
-        CHECK(got == TimeStamp{std::chrono::milliseconds{localMillis}});
+        const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
+        CHECK(TimeZoneContext::Utc().LocalToUtc(localMicros) == localMicros);
     }
 }
 
@@ -864,14 +853,14 @@ TEST_CASE(
     CHECK(static_cast<int>(ymdDec.year()) == 2026);
 }
 
-TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
+TEST_CASE("TimeZoneContext::FormatDateTime formats local time", "[log_processing]")
 {
     InitializeTimezoneData();
 
     // 2023-05-15 10:30:45 UTC.
     const int64_t testMicroseconds = 1684146645000000;
 
-    std::string formattedDate = UtcMicrosecondsToDateTimeString(testMicroseconds);
+    std::string formattedDate = TestTimeZone().FormatDateTime(TimeStamp{std::chrono::microseconds{testMicroseconds}});
 
     const std::regex dateTimePattern(R"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.000)");
     CHECK(std::regex_match(formattedDate, dateTimePattern));
@@ -891,7 +880,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("OffsetWindowAt agrees with LocalMicrosecondsToUtc across a year", "[time_zone][offset_window]")
+TEST_CASE("OffsetWindowAt agrees with LocalToUtc across a year", "[time_zone][offset_window]")
 {
     const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
     constexpr std::int64_t HALF_HOUR_US = 1'800'000'000;
@@ -907,7 +896,7 @@ TEST_CASE("OffsetWindowAt agrees with LocalMicrosecondsToUtc across a year", "[t
         {
             ++inWindow;
             INFO("local " << local);
-            REQUIRE(local - window.utcOffset == berlin.LocalMicrosecondsToUtc(local));
+            REQUIRE(local - window.utcOffset == berlin.LocalToUtc(local));
         }
     }
     CHECK(inWindow > STEPS / 2);
@@ -972,7 +961,7 @@ TEST_CASE("ParseQuery reads time bounds without a zone in the zone it is given",
         CHECK(bound("2024-01-01T10:00:00+09:00", berlin) == utcBound);
     }
 
-    SECTION("The same text gives different bounds in different zones, whatever the process zone is")
+    SECTION("The same text gives different bounds in different zones")
     {
         const auto inUtc = bound("2024-01-01T10:00:00", TimeZoneContext{});
         const auto inBerlin = bound("2024-01-01T10:00:00", berlin);

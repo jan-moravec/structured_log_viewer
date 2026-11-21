@@ -7,6 +7,7 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>
 #include <loglib/support/theme.hpp>
+#include <loglib/time/time_zone_context.hpp>
 
 #include <QObject>
 #include <QPointer>
@@ -105,6 +106,9 @@ public:
 
     /** @brief Cancels a pending coalesced `bucketsChanged()` emission. */
     void CancelPendingEmit() noexcept;
+
+    /** @brief The zone of the bound log model for showing times, or UTC when no model is bound. */
+    [[nodiscard]] loglib::TimeZoneContext TimeZone() const;
 
     /**
      * @brief Returns the cached time-column index.

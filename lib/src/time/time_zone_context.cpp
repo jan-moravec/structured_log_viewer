@@ -29,16 +29,17 @@ struct TimeZoneContext::Impl
 namespace
 {
 
-std::mutex &DefaultContextMutex()
+/** @brief The tzdata folder that the date library was pointed at, which it keeps for the whole process. */
+std::optional<std::filesystem::path> &InstalledTzdata()
+{
+    static std::optional<std::filesystem::path> installed;
+    return installed;
+}
+
+std::mutex &InstalledTzdataMutex()
 {
     static std::mutex mutex;
     return mutex;
-}
-
-TimeZoneContext &DefaultContextSlot()
-{
-    static TimeZoneContext context;
-    return context;
 }
 
 void InstallTzdata(const std::filesystem::path &tzdataPath)
@@ -48,7 +49,26 @@ void InstallTzdata(const std::filesystem::path &tzdataPath)
     {
         throw IoError("tzdata directory does not exist: " + internal::PathToUtf8(tzdataPath));
     }
+    const std::scoped_lock lock(InstalledTzdataMutex());
+    std::optional<std::filesystem::path> &installed = InstalledTzdata();
+    if (installed.has_value())
+    {
+        std::error_code sameEc;
+        const bool same = std::filesystem::equivalent(*installed, tzdataPath, sameEc);
+        if (sameEc || !same)
+        {
+            throw FormatError(
+                fmt::format(
+                    "tzdata is already loaded from '{}' and cannot also be loaded from '{}'",
+                    internal::PathToUtf8(*installed),
+                    internal::PathToUtf8(tzdataPath)
+                )
+            );
+        }
+        return;
+    }
     date::set_install(tzdataPath.string());
+    installed = tzdataPath;
 }
 
 } // namespace
@@ -123,7 +143,7 @@ std::string_view TimeZoneContext::IanaName() const noexcept
     return mImpl->ianaName;
 }
 
-std::int64_t TimeZoneContext::LocalMicrosecondsToUtc(std::int64_t localMicroseconds) const
+std::int64_t TimeZoneContext::LocalToUtc(std::int64_t localMicroseconds) const
 {
     if (mImpl->zone == nullptr)
     {
@@ -176,24 +196,17 @@ LocalOffsetWindow TimeZoneContext::OffsetWindowAt(std::int64_t localMicroseconds
     }
 }
 
-std::int64_t TimeZoneContext::UtcMicrosecondsToLocalMilliseconds(std::int64_t microseconds) const
+std::int64_t TimeZoneContext::UtcToLocal(std::int64_t utcMicroseconds) const
 {
-    const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
-        std::chrono::microseconds{microseconds}
-    };
     if (mImpl->zone == nullptr)
     {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(utcTime.time_since_epoch()).count();
+        return utcMicroseconds;
     }
+    const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
+        std::chrono::microseconds{utcMicroseconds}
+    };
     const date::zoned_time localTime{mImpl->zone, utcTime};
-    return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.get_local_time().time_since_epoch()).count();
-}
-
-TimeStamp TimeZoneContext::LocalMillisecondsToUtc(std::int64_t milliseconds) const
-{
-    const std::int64_t localMicroseconds =
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds{milliseconds}).count();
-    return TimeStamp{std::chrono::microseconds{LocalMicrosecondsToUtc(localMicroseconds)}};
+    return std::chrono::duration_cast<std::chrono::microseconds>(localTime.get_local_time().time_since_epoch()).count();
 }
 
 std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format) const
@@ -292,67 +305,9 @@ std::optional<ZoneSpan> TimeZoneContext::ZoneSpanAt(std::int64_t utcMicroseconds
     }
 }
 
-std::string TimeZoneContext::FormatUtcMicroseconds(std::int64_t microseconds) const
-{
-    const TimeStamp utcTime{std::chrono::microseconds{microseconds}};
-    return Format(utcTime, "%F %T");
-}
-
-std::string TimeZoneContext::FormatTimeStamp(TimeStamp timeStamp) const
+std::string TimeZoneContext::FormatDateTime(TimeStamp timeStamp) const
 {
     return Format(timeStamp, "%F %T");
-}
-
-void SetProcessDefaultTimeZone(TimeZoneContext context)
-{
-    const std::scoped_lock lock(DefaultContextMutex());
-    DefaultContextSlot() = std::move(context);
-}
-
-TimeZoneContext ProcessDefaultTimeZone()
-{
-    const std::scoped_lock lock(DefaultContextMutex());
-    return DefaultContextSlot();
-}
-
-int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds, const TimeZoneContext &timeZone)
-{
-    return timeZone.UtcMicrosecondsToLocalMilliseconds(microseconds);
-}
-
-int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds)
-{
-    return UtcMicrosecondsToLocalMilliseconds(microseconds, ProcessDefaultTimeZone());
-}
-
-TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds, const TimeZoneContext &timeZone)
-{
-    return timeZone.LocalMillisecondsToUtc(milliseconds);
-}
-
-TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
-{
-    return LocalMillisecondsSinceEpochToTimeStamp(milliseconds, ProcessDefaultTimeZone());
-}
-
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const TimeZoneContext &timeZone)
-{
-    return timeZone.LocalMicrosecondsToUtc(localMicroseconds);
-}
-
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
-{
-    return LocalMicrosecondsSinceEpochToUtc(localMicroseconds, ProcessDefaultTimeZone());
-}
-
-std::string UtcMicrosecondsToDateTimeString(int64_t microseconds, const TimeZoneContext &timeZone)
-{
-    return timeZone.FormatUtcMicroseconds(microseconds);
-}
-
-std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
-{
-    return UtcMicrosecondsToDateTimeString(microseconds, ProcessDefaultTimeZone());
 }
 
 } // namespace loglib

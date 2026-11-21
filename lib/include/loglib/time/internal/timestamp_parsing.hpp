@@ -22,7 +22,7 @@
 #include <string_view>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 /**
@@ -173,4 +173,7 @@ bool TryParseSyslogRfc3164Timestamp(
     std::string_view sv, TimeStamp &out, std::chrono::system_clock::time_point referenceNow
 );
 
-} // namespace loglib
+/** @brief True if neither the prepared format nor a trailing Z in the text that it parsed gives a zone. */
+[[nodiscard]] bool IsNaiveTimestamp(std::string_view text, const TimestampFormat &format) noexcept;
+
+} // namespace loglib::internal

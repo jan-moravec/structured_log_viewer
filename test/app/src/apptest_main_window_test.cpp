@@ -1656,7 +1656,7 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // `ParseGotoTimestampInput` + `LocalMicrosecondsSinceEpochToUtc`
+    // `ParseGotoTimestampInput` + `TimeZoneContext::LocalToUtc`
     // compose correctly: naive parses get TZ-shifted, zoned ones
     // do NOT (double-shift regression pin). Shift bound is +/-14h
     // to stay TZ-agnostic across CI hosts.
@@ -1670,7 +1670,7 @@ private slots:
         QVERIFY(naiveParse->isNaive);
 
         const int64_t naiveMicros = naiveParse->micros;
-        const int64_t shiftedMicros = loglib::LocalMicrosecondsSinceEpochToUtc(naiveMicros);
+        const int64_t shiftedMicros = mWindow->TimeZone().LocalToUtc(naiveMicros);
 
         // Shift is exactly the UTC offset at that instant. Bound it
         // to +/-14 h (max real-world offset today) so the assertion

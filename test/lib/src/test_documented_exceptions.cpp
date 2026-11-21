@@ -46,6 +46,20 @@ TEST_CASE("TimeZoneContext::Load throws only the documented exceptions", "[error
     CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), FormatError);
 }
 
+TEST_CASE("TimeZoneContext::Load accepts one tzdata folder for the whole process", "[errors][time_zone]")
+{
+    InitializeTimezoneData();
+    const test_common::TempDir otherFolder("documented_exceptions_other_tzdata");
+
+    // A second, different folder is an error, whichever zone is asked for.
+    CHECK_THROWS_AS(TimeZoneContext::Load(otherFolder.Path()), FormatError);
+    CHECK_THROWS_AS(TimeZoneContext::Load(otherFolder.Path(), "Europe/Berlin"), FormatError);
+
+    // The same folder again, for another zone, works.
+    const TimeZoneContext tokyo = TimeZoneContext::Load(FindTestTzdata(), "Asia/Tokyo");
+    CHECK(tokyo.IanaName() == "Asia/Tokyo");
+}
+
 TEST_CASE("Network and stdin producers throw IoError for resources they cannot open", "[errors][network]")
 {
     SECTION("a TLS certificate that does not exist")

@@ -21,8 +21,8 @@
 #include <loglib/schema/log_configuration.hpp>
 #include <loglib/table/internal/log_table_test_access.hpp>
 #include <loglib/table/log_table.hpp>
+#include <loglib/time/internal/timestamp_parsing.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/timestamp_parsing.hpp>
 
 #include <test_common/log_line_debug.hpp>
 
@@ -43,6 +43,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace loglib::internal;
 
 namespace
 {
@@ -133,26 +134,6 @@ std::int64_t ParsedTimestampMicros(const std::string &content, const ParserOptio
     return stamp->time_since_epoch().count();
 }
 
-/** @brief Sets the process-wide zone for one scope. Only these tests use it, to prove the library ignores it. */
-class ScopedProcessZone
-{
-public:
-    explicit ScopedProcessZone(const std::string &zone)
-        : mPrevious(ProcessDefaultTimeZone())
-    {
-        SetProcessDefaultTimeZone(TimeZoneContext::Load(FindTestTzdata(), zone));
-    }
-    ScopedProcessZone(const ScopedProcessZone &) = delete;
-    ScopedProcessZone &operator=(const ScopedProcessZone &) = delete;
-    ~ScopedProcessZone()
-    {
-        SetProcessDefaultTimeZone(mPrevious);
-    }
-
-private:
-    TimeZoneContext mPrevious;
-};
-
 } // namespace
 
 TEST_CASE("TimeColumnsOf keeps only Time columns, in order", "[explicit_time_inputs]")
@@ -180,7 +161,6 @@ TEST_CASE("TimeColumnsOf keeps only Time columns, in order", "[explicit_time_inp
 
 TEST_CASE("Two tables in one process format the same timestamp in their own display zones", "[explicit_time_inputs]")
 {
-    const ScopedProcessZone processZone("Asia/Tokyo");
     const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
     const TimeZoneContext newYork = TimeZoneContext::Load(FindTestTzdata(), "America/New_York");
 
@@ -246,7 +226,7 @@ TEST_CASE("Two tables in one process format the same timestamp in their own disp
         CHECK(table.DefaultSourceTimeZone().IanaName() == "America/New_York");
     }
 
-    SECTION("A new table is UTC whatever the process zone is")
+    SECTION("A new table is UTC until a zone is set")
     {
         const LogTable fresh{};
         CHECK(fresh.DisplayTimeZone().IanaName() == TimeZoneContext{}.IanaName());
@@ -269,18 +249,12 @@ TEST_CASE("A parse reads timestamps without an offset in the zone it is given", 
     ParserOptions defaultOptions;
     defaultOptions.timeColumns = {TimeColumn("ts", "%F %T")};
 
-    for (const char *processZone : {"Asia/Tokyo", "America/New_York"})
-    {
-        INFO("process zone: " << processZone);
-        const ScopedProcessZone scoped(processZone);
+    // The documented result of the zone's own conversion.
+    CHECK(ParsedTimestampMicros(content, berlinOptions) == berlin.LocalToUtc(wallClock));
+    CHECK(berlin.LocalToUtc(wallClock) != wallClock);
 
-        // The documented result of the zone's own conversion, whatever the process zone holds.
-        CHECK(ParsedTimestampMicros(content, berlinOptions) == berlin.LocalMicrosecondsToUtc(wallClock));
-        CHECK(berlin.LocalMicrosecondsToUtc(wallClock) != wallClock);
-
-        // A default ParserOptions reads the text as UTC.
-        CHECK(ParsedTimestampMicros(content, defaultOptions) == wallClock);
-    }
+    // A default ParserOptions reads the text as UTC.
+    CHECK(ParsedTimestampMicros(content, defaultOptions) == wallClock);
 }
 
 TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole parse", "[explicit_time_inputs]")

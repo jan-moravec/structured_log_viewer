@@ -419,8 +419,8 @@ void RegisterEnumBenchmark()
         {
             run.table.reset();
             run.table = std::make_unique<loglib::LogTable>(ColumnLayout(fixture.configuration->columns));
-            run.table->SetDisplayTimeZone(ProcessDefaultTimeZone());
-            run.table->SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+            run.table->SetDisplayTimeZone(TestTimeZone());
+            run.table->SetDefaultSourceTimeZone(TestTimeZone());
 
             auto sourceForTable = std::make_unique<FileLineSource>(fixture.file->GetFilePath());
             FileLineSource *parseSource = sourceForTable.get();

@@ -1321,7 +1321,7 @@ private slots:
     // enables the OK button, and round-trips through `Result()`.
     void TestAdvancedFilterEditorAcceptsWellFormedQuery()
     {
-        AdvancedFilterEditor editor;
+        AdvancedFilterEditor editor(TestTimeZone());
         editor.SetQueryText(QStringLiteral("service:auth AND level:error"));
         QCoreApplication::processEvents();
 
@@ -1345,7 +1345,7 @@ private slots:
     // result and disables the OK button.
     void TestAdvancedFilterEditorDisablesOkOnParseError()
     {
-        AdvancedFilterEditor editor;
+        AdvancedFilterEditor editor(TestTimeZone());
         // Leading operator without a column is a lex error at the
         // very first character; the parser produces a diagnostic
         // with an offset >= 0.
@@ -1373,7 +1373,7 @@ private slots:
     // empty field (users start on a clean slate).
     void TestAdvancedFilterEditorRoundTripsThroughFormatAndParse()
     {
-        AdvancedFilterEditor editor;
+        AdvancedFilterEditor editor(TestTimeZone());
 
         // Default-constructed = match all -> empty field.
         const loglib::FilterExpression matchAll;
@@ -1388,7 +1388,7 @@ private slots:
         // the wire the editor uses internally). `LoadFromExpression`
         // must render it back to a form the parser accepts as
         // equivalent.
-        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info", loglib::ProcessDefaultTimeZone());
+        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info", TestTimeZone());
         QVERIFY2(seeded.has_value(), "seed query must parse");
         editor.LoadFromExpression(*seeded);
         QCoreApplication::processEvents();
@@ -1406,7 +1406,7 @@ private slots:
     // editor now surfaces the failure and keeps OK disabled.
     void TestAdvancedFilterEditorRejectsInvalidRegex()
     {
-        AdvancedFilterEditor editor;
+        AdvancedFilterEditor editor(TestTimeZone());
         editor.SetQueryText(QStringLiteral("msg ~ /*[bad/"));
         QCoreApplication::processEvents();
 
@@ -1822,11 +1822,38 @@ private slots:
     // zone the table renders) and emit them back unchanged when Ok is
     // clicked without edits. `Asia/Kolkata` (+05:30, no DST) keeps the
     // expectation independent of the host zone.
+    void TestTwoModelsShowTheSameTimestampInTheirOwnZones()
+    {
+        std::vector<std::filesystem::path> searched;
+        const auto tzdata = loglib::FindTzdataDirectory(
+            loglib::DefaultTzdataSearchRoots(logapp::QStringToFsPath(QCoreApplication::applicationDirPath())), searched
+        );
+        QVERIFY2(!tzdata.empty(), "tzdata must be available next to the test binary");
+
+        LogModel tokyoModel;
+        LogModel newYorkModel;
+        tokyoModel.SetTimeZone(loglib::TimeZoneContext::Load(tzdata, "Asia/Tokyo"));
+        newYorkModel.SetTimeZone(loglib::TimeZoneContext::Load(tzdata, "America/New_York"));
+
+        // 2024-04-28 10:00:02 UTC.
+        const loglib::TimeStamp stamp{std::chrono::microseconds{1'714'298'402'000'000}};
+        QCOMPARE(
+            QString::fromStdString(tokyoModel.TimeZone().FormatDateTime(stamp)),
+            QStringLiteral("2024-04-28 19:00:02.000")
+        );
+        QCOMPARE(
+            QString::fromStdString(newYorkModel.TimeZone().FormatDateTime(stamp)),
+            QStringLiteral("2024-04-28 06:00:02.000")
+        );
+        QCOMPARE(tokyoModel.Table().DisplayTimeZone().IanaName(), std::string_view{"Asia/Tokyo"});
+        QCOMPARE(newYorkModel.Table().DisplayTimeZone().IanaName(), std::string_view{"America/New_York"});
+    }
+
     void TestFilterEditorTimeRangeRoundTripsInNonUtcDisplayZone()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
         QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
-        const auto *model = mWindow->Model();
+        auto *model = mWindow->Model();
         const qint64 row0Micros = model->data(model->index(0, timeCol), LogModelItemDataRole::SortRole).toLongLong();
         const qint64 row2Micros = model->data(model->index(2, timeCol), LogModelItemDataRole::SortRole).toLongLong();
         QVERIFY2(row0Micros > 0 && row2Micros > row0Micros, "fixture rows must carry increasing timestamps");
@@ -1836,9 +1863,10 @@ private slots:
             loglib::DefaultTzdataSearchRoots(logapp::QStringToFsPath(QCoreApplication::applicationDirPath())), searched
         );
         QVERIFY2(!tzdata.empty(), "tzdata must be available next to the test binary");
-        const loglib::TimeZoneContext previousZone = loglib::ProcessDefaultTimeZone();
-        const QScopeGuard zoneRestorer([&previousZone] { loglib::SetProcessDefaultTimeZone(previousZone); });
-        loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata, "Asia/Kolkata"));
+        const loglib::TimeZoneContext kolkata = loglib::TimeZoneContext::Load(tzdata, "Asia/Kolkata");
+        const loglib::TimeZoneContext previousZone = model->TimeZone();
+        const QScopeGuard zoneRestorer([model, &previousZone] { model->SetTimeZone(previousZone); });
+        model->SetTimeZone(kolkata);
 
         FilterEditor editor(*model, QStringLiteral("tz-round-trip"));
         editor.Load(timeCol, std::optional<qint64>{row0Micros}, std::optional<qint64>{row2Micros});
@@ -1856,9 +1884,9 @@ private slots:
             return date->date().toString(QStringLiteral("yyyy-MM-dd")) + QLatin1Char(' ') +
                    time->time().toString(QStringLiteral("HH:mm:ss.zzz"));
         };
-        const auto displayZoneWallClock = [](qint64 micros) {
+        const auto displayZoneWallClock = [&kolkata](qint64 micros) {
             return QString::fromStdString(
-                loglib::ProcessDefaultTimeZone().Format(loglib::TimeStamp{std::chrono::microseconds{micros}}, "%F %T")
+                kolkata.Format(loglib::TimeStamp{std::chrono::microseconds{micros}}, "%F %T")
             );
         };
         QCOMPARE(shownWallClock(beginDate, beginTime), displayZoneWallClock(row0Micros));

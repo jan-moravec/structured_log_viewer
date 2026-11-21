@@ -56,6 +56,10 @@
 namespace apptest_support
 {
 
+/// The zone the computer is set to, loaded from the staged tzdata on first use. Tests give it to the models and windows
+/// they build, as the application does.
+[[nodiscard]] const loglib::TimeZoneContext &TestTimeZone();
+
 /// Saves the columns of @p model as a configuration file.
 void SaveLayoutForTest(const LogModel &model, const std::string &path);
 

@@ -83,7 +83,6 @@ public:
         {
             slp::Console(stdout, stderr, {}, parsed->global).Warn(zone.warning);
         }
-        loglib::SetProcessDefaultTimeZone(zone.context);
         const slp::RuntimeContext runtime{.stop = stop.GetToken(), .timeZone = zone.context};
         return slp::Execute(*parsed, runtime);
     }

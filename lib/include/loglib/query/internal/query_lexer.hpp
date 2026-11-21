@@ -903,7 +903,7 @@ private:
                                         offsetSeconds;
     // Bare-date: hour/minute/second stay 0 = midnight.
     const std::int64_t micros = (secondsSinceEpoch * 1'000'000LL) + fractionalMicros;
-    return hasZone ? micros : timeZone.LocalMicrosecondsToUtc(micros);
+    return hasZone ? micros : timeZone.LocalToUtc(micros);
 }
 
 } // namespace loglib::internal::query

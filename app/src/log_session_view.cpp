@@ -11,8 +11,8 @@
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/schema/log_configuration.hpp>
+#include <loglib/time/time_input.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/user_timestamp.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
@@ -321,14 +321,14 @@ std::optional<LogSessionView::GotoTimestampParse> LogSessionView::ParseGotoTimes
 )
 {
     const QByteArray utf8 = input.toUtf8();
-    const auto parsed = loglib::ParseUserTimestamp(
+    const auto parsed = loglib::ParseTimeInput(
         std::string_view(utf8.constData(), static_cast<std::size_t>(utf8.size())), columnParseFormats, now
     );
     if (!parsed.has_value())
     {
         return std::nullopt;
     }
-    return GotoTimestampParse{.micros = parsed->micros, .isNaive = parsed->isNaive};
+    return GotoTimestampParse{.micros = parsed->microseconds, .isNaive = parsed->isNaive};
 }
 
 void LogSessionView::PromptGotoLine()
@@ -575,9 +575,8 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
     // Stored cell timestamps are UTC, and a log value with no zone was
     // read in the display zone. Naive user input is a display-zone
     // wall-clock instant, so it needs the same local -> UTC shift.
-    // `LocalMicrosecondsSinceEpochToUtc` handles DST edge cases.
-    const int64_t targetMicros =
-        parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
+    // `TimeZoneContext::LocalToUtc` handles DST edge cases.
+    const int64_t targetMicros = parsed->isNaive ? model->TimeZone().LocalToUtc(parsed->micros) : parsed->micros;
 
     const int sourceRow = mSession->FindFirstRowAtOrAfterTimestamp(timeCol, targetMicros);
     if (sourceRow < 0)

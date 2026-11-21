@@ -2505,6 +2505,7 @@ private slots:
         const TempJsonFile fixture(lines);
 
         auto model = std::make_unique<LogModel>(nullptr, nullptr);
+        model->SetTimeZone(TestTimeZone());
         QSignalSpy columnsMovedSpy(model.get(), &QAbstractItemModel::columnsMoved);
         const QSignalSpy columnsInsertedSpy(model.get(), &QAbstractItemModel::columnsInserted);
         QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);

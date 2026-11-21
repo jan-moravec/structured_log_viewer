@@ -62,7 +62,7 @@ add_library(
     src/time/timestamp_formatter.cpp
     src/table/timestamp_backfill.cpp
     src/time/timestamp_parsing.cpp
-    src/time/user_timestamp.cpp
+    src/time/time_input.cpp
     src/table/log_table.cpp
     src/table/table_loader.cpp
     src/output/normalized_json_row.cpp
@@ -158,13 +158,12 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/tcp_server_producer.hpp
     include/loglib/support/theme.hpp
     include/loglib/time/time_zone_context.hpp
-    include/loglib/time/timestamp_parsing.hpp
     include/loglib/core/transparent_string_hash.hpp
     include/loglib/ingest/udp_server_producer.hpp
     include/loglib/support/tzdata_search.hpp
     include/loglib/support/user_paths.hpp
     include/loglib/core/worker_threads.hpp
-    include/loglib/time/user_timestamp.hpp
+    include/loglib/time/time_input.hpp
     include/loglib/core/version.hpp
 )
 

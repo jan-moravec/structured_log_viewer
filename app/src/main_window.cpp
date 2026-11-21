@@ -561,11 +561,11 @@ using loglib::MakeParserForFormat;
  * @brief Parser options for a column layout: its Time columns and the application's display zone as the zone in which
  * timestamps without an offset were written. The table is given the same zone by LogModel, so both agree.
  */
-loglib::ParserOptions MakeParserOptionsFor(const loglib::ColumnLayout &layout)
+loglib::ParserOptions MakeParserOptionsFor(const loglib::ColumnLayout &layout, const loglib::TimeZoneContext &timeZone)
 {
     loglib::ParserOptions options;
     options.timeColumns = loglib::TimeColumnsOf(layout);
-    options.defaultSourceTimeZone = loglib::ProcessDefaultTimeZone();
+    options.defaultSourceTimeZone = timeZone;
     return options;
 }
 
@@ -621,6 +621,7 @@ MainWindow::MainWindow(
 
     // The active session owns the model objects; the shell keeps non-owning aliases.
     mSession = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
+    mSession->Model()->SetTimeZone(mTimeZone);
     // Seed model aliases before constructing the view that supplies widget aliases.
     SetActiveSessionAliases(mSession, /*view=*/nullptr);
 
@@ -1993,6 +1994,7 @@ SessionInstanceId MainWindow::AddNewTab(bool makeActive)
     // is parented to nullptr because `QTabWidget::addTab` reparents
     // it onto the strip's internal stacked widget in one step.
     auto *session = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
+    session->Model()->SetTimeZone(mTimeZone);
     auto *view = new LogSessionView(session, mTheme);
 
     // Shell-owned table chrome parity with the initial tab (H4 fix).
@@ -3057,7 +3059,7 @@ bool MainWindow::InitializeTimezoneDatabase()
 
     try
     {
-        loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata));
+        static_cast<void>(loglib::TimeZoneContext::Load(tzdata));
     }
     catch (std::exception &e)
     {
@@ -3068,6 +3070,29 @@ bool MainWindow::InitializeTimezoneDatabase()
 
     initialised = true;
     return true;
+}
+
+loglib::TimeZoneContext MainWindow::LoadSystemTimeZone()
+{
+    std::vector<std::filesystem::path> searched;
+    const auto tzdata = loglib::FindTzdataDirectory(
+        loglib::DefaultTzdataSearchRoots(logapp::QStringToFsPath(QCoreApplication::applicationDirPath())), searched
+    );
+    if (tzdata.empty())
+    {
+        qWarning().noquote() << FormatTzdataNotFoundMessage(searched);
+        return loglib::TimeZoneContext{};
+    }
+    try
+    {
+        return loglib::TimeZoneContext::Load(tzdata);
+    }
+    catch (const std::exception &e)
+    {
+        qWarning().noquote() << "Failed to load the system time zone from" << logapp::FsPathToQString(tzdata) << ":"
+                             << e.what();
+        return loglib::TimeZoneContext{};
+    }
 }
 
 namespace
@@ -4694,7 +4719,7 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
     QtStreamingLogSink *sink = model->Sink();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(model->Layout());
+    loglib::ParserOptions options = MakeParserOptionsFor(model->Layout(), mTimeZone);
 
     // Per-file parser detection runs against the effective (possibly
     // decompressed) path so the sniff sees the actual bytes.
@@ -6338,7 +6363,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout());
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout(), mTimeZone);
 
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
@@ -6475,7 +6500,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     }
     ApplyDisplayOrder(origin, LogSessionViewForSession(origin));
 
-    loglib::ParserOptions options = MakeParserOptionsFor(model->Layout());
+    loglib::ParserOptions options = MakeParserOptionsFor(model->Layout(), mTimeZone);
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
     const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
@@ -6637,7 +6662,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout());
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout(), mTimeZone);
 
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
@@ -6805,7 +6830,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
     UpdateWindowTitle();
     ApplyDisplayOrder();
 
-    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout());
+    loglib::ParserOptions options = MakeParserOptionsFor(mModel->Layout(), mTimeZone);
 
     // Network streams have no real filesystem path; the producer's
     // display string serves as the LineSource's opaque identity.
@@ -10807,7 +10832,7 @@ void MainWindow::OpenAdvancedFilter()
 {
     // Seed from the live configuration so simple-mode leaves
     // round-trip through the pretty-printer.
-    AdvancedFilterEditor editor(this);
+    AdvancedFilterEditor editor(mTimeZone, this);
     editor.LoadFromExpression(mSession->View().expression);
     if (editor.exec() != QDialog::Accepted)
     {
@@ -11175,9 +11200,13 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         // "any - any" rather than asserting so a hand-edited config
         // surfaces visibly instead of crashing in Debug.
         const std::string beginStr =
-            filter.filterBegin.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) : "any";
+            filter.filterBegin.has_value()
+                ? mTimeZone.FormatDateTime(loglib::TimeStamp{std::chrono::microseconds{*filter.filterBegin}})
+                : "any";
         const std::string endStr =
-            filter.filterEnd.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd) : "any";
+            filter.filterEnd.has_value()
+                ? mTimeZone.FormatDateTime(loglib::TimeStamp{std::chrono::microseconds{*filter.filterEnd}})
+                : "any";
         return QString::fromStdString(beginStr + " - " + endStr);
     }
     case loglib::LeafRule::Type::Enumeration:

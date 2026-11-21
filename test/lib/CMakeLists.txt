@@ -92,7 +92,7 @@ add_executable(
     "src/test_tzdata_search.cpp"
     "src/test_unicode_paths.cpp"
     "src/test_user_paths.cpp"
-    "src/test_user_timestamp.cpp"
+    "src/test_time_input.cpp"
     "src/test_version.cpp"
     "src/test_worker_threads.cpp"
 )

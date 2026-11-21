@@ -5,7 +5,7 @@
 #include <loglib/core/log_level.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/schema/log_configuration.hpp>
-#include <loglib/time/user_timestamp.hpp>
+#include <loglib/time/time_input.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -144,17 +144,17 @@ std::expected<loglib::FilterExpression, Failure> BuildRowFilter(
         std::optional<std::int64_t> begin;
         std::optional<std::int64_t> end;
         auto parseBound = [&](std::string_view text, std::string_view flag) -> std::expected<std::int64_t, Failure> {
-            const auto parsed = loglib::ParseUserTimestamp(text, timeColumn.parseFormats, now);
+            const auto parsed = loglib::ParseTimeInput(text, timeColumn.parseFormats, now);
             if (!parsed)
             {
                 return std::unexpected(
                     FilterFail(command, std::format("'{}' could not parse timestamp '{}'.", flag, text))
                 );
             }
-            std::int64_t micros = parsed->micros;
+            std::int64_t micros = parsed->microseconds;
             if (parsed->isNaive)
             {
-                micros = runtime.timeZone.LocalMicrosecondsToUtc(micros);
+                micros = runtime.timeZone.LocalToUtc(micros);
             }
             return micros;
         };

@@ -318,7 +318,13 @@ std::filesystem::path FindTestTzdata()
     return {};
 }
 
+const loglib::TimeZoneContext &TestTimeZone()
+{
+    static const loglib::TimeZoneContext zone = loglib::TimeZoneContext::Load(FindTestTzdata());
+    return zone;
+}
+
 void InitializeTimezoneData()
 {
-    loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(FindTestTzdata()));
+    static_cast<void>(TestTimeZone());
 }

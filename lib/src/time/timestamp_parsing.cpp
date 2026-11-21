@@ -1,7 +1,7 @@
-#include "loglib/time/timestamp_parsing.hpp"
+#include "loglib/time/internal/timestamp_parsing.hpp"
 #include "loglib/time/internal/generic_timestamp_parsing.hpp"
 
-#include "loglib/time/user_timestamp.hpp"
+#include "loglib/time/time_input.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 namespace
@@ -544,9 +544,6 @@ bool ParseWithDate(std::string_view sv, const std::string &format, TimestampPars
 
 } // namespace
 
-namespace internal
-{
-
 bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
@@ -558,8 +555,6 @@ bool TryParseGenericTimestamp(
     }
     return ParseWithDate(sv, format, scratch, out);
 }
-
-} // namespace internal
 
 namespace
 {
@@ -1175,4 +1170,4 @@ bool TimestampFormat::Parse(
         return ParseWithDate(text, mText, scratch, out);
     }
 }
-} // namespace loglib
+} // namespace loglib::internal

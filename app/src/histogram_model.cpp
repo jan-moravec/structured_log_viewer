@@ -487,6 +487,11 @@ void HistogramModel::AppendRange(int first, int last)
     }
 }
 
+loglib::TimeZoneContext HistogramModel::TimeZone() const
+{
+    return mLogModel != nullptr ? mLogModel->TimeZone() : loglib::TimeZoneContext{};
+}
+
 int HistogramModel::ComputeTimeColumnIndex() const
 {
     if (mLogModel == nullptr)

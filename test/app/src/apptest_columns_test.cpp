@@ -901,8 +901,7 @@ private slots:
         );
 
         constexpr std::int64_t MICROS_2024_04_28_10_00_02 = 1'714'298'402'000'000;
-        const std::int64_t expectedUtc =
-            loglib::ProcessDefaultTimeZone().LocalMicrosecondsToUtc(MICROS_2024_04_28_10_00_02);
+        const std::int64_t expectedUtc = TestTimeZone().LocalToUtc(MICROS_2024_04_28_10_00_02);
         QCOMPARE(
             static_cast<std::int64_t>(
                 model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong()
@@ -2906,7 +2905,7 @@ private slots:
 
         // Parse `svc:auth` -- ParseQuery emits a single-key
         // binding matching the identifier the user typed.
-        auto parsed = loglib::ParseQuery("svc:auth", loglib::ProcessDefaultTimeZone());
+        auto parsed = loglib::ParseQuery("svc:auth", TestTimeZone());
         QVERIFY2(parsed.has_value(), "ParseQuery must accept a well-formed simple leaf");
         const auto *parsedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&parsed->node);
         QVERIFY2(parsedLeaf != nullptr, "parsed root must be a Leaf");

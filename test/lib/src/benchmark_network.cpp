@@ -150,8 +150,8 @@ double RunOnce(const Payload &payload, Transport transport)
 
     const std::shared_ptr<const LogConfiguration> configuration = MakeTimestampConfiguration();
     LogTable table{ColumnLayout(configuration->columns)};
-    table.SetDisplayTimeZone(ProcessDefaultTimeZone());
-    table.SetDefaultSourceTimeZone(ProcessDefaultTimeZone());
+    table.SetDisplayTimeZone(TestTimeZone());
+    table.SetDefaultSourceTimeZone(TestTimeZone());
     auto owned = std::make_unique<StreamLineSource>(std::filesystem::path("network"), std::move(producer));
     StreamLineSource &source = *owned;
     table.BeginStreaming(std::move(owned));

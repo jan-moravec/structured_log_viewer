@@ -10,7 +10,7 @@
 #pragma once
 
 #include "loglib/core/log_value.hpp"
-#include "loglib/time/timestamp_parsing.hpp"
+#include "loglib/time/internal/timestamp_parsing.hpp"
 
 #include <string>
 #include <string_view>

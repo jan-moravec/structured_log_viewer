@@ -3,9 +3,9 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
+#include <loglib/time/internal/timestamp_parsing.hpp>
 #include <loglib/time/internal/timestamp_promotion.hpp>
 #include <loglib/time/time_zone_context.hpp>
-#include <loglib/time/timestamp_parsing.hpp>
 
 #include <test_common/log_line_debug.hpp>
 
@@ -23,8 +23,11 @@
 
 using namespace loglib;
 using loglib::internal::LastTimestampBytesHit;
+using loglib::internal::LastValidTimestampParse;
 using loglib::internal::PromoteLineTimestamps;
 using loglib::internal::TimeColumnSpec;
+using loglib::internal::TimestampFormat;
+using loglib::internal::TimestampParseScratch;
 
 namespace
 {

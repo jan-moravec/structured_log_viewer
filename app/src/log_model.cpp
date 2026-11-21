@@ -63,11 +63,6 @@ LogModel::LogModel(
 )
     : QAbstractTableModel{parent}, mTheme(theme), mAnchors(anchors), mHighlights(highlights)
 {
-    // The application owns the process-wide zone, which main() loads before any model exists. The table reads it from
-    // here and never itself.
-    mLogTable.SetDisplayTimeZone(loglib::ProcessDefaultTimeZone());
-    mLogTable.SetDefaultSourceTimeZone(loglib::ProcessDefaultTimeZone());
-
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
     // Required for queued worker→GUI delivery.
@@ -94,6 +89,17 @@ LogModel::LogModel(
         // read synchronously by `MainWindow` for the status toast.
         connect(mHighlights, &HighlightRuleSet::matchesChanged, this, &LogModel::RefreshAllHighlightRows);
     }
+}
+
+void LogModel::SetTimeZone(loglib::TimeZoneContext timeZone)
+{
+    mLogTable.SetDefaultSourceTimeZone(timeZone);
+    mLogTable.SetDisplayTimeZone(std::move(timeZone));
+}
+
+const loglib::TimeZoneContext &LogModel::TimeZone() const noexcept
+{
+    return mLogTable.DisplayTimeZone();
 }
 
 LogModel::~LogModel()
