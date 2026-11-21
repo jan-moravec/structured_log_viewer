@@ -117,14 +117,17 @@ struct ListedTemplate
 [[nodiscard]] std::vector<ListedTemplate> BuiltinList()
 {
     std::vector<ListedTemplate> listed;
-    for (const loglib::BuiltinRegexTemplateInfo &info : loglib::BuiltinRegexTemplateCatalog())
+    const loglib::RegexTemplateCatalog &catalog = loglib::RegexTemplateCatalog::Builtin();
+    const std::span<const loglib::RegexTemplate> builtins = catalog.Builtins();
+    const std::span<const std::string> slugs = catalog.BuiltinSlugs();
+    for (std::size_t i = 0; i < builtins.size(); ++i)
     {
         ListedTemplate row;
-        row.slug = info.slug;
-        row.name = info.tmpl.name;
-        row.continuation = ContinuationOf(info.tmpl);
-        row.description = info.tmpl.description;
-        row.priority = info.tmpl.priority;
+        row.slug = slugs[i];
+        row.name = builtins[i].name;
+        row.continuation = ContinuationOf(builtins[i]);
+        row.description = builtins[i].description;
+        row.priority = builtins[i].priority;
         listed.push_back(std::move(row));
     }
     return listed;
@@ -173,7 +176,6 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     }
     std::ranges::sort(files);
 
-    std::vector<loglib::RegexTemplate> parsed;
     for (const std::filesystem::path &path : files)
     {
         const std::ifstream input(path, std::ios::binary);
@@ -196,14 +198,12 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
             row.user = true;
             row.shadows = ShadowedSlug(builtins, tmpl.name);
             loaded.templates.push_back(std::move(row));
-            parsed.push_back(std::move(tmpl));
         }
         catch (const std::exception &ex)
         {
             loaded.warnings.push_back("skipped template '" + path.filename().string() + "': " + ex.what());
         }
     }
-    loglib::SetExtraRegexTemplates(parsed);
     return loaded;
 }
 
@@ -259,18 +259,10 @@ UserLoad LoadUser(const std::filesystem::path &directory, const std::vector<List
     return nullptr;
 }
 
-/** @brief Copy of the built-in template named @p slug; the catalog is returned by value, so no pointer into it may
- * escape. */
-[[nodiscard]] std::optional<loglib::RegexTemplate> FindBuiltin(std::string_view slug)
+/** @brief The built-in template named @p slug, or null. */
+[[nodiscard]] const loglib::RegexTemplate *FindBuiltin(std::string_view slug)
 {
-    for (const loglib::BuiltinRegexTemplateInfo &info : loglib::BuiltinRegexTemplateCatalog())
-    {
-        if (info.slug == slug)
-        {
-            return info.tmpl;
-        }
-    }
-    return std::nullopt;
+    return loglib::RegexTemplateCatalog::Builtin().FindBuiltinBySlug(slug);
 }
 
 [[nodiscard]] std::string RenderText(

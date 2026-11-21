@@ -298,7 +298,7 @@ void RegexTemplateRegistry::Discover()
     mIndex.clear();
 
     // Built-ins first (so a same-named user file overrides them).
-    for (const loglib::RegexTemplate &t : loglib::BuiltinRegexTemplates())
+    for (const loglib::RegexTemplate &t : loglib::RegexTemplateCatalog::Builtin().Builtins())
     {
         const QString name = QString::fromStdString(t.name);
         if (name.isEmpty())
@@ -349,15 +349,12 @@ void RegexTemplateRegistry::Discover()
         mIndex[name] = IndexEntry{.tmpl = std::move(*tmpl), .fromUser = true};
     }
 
-    InjectExtrasIntoLoglib();
+    RebuildCatalog();
 }
 
-void RegexTemplateRegistry::InjectExtrasIntoLoglib()
+void RegexTemplateRegistry::RebuildCatalog()
 {
-    // Only user templates go through — built-ins are already in
-    // the library catalog and pushing them again would double-count.
-    // The local vector owns storage for the call; the library
-    // copies into its own slot.
+    // Only user templates are extras. The built-ins are already in the catalog.
     std::vector<loglib::RegexTemplate> extras;
     extras.reserve(mIndex.size());
     for (const auto &[name, entry] : mIndex)
@@ -367,5 +364,5 @@ void RegexTemplateRegistry::InjectExtrasIntoLoglib()
             extras.push_back(entry.tmpl);
         }
     }
-    loglib::SetExtraRegexTemplates(std::span<const loglib::RegexTemplate>(extras));
+    mCatalog = loglib::RegexTemplateCatalog::Builtin().WithExtras(std::move(extras));
 }

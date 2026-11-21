@@ -519,7 +519,7 @@ private slots:
     void TestNetworkDialogReturnsItsTemplateAsOneValue()
     {
         const loglib::RegexTemplate *withContinuation = nullptr;
-        for (const loglib::RegexTemplate &tmpl : loglib::BuiltinRegexTemplates())
+        for (const loglib::RegexTemplate &tmpl : loglib::RegexTemplateCatalog::Builtin().Builtins())
         {
             if (tmpl.continuationMode != loglib::ContinuationMode::None)
             {
@@ -559,7 +559,7 @@ private slots:
     // template's pattern is not given that template's settings.
     void TestNetworkSessionKeepsUserContinuationSettings()
     {
-        const loglib::RegexTemplate &tmpl = loglib::BuiltinRegexTemplates().front();
+        const loglib::RegexTemplate &tmpl = loglib::RegexTemplateCatalog::Builtin().Builtins().front();
         const loglib::ContinuationMode userMode = tmpl.continuationMode == loglib::ContinuationMode::Indented
                                                       ? loglib::ContinuationMode::None
                                                       : loglib::ContinuationMode::Indented;

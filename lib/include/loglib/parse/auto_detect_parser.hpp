@@ -17,7 +17,6 @@
 #include <chrono>
 #include <cstddef>
 #include <string>
-#include <string_view>
 
 namespace loglib
 {
@@ -34,8 +33,8 @@ class StreamLineSource;
  * the chosen parser through StreamLineSource::UnreadBytes, so none are lost. Use it for network streams and other live
  * input of unknown format.
  *
- * For a file source it detects from the head of the file and delegates. Static file opens use DetectFormatForPath
- * directly, so that overload exists to satisfy the LogParser interface.
+ * For a file source it detects from the head of the file and delegates. Static file opens detect the format
+ * themselves, so that overload exists to satisfy the LogParser interface.
  */
 class AutoDetectParser : public LogParser
 {
@@ -55,15 +54,14 @@ public:
      * which tests use to read the whole producer. Reading also stops early once the bytes are enough to decide.
      * @param formatOptions Settings for the parser it picks. Only multilineLogfmt is used, because detection chooses
      * the regex pattern.
+     * @param catalog The regex templates detection tries. The parser keeps its own copy.
      */
     explicit AutoDetectParser(
         std::size_t peekBytes = PROBE_BYTES_BUDGET,
         std::chrono::milliseconds peekTimeout = DEFAULT_PEEK_TIMEOUT,
-        FormatOptions formatOptions = {}
-    ) noexcept;
-
-    /** @brief Always true. The format is chosen in Parse and not here. */
-    bool IsValidBytes(std::string_view sniffBuffer) const override;
+        FormatOptions formatOptions = {},
+        RegexTemplateCatalog catalog = RegexTemplateCatalog::Builtin()
+    );
 
     /** @brief Detects the format from the start of the file and lets the matching parser handle it. */
     void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
@@ -82,6 +80,7 @@ private:
     std::size_t mPeekBytes;
     std::chrono::milliseconds mPeekTimeout;
     FormatOptions mFormatOptions;
+    RegexTemplateCatalog mCatalog;
 };
 
 } // namespace loglib

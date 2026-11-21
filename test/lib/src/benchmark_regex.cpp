@@ -171,11 +171,11 @@ constexpr const char PYTHON_TRACEBACK_PATTERN[] =
     R"(^(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): (?<message>.*)$)";
 constexpr const char PYTHON_TRACEBACK_ANCHOR[] = R"(^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): )";
 
-// Registers one extra Python-traceback template for as long as it lives, and removes it afterwards.
-class ExtraTemplateGuard
+// Holds the Python-traceback template that one fixture parses with.
+class TracebackTemplateHolder
 {
 public:
-    ExtraTemplateGuard(std::string name, std::string headerAnchor)
+    TracebackTemplateHolder(std::string name, std::string headerAnchor)
         : mTemplate{
               .name = std::move(name),
               .pattern = PYTHON_TRACEBACK_PATTERN,
@@ -187,16 +187,6 @@ public:
               .headerAnchor = std::move(headerAnchor),
           }
     {
-        mExtras.push_back(mTemplate);
-        loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(mExtras));
-    }
-    ExtraTemplateGuard(const ExtraTemplateGuard &) = delete;
-    ExtraTemplateGuard(ExtraTemplateGuard &&) = delete;
-    ExtraTemplateGuard &operator=(const ExtraTemplateGuard &) = delete;
-    ExtraTemplateGuard &operator=(ExtraTemplateGuard &&) = delete;
-    ~ExtraTemplateGuard()
-    {
-        loglib::SetExtraRegexTemplates({});
     }
 
     const RegexTemplate &Template() const noexcept
@@ -206,14 +196,13 @@ public:
 
 private:
     RegexTemplate mTemplate;
-    std::vector<RegexTemplate> mExtras;
 };
 
 StreamingFixture MakePythonTracebackFixture(
     const std::string &name, const std::string &headerAnchor, const std::string &fileName
 )
 {
-    const auto guard = std::make_shared<ExtraTemplateGuard>(name, headerAnchor);
+    const auto guard = std::make_shared<TracebackTemplateHolder>(name, headerAnchor);
     const RegexTemplate &extra = guard->Template();
     return StreamingFixture{
         .logFile = std::make_unique<TestStructuredLogFile>(
@@ -257,10 +246,10 @@ void RegisterRegexBenchmarks()
         "Detect format of a 16 KiB sample, built-in catalog",
         [sample = DetectionSample()](benchmark::State &state) {
             // The first call builds the compiled patterns, so it stays out of the timed part.
-            benchmark::DoNotOptimize(loglib::DetectFormatFromBytes(sample));
+            benchmark::DoNotOptimize(loglib::DetectFormat(sample));
             for (auto _ : state)
             {
-                benchmark::DoNotOptimize(loglib::DetectFormatFromBytes(sample));
+                benchmark::DoNotOptimize(loglib::DetectFormat(sample));
             }
         },
         benchmark::kMicrosecond

@@ -15,6 +15,7 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/row_batch.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
+#include "loglib/parse/format_detection.hpp"
 #include "loglib/parse/log_parser.hpp"
 #include "loglib/parse/parser_options.hpp"
 
@@ -118,7 +119,7 @@ private:
 inline void ParseBytes(const LogParser &parser, const std::uint8_t *data, std::size_t size)
 {
     const std::string_view text = AsText(data, size);
-    (void)parser.IsValidBytes(text);
+    (void)loglib::DetectFormat(text);
 
     const std::unique_ptr<FileLineSource> source = FileLineSource::FromBytes(std::string{text}, "fuzz-input");
     ReadingSink sink;

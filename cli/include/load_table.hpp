@@ -9,6 +9,7 @@
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -64,12 +65,12 @@ struct LoadedTable
 );
 
 /**
- * @brief Registers the user's regex templates for format detection.
+ * @brief Builds the regex template catalog for a run: the built-in templates plus the ones the user saved.
  *
  * Reads `global.templateDir` or the library's user template directory.
  * Unreadable template files become warnings on @p console.
  */
-void LoadUserTemplates(const GlobalOptions &global, const Console &console);
+[[nodiscard]] loglib::RegexTemplateCatalog LoadUserTemplates(const GlobalOptions &global, const Console &console);
 
 /**
  * @brief Builds the parser for a live byte stream.
@@ -80,7 +81,7 @@ void LoadUserTemplates(const GlobalOptions &global, const Console &console);
  * @return The parser, or a usage failure when the regex pattern cannot be resolved.
  */
 [[nodiscard]] std::expected<std::unique_ptr<loglib::LogParser>, Failure> MakeStreamParser(
-    const GlobalOptions &global, const InputOptions &input
+    const GlobalOptions &global, const InputOptions &input, const loglib::RegexTemplateCatalog &catalog
 );
 
 /**

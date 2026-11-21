@@ -21,7 +21,7 @@ constexpr std::string_view TEMPLATE_NAME = "Java / log4j / SLF4J Logback";
 const loglib::RegexTemplate &MultiLineTemplate()
 {
     static const loglib::RegexTemplate FOUND = [] {
-        for (const loglib::RegexTemplate &candidate : loglib::BuiltinRegexTemplates())
+        for (const loglib::RegexTemplate &candidate : loglib::RegexTemplateCatalog::Builtin().Builtins())
         {
             if (candidate.name == TEMPLATE_NAME && candidate.continuationMode == loglib::ContinuationMode::Indented)
             {

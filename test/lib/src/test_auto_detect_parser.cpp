@@ -100,16 +100,6 @@ void RunStreaming(
 
 } // namespace
 
-TEST_CASE("AutoDetectParser IsValidBytes accepts anything", "[AutoDetectParser]")
-{
-    // The adapter is a routing layer -- it never rejects, the
-    // resolved parser decides on the concrete bytes.
-    const AutoDetectParser parser;
-    CHECK(parser.IsValidBytes({}));
-    CHECK(parser.IsValidBytes("gibberish"));
-    CHECK(parser.IsValidBytes(R"({"json":true})"));
-}
-
 TEST_CASE("AutoDetectParser routes JSON bytes to a JSON parse", "[AutoDetectParser]")
 {
     const std::string bytes = R"({"level":"info","message":"first"}
@@ -173,19 +163,28 @@ TEST_CASE("AutoDetectParser handles an empty producer via JsonParser fallback", 
     CHECK(sink.rowCount.load() == 0);
 }
 
-TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood", "[AutoDetectParser]")
+TEST_CASE("AutoDetectParser uses the catalog it is given", "[AutoDetectParser]")
 {
-    // Building a FileLineSource is
-    // heavyweight to set up in unit tests. Instead, cover the
-    // file-side branch by asserting that the same detection
-    // logic (`DetectFormatForPath`) reaches the right verdict on
-    // a small on-disk fixture. The `AutoDetectParser`
-    // `FileLineSource` overload is a one-liner around this call.
-    const TempDir dir("auto_detect");
-    const auto filePath = dir.Write("routing.log", "level=info message=first\nlevel=warn message=second\n");
+    // The pattern is not a built-in template, so only the catalog passed to the parser can make the bytes a regex.
+    loglib::RegexTemplate custom;
+    custom.name = "Custom";
+    custom.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)";
+    const std::string bytes = "2026 | first line\n2027 | second line\n";
 
-    const loglib::DetectedFormat detected = loglib::DetectFormatForPath(filePath);
-    CHECK(detected.format == loglib::Source::Format::Logfmt);
+    auto producer = std::make_unique<InMemoryBytesProducer>(bytes, 64);
+    StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
+
+    CollectingSink sink;
+    const AutoDetectParser parser(
+        loglib::PROBE_BYTES_BUDGET,
+        std::chrono::milliseconds(0),
+        loglib::FormatOptions{},
+        loglib::RegexTemplateCatalog::Builtin().WithExtras({custom})
+    );
+    RunStreaming(parser, source, sink, {}, std::chrono::seconds(2));
+
+    CHECK(sink.finished.load());
+    CHECK(sink.rowCount.load() == 2);
 }
 
 TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[AutoDetectParser]")

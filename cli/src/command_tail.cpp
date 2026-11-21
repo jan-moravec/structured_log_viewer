@@ -923,7 +923,7 @@ ExitCode RunTail(
     const TailOptions &options, const GlobalOptions &global, Console &console, const RuntimeContext &runtime
 )
 {
-    LoadUserTemplates(global, console);
+    const loglib::RegexTemplateCatalog catalog = LoadUserTemplates(global, console);
 
     if (options.input.sources.size() != 1)
     {
@@ -966,7 +966,7 @@ ExitCode RunTail(
         stream = file;
     }
 
-    auto parser = MakeStreamParser(global, options.input);
+    auto parser = MakeStreamParser(global, options.input, catalog);
     if (!parser)
     {
         return console.Report(parser.error());

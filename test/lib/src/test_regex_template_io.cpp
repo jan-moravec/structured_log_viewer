@@ -107,12 +107,10 @@ TEST_CASE("RegexTemplate JSON parse throws FormatError on malformed input", "[re
     CHECK_THROWS_AS(ParseRegexTemplate(K_BROKEN_JSON), FormatError);
 }
 
-TEST_CASE("SetExtraRegexTemplates exposes user entries to FindTemplateByPattern", "[regex_templates][io]")
+TEST_CASE("WithExtras exposes user entries to FindByPattern", "[regex_templates][io]")
 {
-    // `FindTemplateByPattern` searches the merged registry (built-
-    // ins + extras); registering an extra must make a previously-
-    // unknown pattern resolve to it. Teardown clears extras so
-    // other cases don't see leftover state.
+    // FindByPattern searches the built-ins and the extras of a catalog. The catalog the extras were added to finds the
+    // pattern, and the catalog it was made from does not.
     const RegexTemplate extra{
         .name = "User-defined demo",
         .pattern = R"(^USER\s+(?<id>\d+)$)",
@@ -122,17 +120,15 @@ TEST_CASE("SetExtraRegexTemplates exposes user entries to FindTemplateByPattern"
         .description = "",
     };
 
-    REQUIRE_FALSE(FindTemplateByPattern(extra.pattern).has_value());
+    REQUIRE(RegexTemplateCatalog::Builtin().FindByPattern(extra.pattern) == nullptr);
 
-    const RegexTemplate extras[] = {extra};
-    SetExtraRegexTemplates(extras);
+    const RegexTemplateCatalog withExtra = RegexTemplateCatalog::Builtin().WithExtras({extra});
 
-    const auto found = FindTemplateByPattern(extra.pattern);
-    REQUIRE(found.has_value());
+    const RegexTemplate *found = withExtra.FindByPattern(extra.pattern);
+    REQUIRE(found != nullptr);
     CHECK(found->name == extra.name);
     CHECK(found->autoDetect == false);
     CHECK(found->priority == 50);
 
-    SetExtraRegexTemplates({});
-    CHECK_FALSE(FindTemplateByPattern(extra.pattern).has_value());
+    CHECK(RegexTemplateCatalog::Builtin().FindByPattern(extra.pattern) == nullptr);
 }

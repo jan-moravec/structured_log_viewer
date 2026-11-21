@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.28)
 # Generate `regex_templates_embedded.cpp` from every JSON file under
 # `data/regex_templates/` at configure time. The generated TU plays
 # the role of a Qt resource file for the library layer: it lets
-# `loglib::BuiltinRegexTemplates()` ship the same one-file-per-template
+# `loglib::RegexTemplateCatalog::Builtin()` ship the same one-file-per-template
 # data shape themes use, without dragging Qt into the library. The
 # generator (`cmake/EmbedRegexTemplates.cmake`) registers each JSON
 # as a configure-step dependency, so editing a template
@@ -55,7 +55,6 @@ add_library(
     src/query/row_filter_evaluation.cpp
     src/core/log_level.cpp
     src/core/log_line.cpp
-    src/parse/log_parser.cpp
     src/query/filter_compile.cpp
     src/query/log_string_matcher.cpp
     src/time/time_zone_context.cpp
@@ -83,7 +82,8 @@ add_library(
     src/parse/parsers/json_parser.cpp
     src/parse/parsers/logfmt_parser.cpp
     src/parse/parsers/regex_parser.cpp
-    src/parse/regex_template_probe.cpp
+    src/parse/regex_pattern_checks.cpp
+    src/parse/regex_template_catalog.cpp
     src/parse/regex_templates.cpp
     src/ingest/stdin_bytes_producer.cpp
     src/ingest/stdin_peek.cpp

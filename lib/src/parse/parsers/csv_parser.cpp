@@ -1,5 +1,7 @@
 #include "loglib/parse/parsers/csv_parser.hpp"
 
+#include "loglib/parse/format_detection.hpp"
+
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/log_line.hpp"
@@ -439,7 +441,7 @@ static_assert(
 
 } // namespace
 
-bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
+bool LooksLikeCsv(std::string_view sniffBuffer)
 {
     // Callers cap sniffBuffer at PROBE_BYTES_BUDGET, so the
     // cursor bounds are sufficient.

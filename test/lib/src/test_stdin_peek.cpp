@@ -168,12 +168,10 @@ TEST_CASE("StdinPeek stops at the timeout when the producer is silent", "[StdinP
     pipe.CloseWrite();
 }
 
-TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPath on the same content", "[StdinPeek]")
+TEST_CASE("StdinPeek bytes and a file head give the same detection for the same content", "[StdinPeek]")
 {
-    // The stdin path drives its format decision through the
-    // peek -> DetectFormatFromBytes -> UnreadBytes handshake.
-    // File-backed opens go through `DetectFormatForPath`. Assert
-    // both entry points reach the same verdict for identical bytes.
+    // The stdin path drives its format decision through the peek -> DetectFormat -> UnreadBytes handshake. File-backed
+    // opens run DetectFormat on the head of the file. Assert both reach the same verdict for identical bytes.
     struct Sample
     {
         std::string_view label;
@@ -207,7 +205,7 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
         pipe.CloseWrite();
         const std::string peek = StdinPeek(loglib::PROBE_BYTES_BUDGET, 2000ms);
         REQUIRE_FALSE(peek.empty());
-        const loglib::DetectedFormat viaStdin = loglib::DetectFormatFromBytes(peek);
+        const loglib::DetectedFormat viaStdin = loglib::DetectFormat(peek).value_or(loglib::DetectedFormat{});
 
         // File path.
         const auto tempPath = std::filesystem::temp_directory_path() /
@@ -217,7 +215,8 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
             REQUIRE(out.is_open());
             out.write(s.bytes.data(), static_cast<std::streamsize>(s.bytes.size()));
         }
-        const loglib::DetectedFormat viaFile = loglib::DetectFormatForPath(tempPath);
+        const loglib::DetectedFormat viaFile =
+            loglib::DetectFormat(loglib::ReadProbeHead(tempPath)).value_or(loglib::DetectedFormat{});
         std::error_code ec;
         std::filesystem::remove(tempPath, ec);
 

@@ -167,7 +167,7 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     }
     else
     {
-        for (const loglib::RegexTemplate &t : loglib::BuiltinRegexTemplates())
+        for (const loglib::RegexTemplate &t : loglib::RegexTemplateCatalog::Builtin().Builtins())
         {
             const QString name = QString::fromStdString(t.name);
             mRegexTemplate->addItem(name, QVariant(name));
@@ -404,7 +404,7 @@ void NetworkStreamDialog::OnRegexTemplateChanged()
     else
     {
         const std::string stdName = templateName.toStdString();
-        for (const loglib::RegexTemplate &t : loglib::BuiltinRegexTemplates())
+        for (const loglib::RegexTemplate &t : loglib::RegexTemplateCatalog::Builtin().Builtins())
         {
             if (t.name == stdName)
             {

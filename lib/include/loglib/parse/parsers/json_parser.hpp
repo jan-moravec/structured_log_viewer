@@ -31,13 +31,6 @@ class JsonParser : public LogParser
 {
 public:
     /**
-     * @brief Says whether the first non-blank line of the sample is a JSON object.
-     *
-     * The file overload of IsValid, AutoDetectParser and the detection of standard input all use this.
-     */
-    bool IsValidBytes(std::string_view sniffBuffer) const override;
-
-    /**
      * @brief Parses a static file. Every row refers to source and has the zero-based line number of the file as its
      * id.
      */

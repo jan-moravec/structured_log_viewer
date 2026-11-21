@@ -421,7 +421,7 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
     const Source &restored = *loaded.source;
     CHECK(restored.regexContinuationMode == ContinuationMode::Indented);
     CHECK(restored.regexHeaderAnchor.empty());
-    CHECK_FALSE(FindTemplateByPattern(restored.regexPattern).has_value());
+    CHECK(RegexTemplateCatalog::Builtin().FindByPattern(restored.regexPattern) == nullptr);
 
     const RegexParser parser{restored.regexPattern, restored.regexContinuationMode, restored.regexHeaderAnchor};
     StreamLineSource source(std::filesystem::path("regex.log"), std::make_unique<InMemoryBytesProducer>(payload));
@@ -439,13 +439,13 @@ TEST_CASE("Detection of a multi-line template reports its continuation settings"
                                "  File \"a.py\", line 7\n"
                                "2024-04-28 04:02:04,001 INFO [main] recovered\n"
                                "2024-04-28 04:02:05,001 INFO [main] again\n";
-    const auto detected = TryDetectFormatFromBytes(sample);
+    const auto detected = DetectFormat(sample);
     if (!detected.has_value() || detected->format != Source::Format::Regex)
     {
         SKIP("No shipped template matches this sample.");
     }
-    const auto tmpl = FindTemplateByPattern(detected->regexPattern);
-    REQUIRE(tmpl.has_value());
+    const RegexTemplate *tmpl = RegexTemplateCatalog::Builtin().FindByPattern(detected->regexPattern);
+    REQUIRE(tmpl != nullptr);
     CHECK(detected->regexContinuationMode == tmpl->continuationMode);
     CHECK(detected->regexHeaderAnchor == tmpl->headerAnchor);
 

@@ -174,7 +174,7 @@ The Qt-side classes that wrap `loglib` are:
 
 - `PreferencesEditor` (`app/include/preferences_editor.hpp`) — Qt widget hosting the **Theme**, **Streaming**, **Static (file mode)**, and **Session History** groups; emits `streamingRetentionChanged` / `streamingDisplayOrderChanged` / `staticDisplayOrderChanged` / `showLevelIconsChanged` / `highContrastLevelsChanged` on Ok so `MainWindow::ApplyDisplayOrder` and the theme/level-icon hooks can re-apply them live with mode-aware dispatch. The Theme group is wired through `ThemeControl` (`app/include/theme_control.hpp`) — single owner of the active theme, the per-`LogLevel` brush / font / icon cache, and the Auto-mode `colorSchemeChanged` listener that re-resolves Light \<-> Dark on OS palette flips. User themes live under `<AppDataLocation>/themes/*.json` and shadow built-ins by `name`; built-ins ship under `resources/themes/*.json`.
 
-- `RegexTemplatesEditor` (`app/include/regex_templates_editor.hpp`) — modeless editor for the merged built-in and user catalog. Its form covers `name`, `pattern`, samples, auto-detect, priority, `continuationMode`, `headerAnchor`, and description. Built-ins are read-only; duplicate one to customize it. Validate and Save compile both regex fields, and Validate checks samples. `RegexTemplateRegistry` owns merging, user shadowing, disk reload, and `SetExtraRegexTemplates`; `NetworkStreamDialog` only consumes the merged picker.
+- `RegexTemplatesEditor` (`app/include/regex_templates_editor.hpp`) — modeless editor for the merged built-in and user catalog. Its form covers `name`, `pattern`, samples, auto-detect, priority, `continuationMode`, `headerAnchor`, and description. Built-ins are read-only; duplicate one to customize it. Validate and Save compile both regex fields, and Validate checks samples. `RegexTemplateRegistry` owns merging, user shadowing, disk reload, and the `loglib::RegexTemplateCatalog` it hands to detection; `NetworkStreamDialog` only consumes the merged picker.
 
 - `MainWindow` (`app/include/main_window.hpp`) — window host for chrome, dialogs, and menus. File-open and stream-mode entry points still live here; ingest, decompression, and export completions resolve a hosted `SessionInstanceId` through `SessionOperationController` (`app/include/session_operation_controller.hpp`) and update only that session. See [Session tabs](doc/session-tabs.md) for tab ownership, switch ordering, dock binding, callback origin, and close ordering.
 
@@ -343,7 +343,6 @@ To teach the viewer a new format (syslog, alternative-delimiter CSV, ...):
 
 1. **Subclass `loglib::LogParser`.** Add `lib/include/loglib/parse/parsers/<format>_parser.hpp` for the public surface and `lib/src/parse/parsers/<format>_parser.cpp` for the implementation, then implement:
 
-   - `bool IsValidBytes(std::string_view) const` — a bounded content probe. The non-virtual `IsValid(path)` shim reads the shared probe head and forwards here.
    - `void Parse(FileLineSource&, LogParseSink&, ParserOptions) const` — the static-file entry point. Drives the TBB pipeline over the source's underlying mmap.
    - `void Parse(StreamLineSource&, LogParseSink&, ParserOptions) const` — the live-tail entry point. Drives the streaming loop over `source.Producer()` and appends each parsed line to `source` via `AppendLine` so the row keeps a stable id.
    - `std::string ToString(const LogLine&) const` — best-effort serialization for library callers and round-trip tests. The GUI's **Edit → Copy** uses `LineSource::RawLine` instead.
@@ -375,9 +374,9 @@ To teach the viewer a new format (syslog, alternative-delimiter CSV, ...):
 
    - Add a value to `Source::Format`.
    - Add a branch to `MakeParserForFormat` to instantiate it.
-   - Add the parser to `TryDetectFormatFromBytes` in the intended probe order.
+   - Add a `LooksLike<Format>(std::string_view)` check, a bounded content probe, and call it from `DetectFormat` and `SampleFitsFormat` in the intended probe order.
 
-1. **GUI affordance.** Static files, live-tail files, stdin, and network streams all resolve a parser at open time. File paths use `loglib::DetectFormatForPath`; stdin peeks with `StdinPeek` and calls `DetectFormatFromBytes`; network Auto-detect delegates through `AutoDetectParser`. `LogModel::BeginStreaming` accepts a `LogParserFactory` thunk so the worker constructs the parser without `LogModel` knowing its concrete type. Adding a format requires a `Source::Format` value, Glaze metadata, a `MakeParserForFormat` branch, and any relevant dialog entry.
+1. **GUI affordance.** Static files, live-tail files, stdin, and network streams all resolve a parser at open time. File paths call `loglib::DetectFormat` on `loglib::ReadProbeHead`; stdin peeks with `StdinPeek` and calls `DetectFormat`; every detection takes the `RegexTemplateCatalog` of the `RegexTemplateRegistry`; network Auto-detect delegates through `AutoDetectParser`. `LogModel::BeginStreaming` accepts a `LogParserFactory` thunk so the worker constructs the parser without `LogModel` knowing its concrete type. Adding a format requires a `Source::Format` value, Glaze metadata, a `MakeParserForFormat` branch, and any relevant dialog entry.
 
 1. **Generator + fixtures.** Every format plugs into one canonical, format-agnostic record type so the same synthetic data can be emitted in any format. Add a `test_common::LogFormat` serializer factory for your format in [`test/common/src/log_format.cpp`](test/common/src/log_format.cpp) (declared in [`test/common/include/test_common/log_format.hpp`](test/common/include/test_common/log_format.hpp)): a `writeLine` that serializes one `test_common::LogRecord` (and, for schema-bearing formats like CSV, a `writeHeader` over the `RecordSchema`). Schemaless-on-the-wire formats that need out-of-band configuration (like a regex-template pattern) pair a serializer factory with a well-known template name — e.g. `SyslogRfc3164Format()` alongside the shipped `"Syslog (RFC3164)"` `RegexTemplate` — so the benchmark and round-trip tests look the pattern up out-of-band via `FindTemplateByName` (see [`test/lib/include/common.hpp`](test/lib/include/common.hpp)). The RNG-driven generators in [`test/common/src/log_generator.cpp`](test/common/src/log_generator.cpp) already produce `LogRecord`s, so once the serializer exists you get three things for free:
 
@@ -434,7 +433,7 @@ To teach the viewer a new regex-based log format (a vendor-specific syslog diale
    ctest --preset release -L regex_templates  # or just: tests.exe '[regex_templates]'
    ```
 
-   The sweep compiles every shipped JSON, asserts each sample line matches its pattern, checks `priority` is set, and round-trips the pattern through `loglib::FindTemplateByPattern`.
+   The sweep compiles every shipped JSON, asserts each sample line matches its pattern, checks `priority` is set, and round-trips the pattern through `loglib::RegexTemplateCatalog::FindByPattern`.
 
 1. **(Optional, for popular formats) synthesizer + round-trip + benchmark.** If the new template covers a widely-shipped format (syslog, an Apache/nginx dialect, a common language runtime logger, ...), add a matching `test_common::LogFormat` factory in [`test/common/src/log_format.cpp`](test/common/src/log_format.cpp) that emits random lines conforming to the template's pattern (see `SyslogRfc3164Format()` / `ApacheCombinedFormat()` / `JavaLogFormat()` for the pattern). Wire it into all three seams so the format lands in every downstream harness:
 
@@ -462,7 +461,7 @@ The folder is created on first launch and lives under:
 
 User files use the same schema as built-ins and shadow a same-`name` built-in in the picker.
 
-User templates join auto-detection through `loglib::SetExtraRegexTemplates(...)`, called by `RegexTemplateRegistry::Discover()` and `Reload()`. Built-ins probe before user templates; each tier is sorted by ascending `priority`. A user template therefore cannot steal a match from a shipped template.
+User templates join auto-detection through `loglib::RegexTemplateCatalog::WithExtras(...)`: `RegexTemplateRegistry::Discover()` and `Reload()` rebuild its catalog, and callers pass `RegexTemplateRegistry::Catalog()` to `loglib::DetectFormat`, `loglib::AutoDetectParser` and `loglib::LoadOptions::regexTemplates`. Built-ins probe before user templates; each tier is sorted by ascending `priority`. A user template therefore cannot steal a match from a shipped template.
 
 The `Network Stream` dialog only consumes the picker; the `Save as template...` button has been moved out of that dialog into the dedicated editor so template lifecycle has one canonical home.
 

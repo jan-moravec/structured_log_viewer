@@ -554,8 +554,19 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 // Shared format detection keeps file, stdin, and network opens
 // consistent.
 using loglib::DetectedFormat;
-using loglib::DetectFormatForPath;
 using loglib::MakeParserForFormat;
+
+/// The templates detection tries: the registry's when there is one, otherwise the built-in ones.
+const loglib::RegexTemplateCatalog &CatalogOf(const RegexTemplateRegistry *registry)
+{
+    return registry != nullptr ? registry->Catalog() : loglib::RegexTemplateCatalog::Builtin();
+}
+
+/// Detects the format of a file from its head. JSON when nothing matches, so a parser can always be made.
+DetectedFormat DetectFileFormat(const std::filesystem::path &file, const loglib::RegexTemplateCatalog &catalog)
+{
+    return loglib::DetectFormat(loglib::ReadProbeHead(file), catalog).value_or(DetectedFormat{});
+}
 
 /**
  * @brief Parser options for a column layout: its Time columns and the application's display zone as the zone in which
@@ -4672,7 +4683,7 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     auto &currentSource = origin->MutableCurrentSource();
     if (isFirstFileInSession)
     {
-        DetectedFormat detected = DetectFormatForPath(effectivePath);
+        DetectedFormat detected = DetectFileFormat(effectivePath, CatalogOf(mRegexTemplateRegistry));
         currentSource = loglib::Source{
             .kind = loglib::Source::Kind::File,
             .format = detected.format,
@@ -4724,7 +4735,7 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     // Per-file parser detection runs against the effective (possibly
     // decompressed) path so the sniff sees the actual bytes.
     // `origin->MutableCurrentSource()` still stores the first file's session-level format.
-    const DetectedFormat detectedPerFile = DetectFormatForPath(effectivePath);
+    const DetectedFormat detectedPerFile = DetectFileFormat(effectivePath, CatalogOf(mRegexTemplateRegistry));
     std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(detectedPerFile.format, detectedPerFile.Options());
 
     // False positive: `parseCallable` is moved into the model and invoked.
@@ -6340,7 +6351,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
-        DetectedFormat detected = DetectFormatForPath(filePath);
+        DetectedFormat detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
         currentSource = loglib::Source{
             .kind = loglib::Source::Kind::File,
             .format = detected.format,
@@ -6455,7 +6466,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     else
     {
         // No sibling seeded a source; detect and seed from the primary.
-        DetectedFormat detected = DetectFormatForPath(filePath);
+        DetectedFormat detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
         currentSource = loglib::Source{
             .kind = loglib::Source::Kind::File,
             .format = detected.format,
@@ -6640,10 +6651,10 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
 
     // Detect the format from the peek so the resolved parser is
     // pinned before the first parse batch. Empty peek falls back
-    // to JSON (matches `DetectFormatFromBytes`'s "nothing matched"
+    // to JSON (matches `DetectFileFormat`'s "nothing matched"
     // branch), which is a safe default: an empty stdin session
     // produces zero rows either way.
-    const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
+    const loglib::DetectedFormat detected = loglib::DetectFormat(peek, CatalogOf(mRegexTemplateRegistry)).value_or(loglib::DetectedFormat{});
     const auto format = detected.format;
     mSession->MutableCurrentSource() = loglib::Source{
         .kind = loglib::Source::Kind::Stdin,
@@ -6840,8 +6851,13 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
     // keep their pinned parser factory.
     if (autoDetect)
     {
-        auto parserFactory = []() -> std::unique_ptr<loglib::LogParser> {
-            return std::make_unique<loglib::AutoDetectParser>();
+        auto parserFactory = [catalog = CatalogOf(mRegexTemplateRegistry)]() -> std::unique_ptr<loglib::LogParser> {
+            return std::make_unique<loglib::AutoDetectParser>(
+                loglib::PROBE_BYTES_BUDGET,
+                loglib::AutoDetectParser::DEFAULT_PEEK_TIMEOUT,
+                loglib::FormatOptions{},
+                catalog
+            );
         };
         mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
         return;

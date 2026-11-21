@@ -114,7 +114,7 @@ struct Source
      * formats.
      *
      * It is saved so a reopened session or stream parses with the same template. The name of the matching template, if
-     * there is one, is looked up for display with FindTemplateByPattern.
+     * there is one, is looked up for display with RegexTemplateCatalog::FindByPattern.
      */
     std::string regexPattern;
 

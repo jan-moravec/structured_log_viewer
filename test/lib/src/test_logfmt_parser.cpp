@@ -6,6 +6,7 @@
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
@@ -36,44 +37,39 @@
 
 TEST_CASE("Validate non-existent file [logfmt]", "[logfmt_parser]")
 {
-    const loglib::LogfmtParser parser;
-    CHECK_FALSE(parser.IsValid("non_existent_file.logfmt"));
+    CHECK_FALSE(loglib::LooksLikeLogfmt(loglib::ReadProbeHead("non_existent_file.logfmt")));
 }
 
 TEST_CASE("Validate empty file [logfmt]", "[logfmt_parser]")
 {
-    const loglib::LogfmtParser parser;
     const TestLogFile file;
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeLogfmt(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate JSON-shaped first line [logfmt]", "[logfmt_parser]")
 {
     // A JSON-shaped first line must be rejected so JSON wins the
     // auto-detect race.
-    const loglib::LogfmtParser parser;
     const TestLogFile file;
     file.Write(
         R"({"key": "value"})"
         "\n"
     );
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeLogfmt(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate logfmt-shaped first line [logfmt]", "[logfmt_parser]")
 {
-    const loglib::LogfmtParser parser;
     const TestLogFile file;
     file.Write("level=info msg=\"hello world\"\n");
-    CHECK(parser.IsValid(file.GetFilePath()));
+    CHECK(loglib::LooksLikeLogfmt(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate file with no key=value pair [logfmt]", "[logfmt_parser]")
 {
-    const loglib::LogfmtParser parser;
     const TestLogFile file;
     file.Write("just some plain text without equals\n");
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeLogfmt(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Parse single bare key/value pair [logfmt]", "[logfmt_parser]")

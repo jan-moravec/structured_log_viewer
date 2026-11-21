@@ -149,18 +149,13 @@ ParseResult ParseFile(const std::filesystem::path &file)
         throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
 
-    const DetectedFormat detected = DetectFormatFromBytes(head);
-    // DetectFormatFromBytes returns JSON both for a JSON match and for nothing matched, so check JSON again.
-    if (detected.format == Source::Format::Json)
+    const std::optional<DetectedFormat> detected = DetectFormat(head);
+    if (!detected)
     {
-        const JsonParser probe;
-        if (!probe.IsValidBytes(head))
-        {
-            throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
-        }
+        throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
 
-    const std::unique_ptr<LogParser> parser = MakeParserForFormat(detected.format, detected.Options());
+    const std::unique_ptr<LogParser> parser = MakeParserForFormat(detected->format, detected->Options());
     return ParseFile(*parser, file);
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)

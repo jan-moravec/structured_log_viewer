@@ -10,7 +10,6 @@
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/probe_line_view.hpp"
 #include "loglib/parse/internal/regex_compiled_pattern.hpp"
-#include "loglib/parse/internal/regex_template_probe_list.hpp"
 #include "loglib/parse/internal/static_parser_pipeline.hpp"
 #include "loglib/parse/internal/streaming_parse_loop.hpp"
 #include "loglib/parse/log_parser.hpp"

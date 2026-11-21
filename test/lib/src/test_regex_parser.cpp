@@ -6,6 +6,7 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/log_data.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -30,38 +32,44 @@
 
 using namespace loglib;
 
-TEST_CASE("RegexParser validates against built-in templates [regex]", "[regex_parser]")
+namespace
 {
-    const RegexParser parser{std::string{}};
+
+/// The template that detection picks for the head of @p file, or nullopt.
+std::optional<RegexTemplate> DetectTemplate(const std::filesystem::path &file)
+{
+    const RegexTemplate *found = RegexTemplateCatalog::Builtin().Detect(ReadProbeHead(file));
+    return found != nullptr ? std::optional<RegexTemplate>(*found) : std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("Detection finds a built-in template for two syslog lines [regex]", "[regex_parser]")
+{
     const TestLogFile file("regex_isvalid.log");
-    // Two syslog lines: enough to trip `IS_VALID_MIN_MATCHES = 2`
-    // and identify Syslog (RFC3164).
+    // Two syslog lines: enough to trip PROBE_MIN_MATCHES = 2 and identify Syslog (RFC3164).
     file.Write(
         "Apr 28 04:02:03 host-a systemd: System starting\n"
         "Jun 27 01:47:20 host-b configd[17]: network changed\n"
     );
-    CHECK(parser.IsValid(file.GetFilePath()));
 
-    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    const auto detected = DetectTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
 }
 
-TEST_CASE("RegexParser rejects single-line files [regex]", "[regex_parser]")
+TEST_CASE("Detection rejects single-line files [regex]", "[regex_parser]")
 {
-    // One matched line is too brittle for auto-detect; the probe
-    // requires at least two non-blank lines.
-    const RegexParser parser{std::string{}};
+    // One matched line is too brittle for auto-detect; the probe requires at least two non-blank lines.
     const TestLogFile file("regex_oneline.log");
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n");
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(DetectTemplate(file.GetFilePath()).has_value());
 }
 
-TEST_CASE("RegexParser rejects JSON / logfmt files [regex]", "[regex_parser]")
+TEST_CASE("Detection does not claim JSON files as regex [regex]", "[regex_parser]")
 {
-    // Auto-detect precedence: a file another probe claims must not
-    // also be claimed by Regex. JSON is the broadest non-regex shape.
-    const RegexParser parser{std::string{}};
+    // Auto-detect precedence: a file another probe claims must not also be claimed by Regex. JSON is the broadest
+    // non-regex shape.
     const TestLogFile file("regex_rejects_json.log");
     file.Write(
         R"({"level":"info","msg":"hello"})"
@@ -69,7 +77,10 @@ TEST_CASE("RegexParser rejects JSON / logfmt files [regex]", "[regex_parser]")
         R"({"level":"warn","msg":"world"})"
         "\n"
     );
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(DetectTemplate(file.GetFilePath()).has_value());
+    const auto format = DetectFormat(ReadProbeHead(file.GetFilePath()));
+    REQUIRE(format.has_value());
+    CHECK(format->format == Source::Format::Json);
 }
 
 TEST_CASE("RegexParser with an empty pattern surfaces one error [regex]", "[regex_parser]")
@@ -313,7 +324,7 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
     // to log files. Without the BOM strip the `^date` anchor in
     // every built-in template fails at byte 0 of line 1 and both
     // auto-detect and parse silently refuse the file. After the
-    // fix `DetectRegexTemplate` claims the file *and* the first
+    // fix detection claims the file *and* the first
     // line emits a row (not a `did not match` error).
     const TestLogFile file("regex_bom.log");
     file.Write(
@@ -322,7 +333,7 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
         "Apr 28 04:02:04 host-a systemd: another line\n"
     );
 
-    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    const auto detected = DetectTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
 
@@ -1072,19 +1083,14 @@ TEST_CASE("PatternMatchesLine returns true only on a full anchored match [regex]
     CHECK_FALSE(PatternMatchesLine(PATTERN, "USER not-a-number"));
 }
 
-TEST_CASE("RegexParser::IsValid returns false for a missing file [regex]", "[regex_parser]")
+TEST_CASE("Detection finds nothing in a missing file [regex]", "[regex_parser]")
 {
-    // `ProbeAutoDetectTemplates` short-circuits on
-    // `!stream.is_open()`. Exercising that path keeps the coverage
-    // sweep honest — a future refactor that dropped the check
-    // would either crash on a fresh install (no session file yet)
-    // or start returning true for paths that don't exist.
-    const RegexParser parser{std::string{}};
+    // ReadProbeHead gives an empty head for a path that cannot be opened, and detection finds nothing in it. A refactor
+    // that dropped the check would start detecting formats for paths that do not exist.
     const std::filesystem::path missing = std::filesystem::temp_directory_path() / "regex_parser_missing_file_test.log";
     std::filesystem::remove(missing);
     REQUIRE_FALSE(std::filesystem::exists(missing));
-    CHECK_FALSE(parser.IsValid(missing));
-    CHECK_FALSE(DetectRegexTemplate(missing).has_value());
+    CHECK_FALSE(DetectTemplate(missing).has_value());
 }
 
 TEST_CASE("RegexParser leaves optional groups that did not match empty [regex]", "[regex_parser]")

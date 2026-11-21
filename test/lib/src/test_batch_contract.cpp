@@ -749,9 +749,11 @@ TEST_CASE(
     "[batch_contract][equivalence][templates]"
 )
 {
-    for (const BuiltinRegexTemplateInfo &info : BuiltinRegexTemplateCatalog())
+    const RegexTemplateCatalog &catalog = RegexTemplateCatalog::Builtin();
+    for (std::size_t i = 0; i < catalog.Builtins().size(); ++i)
     {
-        const RegexTemplate &tmpl = info.tmpl;
+        const RegexTemplate &tmpl = catalog.Builtins()[i];
+        const std::string &slug = catalog.BuiltinSlugs()[i];
         REQUIRE_FALSE(tmpl.sampleLines.empty());
         // The samples are repeated so that the parse spans several batches at the smallest batch size.
         std::string bytes;
@@ -764,9 +766,9 @@ TEST_CASE(
         }
         const RegexParser parser(tmpl.pattern, tmpl.continuationMode, tmpl.headerAnchor);
 
-        INFO("template " << info.slug);
+        INFO("template " << slug);
         RecordingSink reference;
-        ParseAsFile(parser, info.slug + ".log", bytes, 4096, reference);
+        ParseAsFile(parser, slug + ".log", bytes, 4096, reference);
         const Observed expected = Observe(reference);
         CHECK(reference.finished == 1);
         CHECK(expected.errors.empty());
@@ -775,7 +777,7 @@ TEST_CASE(
         for (const std::size_t batchSize : {std::size_t{64}, std::size_t{257}})
         {
             RecordingSink sink;
-            ParseAsFile(parser, info.slug + ".log", bytes, batchSize, sink);
+            ParseAsFile(parser, slug + ".log", bytes, batchSize, sink);
             INFO("file, batch size " << batchSize);
             CheckSame(Observe(sink), expected);
         }
