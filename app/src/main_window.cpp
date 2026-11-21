@@ -7932,12 +7932,12 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
                                                                         // `(unknown column)` so the user can
                                                                         // still get rid of it via the dropdown.
                                                                         : tr("(unknown column)");
-        entries.push_back(
-            {.id = id,
-             .columnLabel = std::move(columnLabel),
-             .filterTitle = BuildFilterTitle(filter),
-             .columnRow = row.has_value() ? static_cast<int>(*row) : -1}
-        );
+        entries.push_back({
+            .id = id,
+            .columnLabel = std::move(columnLabel),
+            .filterTitle = BuildFilterTitle(filter),
+            .columnRow = row.has_value() ? static_cast<int>(*row) : -1,
+        });
     }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
         // Group by column first so all filters on `level` sit

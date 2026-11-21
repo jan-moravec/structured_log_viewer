@@ -320,8 +320,8 @@ std::filesystem::path FindTestTzdata()
 
 const loglib::TimeZoneContext &TestTimeZone()
 {
-    static const loglib::TimeZoneContext zone = loglib::TimeZoneContext::Load(FindTestTzdata());
-    return zone;
+    static const loglib::TimeZoneContext ZONE = loglib::TimeZoneContext::Load(FindTestTzdata());
+    return ZONE;
 }
 
 void InitializeTimezoneData()

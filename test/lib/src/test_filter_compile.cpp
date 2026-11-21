@@ -130,7 +130,7 @@ TEST_CASE("CompileLeafUnresolvedColumnAbsent", "[filter_compile]")
 {
     const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
     const Leaf rule = MakeStringLeaf("level", Leaf::Match::Contains, "warn");
-    REQUIRE_FALSE(loglib::CompileLeaf(rule, /*column=*/std::nullopt, columns, /*table=*/nullptr).has_value());
+    REQUIRE_FALSE(loglib::CompileLeaf(rule, /*resolvedColumn=*/std::nullopt, columns, /*table=*/nullptr).has_value());
 }
 
 TEST_CASE("CompileTimeLeafNoBoundsAbsent", "[filter_compile]")

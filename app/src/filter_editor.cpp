@@ -574,7 +574,7 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
     // unbounded (the user may uncheck the checkbox and start picking):
     // unbounded side reuses the other side's value, both-unbounded
     // falls back to "now".
-    auto pickSeed = [this](std::optional<qint64> primary, std::optional<qint64> fallback) -> QDateTime {
+    const auto pickSeed = [this](std::optional<qint64> primary, std::optional<qint64> fallback) -> QDateTime {
         if (primary.has_value())
         {
             return ConvertToQDateTime(*primary);

@@ -54,11 +54,17 @@ inline constexpr size_t HISTOGRAM_MAX_BUCKETS = size_t{1} << 20U;
     case HistogramBucketSize::OneSecond:
         return duration_cast<microseconds>(seconds{1});
     case HistogramBucketSize::TenSeconds:
-        return duration_cast<microseconds>(seconds{10});
+    {
+        constexpr auto TEN_SECONDS = seconds{10};
+        return duration_cast<microseconds>(TEN_SECONDS);
+    }
     case HistogramBucketSize::OneMinute:
         return duration_cast<microseconds>(minutes{1});
     case HistogramBucketSize::TenMinutes:
-        return duration_cast<microseconds>(minutes{10});
+    {
+        constexpr auto TEN_MINUTES = minutes{10};
+        return duration_cast<microseconds>(TEN_MINUTES);
+    }
     case HistogramBucketSize::OneHour:
         return duration_cast<microseconds>(hours{1});
     case HistogramBucketSize::OneDay:

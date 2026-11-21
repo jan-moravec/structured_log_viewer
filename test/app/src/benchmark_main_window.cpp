@@ -62,7 +62,7 @@ namespace
 // the data is missing.
 const loglib::TimeZoneContext &BenchmarkTimeZone()
 {
-    static const loglib::TimeZoneContext zone = [] {
+    static const loglib::TimeZoneContext ZONE = [] {
         std::vector<std::filesystem::path> searched;
         const loglib::TzdataSearchRoots roots{.startDirectory = std::filesystem::current_path()};
         if (const auto tzdata = loglib::FindTzdataDirectory(roots, searched); !tzdata.empty())
@@ -74,7 +74,7 @@ const loglib::TimeZoneContext &BenchmarkTimeZone()
                       "folder (typically build/<preset>/bin/<config>/).";
         return loglib::TimeZoneContext{};
     }();
-    return zone;
+    return ZONE;
 }
 
 // Write `count` random records to `path` as JSONL; returns the file size.

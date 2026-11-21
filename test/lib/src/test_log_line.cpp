@@ -24,7 +24,7 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
         {"key4", 3.14},
         {"key5", true},
         {"key6", std::monostate()},
-        {"key7", TimeStamp{std::chrono::microseconds{1'714'298'402'123'456}}}
+        {"key7", TimeStamp{std::chrono::microseconds{1'714'298'402'123'456}}},
     };
 
     const TestLogFile testLogFile;
@@ -463,7 +463,7 @@ TEST_CASE("The test support helpers give back the map a line was made from", "[l
         {"signed", static_cast<int64_t>(-12)},
         {"real", 2.5},
         {"flag", false},
-        {"when", TimeStamp{std::chrono::microseconds{1'700'000'000'000'000}}}
+        {"when", TimeStamp{std::chrono::microseconds{1'700'000'000'000'000}}},
     };
 
     const TestLogFile testLogFile;

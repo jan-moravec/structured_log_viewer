@@ -26,7 +26,6 @@ using loglib::internal::LastTimestampBytesHit;
 using loglib::internal::LastValidTimestampParse;
 using loglib::internal::PromoteLineTimestamps;
 using loglib::internal::TimeColumnSpec;
-using loglib::internal::TimestampFormat;
 using loglib::internal::TimestampParseScratch;
 
 namespace
@@ -144,7 +143,8 @@ TEST_CASE("PromoteLineTimestamps tries the keys and the formats in order", "[tim
     {
         LogLine line = test_common::MakeLine(
             test_common::LogMap{
-                {"ts", std::string("2024-05-01 01:00:00")}, {"time", std::string("2024-05-02 02:00:00")}
+                {"ts", std::string("2024-05-01 01:00:00")},
+                {"time", std::string("2024-05-02 02:00:00")},
             },
             keys,
             *source,

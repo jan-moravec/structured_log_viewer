@@ -27,8 +27,8 @@ namespace apptest_support
 
 const loglib::TimeZoneContext &TestTimeZone()
 {
-    static const loglib::TimeZoneContext zone = MainWindow::LoadSystemTimeZone();
-    return zone;
+    static const loglib::TimeZoneContext ZONE = MainWindow::LoadSystemTimeZone();
+    return ZONE;
 }
 
 void AppTestBase::initTestCase()

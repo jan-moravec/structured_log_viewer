@@ -367,6 +367,8 @@ TEST_CASE(
 
     // A C string and a std::string find the same keys as the string_view does.
     CHECK(index.Find("alpha") == alphaId);
-    CHECK(index.Find(std::string("beta")) == betaId);
-    CHECK(index.GetOrInsert(std::string("alpha")) == alphaId);
+    const std::string beta = "beta";
+    const std::string alpha = "alpha";
+    CHECK(index.Find(beta) == betaId);
+    CHECK(index.GetOrInsert(alpha) == alphaId);
 }

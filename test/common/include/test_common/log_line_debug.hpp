@@ -38,7 +38,7 @@ using LogMap = std::unordered_map<std::string, loglib::LogValue>;
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
     std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-    return loglib::LogLine(std::move(sorted), source, lineId);
+    return {std::move(sorted), source, lineId};
 }
 
 /** The value of a field by key name, or std::monostate if the key is unknown or the row has no such field. */
