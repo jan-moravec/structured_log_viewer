@@ -10,6 +10,7 @@
 #include "common.hpp"
 
 #include <loglib/core/file_line_source.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
@@ -233,10 +234,37 @@ StreamingFixture MakePythonTracebackFixture(
     };
 }
 
+// A 16 KiB sample of Apache combined lines, as detection reads it from a file head.
+std::string DetectionSample()
+{
+    constexpr std::string_view LINE =
+        "127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326 "
+        "\"http://www.example.com/start.html\" \"Mozilla/4.08 [en] (Win98; I ;Nav)\"\n";
+    std::string sample;
+    while (sample.size() < loglib::PROBE_BYTES_BUDGET)
+    {
+        sample.append(LINE);
+    }
+    sample.resize(loglib::PROBE_BYTES_BUDGET);
+    return sample;
+}
+
 } // namespace
 
 void RegisterRegexBenchmarks()
 {
+    RegisterSmall(
+        "Detect format of a 16 KiB sample, built-in catalog",
+        [sample = DetectionSample()](benchmark::State &state) {
+            // The first call builds the compiled patterns, so it stays out of the timed part.
+            benchmark::DoNotOptimize(loglib::DetectFormatFromBytes(sample));
+            for (auto _ : state)
+            {
+                benchmark::DoNotOptimize(loglib::DetectFormatFromBytes(sample));
+            }
+        },
+        benchmark::kMicrosecond
+    );
     RegisterTemplateBenchmark(
         "Stream 1'000'000 Syslog (RFC3164) entries to LogTable",
         "Syslog (RFC3164)",
