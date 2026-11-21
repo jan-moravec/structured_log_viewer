@@ -112,13 +112,29 @@ TEST_CASE("A tailed file that does not exist and a bind failure throw IoError wi
             CHECK(error.Code());
         }
     }
-    SECTION("an address that cannot be bound")
+    SECTION("an address that cannot be parsed")
     {
         TcpServerProducer::Options options;
         options.bindAddress = "not-a-host";
         try
         {
             const TcpServerProducer producer(options);
+            FAIL("expected IoError");
+        }
+        catch (const IoError &error)
+        {
+            CHECK(error.Code());
+        }
+    }
+    SECTION("a port that is already in use")
+    {
+        TcpServerProducer::Options options;
+        options.bindAddress = "127.0.0.1";
+        const TcpServerProducer first(options);
+        options.port = first.BoundPort();
+        try
+        {
+            const TcpServerProducer second(options);
             FAIL("expected IoError");
         }
         catch (const IoError &error)

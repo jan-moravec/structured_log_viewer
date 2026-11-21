@@ -171,8 +171,7 @@ void SaveConfiguration(
         std::error_code cleanupEc;
         std::filesystem::remove(tempPath, cleanupEc);
         throw IoError(
-            "Failed to rename '" + internal::PathToUtf8(tempPath) + "' to '" + internal::PathToUtf8(path) +
-            "': " + ec.message()
+            "Failed to rename '" + internal::PathToUtf8(tempPath) + "' to '" + internal::PathToUtf8(path) + "'", ec
         );
     }
 }

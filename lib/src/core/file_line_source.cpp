@@ -96,9 +96,7 @@ FileLineSource::FileLineSource(std::filesystem::path storagePath, std::filesyste
 #endif
         if (ec)
         {
-            throw IoError(
-                fmt::format("Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message())
-            );
+            throw IoError(fmt::format("Failed to memory-map file '{}'", internal::PathToUtf8(mStoragePath)), ec);
         }
         HintSequential(mBacking->mmap);
         mData = mBacking->mmap.data();

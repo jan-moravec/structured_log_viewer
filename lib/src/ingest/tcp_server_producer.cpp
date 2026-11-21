@@ -314,16 +314,15 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
     if (ec)
     {
         throw IoError(
-            "TcpServerProducer: failed to load certificate chain '" + internal::PathToUtf8(tls.certificateChain) +
-            "': " + ec.message()
+            "TcpServerProducer: failed to load certificate chain '" + internal::PathToUtf8(tls.certificateChain) + "'",
+            ec
         );
     }
     ctx.use_private_key_file(internal::PathToUtf8(tls.privateKey), asio::ssl::context::pem, ec);
     if (ec)
     {
         throw IoError(
-            "TcpServerProducer: failed to load private key '" + internal::PathToUtf8(tls.privateKey) +
-            "': " + ec.message()
+            "TcpServerProducer: failed to load private key '" + internal::PathToUtf8(tls.privateKey) + "'", ec
         );
     }
 
@@ -333,8 +332,7 @@ asio::ssl::context BuildSslContext(const TcpServerProducer::TlsOptions &tls)
         if (ec)
         {
             throw IoError(
-                "TcpServerProducer: failed to load CA bundle '" + internal::PathToUtf8(tls.caBundle) +
-                "': " + ec.message()
+                "TcpServerProducer: failed to load CA bundle '" + internal::PathToUtf8(tls.caBundle) + "'", ec
             );
         }
         int verifyMode = asio::ssl::verify_peer;
