@@ -88,6 +88,7 @@ add_executable(
     "src/test_timestamp_corpus.cpp"
     "src/test_timestamp_format.cpp"
     "src/test_timestamp_formatter.cpp"
+    "src/test_time_conversion_paths.cpp"
     "src/test_timestamp_promotion.cpp"
     "src/test_udp_server_producer.cpp"
     "src/test_tzdata_search.cpp"
