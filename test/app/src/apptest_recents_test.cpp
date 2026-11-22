@@ -873,7 +873,7 @@ private slots:
                 Q_ARG(QString, QStringLiteral("survives-failed-probe")),
                 Q_ARG(int, msgCol),
                 Q_ARG(QString, QStringLiteral("alpha")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );

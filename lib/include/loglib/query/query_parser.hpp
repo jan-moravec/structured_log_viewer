@@ -72,8 +72,8 @@ struct QueryParseError
  * An ISO timestamp without Z or an offset is read in timeZone.
  *
  * AND, OR, NOT and IN can be written in any case, and FormatExpression writes them in upper case. The column name is
- * stored as written, as the only element of LeafRule::columnKeys. Empty text, or text with only whitespace, gives a
- * match-all expression.
+ * stored as written, as the only element of FilterCondition::columnKeys. Empty text, or text with only whitespace,
+ * gives a match-all expression.
  */
 [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseQuery(
     std::string_view input, const TimeZoneContext &timeZone

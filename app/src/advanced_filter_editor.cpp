@@ -84,9 +84,10 @@ struct RegexIssue
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, loglib::FilterExpression::Leaf>)
             {
-                const auto &rule = node.rule;
-                if (rule.type != loglib::LeafRule::Type::String ||
-                    rule.matchType != loglib::LeafRule::Match::RegularExpression || !rule.filterString.has_value())
+                const auto &rule = node.condition;
+                if (rule.type != loglib::FilterCondition::Type::String ||
+                    rule.matchType != loglib::FilterCondition::Match::RegularExpression ||
+                    !rule.filterString.has_value())
                 {
                     return std::nullopt;
                 }

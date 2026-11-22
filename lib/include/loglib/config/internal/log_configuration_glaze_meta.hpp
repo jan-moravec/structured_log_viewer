@@ -160,21 +160,19 @@ template <> struct glz::meta<loglib::ColumnType>
     static constexpr std::array value{Any, String, Boolean, Integer, Floating, Number, Time, Enumeration, Level};
 };
 
-template <> struct glz::meta<loglib::LeafRule::Type>
+template <> struct glz::meta<loglib::FilterCondition::Type>
 {
-    using enum loglib::LeafRule::Type;
+    using enum loglib::FilterCondition::Type;
     static constexpr std::array keys{"string", "time", "enumeration", "number", "boolean"};
     static constexpr std::array value{String, Time, Enumeration, Number, Boolean};
 };
 
-template <> struct glz::meta<loglib::LeafRule::Match>
+template <> struct glz::meta<loglib::FilterCondition::Match>
 {
-    using enum loglib::LeafRule::Match;
+    using enum loglib::FilterCondition::Match;
     static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
-
-// The types of HighlightRule are aliases of the LeafRule ones, so they use the specializations above.
 
 template <> struct glz::meta<loglib::SourceDescriptor::Kind>
 {
@@ -298,10 +296,10 @@ template <> struct glz::meta<loglib::SessionView> : loglib::internal::AllKeysOpt
     );
 };
 
-// A leaf of the filter tree. It finds its column by matching its keys against Column::keys.
-template <> struct glz::meta<loglib::LeafRule> : loglib::internal::AllKeysOptional
+// A condition of a filter or a highlight rule. It finds its column by matching its keys against Column::keys.
+template <> struct glz::meta<loglib::FilterCondition> : loglib::internal::AllKeysOptional
 {
-    using T = loglib::LeafRule;
+    using T = loglib::FilterCondition;
     static constexpr auto value = object(
         "type",
         &T::type,
@@ -328,12 +326,12 @@ template <> struct glz::meta<loglib::LeafRule> : loglib::internal::AllKeysOption
 //   { "kind": "and", "children": [ ... ] }
 //   { "kind": "or",  "children": [ ... ] }
 //   { "kind": "not", "child": <sub-expression> }
-//   { "kind": "leaf", "rule": <LeafRule> }
+//   { "kind": "leaf", "condition": <FilterCondition> }
 // The kind comes from the tag of the variant specialization below, and each node type exposes only its payload.
 template <> struct glz::meta<loglib::FilterExpression::Leaf> : loglib::internal::AllKeysOptional
 {
     using T = loglib::FilterExpression::Leaf;
-    static constexpr auto value = object("rule", &T::rule);
+    static constexpr auto value = object("condition", &T::condition);
 };
 
 template <> struct glz::meta<loglib::FilterExpression::And> : loglib::internal::AllKeysOptional
@@ -394,32 +392,10 @@ template <> struct glz::meta<loglib::AnchorEntry> : loglib::internal::AllKeysOpt
         object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
 };
 
-template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysOptional
+template <> struct glz::meta<loglib::HighlightStyle> : loglib::internal::AllKeysOptional
 {
-    using T = loglib::HighlightRule;
+    using T = loglib::HighlightStyle;
     static constexpr auto value = object(
-        "name",
-        &T::name,
-        "enabled",
-        &T::enabled,
-        "columnKeys",
-        &T::columnKeys,
-        "type",
-        &T::type,
-        "matchType",
-        &T::matchType,
-        "filterString",
-        &T::filterString,
-        "filterBegin",
-        &T::filterBegin,
-        "filterEnd",
-        &T::filterEnd,
-        "filterMinValue",
-        &T::filterMinValue,
-        "filterMaxValue",
-        &T::filterMaxValue,
-        "filterValues",
-        &T::filterValues,
         "foregroundIndex",
         &T::foregroundIndex,
         "backgroundIndex",
@@ -429,5 +405,12 @@ template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysO
         "italic",
         &T::italic
     );
+};
+
+template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysOptional
+{
+    using T = loglib::HighlightRule;
+    static constexpr auto value =
+        object("name", &T::name, "enabled", &T::enabled, "condition", &T::condition, "style", &T::style);
 };
 // NOLINTEND(readability-identifier-naming)

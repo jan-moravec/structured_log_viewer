@@ -31,6 +31,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/filter_expression.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
@@ -3762,7 +3763,7 @@ private slots:
         const auto it = mWindow->Filters().find(preSeededId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "pre-seeded filter must survive the menu trigger");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QVERIFY(it->second.filterBegin.has_value());
         QVERIFY(it->second.filterEnd.has_value());
         // NOLINTBEGIN(bugprone-unchecked-optional-access)
@@ -3887,7 +3888,7 @@ private slots:
         const auto it = mWindow->Filters().find(filterId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(it->second.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY2(it->second.filterBegin.has_value(), "uncheck must promote begin from nullopt to the seed value");
         QVERIFY(it->second.filterEnd.has_value());
@@ -3939,10 +3940,10 @@ private slots:
         // and installs the whole tree as the non-Leaf remainder.
         loglib::FilterExpression advancedTree = loglib::MakeNot(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )

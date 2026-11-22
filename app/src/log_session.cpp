@@ -561,7 +561,7 @@ void LogSession::RebuildFilterExpressionFromSimpleLeaves()
     )
     {
         const bool alreadyInSimple = std::ranges::any_of(mSimpleLeaves, [&existingLeaf](const auto &entry) {
-            return entry.second == existingLeaf->rule;
+            return entry.second == existingLeaf->condition;
         });
         if (!alreadyInSimple)
         {

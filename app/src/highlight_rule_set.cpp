@@ -114,8 +114,7 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
     // Shared `CompileLeaf` factory so filter and highlight paths
     // build predicates identically (Level expansion, empty-needle
     // rejection, boolean decoding, ...).
-    auto predicate =
-        loglib::CompileLeaf(loglib::ToLeafRule(rule), static_cast<std::size_t>(resolvedColumn), columns, table);
+    auto predicate = loglib::CompileLeaf(rule.condition, static_cast<std::size_t>(resolvedColumn), columns, table);
     if (!predicate.has_value())
     {
         return std::nullopt;
@@ -146,7 +145,7 @@ void HighlightRuleSet::RecompileAll(const std::vector<loglib::Column> &columns, 
     std::size_t active = 0;
     for (const auto &rule : mRules)
     {
-        const int resolved = ResolveColumnByKeys(rule.columnKeys, columns);
+        const int resolved = ResolveColumnByKeys(rule.condition.columnKeys, columns);
         mResolvedColumn.push_back(resolved);
         auto compiled = CompileRule(rule, resolved, columns, table);
         if (compiled.has_value())

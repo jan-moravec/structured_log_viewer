@@ -31,10 +31,10 @@ namespace
 /// Convenience: extract the Leaf out of a parsed expression, or
 /// `nullptr` when the top-level node isn't a Leaf. Keeps the test
 /// body focused on assertions rather than variant plumbing.
-const LeafRule *AsLeaf(const FilterExpression &expr)
+const FilterCondition *AsLeaf(const FilterExpression &expr)
 {
     const auto *leaf = std::get_if<FilterExpression::Leaf>(&expr.node);
-    return (leaf != nullptr) ? &leaf->rule : nullptr;
+    return (leaf != nullptr) ? &leaf->condition : nullptr;
 }
 
 /// Convenience: parse or `FAIL_CHECK` and return a default value.
@@ -64,10 +64,10 @@ TEST_CASE("ParseQuery: empty input is match-all", "[query_parser]")
 TEST_CASE("ParseQuery: string Contains leaf", "[query_parser]")
 {
     const auto expr = ParseOrFail("service:auth");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::String);
-    CHECK(leaf->matchType == LeafRule::Match::Contains);
+    CHECK(leaf->type == FilterCondition::Type::String);
+    CHECK(leaf->matchType == FilterCondition::Match::Contains);
     REQUIRE(leaf->columnKeys.size() == 1);
     CHECK(leaf->columnKeys.front() == "service");
     REQUIRE(leaf->filterString.has_value());
@@ -77,38 +77,38 @@ TEST_CASE("ParseQuery: string Contains leaf", "[query_parser]")
 TEST_CASE("ParseQuery: string Exactly is always quoted-only", "[query_parser]")
 {
     const auto expr = ParseOrFail("service=\"auth\"");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::String);
-    CHECK(leaf->matchType == LeafRule::Match::Exactly);
+    CHECK(leaf->type == FilterCondition::Type::String);
+    CHECK(leaf->matchType == FilterCondition::Match::Exactly);
     CHECK(*leaf->filterString == "auth");
 }
 
 TEST_CASE("ParseQuery: string Regex uses /.../ delimiters", "[query_parser]")
 {
     const auto expr = ParseOrFail("msg ~ /err(or)?/");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::String);
-    CHECK(leaf->matchType == LeafRule::Match::RegularExpression);
+    CHECK(leaf->type == FilterCondition::Type::String);
+    CHECK(leaf->matchType == FilterCondition::Match::RegularExpression);
     CHECK(*leaf->filterString == "err(or)?");
 }
 
 TEST_CASE("ParseQuery: string Wildcard uses % operator", "[query_parser]")
 {
     const auto expr = ParseOrFail("path%\"*.log\"");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->matchType == LeafRule::Match::Wildcard);
+    CHECK(leaf->matchType == FilterCondition::Match::Wildcard);
     CHECK(*leaf->filterString == "*.log");
 }
 
 TEST_CASE("ParseQuery: numeric equality", "[query_parser]")
 {
     const auto expr = ParseOrFail("latency=42");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Number);
+    CHECK(leaf->type == FilterCondition::Type::Number);
     REQUIRE(leaf->filterMinValue.has_value());
     REQUIRE(leaf->filterMaxValue.has_value());
     CHECK(*leaf->filterMinValue == 42.0);
@@ -120,7 +120,7 @@ TEST_CASE("ParseQuery: numeric one-sided comparisons", "[query_parser]")
     SECTION(">= is inclusive")
     {
         const auto expr = ParseOrFail("latency >= 100");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMinValue.has_value());
         CHECK(*leaf->filterMinValue == 100.0);
@@ -129,7 +129,7 @@ TEST_CASE("ParseQuery: numeric one-sided comparisons", "[query_parser]")
     SECTION("> is strict (ULP-adjacent)")
     {
         const auto expr = ParseOrFail("latency > 100");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMinValue.has_value());
         CHECK(*leaf->filterMinValue > 100.0);
@@ -137,7 +137,7 @@ TEST_CASE("ParseQuery: numeric one-sided comparisons", "[query_parser]")
     SECTION("<= is inclusive")
     {
         const auto expr = ParseOrFail("latency <= 100");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMaxValue.has_value());
         CHECK(*leaf->filterMaxValue == 100.0);
@@ -147,9 +147,9 @@ TEST_CASE("ParseQuery: numeric one-sided comparisons", "[query_parser]")
 TEST_CASE("ParseQuery: boolean equality", "[query_parser]")
 {
     const auto expr = ParseOrFail("succeeded=true");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Boolean);
+    CHECK(leaf->type == FilterCondition::Type::Boolean);
     REQUIRE(leaf->filterValues.size() == 1);
     CHECK(leaf->filterValues.front() == "true");
 }
@@ -157,9 +157,9 @@ TEST_CASE("ParseQuery: boolean equality", "[query_parser]")
 TEST_CASE("ParseQuery: enum list", "[query_parser]")
 {
     const auto expr = ParseOrFail("level in [Info, Warn, Error]");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Enumeration);
+    CHECK(leaf->type == FilterCondition::Type::Enumeration);
     REQUIRE(leaf->filterValues.size() == 3);
     CHECK(leaf->filterValues[0] == "Info");
     CHECK(leaf->filterValues[1] == "Warn");
@@ -169,9 +169,9 @@ TEST_CASE("ParseQuery: enum list", "[query_parser]")
 TEST_CASE("ParseQuery: numeric range in [min..max]", "[query_parser]")
 {
     const auto expr = ParseOrFail("latency in [10..100]");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Number);
+    CHECK(leaf->type == FilterCondition::Type::Number);
     REQUIRE(leaf->filterMinValue.has_value());
     REQUIRE(leaf->filterMaxValue.has_value());
     CHECK(*leaf->filterMinValue == 10.0);
@@ -183,7 +183,7 @@ TEST_CASE("ParseQuery: numeric range with open sides", "[query_parser]")
     SECTION("open lower bound")
     {
         const auto expr = ParseOrFail("latency in [..100]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK_FALSE(leaf->filterMinValue.has_value());
         REQUIRE(leaf->filterMaxValue.has_value());
@@ -192,7 +192,7 @@ TEST_CASE("ParseQuery: numeric range with open sides", "[query_parser]")
     SECTION("open upper bound")
     {
         const auto expr = ParseOrFail("latency in [10..]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMinValue.has_value());
         CHECK(*leaf->filterMinValue == 10.0);
@@ -203,9 +203,9 @@ TEST_CASE("ParseQuery: numeric range with open sides", "[query_parser]")
 TEST_CASE("ParseQuery: time range recognises ISO literals", "[query_parser]")
 {
     const auto expr = ParseOrFail("ts in [2024-01-02T03:04:05Z..2024-01-03T00:00:00Z]");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Time);
+    CHECK(leaf->type == FilterCondition::Type::Time);
     REQUIRE(leaf->filterBegin.has_value());
     REQUIRE(leaf->filterEnd.has_value());
     // Sanity: begin < end and both are non-negative.
@@ -216,9 +216,9 @@ TEST_CASE("ParseQuery: time range recognises ISO literals", "[query_parser]")
 TEST_CASE("ParseQuery: time comparison recognises ISO literal", "[query_parser]")
 {
     const auto expr = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Time);
+    CHECK(leaf->type == FilterCondition::Type::Time);
     REQUIRE(leaf->filterBegin.has_value());
     CHECK(*leaf->filterBegin > 0);
 }
@@ -276,7 +276,7 @@ TEST_CASE("ParseQuery: symbolic operators &&, ||, !", "[query_parser]")
 TEST_CASE("ParseQuery: quoted column preserves whitespace", "[query_parser]")
 {
     const auto expr = ParseOrFail(R"("span id":"abc def")");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
     REQUIRE(leaf->columnKeys.size() == 1);
     CHECK(leaf->columnKeys.front() == "span id");
@@ -397,7 +397,7 @@ TEST_CASE("FormatExpression: numeric range renders as IN [..]", "[query_parser][
 }
 
 // Regression: `col in [true, false]` is the wire form the pretty
-// printer emits for `LeafRule::Type::Boolean` (multi-value bool).
+// printer emits for `FilterCondition::Type::Boolean` (multi-value bool).
 // Before the fix `FinishListLeaf` unconditionally stamped the leaf
 // as `Enumeration`, so the compiled predicate walked the string-set
 // fallback against a `Boolean` column and matched zero rows.
@@ -406,9 +406,9 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
     SECTION("both values")
     {
         const auto expr = ParseOrFail("succeeded in [true, false]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Boolean);
+        CHECK(leaf->type == FilterCondition::Type::Boolean);
         REQUIRE(leaf->filterValues.size() == 2);
         CHECK(leaf->filterValues[0] == "true");
         CHECK(leaf->filterValues[1] == "false");
@@ -416,9 +416,9 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
     SECTION("single true")
     {
         const auto expr = ParseOrFail("succeeded in [true]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Boolean);
+        CHECK(leaf->type == FilterCondition::Type::Boolean);
         REQUIRE(leaf->filterValues.size() == 1);
         CHECK(leaf->filterValues.front() == "true");
     }
@@ -429,9 +429,9 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
         // which emits `col IN [true, false]` with uppercase keyword
         // + lowercase values -- matches the original tree.
         const auto expr = ParseOrFail("succeeded in [True, FALSE]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Boolean);
+        CHECK(leaf->type == FilterCondition::Type::Boolean);
         REQUIRE(leaf->filterValues.size() == 2);
         CHECK(leaf->filterValues[0] == "true");
         CHECK(leaf->filterValues[1] == "false");
@@ -441,11 +441,11 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
         // The printer writes a boolean set as =true, =false or IN [true, false], so the parser keeps each value once,
         // true first. Otherwise a printed query would parse back to a different rule.
         const auto repeatedExpr = ParseOrFail("level IN [false,false ]");
-        const LeafRule *repeated = AsLeaf(repeatedExpr);
+        const FilterCondition *repeated = AsLeaf(repeatedExpr);
         REQUIRE(repeated != nullptr);
         CHECK(repeated->filterValues == std::vector<std::string>{"false"});
         const auto reorderedExpr = ParseOrFail("level IN [false, true, false]");
-        const LeafRule *reordered = AsLeaf(reorderedExpr);
+        const FilterCondition *reordered = AsLeaf(reorderedExpr);
         REQUIRE(reordered != nullptr);
         CHECK(reordered->filterValues == std::vector<std::string>{"true", "false"});
     }
@@ -455,9 +455,9 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
         // on the Enumeration path so hand-typed heterogeneous lists
         // aren't silently misclassified.
         const auto expr = ParseOrFail("field in [true, \"yes\"]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Enumeration);
+        CHECK(leaf->type == FilterCondition::Type::Enumeration);
     }
 }
 
@@ -469,8 +469,8 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
 TEST_CASE("FormatExpression: boolean multi-value round-trips through the parser", "[query_parser][pretty]")
 {
     FilterExpression source;
-    LeafRule rule;
-    rule.type = LeafRule::Type::Boolean;
+    FilterCondition rule;
+    rule.type = FilterCondition::Type::Boolean;
     rule.columnKeys = {"succeeded"};
     rule.filterValues = {"true", "false"};
     source.node = FilterExpression::Leaf{rule};
@@ -495,8 +495,8 @@ TEST_CASE(
     // parser round-trips ISO strings back to microseconds, so the
     // AST equality below is the load-bearing invariant.
     FilterExpression source;
-    LeafRule rule;
-    rule.type = LeafRule::Type::Time;
+    FilterCondition rule;
+    rule.type = FilterCondition::Type::Time;
     rule.columnKeys = {"ts"};
     rule.filterBegin = static_cast<std::int64_t>(-500'000);
     source.node = FilterExpression::Leaf{rule};
@@ -593,8 +593,8 @@ TEST_CASE("FormatExpression: pre-epoch timestamps round-trip", "[query_parser][p
     {
         CAPTURE(c.micros);
         FilterExpression source;
-        LeafRule rule;
-        rule.type = LeafRule::Type::Time;
+        FilterCondition rule;
+        rule.type = FilterCondition::Type::Time;
         rule.columnKeys = {"ts"};
         rule.filterBegin = c.micros;
         source.node = FilterExpression::Leaf{rule};
@@ -642,9 +642,9 @@ TEST_CASE("ParseQuery: out-of-range calendar fields are parse errors", "[query_p
     SECTION("genuine leap day still parses")
     {
         const auto expr = ParseOrFail("ts >= 2024-02-29T00:00:00Z");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Time);
+        CHECK(leaf->type == FilterCondition::Type::Time);
         REQUIRE(leaf->filterBegin.has_value());
     }
 }
@@ -661,12 +661,12 @@ TEST_CASE("ParseQuery: hour==24 is only valid at midnight", "[query_parser][regr
     {
         // `24:00:00Z` on 2024-01-01 is midnight of 2024-01-02.
         const auto expr = ParseOrFail("ts >= 2024-01-01T24:00:00Z");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterBegin.has_value());
         // Same instant as `2024-01-02T00:00:00Z`.
         const auto reference = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
-        const LeafRule *refLeaf = AsLeaf(reference);
+        const FilterCondition *refLeaf = AsLeaf(reference);
         REQUIRE(refLeaf != nullptr);
         REQUIRE(refLeaf->filterBegin.has_value());
         CHECK(*leaf->filterBegin == *refLeaf->filterBegin);
@@ -844,8 +844,8 @@ TEST_CASE(
 )
 {
     FilterExpression source;
-    LeafRule rule;
-    rule.type = LeafRule::Type::Time;
+    FilterCondition rule;
+    rule.type = FilterCondition::Type::Time;
     rule.columnKeys = {"ts"};
     // Well past year 9999 -- Windows `gmtime_s` returns EINVAL for
     // this. POSIX `gmtime_r` clamps or fails depending on libc;
@@ -899,9 +899,9 @@ TEST_CASE("ParseQuery: single-value numeric IN [N] demotes to equality", "[query
     SECTION("numeric single-item list")
     {
         const auto expr = ParseOrFail("latency in [42]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Number);
+        CHECK(leaf->type == FilterCondition::Type::Number);
         REQUIRE(leaf->filterMinValue.has_value());
         REQUIRE(leaf->filterMaxValue.has_value());
         CHECK(*leaf->filterMinValue == 42.0);
@@ -911,9 +911,9 @@ TEST_CASE("ParseQuery: single-value numeric IN [N] demotes to equality", "[query
     SECTION("timestamp single-item list")
     {
         const auto expr = ParseOrFail("ts in [2024-01-01T00:00:00Z]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Time);
+        CHECK(leaf->type == FilterCondition::Type::Time);
         REQUIRE(leaf->filterBegin.has_value());
         REQUIRE(leaf->filterEnd.has_value());
         CHECK(*leaf->filterBegin == *leaf->filterEnd);
@@ -925,17 +925,17 @@ TEST_CASE("ParseQuery: single-value numeric IN [N] demotes to equality", "[query
         // separate follow-up. Guard the current behaviour so we
         // don't regress the single-item path by accident.
         const auto expr = ParseOrFail("latency in [1, 2]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Enumeration);
+        CHECK(leaf->type == FilterCondition::Type::Enumeration);
         CHECK(leaf->filterValues.size() == 2);
     }
     SECTION("string single-item list stays Enumeration")
     {
         const auto expr = ParseOrFail("service in [auth]");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Enumeration);
+        CHECK(leaf->type == FilterCondition::Type::Enumeration);
         REQUIRE(leaf->filterValues.size() == 1);
         CHECK(leaf->filterValues.front() == "auth");
     }
@@ -949,9 +949,9 @@ TEST_CASE("ParseQuery: NOT IN sugar wraps the IN leaf in NOT", "[query_parser]")
     const auto *notNode = std::get_if<FilterExpression::Not>(&expr.node);
     REQUIRE(notNode != nullptr);
     REQUIRE(notNode->child != nullptr);
-    const LeafRule *inner = AsLeaf(*notNode->child);
+    const FilterCondition *inner = AsLeaf(*notNode->child);
     REQUIRE(inner != nullptr);
-    CHECK(inner->type == LeafRule::Type::Enumeration);
+    CHECK(inner->type == FilterCondition::Type::Enumeration);
     CHECK(inner->filterValues.size() == 2);
 
     // `NOT` without a following `IN` at leaf position stays an error.
@@ -1028,7 +1028,7 @@ TEST_CASE("ParseQuery: numeric one-sided `<` and `>` bounds", "[query_parser]")
     SECTION("< is strict (below the inclusive bound)")
     {
         const auto expr = ParseOrFail("latency < 100");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMaxValue.has_value());
         CHECK(*leaf->filterMaxValue < 100.0);
@@ -1038,8 +1038,8 @@ TEST_CASE("ParseQuery: numeric one-sided `<` and `>` bounds", "[query_parser]")
     {
         const auto strict = ParseOrFail("latency < 100");
         const auto inclusive = ParseOrFail("latency <= 100");
-        const LeafRule *strictLeaf = AsLeaf(strict);
-        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        const FilterCondition *strictLeaf = AsLeaf(strict);
+        const FilterCondition *inclusiveLeaf = AsLeaf(inclusive);
         REQUIRE(strictLeaf != nullptr);
         REQUIRE(inclusiveLeaf != nullptr);
         REQUIRE(strictLeaf->filterMaxValue.has_value());
@@ -1050,8 +1050,8 @@ TEST_CASE("ParseQuery: numeric one-sided `<` and `>` bounds", "[query_parser]")
     {
         const auto strict = ParseOrFail("latency > 100");
         const auto inclusive = ParseOrFail("latency >= 100");
-        const LeafRule *strictLeaf = AsLeaf(strict);
-        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        const FilterCondition *strictLeaf = AsLeaf(strict);
+        const FilterCondition *inclusiveLeaf = AsLeaf(inclusive);
         REQUIRE(strictLeaf != nullptr);
         REQUIRE(inclusiveLeaf != nullptr);
         REQUIRE(strictLeaf->filterMinValue.has_value());
@@ -1065,9 +1065,9 @@ TEST_CASE("ParseQuery: time one-sided `<`, `<=`, `>`, `>=` bounds", "[query_pars
     SECTION("<= is inclusive")
     {
         const auto expr = ParseOrFail("ts <= 2024-01-02T00:00:00Z");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Time);
+        CHECK(leaf->type == FilterCondition::Type::Time);
         REQUIRE(leaf->filterEnd.has_value());
         CHECK_FALSE(leaf->filterBegin.has_value());
     }
@@ -1075,8 +1075,8 @@ TEST_CASE("ParseQuery: time one-sided `<`, `<=`, `>`, `>=` bounds", "[query_pars
     {
         const auto strict = ParseOrFail("ts < 2024-01-02T00:00:00Z");
         const auto inclusive = ParseOrFail("ts <= 2024-01-02T00:00:00Z");
-        const LeafRule *strictLeaf = AsLeaf(strict);
-        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        const FilterCondition *strictLeaf = AsLeaf(strict);
+        const FilterCondition *inclusiveLeaf = AsLeaf(inclusive);
         REQUIRE(strictLeaf != nullptr);
         REQUIRE(inclusiveLeaf != nullptr);
         REQUIRE(strictLeaf->filterEnd.has_value());
@@ -1087,8 +1087,8 @@ TEST_CASE("ParseQuery: time one-sided `<`, `<=`, `>`, `>=` bounds", "[query_pars
     {
         const auto strict = ParseOrFail("ts > 2024-01-02T00:00:00Z");
         const auto inclusive = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
-        const LeafRule *strictLeaf = AsLeaf(strict);
-        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        const FilterCondition *strictLeaf = AsLeaf(strict);
+        const FilterCondition *inclusiveLeaf = AsLeaf(inclusive);
         REQUIRE(strictLeaf != nullptr);
         REQUIRE(inclusiveLeaf != nullptr);
         REQUIRE(strictLeaf->filterBegin.has_value());
@@ -1104,16 +1104,16 @@ TEST_CASE("ParseQuery: signed numeric literals in comparisons", "[query_parser]"
     SECTION("negative signed number")
     {
         const auto expr = ParseOrFail("delta > -1.5");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Number);
+        CHECK(leaf->type == FilterCondition::Type::Number);
         REQUIRE(leaf->filterMinValue.has_value());
         CHECK(*leaf->filterMinValue > -1.5);
     }
     SECTION("positive signed number")
     {
         const auto expr = ParseOrFail("delta >= +2");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMinValue.has_value());
         CHECK(*leaf->filterMinValue == 2.0);
@@ -1121,7 +1121,7 @@ TEST_CASE("ParseQuery: signed numeric literals in comparisons", "[query_parser]"
     SECTION("scientific notation")
     {
         const auto expr = ParseOrFail("delta >= 1e2");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         REQUIRE(leaf->filterMinValue.has_value());
         CHECK(*leaf->filterMinValue == 100.0);
@@ -1137,35 +1137,35 @@ TEST_CASE("ParseQuery: quoted string escape sequences", "[query_parser][lexer]")
     SECTION("\\\" produces a literal quote")
     {
         const auto expr = ParseOrFail(R"(col=" a\"b ")");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == " a\"b ");
     }
     SECTION("\\\\ produces a literal backslash")
     {
         const auto expr = ParseOrFail(R"(col="a\\b")");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "a\\b");
     }
     SECTION("\\n produces a newline")
     {
         const auto expr = ParseOrFail(R"(col="a\nb")");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "a\nb");
     }
     SECTION("\\r produces a carriage return")
     {
         const auto expr = ParseOrFail(R"(col="a\rb")");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "a\rb");
     }
     SECTION("\\t produces a tab")
     {
         const auto expr = ParseOrFail(R"(col="a\tb")");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "a\tb");
     }
@@ -1174,7 +1174,7 @@ TEST_CASE("ParseQuery: quoted string escape sequences", "[query_parser][lexer]")
         // `\x` isn't a defined escape; the default arm drops the `\\`
         // and keeps the `x` verbatim.
         const auto expr = ParseOrFail(R"(col="a\xb")");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "axb");
     }
@@ -1188,7 +1188,7 @@ TEST_CASE("ParseQuery: regex literal escape sequences", "[query_parser][lexer]")
         // must accept `\\/` as an escaped delimiter and hand `/` to
         // the regex engine.
         const auto expr = ParseOrFail("path ~ /etc\\/pass/");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "etc/pass");
     }
@@ -1197,7 +1197,7 @@ TEST_CASE("ParseQuery: regex literal escape sequences", "[query_parser][lexer]")
         // `\d` etc. are decoded by `QRegularExpression`, not by the
         // lexer, so they must arrive with the backslash intact.
         const auto expr = ParseOrFail("msg ~ /\\d+/");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
         CHECK(*leaf->filterString == "\\d+");
     }
@@ -1226,9 +1226,9 @@ TEST_CASE("ParseQuery: `%` accepts a bareword pattern", "[query_parser]")
     // right-hand sides; the Ident arm was under-tested by the initial
     // suite (only Quoted).
     const auto expr = ParseOrFail("path% abc");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->matchType == LeafRule::Match::Wildcard);
+    CHECK(leaf->matchType == FilterCondition::Match::Wildcard);
     CHECK(*leaf->filterString == "abc");
 }
 
@@ -1239,12 +1239,12 @@ TEST_CASE("ParseQuery: date-only ISO literal is accepted", "[query_parser]")
     // `TryLexIsoTimestamp` accepts bare `YYYY-MM-DD` without a `T`
     // portion; the parser then lands at midnight UTC on that day.
     const auto expr = ParseOrFail("ts >= 2024-01-02");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Time);
+    CHECK(leaf->type == FilterCondition::Type::Time);
     REQUIRE(leaf->filterBegin.has_value());
     const auto reference = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
-    const LeafRule *refLeaf = AsLeaf(reference);
+    const FilterCondition *refLeaf = AsLeaf(reference);
     REQUIRE(refLeaf != nullptr);
     REQUIRE(refLeaf->filterBegin.has_value());
     CHECK(*leaf->filterBegin == *refLeaf->filterBegin);
@@ -1256,9 +1256,9 @@ TEST_CASE("ParseQuery: ISO timestamp accepts space separator between date and ti
     // `FormatTimestampMicros` doesn't emit (space) is still safe to
     // paste in.
     const auto expr = ParseOrFail("ts >= 2024-01-02 03:04:05Z");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Time);
+    CHECK(leaf->type == FilterCondition::Type::Time);
     REQUIRE(leaf->filterBegin.has_value());
 }
 
@@ -1287,8 +1287,8 @@ TEST_CASE("ParseQuery: ISO timestamp timezone shapes", "[query_parser]")
     // offsets are numerically equal.
     const auto colonForm = ParseOrFail("ts >= 2024-01-02T00:00:00+01:30");
     const auto compactForm = ParseOrFail("ts >= 2024-01-02T00:00:00+0130");
-    const LeafRule *colonLeaf = AsLeaf(colonForm);
-    const LeafRule *compactLeaf = AsLeaf(compactForm);
+    const FilterCondition *colonLeaf = AsLeaf(colonForm);
+    const FilterCondition *compactLeaf = AsLeaf(compactForm);
     REQUIRE(colonLeaf != nullptr);
     REQUIRE(compactLeaf != nullptr);
     REQUIRE(colonLeaf->filterBegin.has_value());
@@ -1331,18 +1331,18 @@ TEST_CASE("ParseQuery: `=` payload alternatives", "[query_parser]")
         // The Ident arm of `FinishEqLeaf` was under-tested by the
         // initial suite (Quoted-only).
         const auto expr = ParseOrFail("service=auth");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::String);
-        CHECK(leaf->matchType == LeafRule::Match::Exactly);
+        CHECK(leaf->type == FilterCondition::Type::String);
+        CHECK(leaf->matchType == FilterCondition::Match::Exactly);
         CHECK(*leaf->filterString == "auth");
     }
     SECTION("`=false` becomes a Boolean leaf")
     {
         const auto expr = ParseOrFail("succeeded=false");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::Boolean);
+        CHECK(leaf->type == FilterCondition::Type::Boolean);
         REQUIRE(leaf->filterValues.size() == 1);
         CHECK(leaf->filterValues.front() == "false");
     }
@@ -1366,10 +1366,10 @@ TEST_CASE("ParseQuery: `:` payload alternatives", "[query_parser]")
         // `:` treats the RHS as literal text, so `latency:42` matches
         // rows whose `latency` cell contains the substring "42".
         const auto expr = ParseOrFail("latency:42");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::String);
-        CHECK(leaf->matchType == LeafRule::Match::Contains);
+        CHECK(leaf->type == FilterCondition::Type::String);
+        CHECK(leaf->matchType == FilterCondition::Match::Contains);
         CHECK(*leaf->filterString == "42");
     }
     SECTION("true payload becomes a String Contains (not Boolean)")
@@ -1377,10 +1377,10 @@ TEST_CASE("ParseQuery: `:` payload alternatives", "[query_parser]")
         // Only `=` promotes `true`/`false` to a Boolean leaf; the `:`
         // arm keeps them as literal-text substring matches.
         const auto expr = ParseOrFail("state:true");
-        const LeafRule *leaf = AsLeaf(expr);
+        const FilterCondition *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);
-        CHECK(leaf->type == LeafRule::Type::String);
-        CHECK(leaf->matchType == LeafRule::Match::Contains);
+        CHECK(leaf->type == FilterCondition::Type::String);
+        CHECK(leaf->matchType == FilterCondition::Match::Contains);
         CHECK(*leaf->filterString == "true");
     }
     SECTION("no value after `:` errors")
@@ -1514,9 +1514,9 @@ TEST_CASE("ParseQuery: open-lower time range parses", "[query_parser]")
     // Covers the `[..end]` branch in `FinishInLeaf` that jumps
     // straight into `FinishRangeUpper` without a firstTok.
     const auto expr = ParseOrFail("ts in [..2024-01-02T00:00:00Z]");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Time);
+    CHECK(leaf->type == FilterCondition::Type::Time);
     CHECK_FALSE(leaf->filterBegin.has_value());
     REQUIRE(leaf->filterEnd.has_value());
 }
@@ -1528,9 +1528,9 @@ TEST_CASE("ParseQuery: multi-value numeric IN list stays Enumeration", "[query_p
     // enum-set predicate handles them (see the pretty-print regression
     // suite for the boolean multi-value round-trip).
     const auto expr = ParseOrFail("latency in [1, 2, 3]");
-    const LeafRule *leaf = AsLeaf(expr);
+    const FilterCondition *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
-    CHECK(leaf->type == LeafRule::Type::Enumeration);
+    CHECK(leaf->type == FilterCondition::Type::Enumeration);
     CHECK(leaf->filterValues.size() == 3);
 }
 
@@ -1591,7 +1591,7 @@ TEST_CASE("ParseQuery: trailing tokens after a complete expression error", "[que
 
 TEST_CASE("FormatExpression: string match kinds round-trip", "[query_parser][pretty]")
 {
-    // One SECTION per `LeafRule::Match` arm of `AppendLeaf` so a
+    // One SECTION per `FilterCondition::Match` arm of `AppendLeaf` so a
     // dispatch swap fails visibly.
     SECTION("Contains")
     {
@@ -1658,8 +1658,8 @@ TEST_CASE("FormatExpression: numeric leaf shapes", "[query_parser][pretty]")
         // case (a shape the parser itself won't produce, but which the
         // formatter still needs to handle for hand-edited configs).
         FilterExpression expr;
-        LeafRule rule;
-        rule.type = LeafRule::Type::Number;
+        FilterCondition rule;
+        rule.type = FilterCondition::Type::Number;
         rule.columnKeys = {"latency"};
         expr.node = FilterExpression::Leaf{rule};
         const std::string formatted = FormatExpression(expr);
@@ -1685,8 +1685,8 @@ TEST_CASE("FormatExpression: time leaf shapes", "[query_parser][pretty]")
     SECTION("no-bounds time leaf renders as ` IN []`")
     {
         FilterExpression expr;
-        LeafRule rule;
-        rule.type = LeafRule::Type::Time;
+        FilterCondition rule;
+        rule.type = FilterCondition::Type::Time;
         rule.columnKeys = {"ts"};
         expr.node = FilterExpression::Leaf{rule};
         const std::string formatted = FormatExpression(expr);
@@ -1715,8 +1715,8 @@ TEST_CASE("FormatExpression: boolean leaf shapes", "[query_parser][pretty]")
         // but that shows up in hand-edited or partially-materialised
         // configs.
         FilterExpression expr;
-        LeafRule rule;
-        rule.type = LeafRule::Type::Boolean;
+        FilterCondition rule;
+        rule.type = FilterCondition::Type::Boolean;
         rule.columnKeys = {"succeeded"};
         expr.node = FilterExpression::Leaf{rule};
         const std::string formatted = FormatExpression(expr);

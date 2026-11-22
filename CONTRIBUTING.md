@@ -199,7 +199,7 @@ The field names follow the C++ members of `LogConfiguration`, `Column`, `Session
 - Unknown keys are errors at every level. The error names the key and the file.
 - `header` and `keys` of a column and the top-level `version` and `columns` are required. Every other field is optional and takes the default of its C++ member, which is documented on the member.
 - A column's `type` is written only if the user chose it. A column the detector owns (`autoDetect` is true) is written without a type. On load, a column without a type is a column with `autoDetect` true and type `any`, and it is detected again. A column with a type has `autoDetect` false. So a saved file holds the choices of the user, and the detected types stay with the table. A column that `AppendKeys` makes a Time column because of its key name counts as chosen.
-- The sort names its column by `columnKeys`, found the way filter leaves find theirs with `LeafRule::columnKeys`. Empty keys mean no sort.
+- The sort names its column by `columnKeys`, found the way filter leaves find theirs with `FilterCondition::columnKeys`. Empty keys mean no sort.
 - The `format` of a source is one object: `{ "type": "regex", "regex": { "pattern": "...", "continuation": "untilNextHeader", "headerAnchor": "..." }, "logfmtMultiline": true }`. `type` is `json`, `logfmt`, `csv` or `regex`. The `regex` object is written for the regex format only. A regex template file is a separate format and keeps its flat `pattern`, `continuationMode` and `headerAnchor` keys.
 - `SaveScope::Columns` writes `version` and `columns` only. `SaveScope::Full` also writes `view` and `source`.
 

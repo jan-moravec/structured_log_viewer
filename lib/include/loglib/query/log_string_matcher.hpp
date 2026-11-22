@@ -36,9 +36,11 @@ namespace loglib
  *
  * The returned function can be called from several threads.
  */
-[[nodiscard]] CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, LeafRule::Match match);
+[[nodiscard]] CallbackStringRowPredicate::MatchFn MakeStringMatcher(
+    std::string_view pattern, FilterCondition::Match match
+);
 
 /** @brief Says why MakeStringMatcher would match nothing for this pattern. Returns nullopt if the pattern compiles. */
-[[nodiscard]] std::optional<std::string> StringPatternProblem(std::string_view pattern, LeafRule::Match match);
+[[nodiscard]] std::optional<std::string> StringPatternProblem(std::string_view pattern, FilterCondition::Match match);
 
 } // namespace loglib

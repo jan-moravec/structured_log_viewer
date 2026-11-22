@@ -18,7 +18,7 @@ namespace
 {
 
 using Column = loglib::Column;
-using Leaf = loglib::LeafRule;
+using Leaf = loglib::FilterCondition;
 
 /// One-column fixture bound to @p key.
 [[nodiscard]] Column MakeColumn(std::string header, std::string key, loglib::ColumnType type)
@@ -30,7 +30,9 @@ using Leaf = loglib::LeafRule;
     return col;
 }
 
-[[nodiscard]] Leaf MakeStringLeaf(std::string key, loglib::LeafRule::Match matchType, std::optional<std::string> needle)
+[[nodiscard]] Leaf MakeStringLeaf(
+    std::string key, loglib::FilterCondition::Match matchType, std::optional<std::string> needle
+)
 {
     Leaf rule;
     rule.type = Leaf::Type::String;

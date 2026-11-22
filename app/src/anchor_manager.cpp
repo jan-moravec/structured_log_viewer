@@ -1,5 +1,6 @@
 #include "anchor_manager.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/support/theme.hpp>
 
 #include <algorithm>

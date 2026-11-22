@@ -424,43 +424,49 @@ private slots:
         QVERIFY2(componentCol >= 0, "fixture must produce a `component` column");
 
         using Rule = loglib::HighlightRule;
-        auto makeRule =
-            [](const std::string &name, const std::string &key, Rule::Match matchType, const std::string &needle) {
-                Rule r;
-                r.name = name;
-                r.enabled = true;
-                r.columnKeys = {key};
-                r.type = Rule::Type::String;
-                r.matchType = matchType;
-                r.filterString = needle;
-                r.foregroundIndex = 1;
-                r.backgroundIndex = 2;
-                return r;
-            };
+        auto makeRule = [](const std::string &name,
+                           const std::string &key,
+                           loglib::FilterCondition::Match matchType,
+                           const std::string &needle) {
+            Rule r;
+            r.name = name;
+            r.enabled = true;
+            r.condition.columnKeys = {key};
+            r.condition.type = loglib::FilterCondition::Type::String;
+            r.condition.matchType = matchType;
+            r.condition.filterString = needle;
+            r.style.foregroundIndex = 1;
+            r.style.backgroundIndex = 2;
+            return r;
+        };
 
         // Ten rules across columns and match types so the rebuild
         // covers the `Contains` fast path, regex, and enum-column
         // paths. Overlaps on `info` force the last-match-wins loop
         // to do real work per row instead of short-circuiting.
         std::vector<Rule> ruleSet;
-        ruleSet.push_back(makeRule("level-info", "level", Rule::Match::Contains, "info"));
-        ruleSet.push_back(makeRule("level-warn", "level", Rule::Match::Contains, "warn"));
-        ruleSet.push_back(makeRule("level-err", "level", Rule::Match::Contains, "err"));
-        ruleSet.push_back(makeRule("comp-auth", "component", Rule::Match::Contains, "auth"));
-        ruleSet.push_back(makeRule("comp-net", "component", Rule::Match::Contains, "net"));
-        ruleSet.push_back(makeRule("comp-db", "component", Rule::Match::Contains, "db"));
-        ruleSet.push_back(makeRule("comp-exact", "component", Rule::Match::Exactly, "component-2"));
-        ruleSet.push_back(makeRule("comp-wild", "component", Rule::Match::Wildcard, "component-?"));
+        ruleSet.push_back(makeRule("level-info", "level", loglib::FilterCondition::Match::Contains, "info"));
+        ruleSet.push_back(makeRule("level-warn", "level", loglib::FilterCondition::Match::Contains, "warn"));
+        ruleSet.push_back(makeRule("level-err", "level", loglib::FilterCondition::Match::Contains, "err"));
+        ruleSet.push_back(makeRule("comp-auth", "component", loglib::FilterCondition::Match::Contains, "auth"));
+        ruleSet.push_back(makeRule("comp-net", "component", loglib::FilterCondition::Match::Contains, "net"));
+        ruleSet.push_back(makeRule("comp-db", "component", loglib::FilterCondition::Match::Contains, "db"));
+        ruleSet.push_back(makeRule("comp-exact", "component", loglib::FilterCondition::Match::Exactly, "component-2"));
+        ruleSet.push_back(makeRule("comp-wild", "component", loglib::FilterCondition::Match::Wildcard, "component-?"));
         if (bodyCol >= 0)
         {
-            ruleSet.push_back(makeRule("body-oops", "body", Rule::Match::Contains, "oops"));
-            ruleSet.push_back(makeRule("body-rx", "body", Rule::Match::RegularExpression, R"(msg \d{4}$)"));
+            ruleSet.push_back(makeRule("body-oops", "body", loglib::FilterCondition::Match::Contains, "oops"));
+            ruleSet.push_back(
+                makeRule("body-rx", "body", loglib::FilterCondition::Match::RegularExpression, R"(msg \d{4}$)")
+            );
         }
         else
         {
             // Keep the total at 10 when the fixture lacks `body`.
-            ruleSet.push_back(makeRule("level-debug", "level", Rule::Match::Contains, "debug"));
-            ruleSet.push_back(makeRule("level-any", "level", Rule::Match::RegularExpression, R"(.*)"));
+            ruleSet.push_back(makeRule("level-debug", "level", loglib::FilterCondition::Match::Contains, "debug"));
+            ruleSet.push_back(
+                makeRule("level-any", "level", loglib::FilterCondition::Match::RegularExpression, R"(.*)")
+            );
         }
 
         HighlightRuleSet rules;

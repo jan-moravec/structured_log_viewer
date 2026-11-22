@@ -47,25 +47,8 @@ std::optional<std::size_t> FindColumnByKeys(
     return std::nullopt;
 }
 
-loglib::LeafRule ToLeafRule(const loglib::HighlightRule &rule)
-{
-    // Plain copy of shared payload; rendering fields (name,
-    // enabled, colours, bold/italic) stay on HighlightRule.
-    loglib::LeafRule leaf;
-    leaf.type = rule.type;
-    leaf.columnKeys = rule.columnKeys;
-    leaf.matchType = rule.matchType;
-    leaf.filterString = rule.filterString;
-    leaf.filterBegin = rule.filterBegin;
-    leaf.filterEnd = rule.filterEnd;
-    leaf.filterMinValue = rule.filterMinValue;
-    leaf.filterMaxValue = rule.filterMaxValue;
-    leaf.filterValues = rule.filterValues;
-    return leaf;
-}
-
 std::optional<loglib::RowPredicate> CompileLeaf(
-    const loglib::LeafRule &rule,
+    const loglib::FilterCondition &rule,
     std::optional<std::size_t> resolvedColumn,
     const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
@@ -76,7 +59,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         return std::nullopt;
     }
     const std::size_t column = *resolvedColumn;
-    using T = loglib::LeafRule::Type;
+    using T = loglib::FilterCondition::Type;
     switch (rule.type)
     {
     case T::Time:
@@ -215,7 +198,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         // matches every row and would silently blank / paint the
         // whole view. Exactly "" is genuinely useful (match
         // empty column values), so allow it.
-        if (rule.filterString->empty() && *rule.matchType != loglib::LeafRule::Match::Exactly)
+        if (rule.filterString->empty() && *rule.matchType != loglib::FilterCondition::Match::Exactly)
         {
             return std::nullopt;
         }
@@ -227,7 +210,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
     }
     }
     // Unreachable: switch is exhaustive with no default, so a
-    // new LeafRule::Type triggers -Wswitch here.
+    // new FilterCondition::Type triggers -Wswitch here.
     return std::nullopt;
 }
 
@@ -246,14 +229,14 @@ void CollectFilterProblems(
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)
             {
-                if (!n.rule.columnKeys.empty() && !FindColumnByKeys(n.rule.columnKeys, columns).has_value())
+                if (!n.condition.columnKeys.empty() && !FindColumnByKeys(n.condition.columnKeys, columns).has_value())
                 {
-                    out.push_back("unknown column '" + n.rule.columnKeys.front() + "'");
+                    out.push_back("unknown column '" + n.condition.columnKeys.front() + "'");
                 }
-                if (n.rule.type == loglib::LeafRule::Type::String && n.rule.filterString.has_value() &&
-                    n.rule.matchType.has_value())
+                if (n.condition.type == loglib::FilterCondition::Type::String && n.condition.filterString.has_value() &&
+                    n.condition.matchType.has_value())
                 {
-                    if (auto problem = StringPatternProblem(*n.rule.filterString, *n.rule.matchType))
+                    if (auto problem = StringPatternProblem(*n.condition.filterString, *n.condition.matchType))
                     {
                         out.push_back(std::move(*problem));
                     }
@@ -312,8 +295,8 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)
             {
-                const std::optional<std::size_t> resolved = FindColumnByKeys(n.rule.columnKeys, columns);
-                auto predicate = CompileLeaf(n.rule, resolved, columns, table);
+                const std::optional<std::size_t> resolved = FindColumnByKeys(n.condition.columnKeys, columns);
+                auto predicate = CompileLeaf(n.condition, resolved, columns, table);
                 if (!predicate.has_value())
                 {
                     return std::nullopt;

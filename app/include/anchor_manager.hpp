@@ -1,5 +1,6 @@
 #pragma once
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 

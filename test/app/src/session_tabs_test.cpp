@@ -165,11 +165,11 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
         {
             return {};
         }
-        loglib::LeafRule rule;
-        rule.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition rule;
+        rule.type = loglib::FilterCondition::Type::String;
         rule.columnKeys = configuration.columns.front().keys;
         rule.filterString = filterToken.toStdString();
-        rule.matchType = loglib::LeafRule::Match::Contains;
+        rule.matchType = loglib::FilterCondition::Match::Contains;
         configuration.view.expression = loglib::MakeAnd({loglib::MakeLeaf(std::move(rule))});
         loglib::WriteSessionBundle(table, configuration, logapp::QStringToFsPath(path));
         return path;
@@ -252,11 +252,11 @@ QStringList FilterMenuTitles(const MainWindow &window)
 
 void AddContainsFilter(MainWindow &window, const QString &token)
 {
-    loglib::LeafRule rule;
-    rule.type = loglib::LeafRule::Type::String;
+    loglib::FilterCondition rule;
+    rule.type = loglib::FilterCondition::Type::String;
     rule.columnKeys = {"n"};
     rule.filterString = token.toStdString();
-    rule.matchType = loglib::LeafRule::Match::Contains;
+    rule.matchType = loglib::FilterCondition::Match::Contains;
     window.AddLogFilterForTest(QUuid::createUuid().toString(), rule);
 }
 
@@ -278,7 +278,7 @@ void AddContainsFilter(MainWindow &window, const QString &token)
     const auto visit = [&](const loglib::FilterExpression &node, const auto &self) -> bool {
         if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&node.node); leaf != nullptr)
         {
-            return leaf->rule.filterString.has_value() && *leaf->rule.filterString == needle;
+            return leaf->condition.filterString.has_value() && *leaf->condition.filterString == needle;
         }
         if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&node.node); asAnd != nullptr)
         {
@@ -316,10 +316,10 @@ void AddContainsFilter(MainWindow &window, const QString &token)
 {
     loglib::HighlightRule rule;
     rule.name = "draft-rule";
-    rule.columnKeys = {"n"};
-    rule.type = loglib::HighlightRule::Type::String;
-    rule.matchType = loglib::HighlightRule::Match::Contains;
-    rule.filterString = std::string{"draft-needle"};
+    rule.condition.columnKeys = {"n"};
+    rule.condition.type = loglib::FilterCondition::Type::String;
+    rule.condition.matchType = loglib::FilterCondition::Match::Contains;
+    rule.condition.filterString = std::string{"draft-needle"};
     return rule;
 }
 
@@ -1627,10 +1627,10 @@ private slots:
         // this pin is about the ownership boundary, not the shell
         // route.
         sessionA->MutableSimpleLeafOrder().emplace_back("leaf-A");
-        sessionA->MutableSimpleLeaves()[std::string{"leaf-A"}] = loglib::LeafRule{};
+        sessionA->MutableSimpleLeaves()[std::string{"leaf-A"}] = loglib::FilterCondition{};
 
         sessionB->MutableSimpleLeafOrder().emplace_back("leaf-B");
-        sessionB->MutableSimpleLeaves()[std::string{"leaf-B"}] = loglib::LeafRule{};
+        sessionB->MutableSimpleLeaves()[std::string{"leaf-B"}] = loglib::FilterCondition{};
 
         QCOMPARE(sessionA->SimpleLeafOrder().size(), std::size_t{1});
         QCOMPARE(sessionB->SimpleLeafOrder().size(), std::size_t{1});

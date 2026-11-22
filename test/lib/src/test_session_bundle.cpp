@@ -189,7 +189,7 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
     return compressed;
 }
 
-[[nodiscard]] loglib::FilterExpression SingleLeafExpression(loglib::LeafRule rule)
+[[nodiscard]] loglib::FilterExpression SingleLeafExpression(loglib::FilterCondition rule)
 {
     loglib::FilterExpression expression;
     expression.node = loglib::FilterExpression::Leaf{std::move(rule)};
@@ -289,10 +289,10 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
          .levelMapping = {},
          .autoDetect = false},
     };
-    const loglib::LeafRule filter{
-        .type = loglib::LeafRule::Type::String,
+    const loglib::FilterCondition filter{
+        .type = loglib::FilterCondition::Type::String,
         .columnKeys = {"service"},
-        .matchType = loglib::LeafRule::Match::Exactly,
+        .matchType = loglib::FilterCondition::Match::Exactly,
         .filterString = "auth",
         .filterBegin = std::nullopt,
         .filterEnd = std::nullopt,
@@ -310,19 +310,12 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     configuration.view.highlightRules = {
         {.name = "Auth",
          .enabled = true,
-         .columnKeys = {"service"},
-         .type = loglib::LeafRule::Type::String,
-         .matchType = loglib::LeafRule::Match::Contains,
-         .filterString = "auth",
-         .filterBegin = std::nullopt,
-         .filterEnd = std::nullopt,
-         .filterMinValue = std::nullopt,
-         .filterMaxValue = std::nullopt,
-         .filterValues = {},
-         .foregroundIndex = 2,
-         .backgroundIndex = 3,
-         .bold = true,
-         .italic = false},
+         .condition =
+             {.type = loglib::FilterCondition::Type::String,
+              .columnKeys = {"service"},
+              .matchType = loglib::FilterCondition::Match::Contains,
+              .filterString = "auth"},
+         .style = {.foregroundIndex = 2, .backgroundIndex = 3, .bold = true, .italic = false}},
     };
 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());

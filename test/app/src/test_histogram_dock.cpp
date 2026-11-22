@@ -768,7 +768,7 @@ private slots:
         const auto &filters = window.Filters();
         const auto it = filters.find("histogram-time-range");
         QVERIFY2(it != filters.end(), "sentinel filter ID must be installed");
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(
             it->second.columnKeys, window.Model()->Layout().Columns()[static_cast<size_t>(hm->TimeColumnIndex())].keys
         );

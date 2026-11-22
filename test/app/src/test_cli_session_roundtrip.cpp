@@ -291,7 +291,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("roundtrip-filter")),
             Q_ARG(int, msgColumn),
             Q_ARG(QString, QStringLiteral("l")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
@@ -420,10 +420,10 @@ private:
         {
             loglib::HighlightRule rule;
             rule.name = "errors";
-            rule.columnKeys = {"level"};
-            rule.type = loglib::HighlightRule::Type::Enumeration;
-            rule.filterValues = {"Error"};
-            rule.backgroundIndex = 1;
+            rule.condition.columnKeys = {"level"};
+            rule.condition.type = loglib::FilterCondition::Type::Enumeration;
+            rule.condition.filterValues = {"Error"};
+            rule.style.backgroundIndex = 1;
             seed.view.highlightRules.push_back(rule);
         }
         const QString seedPath = mDir.filePath(QStringLiteral("seed.json"));

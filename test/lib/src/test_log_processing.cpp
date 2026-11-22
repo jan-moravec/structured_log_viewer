@@ -945,7 +945,7 @@ TEST_CASE("ParseQuery reads time bounds without a zone in the zone it is given",
     const auto bound = [](std::string_view text, const TimeZoneContext &zone) -> std::optional<std::int64_t> {
         const auto parsed = ParseQuery("ts IN [" + std::string(text) + "..]", zone);
         REQUIRE(parsed.has_value());
-        return std::get<FilterExpression::Leaf>(parsed->node).rule.filterBegin;
+        return std::get<FilterExpression::Leaf>(parsed->node).condition.filterBegin;
     };
     const auto utcBound = bound("2024-01-01T01:00:00Z", TimeZoneContext{});
 

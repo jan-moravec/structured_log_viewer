@@ -3,6 +3,7 @@
 #include "anchor_manager.hpp"
 #include "scoped_connections.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/query/histogram_bucket_index.hpp>

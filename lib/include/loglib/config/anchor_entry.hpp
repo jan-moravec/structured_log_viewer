@@ -9,11 +9,15 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace loglib
 {
+
+/** @brief The number of anchor colors a theme offers. An anchor refers to them by index, starting at 0. */
+inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 
 /**
  * @brief A saved bookmark on one log line.

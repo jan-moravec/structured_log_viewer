@@ -34,7 +34,7 @@ using namespace loglib;
 namespace
 {
 
-[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<LeafRule> leaves)
+[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<FilterCondition> leaves)
 {
     FilterExpression::And node;
     for (auto &rule : leaves)
@@ -92,15 +92,15 @@ namespace
     hidden.autoDetect = false;
     configuration.columns.push_back(hidden);
 
-    LeafRule leaf;
-    leaf.type = LeafRule::Type::String;
+    FilterCondition leaf;
+    leaf.type = FilterCondition::Type::String;
     leaf.columnKeys = {"msg", "message"};
-    leaf.matchType = LeafRule::Match::Contains;
+    leaf.matchType = FilterCondition::Match::Contains;
     leaf.filterString = "boot";
     configuration.view.expression = LeavesAsExpression({leaf});
     configuration.view.sort = Sort{.columnKeys = {"ts"}, .descending = true};
     configuration.view.highlightRules.push_back(
-        HighlightRule{.name = "errors", .columnKeys = {"level"}, .filterString = std::string{"error"}}
+        HighlightRule{.name = "errors", .condition = {.columnKeys = {"level"}, .filterString = std::string{"error"}}}
     );
     configuration.view.anchors.push_back(
         AnchorEntry{.locator = "c:/logs/app.json", .lineId = 7, .colorIndex = 2, .note = "start"}
@@ -420,6 +420,13 @@ TEST_CASE("An unknown key is a FormatError that names the key and the file", "[l
         CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"highlightRules":[{"extraRuleKey":1}]}})")
                   .contains("extraRuleKey"));
     }
+    SECTION("in the condition and the style of a highlight rule")
+    {
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"highlightRules":[{"condition":{"extraConditionKey":1}}]}})")
+                  .contains("extraConditionKey"));
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"highlightRules":[{"style":{"extraStyleKey":1}}]}})")
+                  .contains("extraStyleKey"));
+    }
     SECTION("the old autoDetect key is not known")
     {
         CHECK(ErrorOf(R"({"version":1,"columns":[{"header":"a","keys":["a"],"autoDetect":false}]})")
@@ -571,13 +578,50 @@ TEST_CASE("Anchors and highlight rules round-trip in the view", "[log_configurat
         AnchorEntry{.locator = "c:/logs/a.json", .lineId = 7, .colorIndex = 2, .note = "n"},
     };
     configuration.view.highlightRules = {
-        HighlightRule{.name = "first", .columnKeys = {"a"}},
-        HighlightRule{.name = "second", .enabled = false, .columnKeys = {"b"}, .bold = true},
+        HighlightRule{.name = "first", .condition = {.columnKeys = {"a"}}},
+        HighlightRule{.name = "second", .enabled = false, .condition = {.columnKeys = {"b"}}, .style = {.bold = true}},
     };
 
     const LogConfiguration loaded = ParseConfiguration(SerializeConfiguration(configuration));
     CHECK(loaded.view.anchors == configuration.view.anchors);
     CHECK(loaded.view.highlightRules == configuration.view.highlightRules);
+}
+
+TEST_CASE(
+    "A highlight rule of every condition type round-trips with a nested condition and style",
+    "[log_configuration][view]"
+)
+{
+    LogConfiguration configuration;
+    configuration.view.highlightRules = {
+        {.name = "text",
+         .condition =
+             {.type = FilterCondition::Type::String,
+              .columnKeys = {"msg"},
+              .matchType = FilterCondition::Match::Wildcard,
+              .filterString = "a*"},
+         .style = {.foregroundIndex = 1, .backgroundIndex = 2, .bold = true, .italic = true}},
+        {.name = "time",
+         .condition = {.type = FilterCondition::Type::Time, .columnKeys = {"ts"}, .filterBegin = 10, .filterEnd = 20}},
+        {.name = "level",
+         .condition =
+             {.type = FilterCondition::Type::Enumeration, .columnKeys = {"level"}, .filterValues = {"Error", "Warn"}}},
+        {.name = "latency",
+         .condition =
+             {.type = FilterCondition::Type::Number,
+              .columnKeys = {"latency"},
+              .filterMinValue = 1.5,
+              .filterMaxValue = 9.0}},
+        {.name = "flag",
+         .condition = {.type = FilterCondition::Type::Boolean, .columnKeys = {"ok"}, .filterValues = {"false"}}},
+    };
+
+    const std::string json = SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact);
+    CHECK(ParseConfiguration(json).view.highlightRules == configuration.view.highlightRules);
+    CHECK(json.contains(
+        R"("condition":{"type":"string","columnKeys":["msg"],"matchType":"wildcard","filterString":"a*")"
+    ));
+    CHECK(json.contains(R"("style":{"foregroundIndex":1,"backgroundIndex":2,"bold":true,"italic":true})"));
 }
 
 TEST_CASE("An anchor without a note loads with an empty note", "[log_configuration][view]")
@@ -591,19 +635,19 @@ TEST_CASE("An anchor without a note loads with an empty note", "[log_configurati
 
 TEST_CASE("A filter of every kind round-trips", "[log_configuration][view]")
 {
-    LeafRule number;
-    number.type = LeafRule::Type::Number;
+    FilterCondition number;
+    number.type = FilterCondition::Type::Number;
     number.columnKeys = {"latency"};
     number.filterMinValue = 1.5;
     number.filterMaxValue = 9.0;
 
-    LeafRule boolean;
-    boolean.type = LeafRule::Type::Boolean;
+    FilterCondition boolean;
+    boolean.type = FilterCondition::Type::Boolean;
     boolean.columnKeys = {"ok"};
     boolean.filterValues = {"true"};
 
-    LeafRule enumeration;
-    enumeration.type = LeafRule::Type::Enumeration;
+    FilterCondition enumeration;
+    enumeration.type = FilterCondition::Type::Enumeration;
     enumeration.columnKeys = {"level"};
     enumeration.filterValues = {"Warn", "Error"};
 

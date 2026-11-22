@@ -2785,10 +2785,10 @@ private slots:
         // Simulate the user typing `msg:m1` and clicking OK. `Result`
         // is a bare `Leaf` -- the shape the pre-fix branch dropped.
         const loglib::FilterExpression bareLeaf = loglib::MakeLeaf(
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::String,
+            loglib::FilterCondition{
+                .type = loglib::FilterCondition::Type::String,
                 .columnKeys = msgKeys,
-                .matchType = loglib::LeafRule::Match::Contains,
+                .matchType = loglib::FilterCondition::Match::Contains,
                 .filterString = std::string("m1"),
             }
         );
@@ -2806,8 +2806,8 @@ private slots:
             QCOMPARE(static_cast<int>(asAnd->children.size()), 1);
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&asAnd->children.front().node);
             QVERIFY2(leaf != nullptr, "the sole child must be the leaf we just committed");
-            QVERIFY(leaf->rule.filterString.has_value());
-            QCOMPARE(*leaf->rule.filterString, std::string("m1"));
+            QVERIFY(leaf->condition.filterString.has_value());
+            QCOMPARE(*leaf->condition.filterString, std::string("m1"));
         }
 
         // Now trigger a follow-up mirror through `FilterSubmitted`
@@ -2820,7 +2820,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("second-simple")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m2")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
 
@@ -2834,12 +2834,12 @@ private slots:
         {
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
             QVERIFY2(leaf != nullptr, "both children must remain Leaves");
-            QVERIFY(leaf->rule.filterString.has_value());
-            if (*leaf->rule.filterString == "m1")
+            QVERIFY(leaf->condition.filterString.has_value());
+            if (*leaf->condition.filterString == "m1")
             {
                 sawM1 = true;
             }
-            if (*leaf->rule.filterString == "m2")
+            if (*leaf->condition.filterString == "m2")
             {
                 sawM2 = true;
             }
@@ -2871,7 +2871,7 @@ private slots:
             Q_ARG(QString, filterId),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m1")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
         QVERIFY2(model->HasFilterForColumn(msgCol), "precondition: filter installed on msg column");

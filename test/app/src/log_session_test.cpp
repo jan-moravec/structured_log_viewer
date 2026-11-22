@@ -203,13 +203,13 @@ private slots:
         QVERIFY(session.SimpleLeaves().empty());
         QVERIFY(session.SimpleLeafOrder().empty());
 
-        loglib::LeafRule ruleA;
-        ruleA.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition ruleA;
+        ruleA.type = loglib::FilterCondition::Type::String;
         ruleA.columnKeys = {"level"};
         ruleA.filterString = "error";
 
-        loglib::LeafRule ruleB;
-        ruleB.type = loglib::LeafRule::Type::Boolean;
+        loglib::FilterCondition ruleB;
+        ruleB.type = loglib::FilterCondition::Type::Boolean;
         ruleB.columnKeys = {"is_error"};
         ruleB.filterValues = {"true"};
 
@@ -254,13 +254,13 @@ private slots:
         //      dropped so we do not double-apply the same rule.
         LogSession session;
 
-        loglib::LeafRule simpleA;
-        simpleA.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition simpleA;
+        simpleA.type = loglib::FilterCondition::Type::String;
         simpleA.columnKeys = {"level"};
         simpleA.filterString = "error";
 
-        loglib::LeafRule simpleB;
-        simpleB.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition simpleB;
+        simpleB.type = loglib::FilterCondition::Type::String;
         simpleB.columnKeys = {"message"};
         simpleB.filterString = "warn";
 
@@ -269,8 +269,8 @@ private slots:
         session.MutableSimpleLeaves()["id-b"] = simpleB;
         session.MutableSimpleLeafOrder().emplace_back("id-b");
 
-        loglib::LeafRule advancedInner;
-        advancedInner.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition advancedInner;
+        advancedInner.type = loglib::FilterCondition::Type::String;
         advancedInner.columnKeys = {"module"};
         advancedInner.filterString = "auth";
         loglib::FilterExpression advancedLeaf;
@@ -280,8 +280,8 @@ private slots:
         loglib::FilterExpression advancedBranch;
         advancedBranch.node = std::move(orSubtree);
 
-        loglib::LeafRule staleLeaf;
-        staleLeaf.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition staleLeaf;
+        staleLeaf.type = loglib::FilterCondition::Type::String;
         staleLeaf.columnKeys = {"stale"};
         staleLeaf.filterString = "drop";
         loglib::FilterExpression staleChild;
@@ -303,11 +303,11 @@ private slots:
 
         const auto *firstLeaf = std::get_if<loglib::FilterExpression::Leaf>(&recomposedAnd->children.at(0).node);
         QVERIFY(firstLeaf != nullptr);
-        QCOMPARE(firstLeaf->rule, simpleA);
+        QCOMPARE(firstLeaf->condition, simpleA);
 
         const auto *secondLeaf = std::get_if<loglib::FilterExpression::Leaf>(&recomposedAnd->children.at(1).node);
         QVERIFY(secondLeaf != nullptr);
-        QCOMPARE(secondLeaf->rule, simpleB);
+        QCOMPARE(secondLeaf->condition, simpleB);
 
         QVERIFY(std::holds_alternative<loglib::FilterExpression::Or>(recomposedAnd->children.at(2).node));
     }
@@ -319,15 +319,15 @@ private slots:
         // instead of being flattened and losing structure.
         LogSession session;
 
-        loglib::LeafRule simple;
-        simple.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition simple;
+        simple.type = loglib::FilterCondition::Type::String;
         simple.columnKeys = {"level"};
         simple.filterString = "warn";
         session.MutableSimpleLeaves()["id-a"] = simple;
         session.MutableSimpleLeafOrder().emplace_back("id-a");
 
-        loglib::LeafRule orLeafRule;
-        orLeafRule.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition orLeafRule;
+        orLeafRule.type = loglib::FilterCondition::Type::String;
         orLeafRule.columnKeys = {"module"};
         orLeafRule.filterString = "auth";
         loglib::FilterExpression orLeaf;
@@ -723,8 +723,8 @@ private slots:
         // display-order companion must clear together so the
         // reconciler cannot see a stale UUID in only one container.
         LogSession session;
-        loglib::LeafRule rule;
-        rule.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition rule;
+        rule.type = loglib::FilterCondition::Type::String;
         rule.columnKeys = {"level"};
         rule.filterString = "warn";
         session.MutableSimpleLeaves()["id-a"] = rule;

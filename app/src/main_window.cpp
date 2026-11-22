@@ -27,6 +27,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/ascii_case.hpp>
 #include <loglib/core/bytes_producer.hpp>
@@ -154,7 +155,7 @@ namespace
         [&columns]<class N>(const N &node) -> bool {
             if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
             {
-                return !loglib::FindColumnByKeys(node.rule.columnKeys, columns).has_value();
+                return !loglib::FindColumnByKeys(node.condition.columnKeys, columns).has_value();
             }
             else if constexpr (
                 std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
@@ -429,10 +430,10 @@ QString FilterValidationReasonString(FilterValidationReason reason)
 
 // Validate saved leaves before load or editing; nullopt means valid.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
-    const loglib::LeafRule &filter, const std::vector<loglib::Column> &columns
+    const loglib::FilterCondition &filter, const std::vector<loglib::Column> &columns
 )
 {
-    using LeafType = loglib::LeafRule::Type;
+    using LeafType = loglib::FilterCondition::Type;
     using ColumnType = loglib::ColumnType;
 
     const std::optional<size_t> resolvedColumn = loglib::FindColumnByKeys(filter.columnKeys, columns);
@@ -2195,7 +2196,7 @@ void MainWindow::RebuildFilterMenuFromActiveSession()
             continue;
         }
         const QString id = QString::fromStdString(idKey);
-        const loglib::LeafRule &filter = it->second;
+        const loglib::FilterCondition &filter = it->second;
         const QString title = BuildFilterTitle(filter);
         QMenu *menuItem = ui->menuFilters->addMenu(title);
         menuItem->setObjectName(id);
@@ -9881,13 +9882,13 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                                                           : nullptr;
                 for (auto &kv : mSession->MutableSimpleLeaves())
                 {
-                    loglib::LeafRule &filter = kv.second;
+                    loglib::FilterCondition &filter = kv.second;
                     const std::optional<size_t> resolvedRow = loglib::FindColumnByKeys(filter.columnKeys, columnsCfg);
                     if (!resolvedRow.has_value() || std::cmp_not_equal(*resolvedRow, columnIndex))
                     {
                         continue;
                     }
-                    if (filter.type != loglib::LeafRule::Type::Enumeration)
+                    if (filter.type != loglib::FilterCondition::Type::Enumeration)
                     {
                         continue;
                     }
@@ -9943,17 +9944,17 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
     {
     case EnumColumnsChangeReason::Demoted:
         rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
-            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+            return kv.second.type == loglib::FilterCondition::Type::Enumeration && matchesAffectedColumn(kv);
         });
         break;
     case EnumColumnsChangeReason::Promoted:
         rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
-            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+            return kv.second.type == loglib::FilterCondition::Type::Enumeration && matchesAffectedColumn(kv);
         });
         break;
     case EnumColumnsChangeReason::Grew:
         rebuild = std::ranges::any_of(Filters(), [this, &matchesAffectedColumn](const auto &kv) {
-            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
+            return kv.second.type == loglib::FilterCondition::Type::Enumeration && matchesAffectedColumn(kv) &&
                    !EnumFilterFullyResolved(kv.second);
         });
         break;
@@ -10194,7 +10195,7 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
     // children and non-`And` roots are Advanced clauses and are
     // preserved by `SyncSessionView`. UUIDs are
     // GUI-only and regenerated here.
-    std::vector<loglib::LeafRule> loadedFilters;
+    std::vector<loglib::FilterCondition> loadedFilters;
     const auto &loadedExpression = session->View().expression;
     if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node); rootAnd != nullptr)
     {
@@ -10203,13 +10204,13 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
         {
             if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); leaf != nullptr)
             {
-                loadedFilters.push_back(leaf->rule);
+                loadedFilters.push_back(leaf->condition);
             }
         }
     }
     else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&loadedExpression.node); leaf != nullptr)
     {
-        loadedFilters.push_back(leaf->rule);
+        loadedFilters.push_back(leaf->condition);
     }
 
     // Suppress per-filter dirty/title updates; emit one consolidated state
@@ -10553,7 +10554,7 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 }
 
 void MainWindow::AddFilter(
-    const QString &filterId, const std::optional<loglib::LeafRule> &filter, bool openEditor, int initialColumn
+    const QString &filterId, const std::optional<loglib::FilterCondition> &filter, bool openEditor, int initialColumn
 )
 {
     if (mModel->rowCount() == 0)
@@ -10576,7 +10577,7 @@ void MainWindow::AddFilter(
     // this pre-guard adapts its result to the existing status-bar UX.
     // The post-editor "missing payload" guards remain inline because
     // they need to delete the editor on failure.
-    std::optional<loglib::LeafRule> resolvedFilter = filter;
+    std::optional<loglib::FilterCondition> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
         const auto &columns = mModel->Layout().Columns();
@@ -10675,7 +10676,7 @@ void MainWindow::AddFilter(
             loglib::FindColumnByKeys(resolvedFilter->columnKeys, mModel->Layout().Columns());
         // The editor takes a Qt row and uses -1 for a filter whose column is gone.
         const int editorRow = editorColumn.has_value() ? static_cast<int>(*editorColumn) : -1;
-        if (resolvedFilter->type == loglib::LeafRule::Type::Time)
+        if (resolvedFilter->type == loglib::FilterCondition::Type::Time)
         {
             // At least one bound must be set; the other side may be
             // `nullopt` (shown as "No begin/end limit" in the editor).
@@ -10699,7 +10700,7 @@ void MainWindow::AddFilter(
                     : std::nullopt;
             filterEditor->Load(editorRow, begin, end);
         }
-        else if (resolvedFilter->type == loglib::LeafRule::Type::Enumeration)
+        else if (resolvedFilter->type == loglib::FilterCondition::Type::Enumeration)
         {
             QStringList values;
             values.reserve(static_cast<qsizetype>(resolvedFilter->filterValues.size()));
@@ -10709,7 +10710,7 @@ void MainWindow::AddFilter(
             }
             filterEditor->Load(editorRow, values);
         }
-        else if (resolvedFilter->type == loglib::LeafRule::Type::Number)
+        else if (resolvedFilter->type == loglib::FilterCondition::Type::Number)
         {
             if (!resolvedFilter->filterMinValue.has_value() && !resolvedFilter->filterMaxValue.has_value())
             {
@@ -10723,7 +10724,7 @@ void MainWindow::AddFilter(
             }
             filterEditor->Load(editorRow, resolvedFilter->filterMinValue, resolvedFilter->filterMaxValue);
         }
-        else if (resolvedFilter->type == loglib::LeafRule::Type::Boolean)
+        else if (resolvedFilter->type == loglib::FilterCondition::Type::Boolean)
         {
             const BooleanFilterSides sides = DecodeBooleanFilterSides(resolvedFilter->filterValues);
             if (!sides.includeTrue && !sides.includeFalse)
@@ -10760,7 +10761,7 @@ void MainWindow::AddFilter(
     filterEditor->show();
 }
 
-const std::unordered_map<std::string, loglib::LeafRule> &MainWindow::Filters() const
+const std::unordered_map<std::string, loglib::FilterCondition> &MainWindow::Filters() const
 {
     return mSession->SimpleLeaves();
 }
@@ -10860,7 +10861,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // (e.g. `level:error` as String vs. an Enumeration column) --
     // those need to stay Advanced so the next load doesn't drop
     // them as a column-type mismatch.
-    const auto isSimpleRepresentable = [&columns](const loglib::LeafRule &rule) {
+    const auto isSimpleRepresentable = [&columns](const loglib::FilterCondition &rule) {
         return !ValidateFilterAgainstColumns(rule, columns).has_value();
     };
 
@@ -10873,7 +10874,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // resolved column's full `keys` vector when extracting into
     // `mSimpleLeaves`; safe because `isSimpleRepresentable` already
     // proved the resolve.
-    const auto promoteToColumnKeys = [&columns](loglib::LeafRule rule) {
+    const auto promoteToColumnKeys = [&columns](loglib::FilterCondition rule) {
         const std::optional<std::size_t> resolved = loglib::FindColumnByKeys(rule.columnKeys, columns);
         if (resolved.has_value())
         {
@@ -10882,7 +10883,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
         return rule;
     };
 
-    std::vector<loglib::LeafRule> extractedLeaves;
+    std::vector<loglib::FilterCondition> extractedLeaves;
     loglib::FilterExpression::And rest;
     // Wrap a bare `Leaf` remainder in a single-child `And`:
     // `SyncSessionView` drops top-level Leaves
@@ -10902,9 +10903,9 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
 
     if (const auto *rootLeaf = std::get_if<loglib::FilterExpression::Leaf>(&result.node); rootLeaf != nullptr)
     {
-        if (isSimpleRepresentable(rootLeaf->rule))
+        if (isSimpleRepresentable(rootLeaf->condition))
         {
-            extractedLeaves.push_back(promoteToColumnKeys(rootLeaf->rule));
+            extractedLeaves.push_back(promoteToColumnKeys(rootLeaf->condition));
         }
         else
         {
@@ -10917,9 +10918,9 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
         for (auto &child : rootAnd->children)
         {
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
-            if (leaf != nullptr && isSimpleRepresentable(leaf->rule))
+            if (leaf != nullptr && isSimpleRepresentable(leaf->condition))
             {
-                extractedLeaves.push_back(promoteToColumnKeys(leaf->rule));
+                extractedLeaves.push_back(promoteToColumnKeys(leaf->condition));
             }
             else
             {
@@ -10996,12 +10997,12 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
-    const auto match = static_cast<loglib::LeafRule::Match>(matchType);
+    const auto match = static_cast<loglib::FilterCondition::Match>(matchType);
 
     // Reject an invalid regex up front; the downstream
     // `QRegularExpression` would otherwise compile to an invalid
     // object and silently hide every row. Wildcards always compile.
-    if (match == loglib::LeafRule::Match::RegularExpression)
+    if (match == loglib::FilterCondition::Match::RegularExpression)
     {
         const QRegularExpression probe(filterString);
         if (!probe.isValid())
@@ -11019,8 +11020,8 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     // (pathological on large logs).
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::String;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::String;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterString = filterString.toStdString();
     filter.matchType = match;
@@ -11067,8 +11068,8 @@ void MainWindow::FilterTimeStampSubmitted(
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Time;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Time;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
@@ -11080,8 +11081,8 @@ void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QSt
 {
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Enumeration;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Enumeration;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
     for (const QString &v : selectedValues)
@@ -11125,8 +11126,8 @@ void MainWindow::FilterNumericRangeSubmitted(
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Number;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Number;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterMinValue = minValue;
     filter.filterMaxValue = maxValue;
@@ -11148,8 +11149,8 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Boolean;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Boolean;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     if (includeTrue)
     {
@@ -11163,9 +11164,9 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
     AddLogFilter(filterID, filter);
 }
 
-QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
+QString MainWindow::BuildFilterTitle(const loglib::FilterCondition &filter) const
 {
-    // No `default:`: a new `LeafRule::Type` must trip `-Wswitch`
+    // No `default:`: a new `FilterCondition::Type` must trip `-Wswitch`
     // rather than silently fall through and deref a `nullopt`.
     //
     // Every leaf in `mSimpleLeaves` is supposed to carry a fully
@@ -11183,7 +11184,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
     // translatable entry.
     switch (filter.type)
     {
-    case loglib::LeafRule::Type::Time:
+    case loglib::FilterCondition::Type::Time:
     {
         // `nullopt` renders as "any" rather than formatting the INT64
         // sentinels (which produced absurd 294247 AD / 292277 BC dates).
@@ -11200,7 +11201,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
                 : "any";
         return QString::fromStdString(beginStr + " - " + endStr);
     }
-    case loglib::LeafRule::Type::Enumeration:
+    case loglib::FilterCondition::Type::Enumeration:
     {
         if (filter.filterValues.empty())
         {
@@ -11214,7 +11215,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         }
         return values.join(QStringLiteral(", "));
     }
-    case loglib::LeafRule::Type::Number:
+    case loglib::FilterCondition::Type::Number:
     {
         // Unbounded on both sides renders as `[-inf, +inf]` below,
         // which reads as "matches anything" -- accurate, and the same
@@ -11234,7 +11235,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
                 : QStringLiteral("+inf");
         return QStringLiteral("[%1, %2]").arg(minStr, maxStr);
     }
-    case loglib::LeafRule::Type::Boolean:
+    case loglib::FilterCondition::Type::Boolean:
     {
         // Canonicalise to "true, false" order regardless of how
         // `filter.filterValues` is laid out (the submit slot always
@@ -11255,7 +11256,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         }
         return values.join(QStringLiteral(", "));
     }
-    case loglib::LeafRule::Type::String:
+    case loglib::FilterCondition::Type::String:
         if (!filter.filterString.has_value())
         {
             return tr("(unset)");
@@ -11266,20 +11267,22 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         // validation before they can reach the simple-mode surface.
         if (filter.filterString->empty())
         {
-            return filter.matchType == loglib::LeafRule::Match::Exactly ? QStringLiteral("\"\"") : tr("(unset)");
+            return filter.matchType == loglib::FilterCondition::Match::Exactly ? QStringLiteral("\"\"") : tr("(unset)");
         }
         return QString::fromStdString(*filter.filterString);
     }
-    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LeafRule::Type");
+    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled FilterCondition::Type");
     return tr("(unset)");
 }
 
-void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync)
+void MainWindow::AddLogFilter(const QString &id, const loglib::FilterCondition &filter, bool deferSync)
 {
     AddLogFilter(mSession, id, filter, deferSync);
 }
 
-void MainWindow::AddLogFilter(LogSession *session, const QString &id, const loglib::LeafRule &filter, bool deferSync)
+void MainWindow::AddLogFilter(
+    LogSession *session, const QString &id, const loglib::FilterCondition &filter, bool deferSync
+)
 {
     if (session == nullptr)
     {
@@ -11322,7 +11325,7 @@ void MainWindow::AddLogFilter(LogSession *session, const QString &id, const logl
     // targets the right row. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     //
-    // Lint suppression: `mSimpleLeaves.find` and `LeafRule` copy
+    // Lint suppression: `mSimpleLeaves.find` and `FilterCondition` copy
     // can technically throw, but the body has no real source of
     // exceptions. Same for the matching lambda in
     // `BuildHeaderContextMenu`.
@@ -11574,9 +11577,9 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
     );
 }
 
-bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
+bool MainWindow::EnumFilterFullyResolved(const loglib::FilterCondition &filter) const
 {
-    if (filter.type != loglib::LeafRule::Type::Enumeration)
+    if (filter.type != loglib::FilterCondition::Type::Enumeration)
     {
         return true;
     }
@@ -11934,7 +11937,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         std::string id;
         QString title;
-        loglib::LeafRule::Type type;
+        loglib::FilterCondition::Type type;
     };
     std::vector<FilterEntry> filtersForColumn;
     filtersForColumn.reserve(Filters().size());

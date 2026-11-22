@@ -1689,7 +1689,7 @@ private slots:
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &installed = mWindow->Filters().begin()->second;
-        QCOMPARE(installed.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(installed.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(installed.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY(installed.filterBegin.has_value());
         // Open upper bound encoded as `std::nullopt` (not INT64_MAX).
@@ -1721,7 +1721,7 @@ private slots:
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &installed = mWindow->Filters().begin()->second;
-        QCOMPARE(installed.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(installed.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(installed.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY2(!installed.filterBegin.has_value(), "open lower bound must be std::nullopt, not INT64_MIN");
         QVERIFY(installed.filterEnd.has_value());
@@ -1806,7 +1806,7 @@ private slots:
         const auto it = mWindow->Filters().find(filterId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(it->second.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY(it->second.filterBegin.has_value());
         QVERIFY2(!it->second.filterEnd.has_value(), "open upper bound must round-trip as std::nullopt");
@@ -1988,20 +1988,20 @@ private slots:
         std::vector<loglib::FilterExpression> orChildren;
         orChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
         );
         orChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m2"),
                 }
             )
@@ -2064,10 +2064,10 @@ private slots:
         // `OpenAdvancedFilter` would after user commit.
         const loglib::FilterExpression advancedTree = loglib::MakeNot(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
@@ -2084,7 +2084,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("simple-after-advanced")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m2")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
 
@@ -2104,8 +2104,8 @@ private slots:
             else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); leaf != nullptr)
             {
                 sawSimpleLeaf = true;
-                QVERIFY(leaf->rule.filterString.has_value());
-                QCOMPARE(*leaf->rule.filterString, std::string("m2"));
+                QVERIFY(leaf->condition.filterString.has_value());
+                QCOMPARE(*leaf->condition.filterString, std::string("m2"));
             }
         }
         QVERIFY2(sawAdvancedNot, "Advanced NOT subtree must be preserved through the mirror");
@@ -2124,10 +2124,10 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
         const std::vector<std::string> msgKeys = model->Layout().Columns()[static_cast<size_t>(msgCol)].keys;
 
-        loglib::LeafRule exactEmpty;
-        exactEmpty.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition exactEmpty;
+        exactEmpty.type = loglib::FilterCondition::Type::String;
         exactEmpty.columnKeys = msgKeys;
-        exactEmpty.matchType = loglib::LeafRule::Match::Exactly;
+        exactEmpty.matchType = loglib::FilterCondition::Match::Exactly;
         exactEmpty.filterString = std::string{};
         mWindow->CommitAdvancedFilterForTest(loglib::MakeLeaf(std::move(exactEmpty)));
         QCoreApplication::processEvents();
@@ -2176,38 +2176,38 @@ private slots:
         // Build `msg:m1 AND msg:m2 AND (msg:m3 OR msg:m4)` -- two
         // representable-as-simple leaves plus one non-Leaf child.
         loglib::FilterExpression leafM1 = loglib::MakeLeaf(
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::String,
+            loglib::FilterCondition{
+                .type = loglib::FilterCondition::Type::String,
                 .columnKeys = msgKeys,
-                .matchType = loglib::LeafRule::Match::Contains,
+                .matchType = loglib::FilterCondition::Match::Contains,
                 .filterString = std::string("m1"),
             }
         );
         loglib::FilterExpression leafM2 = loglib::MakeLeaf(
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::String,
+            loglib::FilterCondition{
+                .type = loglib::FilterCondition::Type::String,
                 .columnKeys = msgKeys,
-                .matchType = loglib::LeafRule::Match::Contains,
+                .matchType = loglib::FilterCondition::Match::Contains,
                 .filterString = std::string("m2"),
             }
         );
         std::vector<loglib::FilterExpression> orChildren;
         orChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m3"),
                 }
             )
         );
         orChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m4"),
                 }
             )
@@ -2276,20 +2276,20 @@ private slots:
         std::vector<loglib::FilterExpression> orChildren;
         orChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m2"),
                 }
             )
         );
         orChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m3"),
                 }
             )
@@ -2297,10 +2297,10 @@ private slots:
         std::vector<loglib::FilterExpression> andChildren;
         andChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
@@ -2360,10 +2360,10 @@ private slots:
         // `OpenAdvancedFilter` would after user commit.
         const loglib::FilterExpression advancedTree = loglib::MakeNot(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
@@ -2440,7 +2440,7 @@ private slots:
             Q_ARG(QString, filterId),
             Q_ARG(int, msgCol),
             Q_ARG(QString, needle),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
 
@@ -2477,7 +2477,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-zebra")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("zebra")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QMetaObject::invokeMethod(
             mWindow,
@@ -2486,7 +2486,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-apple")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("apple")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
 
@@ -2517,7 +2517,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-temporary")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m1")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -2562,7 +2562,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-coexist")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m7")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
         const QVariant funnelOnlyVariant = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
@@ -2617,7 +2617,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-palette")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m2")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
 
@@ -2903,7 +2903,7 @@ private slots:
                 Q_ARG(QString, filterId),
                 Q_ARG(int, column),
                 Q_ARG(QString, QStringLiteral("*[invalid")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::RegularExpression))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::RegularExpression))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );
@@ -2985,21 +2985,22 @@ private slots:
         const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
 
-        const auto submitFilter = [&](const QString &filterId, const QString &pattern, loglib::LeafRule::Match match) {
-            QVERIFY2(
-                QMetaObject::invokeMethod(
-                    mWindow,
-                    "FilterSubmitted",
-                    Qt::DirectConnection,
-                    Q_ARG(QString, filterId),
-                    Q_ARG(int, msgCol),
-                    Q_ARG(QString, pattern),
-                    Q_ARG(int, static_cast<int>(match))
-                ),
-                "FilterSubmitted slot must be invocable via meta-object"
-            );
-            QCoreApplication::processEvents();
-        };
+        const auto submitFilter =
+            [&](const QString &filterId, const QString &pattern, loglib::FilterCondition::Match match) {
+                QVERIFY2(
+                    QMetaObject::invokeMethod(
+                        mWindow,
+                        "FilterSubmitted",
+                        Qt::DirectConnection,
+                        Q_ARG(QString, filterId),
+                        Q_ARG(int, msgCol),
+                        Q_ARG(QString, pattern),
+                        Q_ARG(int, static_cast<int>(match))
+                    ),
+                    "FilterSubmitted slot must be invocable via meta-object"
+                );
+                QCoreApplication::processEvents();
+            };
 
         const auto clearFilter = [&](const QString &filterId) {
             QVERIFY2(
@@ -3012,14 +3013,16 @@ private slots:
 
         // Contains: needle matches the displayed (simplified) text.
         submitFilter(
-            QStringLiteral("contains-displayed"), QStringLiteral("line1 line2"), loglib::LeafRule::Match::Contains
+            QStringLiteral("contains-displayed"),
+            QStringLiteral("line1 line2"),
+            loglib::FilterCondition::Match::Contains
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("contains-displayed"));
 
         // Exactly: full simplified value.
         submitFilter(
-            QStringLiteral("exact-displayed"), QStringLiteral("line1 line2"), loglib::LeafRule::Match::Exactly
+            QStringLiteral("exact-displayed"), QStringLiteral("line1 line2"), loglib::FilterCondition::Match::Exactly
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("exact-displayed"));
@@ -3029,7 +3032,7 @@ private slots:
         submitFilter(
             QStringLiteral("regex-displayed"),
             QStringLiteral("^line1 line2$"),
-            loglib::LeafRule::Match::RegularExpression
+            loglib::FilterCondition::Match::RegularExpression
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("regex-displayed"));
@@ -3037,7 +3040,7 @@ private slots:
         // Wildcard: Qt-flavoured `line1 *2` only matches the
         // simplified single-line form.
         submitFilter(
-            QStringLiteral("wildcard-displayed"), QStringLiteral("line1 *2"), loglib::LeafRule::Match::Wildcard
+            QStringLiteral("wildcard-displayed"), QStringLiteral("line1 *2"), loglib::FilterCondition::Match::Wildcard
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("wildcard-displayed"));
@@ -3988,7 +3991,7 @@ private slots:
                 Q_ARG(QString, msgFilter),
                 Q_ARG(int, msgCol),
                 Q_ARG(QString, QStringLiteral("m1")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
             ),
             "FilterSubmitted must be invocable"
         );
@@ -4069,7 +4072,7 @@ private slots:
                 Q_ARG(QString, dropId),
                 Q_ARG(int, msgCol),
                 Q_ARG(QString, QStringLiteral("noise")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
             ),
             "FilterSubmitted must be invocable"
         );
@@ -4717,8 +4720,8 @@ private slots:
         const std::vector<std::string> valueKeys = model->Layout().Columns()[static_cast<size_t>(valueCol)].keys;
 
         loglib::LogConfiguration cfg;
-        loglib::LeafRule leaf;
-        leaf.type = loglib::LeafRule::Type::Number;
+        loglib::FilterCondition leaf;
+        leaf.type = loglib::FilterCondition::Type::Number;
         leaf.columnKeys = valueKeys;
         leaf.filterMinValue = 10.0;
         leaf.filterMaxValue = 19.0;
@@ -4731,7 +4734,7 @@ private slots:
         const loglib::LogConfiguration loaded = loglib::LoadConfiguration(roundTripPath.toStdString());
         const auto loadedLeaves = WireLeavesOf(loaded.view.expression);
         QCOMPARE(loadedLeaves.size(), static_cast<size_t>(1));
-        QCOMPARE(loadedLeaves[0].type, loglib::LeafRule::Type::Number);
+        QCOMPARE(loadedLeaves[0].type, loglib::FilterCondition::Type::Number);
         QVERIFY(loadedLeaves[0].filterMinValue.has_value());
         QVERIFY(loadedLeaves[0].filterMaxValue.has_value());
 
@@ -4746,7 +4749,7 @@ private slots:
                 "AddFilter",
                 Qt::DirectConnection,
                 Q_ARG(QString, filterId),
-                Q_ARG(std::optional<loglib::LeafRule>, loadedLeaves[0])
+                Q_ARG(std::optional<loglib::FilterCondition>, loadedLeaves[0])
             ),
             "AddFilter slot must be invocable via meta-object"
         );
@@ -4823,8 +4826,8 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist");
         QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
-        loglib::LeafRule savedFilter;
-        savedFilter.type = loglib::LeafRule::Type::Number;
+        loglib::FilterCondition savedFilter;
+        savedFilter.type = loglib::FilterCondition::Type::Number;
         savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         savedFilter.filterMinValue = 0.0;
         savedFilter.filterMaxValue = 1.0;
@@ -4837,7 +4840,7 @@ private slots:
                 "AddFilter",
                 Qt::DirectConnection,
                 Q_ARG(QString, filterId),
-                Q_ARG(std::optional<loglib::LeafRule>, savedFilter)
+                Q_ARG(std::optional<loglib::FilterCondition>, savedFilter)
             ),
             "AddFilter slot must be invocable via meta-object"
         );

@@ -10,7 +10,6 @@
 #pragma once
 
 #include "loglib/config/filter_expression.hpp"
-#include "loglib/config/highlight_rule.hpp"
 #include "loglib/config/log_configuration.hpp"
 #include "loglib/query/row_filter.hpp"
 
@@ -49,17 +48,11 @@ class LogTable;
  * @param table The table that owns the enumeration dictionaries. May be null.
  */
 [[nodiscard]] std::optional<RowPredicate> CompileLeaf(
-    const LeafRule &rule,
+    const FilterCondition &rule,
     std::optional<size_t> resolvedColumn,
     const std::vector<Column> &columns,
     const LogTable *table
 );
-
-/**
- * @brief Copies the matching part of a highlight rule into a LeafRule. The display settings stay behind, and
- * CompileLeaf then handles both kinds of rule.
- */
-[[nodiscard]] LeafRule ToLeafRule(const HighlightRule &rule);
 
 /**
  * @brief Lists the leaves of an expression that cannot work as written: columns that no column of the list has, and

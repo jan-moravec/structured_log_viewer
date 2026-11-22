@@ -15,7 +15,7 @@
 struct StringMatcherCase
 {
     std::string_view id;
-    loglib::LeafRule::Match match;
+    loglib::FilterCondition::Match match;
     std::string_view pattern;
     std::string_view haystack;
     bool expected;
@@ -23,7 +23,7 @@ struct StringMatcherCase
 
 [[nodiscard]] inline const std::vector<StringMatcherCase> &StringMatcherCorpus()
 {
-    using Match = loglib::LeafRule::Match;
+    using Match = loglib::FilterCondition::Match;
     static const std::vector<StringMatcherCase> CASES = {
         // Exactly — ASCII, case, empty.
         {.id = "exactly-ascii-equal",

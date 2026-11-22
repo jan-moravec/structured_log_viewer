@@ -66,16 +66,16 @@ void SaveLayoutForTest(const LogModel &model, const std::string &path);
 /// Replaces the columns of @p model with those of a configuration file.
 void LoadLayoutForTest(LogModel &model, const std::string &path);
 
-/// Extract top-level `LeafRule` children from a `FilterExpression`.
+/// Extract top-level `FilterCondition` children from a `FilterExpression`.
 /// Test-only shim: the historical simple-mode UX only ever wrote
 /// flat AND trees, so this covers `LegacyLeavesOf` for the app
 /// tests without duplicating them.
-[[nodiscard]] inline std::vector<loglib::LeafRule> WireLeavesOf(const loglib::FilterExpression &expression)
+[[nodiscard]] inline std::vector<loglib::FilterCondition> WireLeavesOf(const loglib::FilterExpression &expression)
 {
-    std::vector<loglib::LeafRule> out;
+    std::vector<loglib::FilterCondition> out;
     if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&expression.node); leaf != nullptr)
     {
-        out.push_back(leaf->rule);
+        out.push_back(leaf->condition);
         return out;
     }
     if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&expression.node); asAnd != nullptr)
@@ -84,21 +84,21 @@ void LoadLayoutForTest(LogModel &model, const std::string &path);
         {
             if (const auto *childLeaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); childLeaf != nullptr)
             {
-                out.push_back(childLeaf->rule);
+                out.push_back(childLeaf->condition);
             }
         }
     }
     return out;
 }
 
-/// Collect every `LeafRule` in the tree, at any depth. Needed where
+/// Collect every `FilterCondition` in the tree, at any depth. Needed where
 /// `WireLeavesOf`'s top-level-only view is too shallow -- e.g. a leaf
 /// the simple editor can't represent, which
 /// `ApplyAdvancedFilterResult` nests one level down to keep it out of
 /// `mSimpleLeaves`.
-[[nodiscard]] inline std::vector<loglib::LeafRule> AllLeavesOf(const loglib::FilterExpression &expression)
+[[nodiscard]] inline std::vector<loglib::FilterCondition> AllLeavesOf(const loglib::FilterExpression &expression)
 {
-    std::vector<loglib::LeafRule> out;
+    std::vector<loglib::FilterCondition> out;
     // The lambda calls itself via the `self`-parameter trick to
     // walk the boolean AST recursively; misc-no-recursion has no
     // way to reason about `auto` self-parameters, hence the NOLINT.
@@ -106,7 +106,7 @@ void LoadLayoutForTest(LogModel &model, const std::string &path);
     const auto visit = [&out](const loglib::FilterExpression &node, const auto &self) -> void {
         if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&node.node); leaf != nullptr)
         {
-            out.push_back(leaf->rule);
+            out.push_back(leaf->condition);
         }
         else if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&node.node); asAnd != nullptr)
         {
@@ -135,7 +135,7 @@ void LoadLayoutForTest(LogModel &model, const std::string &path);
 }
 
 /// Install @p leaves as a top-level `And` expression.
-[[nodiscard]] inline loglib::FilterExpression WireLeavesAsExpression(std::vector<loglib::LeafRule> leaves)
+[[nodiscard]] inline loglib::FilterExpression WireLeavesAsExpression(std::vector<loglib::FilterCondition> leaves)
 {
     loglib::FilterExpression::And node;
     node.children.reserve(leaves.size());

@@ -520,24 +520,24 @@ std::optional<std::string> CompileProblem(std::string_view pattern)
 
 } // namespace
 
-std::optional<std::string> StringPatternProblem(std::string_view pattern, LeafRule::Match match)
+std::optional<std::string> StringPatternProblem(std::string_view pattern, FilterCondition::Match match)
 {
     switch (match)
     {
-    case LeafRule::Match::RegularExpression:
+    case FilterCondition::Match::RegularExpression:
         return CompileProblem(DecodeUtf8(pattern));
-    case LeafRule::Match::Wildcard:
+    case FilterCondition::Match::Wildcard:
         return CompileProblem(WildcardToPcre(DecodeUtf8(pattern)));
-    case LeafRule::Match::Exactly:
-    case LeafRule::Match::Contains:
+    case FilterCondition::Match::Exactly:
+    case FilterCondition::Match::Contains:
         break;
     }
     return std::nullopt;
 }
 
-CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, LeafRule::Match match)
+CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, FilterCondition::Match match)
 {
-    using Match = LeafRule::Match;
+    using Match = FilterCondition::Match;
     switch (match)
     {
     case Match::Exactly:

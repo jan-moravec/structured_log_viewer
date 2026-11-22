@@ -29,16 +29,16 @@ TEST_CASE("string matcher differential corpus covers the required axes", "[strin
         REQUIRE(ids.insert(std::string(entry.id)).second);
         switch (entry.match)
         {
-        case loglib::LeafRule::Match::Exactly:
+        case loglib::FilterCondition::Match::Exactly:
             sawExactly = true;
             break;
-        case loglib::LeafRule::Match::Contains:
+        case loglib::FilterCondition::Match::Contains:
             sawContains = true;
             break;
-        case loglib::LeafRule::Match::RegularExpression:
+        case loglib::FilterCondition::Match::RegularExpression:
             sawRegex = true;
             break;
-        case loglib::LeafRule::Match::Wildcard:
+        case loglib::FilterCondition::Match::Wildcard:
             sawWildcard = true;
             break;
         }
@@ -113,7 +113,7 @@ namespace
 // before Contains, Exactly and star-text wildcards got their own paths.
 bool ReferenceMatch(std::string_view regex, std::string_view haystack)
 {
-    return loglib::MakeStringMatcher(regex, loglib::LeafRule::Match::RegularExpression)(haystack);
+    return loglib::MakeStringMatcher(regex, loglib::FilterCondition::Match::RegularExpression)(haystack);
 }
 
 // The text as a regular expression that matches it literally: every ASCII punctuation or space byte gets a backslash.
@@ -144,7 +144,7 @@ TEST_CASE(
     "[string_matcher][fast_path]"
 )
 {
-    using Match = loglib::LeafRule::Match;
+    using Match = loglib::FilterCondition::Match;
     const std::vector<std::string> haystacks = {
         "",
         "abc",

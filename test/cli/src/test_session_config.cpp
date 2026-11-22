@@ -385,10 +385,10 @@ TEST_CASE("slp query --save-columns omits session state", "[cli][session][e2e]")
     loglib::LogConfiguration configuration = DetectedConfiguration();
     loglib::HighlightRule rule;
     rule.name = "errors";
-    rule.columnKeys = {"level"};
-    rule.type = loglib::HighlightRule::Type::Enumeration;
-    rule.filterValues = {"Error"};
-    rule.backgroundIndex = 1;
+    rule.condition.columnKeys = {"level"};
+    rule.condition.type = loglib::FilterCondition::Type::Enumeration;
+    rule.condition.filterValues = {"Error"};
+    rule.style.backgroundIndex = 1;
     configuration.view.highlightRules.push_back(rule);
     const auto configPath = WriteConfig("with_rules.json", configuration, loglib::SaveScope::Full);
 
@@ -606,7 +606,7 @@ TEST_CASE("slp query --config rejects a configuration filter on an unknown colum
     const std::string config = WriteConfigText(
         "unknown_column_filter.json",
         ConfigWithExpression(
-            R"({"kind":"leaf","rule":{"type":"string","columnKeys":["missing"],"matchType":"contains","filterString":"x"}})"
+            R"({"kind":"leaf","condition":{"type":"string","columnKeys":["missing"],"matchType":"contains","filterString":"x"}})"
         )
     );
     const auto result =
@@ -619,7 +619,7 @@ TEST_CASE("slp query --config rejects a configuration filter on an unknown colum
 TEST_CASE("slp query --config handles deep filter trees", "[cli][session][e2e][nesting]")
 {
     const std::string leaf =
-        R"({"kind":"leaf","rule":{"type":"string","columnKeys":["msg"],"matchType":"contains","filterString":"alpha"}})";
+        R"({"kind":"leaf","condition":{"type":"string","columnKeys":["msg"],"matchType":"contains","filterString":"alpha"}})";
 
     const std::string deep = WriteConfigText("deep_filter.json", ConfigWithExpression(NotChain(250, leaf)));
     const auto accepted = RunSlp(

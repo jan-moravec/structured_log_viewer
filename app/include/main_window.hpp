@@ -25,6 +25,7 @@
 
 #include <QUuid>
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
@@ -871,7 +872,7 @@ public:
      * @brief Returns the active session's simple filter leaves keyed by UUID.
      * @return A reference owned by the active session and invalidated with that session.
      */
-    [[nodiscard]] const std::unordered_map<std::string, loglib::LeafRule> &Filters() const;
+    [[nodiscard]] const std::unordered_map<std::string, loglib::FilterCondition> &Filters() const;
 
     /**
      * @brief Owned `LogModel`; non-null after construction.
@@ -1211,7 +1212,7 @@ public:
      * @param filterId Filter identity stored on the menu action.
      * @param filter Filter rule to install.
      */
-    void AddLogFilterForTest(const QString &filterId, const loglib::LeafRule &filter)
+    void AddLogFilterForTest(const QString &filterId, const loglib::FilterCondition &filter)
     {
         AddLogFilter(filterId, filter);
     }
@@ -1807,7 +1808,7 @@ private slots:
      */
     void AddFilter(
         const QString &filterId,
-        const std::optional<loglib::LeafRule> &filter = std::nullopt,
+        const std::optional<loglib::FilterCondition> &filter = std::nullopt,
         bool openEditor = true,
         int initialColumn = -1
     );
@@ -2375,8 +2376,8 @@ private:
      * @param filter The `filter` value.
      * @param deferSync The `deferSync` value.
      */
-    void AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync = false);
-    void AddLogFilter(LogSession *session, const QString &id, const loglib::LeafRule &filter, bool deferSync);
+    void AddLogFilter(const QString &id, const loglib::FilterCondition &filter, bool deferSync = false);
+    void AddLogFilter(LogSession *session, const QString &id, const loglib::FilterCondition &filter, bool deferSync);
 
     /**
      * @brief Display title for @p filter (e.g. `info, warn` for enum,
@@ -2385,7 +2386,7 @@ private:
      * @param filter The `filter` value.
      * @return The result described above.
      */
-    [[nodiscard]] QString BuildFilterTitle(const loglib::LeafRule &filter) const;
+    [[nodiscard]] QString BuildFilterTitle(const loglib::FilterCondition &filter) const;
 
     /**
      * @brief Recompile `LogConfiguration::expression` against the
@@ -2633,7 +2634,7 @@ private:
      * @param filter The `filter` value.
      * @return The result described above.
      */
-    [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LeafRule &filter) const;
+    [[nodiscard]] bool EnumFilterFullyResolved(const loglib::FilterCondition &filter) const;
 
     /**
      * @brief Applies and clears a deferred configuration sort when still valid.

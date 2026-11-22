@@ -37,8 +37,8 @@ struct SessionView
 {
     /**
      * @brief The filter. The default is an empty And, which accepts every row, so a new session shows everything.
-     * Leaves find their column by LeafRule::columnKeys and not by position, so moving a column does not change the
-     * filter.
+     * Leaves find their column by FilterCondition::columnKeys and not by position, so moving a column does not change
+     * the filter.
      */
     FilterExpression expression;
 

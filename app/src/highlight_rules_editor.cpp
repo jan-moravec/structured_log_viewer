@@ -2,6 +2,7 @@
 
 #include "theme_control.hpp"
 
+#include <loglib/config/highlight_rule.hpp>
 #include <loglib/support/theme.hpp>
 
 #include <QCheckBox>
@@ -60,11 +61,11 @@ constexpr int NUMBER_SPIN_DECIMALS = 6;
 // Rendering pane). Reused so the two panes stay visually aligned.
 constexpr int FORM_GROUP_SPACING_PX = 12;
 
-/// Combo labels; index matches `HighlightRule::Type`. Time /
+/// Combo labels; index matches `FilterCondition::Type`. Time /
 /// Enumeration render on read-only panes in v1.
 constexpr std::array<const char *, 5> TYPE_LABELS = {"Text (string)", "Time", "Enumeration", "Number", "Boolean"};
 
-/// Combo labels; index matches `HighlightRule::Match` wire order.
+/// Combo labels; index matches `FilterCondition::Match` wire order.
 constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contains", "Regular expression", "Wildcard"};
 
 [[nodiscard]] QIcon RenderSwatchIcon(const QBrush &background, const QBrush &foreground, int sizePx, bool paintBorder)
@@ -242,7 +243,7 @@ HighlightRulesEditor::HighlightRulesEditor(
     // widgets even though the message is identical: a
     // `QStackedWidget` only holds each `QWidget` in one slot at a
     // time, so sharing a pointer between two slots silently
-    // shifts every `HighlightRule::Type` index past `Time` off by
+    // shifts every `FilterCondition::Type` index past `Time` off by
     // one.
     auto buildReadOnlyPane = [this]() -> QWidget * {
         auto *pane = new QWidget(this);
@@ -262,7 +263,7 @@ HighlightRulesEditor::HighlightRulesEditor(
     auto *enumReadOnlyPane = buildReadOnlyPane();
 
     mMatchStack = new QStackedWidget(this);
-    // Order MUST match `HighlightRule::Type`:
+    // Order MUST match `FilterCondition::Type`:
     //   0=String, 1=Time, 2=Enumeration, 3=Number, 4=Boolean.
     mMatchStack->insertWidget(0, stringPane);
     mMatchStack->insertWidget(1, timeReadOnlyPane);
@@ -480,21 +481,21 @@ QIcon HighlightRulesEditor::FormatListIcon(const loglib::HighlightRule &rule, in
     {
         return {};
     }
-    const QBrush bg = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::BackgroundRole);
-    const QBrush fg = mTheme->HighlightBrushFor(rule.foregroundIndex, Qt::ForegroundRole);
+    const QBrush bg = mTheme->HighlightBrushFor(rule.style.backgroundIndex, Qt::BackgroundRole);
+    const QBrush fg = mTheme->HighlightBrushFor(rule.style.foregroundIndex, Qt::ForegroundRole);
     return RenderSwatchIcon(bg, fg, sizePx, true);
 }
 
 int HighlightRulesEditor::ResolveColumnIndex(const loglib::HighlightRule &rule) const
 {
-    if (rule.columnKeys.empty())
+    if (rule.condition.columnKeys.empty())
     {
         return -1;
     }
     for (std::size_t i = 0; i < mColumns.size(); ++i)
     {
         const auto &keys = mColumns[i].keys;
-        const bool allPresent = std::ranges::all_of(rule.columnKeys, [&keys](const std::string &k) {
+        const bool allPresent = std::ranges::all_of(rule.condition.columnKeys, [&keys](const std::string &k) {
             return std::ranges::find(keys, k) != keys.end();
         });
         if (allPresent)
@@ -682,19 +683,20 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     }
     mColumnCombo->setCurrentIndex(comboIndex);
 
-    const int typeIdx = static_cast<int>(rule.type);
+    const int typeIdx = static_cast<int>(rule.condition.type);
     mTypeCombo->setCurrentIndex(typeIdx);
     mMatchStack->setCurrentIndex(typeIdx);
 
     // Type-specific fields.
-    using RT = loglib::HighlightRule::Type;
-    switch (rule.type)
+    using RT = loglib::FilterCondition::Type;
+    switch (rule.condition.type)
     {
     case RT::String:
     {
-        const int matchIdx = rule.matchType.has_value() ? static_cast<int>(*rule.matchType) : 1;
+        const int matchIdx = rule.condition.matchType.has_value() ? static_cast<int>(*rule.condition.matchType) : 1;
         mStringMatchCombo->setCurrentIndex(matchIdx);
-        const QString needle = rule.filterString.has_value() ? QString::fromStdString(*rule.filterString) : QString{};
+        const QString needle =
+            rule.condition.filterString.has_value() ? QString::fromStdString(*rule.condition.filterString) : QString{};
         // Keep-cursor guard, see `mNameEdit` above.
         if (mStringNeedleEdit->text() != needle)
         {
@@ -704,19 +706,19 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     }
     case RT::Number:
     {
-        mNumberMinEnabled->setChecked(rule.filterMinValue.has_value());
-        mNumberMinValue->setEnabled(rule.filterMinValue.has_value());
-        mNumberMinValue->setValue(rule.filterMinValue.value_or(0.0));
-        mNumberMaxEnabled->setChecked(rule.filterMaxValue.has_value());
-        mNumberMaxValue->setEnabled(rule.filterMaxValue.has_value());
-        mNumberMaxValue->setValue(rule.filterMaxValue.value_or(0.0));
+        mNumberMinEnabled->setChecked(rule.condition.filterMinValue.has_value());
+        mNumberMinValue->setEnabled(rule.condition.filterMinValue.has_value());
+        mNumberMinValue->setValue(rule.condition.filterMinValue.value_or(0.0));
+        mNumberMaxEnabled->setChecked(rule.condition.filterMaxValue.has_value());
+        mNumberMaxValue->setEnabled(rule.condition.filterMaxValue.has_value());
+        mNumberMaxValue->setValue(rule.condition.filterMaxValue.value_or(0.0));
         break;
     }
     case RT::Boolean:
     {
         bool includeTrue = false;
         bool includeFalse = false;
-        for (const auto &v : rule.filterValues)
+        for (const auto &v : rule.condition.filterValues)
         {
             std::string lower = v;
             std::ranges::transform(lower, lower.begin(), [](unsigned char ch) {
@@ -741,25 +743,25 @@ void HighlightRulesEditor::LoadIntoForm(int row)
         break;
     }
 
-    mSelectedForegroundIndex = rule.foregroundIndex;
-    mSelectedBackgroundIndex = rule.backgroundIndex;
+    mSelectedForegroundIndex = rule.style.foregroundIndex;
+    mSelectedBackgroundIndex = rule.style.backgroundIndex;
     if (mTheme != nullptr)
     {
-        const QBrush fgBg = mTheme->HighlightBrushFor(rule.foregroundIndex, Qt::BackgroundRole);
-        const QBrush fgFg = mTheme->HighlightBrushFor(rule.foregroundIndex, Qt::ForegroundRole);
+        const QBrush fgBg = mTheme->HighlightBrushFor(rule.style.foregroundIndex, Qt::BackgroundRole);
+        const QBrush fgFg = mTheme->HighlightBrushFor(rule.style.foregroundIndex, Qt::ForegroundRole);
         mForegroundButton->setIcon(
-            rule.foregroundIndex == 0 ? RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true)
-                                      : RenderSwatchIcon(fgBg, fgFg, SwatchIconSizePx(), true)
+            rule.style.foregroundIndex == 0 ? RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true)
+                                            : RenderSwatchIcon(fgBg, fgFg, SwatchIconSizePx(), true)
         );
-        const QBrush bgBg = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::BackgroundRole);
-        const QBrush bgFg = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::ForegroundRole);
+        const QBrush bgBg = mTheme->HighlightBrushFor(rule.style.backgroundIndex, Qt::BackgroundRole);
+        const QBrush bgFg = mTheme->HighlightBrushFor(rule.style.backgroundIndex, Qt::ForegroundRole);
         mBackgroundButton->setIcon(
-            rule.backgroundIndex == 0 ? RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true)
-                                      : RenderSwatchIcon(bgBg, bgFg, SwatchIconSizePx(), true)
+            rule.style.backgroundIndex == 0 ? RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true)
+                                            : RenderSwatchIcon(bgBg, bgFg, SwatchIconSizePx(), true)
         );
     }
-    mBoldCheck->setChecked(rule.bold);
-    mItalicCheck->setChecked(rule.italic);
+    mBoldCheck->setChecked(rule.style.bold);
+    mItalicCheck->setChecked(rule.style.italic);
 
     UpdateFormEnabled();
 }
@@ -786,9 +788,9 @@ void HighlightRulesEditor::UpdateFormEnabled()
     // Read-only pane (Time / Enumeration) grays the whole stack.
     if (haveSelection)
     {
-        const auto ruleType = mLocalRules[static_cast<std::size_t>(mCurrentRow)].type;
+        const auto ruleType = mLocalRules[static_cast<std::size_t>(mCurrentRow)].condition.type;
         const bool isReadOnly =
-            (ruleType == loglib::HighlightRule::Type::Time || ruleType == loglib::HighlightRule::Type::Enumeration);
+            (ruleType == loglib::FilterCondition::Type::Time || ruleType == loglib::FilterCondition::Type::Enumeration);
         if (isReadOnly)
         {
             mMatchStack->setEnabled(false);
@@ -829,25 +831,25 @@ void HighlightRulesEditor::UpdateListButtons()
 
 QString HighlightRulesEditor::ValidateRule(const loglib::HighlightRule &rule) const
 {
-    if (rule.columnKeys.empty())
+    if (rule.condition.columnKeys.empty())
     {
         return tr("pick a column to match against.");
     }
-    using RT = loglib::HighlightRule::Type;
-    switch (rule.type)
+    using RT = loglib::FilterCondition::Type;
+    switch (rule.condition.type)
     {
     case RT::String:
-        if (!rule.matchType.has_value())
+        if (!rule.condition.matchType.has_value())
         {
             return tr("pick a string match type.");
         }
-        if (!rule.filterString.has_value() || rule.filterString->empty())
+        if (!rule.condition.filterString.has_value() || rule.condition.filterString->empty())
         {
             return tr("enter a pattern or literal to match.");
         }
         return {};
     case RT::Number:
-        if (!rule.filterMinValue.has_value() && !rule.filterMaxValue.has_value())
+        if (!rule.condition.filterMinValue.has_value() && !rule.condition.filterMaxValue.has_value())
         {
             return tr("set a minimum or maximum value.");
         }
@@ -856,7 +858,7 @@ QString HighlightRulesEditor::ValidateRule(const loglib::HighlightRule &rule) co
     {
         bool includeTrue = false;
         bool includeFalse = false;
-        for (const std::string &v : rule.filterValues)
+        for (const std::string &v : rule.condition.filterValues)
         {
             std::string lower = v;
             std::ranges::transform(lower, lower.begin(), [](unsigned char ch) {
@@ -878,13 +880,13 @@ QString HighlightRulesEditor::ValidateRule(const loglib::HighlightRule &rule) co
         return {};
     }
     case RT::Time:
-        if (!rule.filterBegin.has_value() && !rule.filterEnd.has_value())
+        if (!rule.condition.filterBegin.has_value() && !rule.condition.filterEnd.has_value())
         {
             return tr("Time rules need begin or end bounds (edit via config file in v1).");
         }
         return {};
     case RT::Enumeration:
-        if (rule.filterValues.empty())
+        if (rule.condition.filterValues.empty())
         {
             return tr("Enumeration rules need at least one value (edit via config file in v1).");
         }
@@ -992,67 +994,67 @@ void HighlightRulesEditor::GatherForm()
     // single primary key per column; empty for "(none)" -- see
     // `RepopulateColumnCombo`).
     const QVariant columnData = mColumnCombo->currentData();
-    rule.columnKeys.clear();
+    rule.condition.columnKeys.clear();
     if (columnData.canConvert<QStringList>())
     {
         for (const QString &k : columnData.toStringList())
         {
-            rule.columnKeys.push_back(k.toStdString());
+            rule.condition.columnKeys.push_back(k.toStdString());
         }
     }
 
-    rule.type = static_cast<loglib::HighlightRule::Type>(mTypeCombo->currentIndex());
+    rule.condition.type = static_cast<loglib::FilterCondition::Type>(mTypeCombo->currentIndex());
 
     // Only reset fields the editor owns. Time / Enumeration are
     // authored via the config file, so any style / name tweak
     // routed through here must preserve their match spec.
     // Flipping the type to (say) String is still safe: the
     // `String` branch owns and repopulates its own fields, and
-    // `CompileRule` reads only the fields relevant to `rule.type`.
-    using RT = loglib::HighlightRule::Type;
-    switch (rule.type)
+    // `CompileRule` reads only the fields relevant to `rule.condition.type`.
+    using RT = loglib::FilterCondition::Type;
+    switch (rule.condition.type)
     {
     case RT::String:
-        rule.filterBegin.reset();
-        rule.filterEnd.reset();
-        rule.filterMinValue.reset();
-        rule.filterMaxValue.reset();
-        rule.filterValues.clear();
-        rule.matchType = static_cast<loglib::HighlightRule::Match>(mStringMatchCombo->currentIndex());
-        rule.filterString = mStringNeedleEdit->text().toStdString();
+        rule.condition.filterBegin.reset();
+        rule.condition.filterEnd.reset();
+        rule.condition.filterMinValue.reset();
+        rule.condition.filterMaxValue.reset();
+        rule.condition.filterValues.clear();
+        rule.condition.matchType = static_cast<loglib::FilterCondition::Match>(mStringMatchCombo->currentIndex());
+        rule.condition.filterString = mStringNeedleEdit->text().toStdString();
         break;
     case RT::Number:
-        rule.matchType.reset();
-        rule.filterString.reset();
-        rule.filterBegin.reset();
-        rule.filterEnd.reset();
-        rule.filterValues.clear();
-        rule.filterMinValue.reset();
-        rule.filterMaxValue.reset();
+        rule.condition.matchType.reset();
+        rule.condition.filterString.reset();
+        rule.condition.filterBegin.reset();
+        rule.condition.filterEnd.reset();
+        rule.condition.filterValues.clear();
+        rule.condition.filterMinValue.reset();
+        rule.condition.filterMaxValue.reset();
         if (mNumberMinEnabled->isChecked())
         {
-            rule.filterMinValue = mNumberMinValue->value();
+            rule.condition.filterMinValue = mNumberMinValue->value();
         }
         if (mNumberMaxEnabled->isChecked())
         {
-            rule.filterMaxValue = mNumberMaxValue->value();
+            rule.condition.filterMaxValue = mNumberMaxValue->value();
         }
         break;
     case RT::Boolean:
-        rule.matchType.reset();
-        rule.filterString.reset();
-        rule.filterBegin.reset();
-        rule.filterEnd.reset();
-        rule.filterMinValue.reset();
-        rule.filterMaxValue.reset();
-        rule.filterValues.clear();
+        rule.condition.matchType.reset();
+        rule.condition.filterString.reset();
+        rule.condition.filterBegin.reset();
+        rule.condition.filterEnd.reset();
+        rule.condition.filterMinValue.reset();
+        rule.condition.filterMaxValue.reset();
+        rule.condition.filterValues.clear();
         if (mBoolIncludeTrue->isChecked())
         {
-            rule.filterValues.emplace_back("true");
+            rule.condition.filterValues.emplace_back("true");
         }
         if (mBoolIncludeFalse->isChecked())
         {
-            rule.filterValues.emplace_back("false");
+            rule.condition.filterValues.emplace_back("false");
         }
         break;
     case RT::Time:
@@ -1063,10 +1065,10 @@ void HighlightRulesEditor::GatherForm()
         break;
     }
 
-    rule.foregroundIndex = mSelectedForegroundIndex;
-    rule.backgroundIndex = mSelectedBackgroundIndex;
-    rule.bold = mBoldCheck->isChecked();
-    rule.italic = mItalicCheck->isChecked();
+    rule.style.foregroundIndex = mSelectedForegroundIndex;
+    rule.style.backgroundIndex = mSelectedBackgroundIndex;
+    rule.style.bold = mBoldCheck->isChecked();
+    rule.style.italic = mItalicCheck->isChecked();
 }
 
 void HighlightRulesEditor::OnNewClicked()
@@ -1074,16 +1076,16 @@ void HighlightRulesEditor::OnNewClicked()
     loglib::HighlightRule rule;
     rule.name = "New rule";
     rule.enabled = true;
-    rule.type = loglib::HighlightRule::Type::String;
-    rule.matchType = loglib::HighlightRule::Match::Contains;
+    rule.condition.type = loglib::FilterCondition::Type::String;
+    rule.condition.matchType = loglib::FilterCondition::Match::Contains;
     // Empty needle keeps the rule inactive until the user types
     // (see `CompileRule` and `ValidateRule`); the line edit's
     // placeholder guides them.
-    rule.filterString = std::string{};
+    rule.condition.filterString = std::string{};
     if (!mColumns.empty() && !mColumns[0].keys.empty())
     {
         // Single primary key -- see `RepopulateColumnCombo`.
-        rule.columnKeys = {mColumns[0].keys.front()};
+        rule.condition.columnKeys = {mColumns[0].keys.front()};
     }
     mLocalRules.push_back(std::move(rule));
     RebuildList(static_cast<int>(mLocalRules.size()) - 1);
