@@ -1,0 +1,37 @@
+# rows
+row 1: timestamp=slice:2015-05-13T23:39:43.945958Z elb=slice:my-loadbalancer clientip=slice:192.168.131.39 clientport=uint:2817 backendip=slice:10.0.0.1 backendport=uint:80 request_processing_time=double:7.2999999999999999e-05 backend_processing_time=double:0.0010480000000000001 response_processing_time=double:5.7000000000000003e-05 elb_status_code=uint:200 backend_status_code=uint:200 received_bytes=uint:0 sent_bytes=uint:29 verb=slice:GET request=slice:http://www.example.com:80/ httpversion=double:1.1000000000000001 user_agent=slice:curl/7.38.0 ssl_cipher=slice:- ssl_protocol=slice:-
+row 2: timestamp=slice:2024-04-28T04:02:03.123Z elb=slice:prod-elb clientip=slice:1.2.3.4 clientport=uint:54321 backendip=slice:10.0.0.5 backendport=uint:443 request_processing_time=double:0.001 backend_processing_time=double:0.02 response_processing_time=double:0.001 elb_status_code=uint:502 backend_status_code=slice:- received_bytes=uint:0 sent_bytes=uint:0 verb=slice:POST request=slice:https://api.example.com:443/v1/orders httpversion=double:2 user_agent=slice:Mozilla/5.0 ssl_cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 ssl_protocol=slice:TLSv1.2
+row 3: timestamp=slice:2024-04-28T04:02:04Z elb=slice:my-elb clientip=slice:10.0.0.1 clientport=uint:33442 request_processing_time=int:-1 backend_processing_time=int:-1 response_processing_time=int:-1 elb_status_code=slice:- backend_status_code=slice:- received_bytes=uint:0 sent_bytes=uint:0 user_agent=slice:- ssl_cipher=slice:- ssl_protocol=slice:-
+row 4: timestamp=slice:2015-05-13T23:39:43.945958Z elb=slice:my-loadbalancer clientip=slice:192.168.131.39 clientport=uint:2817 backendip=slice:10.0.0.1 backendport=uint:80 request_processing_time=double:7.2999999999999999e-05 backend_processing_time=double:0.0010480000000000001 response_processing_time=double:5.7000000000000003e-05 elb_status_code=uint:200 backend_status_code=uint:200 received_bytes=uint:0 sent_bytes=uint:29 verb=slice:GET request=slice:http://www.example.com:80/ httpversion=double:1.1000000000000001 user_agent=slice:curl/7.38.0 ssl_cipher=slice:- ssl_protocol=slice:-
+row 5: timestamp=slice:2024-04-28T04:02:03.123Z elb=slice:prod-elb clientip=slice:1.2.3.4 clientport=uint:54321 backendip=slice:10.0.0.5 backendport=uint:443 request_processing_time=double:0.001 backend_processing_time=double:0.02 response_processing_time=double:0.001 elb_status_code=uint:502 backend_status_code=slice:- received_bytes=uint:0 sent_bytes=uint:0 verb=slice:POST request=slice:https://api.example.com:443/v1/orders httpversion=double:2 user_agent=slice:Mozilla/5.0 ssl_cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 ssl_protocol=slice:TLSv1.2
+row 6: timestamp=slice:2024-04-28T04:02:04Z elb=slice:my-elb clientip=slice:10.0.0.1 clientport=uint:33442 request_processing_time=int:-1 backend_processing_time=int:-1 response_processing_time=int:-1 elb_status_code=slice:- backend_status_code=slice:- received_bytes=uint:0 sent_bytes=uint:0 user_agent=slice:- ssl_cipher=slice:- ssl_protocol=slice:-
+row 7: timestamp=slice:2015-05-13T23:39:43.945958Z elb=slice:my-loadbalancer clientip=slice:192.168.131.39 clientport=uint:2817 backendip=slice:10.0.0.1 backendport=uint:80 request_processing_time=double:7.2999999999999999e-05 backend_processing_time=double:0.0010480000000000001 response_processing_time=double:5.7000000000000003e-05 elb_status_code=uint:200 backend_status_code=uint:200 received_bytes=uint:0 sent_bytes=uint:29 verb=slice:GET request=slice:http://www.example.com:80/ httpversion=double:1.1000000000000001 user_agent=slice:curl/7.38.0 ssl_cipher=slice:- ssl_protocol=slice:-
+row 8: timestamp=slice:2024-04-28T04:02:03.123Z elb=slice:prod-elb clientip=slice:1.2.3.4 clientport=uint:54321 backendip=slice:10.0.0.5 backendport=uint:443 request_processing_time=double:0.001 backend_processing_time=double:0.02 response_processing_time=double:0.001 elb_status_code=uint:502 backend_status_code=slice:- received_bytes=uint:0 sent_bytes=uint:0 verb=slice:POST request=slice:https://api.example.com:443/v1/orders httpversion=double:2 user_agent=slice:Mozilla/5.0 ssl_cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 ssl_protocol=slice:TLSv1.2
+row 9: timestamp=slice:2024-04-28T04:02:04Z elb=slice:my-elb clientip=slice:10.0.0.1 clientport=uint:33442 request_processing_time=int:-1 backend_processing_time=int:-1 response_processing_time=int:-1 elb_status_code=slice:- backend_status_code=slice:- received_bytes=uint:0 sent_bytes=uint:0 user_agent=slice:- ssl_cipher=slice:- ssl_protocol=slice:-
+# errors
+error 5-5: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+timestamp
+elb
+clientip
+clientport
+backendip
+backendport
+request_processing_time
+backend_processing_time
+response_processing_time
+elb_status_code
+backend_status_code
+received_bytes
+sent_bytes
+verb
+request
+httpversion
+user_agent
+ssl_cipher
+ssl_protocol
+# last line 11
+# started 1 finished 1 cancelled false

@@ -1,0 +1,18 @@
+# rows
+row 1: b=slice:=c d=null: e=null: f=null: g=slice:  x=1\ty=2
+row 2: line=null:
+# errors
+error 1-1: Unterminated quoted value.
+error 5-5: Unterminated quoted value.
+# offsets
+
+# spans
+# keys
+b
+d
+e
+f
+g
+line
+# last line 6
+# started 1 finished 1 cancelled false

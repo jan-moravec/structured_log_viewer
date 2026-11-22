@@ -1,0 +1,27 @@
+# rows
+row 1: a=owned:quote " slash \\ newline \n tab \t unicode é 😀
+row 2: key=slice:escaped key big=uint:18446744073709551615 neg=int:-5 huge=slice:123456789012345678901234567890
+row 3: arr=slice:[1,2,{"x":3}] obj=slice:{"y":[true,null]} empty=owned:
+row 4:
+row 5: dup=int:2
+# errors
+error 5-5: Not a JSON object.
+error 6-6: Not a JSON object.
+error 7-7: Not a JSON object.
+error 8-8: Not a JSON object.
+error 9-9: Not a JSON object.
+# offsets
+
+# spans
+# keys
+a
+key
+big
+neg
+huge
+arr
+obj
+empty
+dup
+# last line 10
+# started 1 finished 1 cancelled false

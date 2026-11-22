@@ -1,0 +1,28 @@
+# rows
+row 0: timestamp=slice:28-Apr-2024 04:02:03.123 level=slice:info clientip=slice:10.0.0.1 clientport=uint:54321 question=slice:example.com query=slice:example.com class=slice:IN qtype=slice:A flags=slice:+ server=slice:10.0.0.53
+row 1: timestamp=slice:28-Apr-2024 04:02:04.456 level=slice:info clientip=slice:192.168.1.5 clientport=uint:33445 question=slice:api.example.com query=slice:api.example.com class=slice:IN qtype=slice:AAAA flags=slice:+E(0)K server=slice:192.168.1.53
+row 2: timestamp=slice:28-Apr-2024 04:02:05.789 level=slice:info clientip=slice:::1 clientport=uint:5353 query=slice:localhost class=slice:IN qtype=slice:PTR flags=slice:-
+row 5: timestamp=slice:28-Apr-2024 04:02:03.123 level=slice:info clientip=slice:10.0.0.1 clientport=uint:54321 question=slice:example.com query=slice:example.com class=slice:IN qtype=slice:A flags=slice:+ server=slice:10.0.0.53
+row 6: timestamp=slice:28-Apr-2024 04:02:04.456 level=slice:info clientip=slice:192.168.1.5 clientport=uint:33445 question=slice:api.example.com query=slice:api.example.com class=slice:IN qtype=slice:AAAA flags=slice:+E(0)K server=slice:192.168.1.53
+row 7: timestamp=slice:28-Apr-2024 04:02:05.789 level=slice:info clientip=slice:::1 clientport=uint:5353 query=slice:localhost class=slice:IN qtype=slice:PTR flags=slice:-
+row 8: timestamp=slice:28-Apr-2024 04:02:03.123 level=slice:info clientip=slice:10.0.0.1 clientport=uint:54321 question=slice:example.com query=slice:example.com class=slice:IN qtype=slice:A flags=slice:+ server=slice:10.0.0.53
+row 9: timestamp=slice:28-Apr-2024 04:02:04.456 level=slice:info clientip=slice:192.168.1.5 clientport=uint:33445 question=slice:api.example.com query=slice:api.example.com class=slice:IN qtype=slice:AAAA flags=slice:+E(0)K server=slice:192.168.1.53
+row 10: timestamp=slice:28-Apr-2024 04:02:05.789 level=slice:info clientip=slice:::1 clientport=uint:5353 query=slice:localhost class=slice:IN qtype=slice:PTR flags=slice:-
+# errors
+error 5-5: Line did not match the regex pattern.
+# offsets
+ 115 268 351 352 382 497 650 733 848 1001 1084
+# spans
+# keys
+timestamp
+level
+clientip
+clientport
+question
+query
+class
+qtype
+flags
+server
+# last line 11
+# started 1 finished 1 cancelled false

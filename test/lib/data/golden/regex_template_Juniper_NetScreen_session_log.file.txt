@@ -1,0 +1,37 @@
+# rows
+row 0: priority=uint:14 timestamp=slice:Apr 28 04:02:03 hostname=slice:fw01 device_id=slice:ns5gt facility=slice:Root level_tag=slice:system-notification-00257(traffic) start_time=slice:2024-04-28 04:02:01 duration=uint:2 policy_id=uint:10 service=slice:tcp/port:443 proto=uint:6 src_zone=slice:Trust dst_zone=slice:Untrust action=slice:Permit sent=uint:1024 rcvd=uint:2048 srcip=slice:10.0.0.5 dstip=slice:1.2.3.4 srcport=uint:54321 dstport=uint:443 session_id=uint:12345
+row 1: timestamp=slice:Apr 28 04:02:04 hostname=slice:fw02 device_id=slice:ssg140 facility=slice:Root level_tag=slice:system-warning-00518(traffic) start_time=slice:2024-04-28 04:02:03 duration=uint:1 policy_id=uint:1 service=slice:icmp proto=uint:1 src_zone=slice:Untrust dst_zone=slice:Trust action=slice:Deny sent=uint:0 rcvd=uint:0 srcip=slice:1.2.3.4 dstip=slice:10.0.0.5 session_id=uint:0 reason=slice:Policy denied
+row 4: priority=uint:14 timestamp=slice:Apr 28 04:02:03 hostname=slice:fw01 device_id=slice:ns5gt facility=slice:Root level_tag=slice:system-notification-00257(traffic) start_time=slice:2024-04-28 04:02:01 duration=uint:2 policy_id=uint:10 service=slice:tcp/port:443 proto=uint:6 src_zone=slice:Trust dst_zone=slice:Untrust action=slice:Permit sent=uint:1024 rcvd=uint:2048 srcip=slice:10.0.0.5 dstip=slice:1.2.3.4 srcport=uint:54321 dstport=uint:443 session_id=uint:12345
+row 5: timestamp=slice:Apr 28 04:02:04 hostname=slice:fw02 device_id=slice:ssg140 facility=slice:Root level_tag=slice:system-warning-00518(traffic) start_time=slice:2024-04-28 04:02:03 duration=uint:1 policy_id=uint:1 service=slice:icmp proto=uint:1 src_zone=slice:Untrust dst_zone=slice:Trust action=slice:Deny sent=uint:0 rcvd=uint:0 srcip=slice:1.2.3.4 dstip=slice:10.0.0.5 session_id=uint:0 reason=slice:Policy denied
+row 6: priority=uint:14 timestamp=slice:Apr 28 04:02:03 hostname=slice:fw01 device_id=slice:ns5gt facility=slice:Root level_tag=slice:system-notification-00257(traffic) start_time=slice:2024-04-28 04:02:01 duration=uint:2 policy_id=uint:10 service=slice:tcp/port:443 proto=uint:6 src_zone=slice:Trust dst_zone=slice:Untrust action=slice:Permit sent=uint:1024 rcvd=uint:2048 srcip=slice:10.0.0.5 dstip=slice:1.2.3.4 srcport=uint:54321 dstport=uint:443 session_id=uint:12345
+row 7: timestamp=slice:Apr 28 04:02:04 hostname=slice:fw02 device_id=slice:ssg140 facility=slice:Root level_tag=slice:system-warning-00518(traffic) start_time=slice:2024-04-28 04:02:03 duration=uint:1 policy_id=uint:1 service=slice:icmp proto=uint:1 src_zone=slice:Untrust dst_zone=slice:Trust action=slice:Deny sent=uint:0 rcvd=uint:0 srcip=slice:1.2.3.4 dstip=slice:10.0.0.5 session_id=uint:0 reason=slice:Policy denied
+# errors
+error 4-4: Line did not match the regex pattern.
+# offsets
+ 316 596 597 627 943 1223 1539 1819
+# spans
+# keys
+priority
+timestamp
+hostname
+device_id
+facility
+level_tag
+start_time
+duration
+policy_id
+service
+proto
+src_zone
+dst_zone
+action
+sent
+rcvd
+srcip
+dstip
+srcport
+dstport
+session_id
+reason
+# last line 8
+# started 1 finished 1 cancelled false

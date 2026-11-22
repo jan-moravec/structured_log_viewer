@@ -1,0 +1,26 @@
+# rows
+row 0: clientip=slice:10.112.72.172 ident=slice:- auth=slice:- timestamp=slice:11/Feb/2013:06:43:36 +0000 verb=slice:GET request=slice:/client/ httpversion=double:1.1000000000000001 response=uint:200 bytes=uint:5778 referrer=slice:- agent=slice:Mozilla/5.0
+row 1: clientip=slice:1.2.3.4 ident=slice:- auth=slice:bob timestamp=slice:10/Feb/2012:16:41:07 -0500 verb=slice:GET request=slice:/ httpversion=double:1 response=uint:200 bytes=uint:368 referrer=slice:https://example.com agent=slice:curl/8.5.0
+row 4: clientip=slice:10.112.72.172 ident=slice:- auth=slice:- timestamp=slice:11/Feb/2013:06:43:36 +0000 verb=slice:GET request=slice:/client/ httpversion=double:1.1000000000000001 response=uint:200 bytes=uint:5778 referrer=slice:- agent=slice:Mozilla/5.0
+row 5: clientip=slice:1.2.3.4 ident=slice:- auth=slice:bob timestamp=slice:10/Feb/2012:16:41:07 -0500 verb=slice:GET request=slice:/ httpversion=double:1 response=uint:200 bytes=uint:368 referrer=slice:https://example.com agent=slice:curl/8.5.0
+row 6: clientip=slice:10.112.72.172 ident=slice:- auth=slice:- timestamp=slice:11/Feb/2013:06:43:36 +0000 verb=slice:GET request=slice:/client/ httpversion=double:1.1000000000000001 response=uint:200 bytes=uint:5778 referrer=slice:- agent=slice:Mozilla/5.0
+row 7: clientip=slice:1.2.3.4 ident=slice:- auth=slice:bob timestamp=slice:10/Feb/2012:16:41:07 -0500 verb=slice:GET request=slice:/ httpversion=double:1 response=uint:200 bytes=uint:368 referrer=slice:https://example.com agent=slice:curl/8.5.0
+# errors
+error 4-4: Line did not match the regex pattern.
+# offsets
+ 98 201 202 232 330 433 531 634
+# spans
+# keys
+clientip
+ident
+auth
+timestamp
+verb
+request
+httpversion
+response
+bytes
+referrer
+agent
+# last line 8
+# started 1 finished 1 cancelled false

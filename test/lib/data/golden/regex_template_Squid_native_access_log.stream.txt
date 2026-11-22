@@ -1,0 +1,30 @@
+# rows
+row 1: timestamp=double:1714276923.1229999 duration=uint:234 clientip=slice:10.0.0.5 result=slice:TCP_MISS status=uint:200 bytes=uint:1024 verb=slice:GET url=slice:http://example.com/ rfc931=slice:- hierarchy=slice:DIRECT server=slice:93.184.216.34 mimetype=slice:text/html
+row 2: timestamp=double:1714276924.4560001 duration=uint:45 clientip=slice:10.0.0.6 result=slice:TCP_HIT status=uint:200 bytes=uint:512 verb=slice:GET url=slice:http://example.com/style.css rfc931=slice:- hierarchy=slice:NONE server=slice:- mimetype=slice:text/css
+row 3: timestamp=double:1714276925.789 duration=uint:1234 clientip=slice:192.168.1.7 result=slice:TCP_REFRESH_MODIFIED status=uint:304 bytes=uint:350 verb=slice:GET url=slice:http://example.com/api rfc931=slice:- hierarchy=slice:DIRECT server=slice:93.184.216.34 mimetype=slice:-
+row 4: timestamp=double:1714276923.1229999 duration=uint:234 clientip=slice:10.0.0.5 result=slice:TCP_MISS status=uint:200 bytes=uint:1024 verb=slice:GET url=slice:http://example.com/ rfc931=slice:- hierarchy=slice:DIRECT server=slice:93.184.216.34 mimetype=slice:text/html
+row 5: timestamp=double:1714276924.4560001 duration=uint:45 clientip=slice:10.0.0.6 result=slice:TCP_HIT status=uint:200 bytes=uint:512 verb=slice:GET url=slice:http://example.com/style.css rfc931=slice:- hierarchy=slice:NONE server=slice:- mimetype=slice:text/css
+row 6: timestamp=double:1714276925.789 duration=uint:1234 clientip=slice:192.168.1.7 result=slice:TCP_REFRESH_MODIFIED status=uint:304 bytes=uint:350 verb=slice:GET url=slice:http://example.com/api rfc931=slice:- hierarchy=slice:DIRECT server=slice:93.184.216.34 mimetype=slice:-
+row 7: timestamp=double:1714276923.1229999 duration=uint:234 clientip=slice:10.0.0.5 result=slice:TCP_MISS status=uint:200 bytes=uint:1024 verb=slice:GET url=slice:http://example.com/ rfc931=slice:- hierarchy=slice:DIRECT server=slice:93.184.216.34 mimetype=slice:text/html
+row 8: timestamp=double:1714276924.4560001 duration=uint:45 clientip=slice:10.0.0.6 result=slice:TCP_HIT status=uint:200 bytes=uint:512 verb=slice:GET url=slice:http://example.com/style.css rfc931=slice:- hierarchy=slice:NONE server=slice:- mimetype=slice:text/css
+row 9: timestamp=double:1714276925.789 duration=uint:1234 clientip=slice:192.168.1.7 result=slice:TCP_REFRESH_MODIFIED status=uint:304 bytes=uint:350 verb=slice:GET url=slice:http://example.com/api rfc931=slice:- hierarchy=slice:DIRECT server=slice:93.184.216.34 mimetype=slice:-
+# errors
+error 5-5: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+timestamp
+duration
+clientip
+result
+status
+bytes
+verb
+url
+rfc931
+hierarchy
+server
+mimetype
+# last line 11
+# started 1 finished 1 cancelled false

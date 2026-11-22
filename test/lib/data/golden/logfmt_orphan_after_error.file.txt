@@ -1,0 +1,14 @@
+# rows
+row 2: ok=uint:1 last=owned:text\n  fine
+# errors
+error 1-1: Orphaned continuation line.
+error 1-1: Unterminated quoted value.
+# offsets
+ 18 27 42 49
+# spans
+span 2-3
+# keys
+ok
+last
+# last line 4
+# started 1 finished 1 cancelled false

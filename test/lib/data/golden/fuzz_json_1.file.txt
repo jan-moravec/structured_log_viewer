@@ -1,0 +1,15 @@
+# rows
+row 2: a=uint:18446744073709551615
+# errors
+error 1-1: UNCLOSED_STRING: A string is opened, but never closed.
+error 2-2: UNCLOSED_STRING: A string is opened, but never closed.
+error 4-4: UNCLOSED_STRING: A string is opened, but never closed.
+error 5-5: Not a JSON object.
+error 6-6: Not a JSON object.
+# offsets
+ 45 112 139 158 164 173 174
+# spans
+# keys
+a
+# last line 7
+# started 1 finished 1 cancelled false

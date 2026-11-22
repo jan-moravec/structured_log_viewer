@@ -1,0 +1,34 @@
+# rows
+row 3: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:0)\n\tat com.example.Main.main(Main.java:1)
+row 6: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n    at indented with spaces\n\tafter a blank line
+row 10: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 12: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:3)\n\tat com.example.Main.main(Main.java:1)
+row 15: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 16: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n    at indented with spaces\n\tafter a blank line
+row 20: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:6)\n\tat com.example.Main.main(Main.java:1)
+row 23: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 25: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 26: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:9)\n\tat com.example.Main.main(Main.java:1)\n    at indented with spaces\n\tafter a blank line
+row 32: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 33: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+# errors
+error 1-3: 3 orphaned continuation lines dropped.
+error 12-12: Line did not match the regex pattern.
+error 25-25: Line did not match the regex pattern.
+# offsets
+ 13 14 27 103 147 186 262 290 291 311 387 435 511 555 594 670 746 774 775 795 871 915 954 1030 1078 1154 1230 1274 1313 1341 1342 1362 1438 1514
+# spans
+span 3-5
+span 6-9
+span 12-14
+span 16-19
+span 20-22
+span 26-31
+# keys
+timestamp
+level
+thread
+logger
+message
+# last line 34
+# started 1 finished 1 cancelled false

@@ -1,0 +1,14 @@
+# rows
+row 1:
+row 2: a=uint:1 c=uint:3
+row 3: a=slice: b=slice:x
+# errors
+# offsets
+ 6 9 14 20
+# spans
+# keys
+a
+b
+c
+# last line 4
+# started 1 finished 1 cancelled false

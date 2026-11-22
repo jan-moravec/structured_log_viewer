@@ -1,0 +1,13 @@
+# rows
+row 1: a;b;c=slice:1;2
+row 3: a;b;c=slice:5;6;7;8
+row 5: a;b;c=owned:x"y
+# errors
+error 3-3: Unterminated quoted value.
+# offsets
+ 6 10 28 36 37 46
+# spans
+# keys
+a;b;c
+# last line 6
+# started 1 finished 1 cancelled false

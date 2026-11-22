@@ -1,0 +1,26 @@
+# rows
+row 1: pid=uint:12345 role=slice:M timestamp=slice:28 Apr 2024 04:02:03.123 level=slice:* message=slice:Ready to accept connections tcp
+row 2: pid=uint:12345 role=slice:M timestamp=slice:28 Apr 2024 04:02:04.456 level=slice:# message=slice:WARNING overcommit_memory is set to 0!
+row 3: pid=uint:12345 role=slice:S timestamp=slice:28 Apr 2024 04:02:05.789 level=slice:. message=slice:slave start
+row 4: pid=uint:12345 role=slice:C timestamp=slice:28 Apr 2024 04:02:06.000 level=slice:- message=slice:DB loaded from disk: 0.123 seconds
+row 5: pid=uint:12345 role=slice:M timestamp=slice:28 Apr 2024 04:02:03.123 level=slice:* message=slice:Ready to accept connections tcp
+row 6: pid=uint:12345 role=slice:M timestamp=slice:28 Apr 2024 04:02:04.456 level=slice:# message=slice:WARNING overcommit_memory is set to 0!
+row 7: pid=uint:12345 role=slice:S timestamp=slice:28 Apr 2024 04:02:05.789 level=slice:. message=slice:slave start
+row 8: pid=uint:12345 role=slice:C timestamp=slice:28 Apr 2024 04:02:06.000 level=slice:- message=slice:DB loaded from disk: 0.123 seconds
+row 9: pid=uint:12345 role=slice:M timestamp=slice:28 Apr 2024 04:02:03.123 level=slice:* message=slice:Ready to accept connections tcp
+row 10: pid=uint:12345 role=slice:M timestamp=slice:28 Apr 2024 04:02:04.456 level=slice:# message=slice:WARNING overcommit_memory is set to 0!
+row 11: pid=uint:12345 role=slice:S timestamp=slice:28 Apr 2024 04:02:05.789 level=slice:. message=slice:slave start
+row 12: pid=uint:12345 role=slice:C timestamp=slice:28 Apr 2024 04:02:06.000 level=slice:- message=slice:DB loaded from disk: 0.123 seconds
+# errors
+error 6-6: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+pid
+role
+timestamp
+level
+message
+# last line 14
+# started 1 finished 1 cancelled false

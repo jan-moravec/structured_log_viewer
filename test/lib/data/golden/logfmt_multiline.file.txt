@@ -1,0 +1,46 @@
+# rows
+row 0: level=slice:info n=uint:0 msg=owned:row 0\n  continuation of 0\n  and more
+row 4: level=slice:info n=uint:1 msg=owned:row 1\n\t tab continuation
+row 6: level=slice:info n=uint:2 msg=slice:row 2
+row 7: level=slice:info n=uint:3 msg=owned:row 3\n  continuation of 3\n  and more
+row 11: level=slice:info n=uint:4 msg=slice:row 4
+row 12: level=slice:info n=uint:5 msg=slice:row 5
+row 13: level=slice:info n=uint:6 msg=owned:row 6\n  continuation of 6\n  and more
+row 17: level=slice:info n=uint:7 msg=slice:row 7
+row 18: level=slice:info n=uint:8 msg=owned:row 8\n\t tab continuation
+row 20: level=slice:info n=uint:9 msg=owned:row 9\n  continuation of 9\n  and more
+row 24: level=slice:info n=uint:10 msg=slice:row 10
+row 25: level=slice:info n=uint:11 msg=slice:row 11
+row 26: level=slice:info n=uint:12 msg=owned:row 12\n  continuation of 12\n  and more
+row 30: level=slice:info n=uint:13 msg=slice:row 13
+row 31: level=slice:info n=uint:14 msg=slice:row 14
+row 32: level=slice:info n=uint:15 msg=owned:row 15\n  continuation of 15\n  and more\n\t tab continuation
+row 37: level=slice:info n=uint:16 msg=slice:row 16
+row 38: level=slice:info n=uint:17 msg=slice:row 17
+row 39: level=slice:info n=uint:18 msg=owned:row 18\n  continuation of 18\n  and more
+row 43: level=slice:info n=uint:19 msg=slice:row 19
+row 44: level=slice:info n=uint:20 msg=slice:row 20
+row 45: level=slice:info n=uint:21 msg=owned:row 21\n  continuation of 21\n  and more
+row 49: level=slice:info n=uint:22 msg=owned:row 22\n\t tab continuation
+row 51: level=slice:info n=uint:23 msg=slice:row 23
+# errors
+# offsets
+ 27 47 48 59 86 105 132 159 179 180 191 218 245 272 292 293 304 331 358 377 404 424 425 436 465 494 523 544 545 556 585 614 643 664 665 676 695 724 753 782 803 804 815 844 873 902 923 924 935 964 983 1012
+# spans
+span 0-3
+span 4-5
+span 7-10
+span 13-16
+span 18-19
+span 20-23
+span 26-29
+span 32-36
+span 39-42
+span 45-48
+span 49-50
+# keys
+level
+n
+msg
+# last line 52
+# started 1 finished 1 cancelled false

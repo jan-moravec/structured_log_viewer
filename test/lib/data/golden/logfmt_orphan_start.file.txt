@@ -1,0 +1,47 @@
+# rows
+row 3: level=slice:info n=uint:0 msg=owned:row 0\n  continuation of 0\n  and more
+row 7: level=slice:info n=uint:1 msg=owned:row 1\n\t tab continuation
+row 9: level=slice:info n=uint:2 msg=slice:row 2
+row 10: level=slice:info n=uint:3 msg=owned:row 3\n  continuation of 3\n  and more
+row 14: level=slice:info n=uint:4 msg=slice:row 4
+row 15: level=slice:info n=uint:5 msg=slice:row 5
+row 16: level=slice:info n=uint:6 msg=owned:row 6\n  continuation of 6\n  and more
+row 20: level=slice:info n=uint:7 msg=slice:row 7
+row 21: level=slice:info n=uint:8 msg=owned:row 8\n\t tab continuation
+row 23: level=slice:info n=uint:9 msg=owned:row 9\n  continuation of 9\n  and more
+row 27: level=slice:info n=uint:10 msg=slice:row 10
+row 28: level=slice:info n=uint:11 msg=slice:row 11
+row 29: level=slice:info n=uint:12 msg=owned:row 12\n  continuation of 12\n  and more
+row 33: level=slice:info n=uint:13 msg=slice:row 13
+row 34: level=slice:info n=uint:14 msg=slice:row 14
+row 35: level=slice:info n=uint:15 msg=owned:row 15\n  continuation of 15\n  and more\n\t tab continuation
+row 40: level=slice:info n=uint:16 msg=slice:row 16
+row 41: level=slice:info n=uint:17 msg=slice:row 17
+row 42: level=slice:info n=uint:18 msg=owned:row 18\n  continuation of 18\n  and more
+row 46: level=slice:info n=uint:19 msg=slice:row 19
+row 47: level=slice:info n=uint:20 msg=slice:row 20
+row 48: level=slice:info n=uint:21 msg=owned:row 21\n  continuation of 21\n  and more
+row 52: level=slice:info n=uint:22 msg=owned:row 22\n\t tab continuation
+row 54: level=slice:info n=uint:23 msg=slice:row 23
+# errors
+error 1-3: 3 orphaned continuation lines dropped.
+# offsets
+ 13 14 27 54 74 75 86 113 132 159 186 206 207 218 245 272 299 319 320 331 358 385 404 431 451 452 463 492 521 550 571 572 583 612 641 670 691 692 703 722 751 780 809 830 831 842 871 900 929 950 951 962 991 1010 1039
+# spans
+span 3-6
+span 7-8
+span 10-13
+span 16-19
+span 21-22
+span 23-26
+span 29-32
+span 35-39
+span 42-45
+span 48-51
+span 52-53
+# keys
+level
+n
+msg
+# last line 55
+# started 1 finished 1 cancelled false

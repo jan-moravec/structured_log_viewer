@@ -1,0 +1,48 @@
+# rows
+row 0: ts=slice:2026-01-01T00:00:00Z level=slice:info n=uint:0 msg=slice:row 0
+row 1: ts=slice:2026-01-01T00:00:01Z level=slice:info n=uint:1 msg=slice:row 1
+row 2: ts=slice:2026-01-01T00:00:02Z level=slice:info n=uint:2 msg=slice:row 2
+row 3: ts=slice:2026-01-01T00:00:03Z level=slice:info n=uint:3 msg=slice:row 3
+row 4: ts=slice:2026-01-01T00:00:04Z level=slice:info n=uint:4 msg=slice:row 4
+row 5: ts=slice:2026-01-01T00:00:05Z level=slice:info n=uint:5 msg=slice:row 5
+row 6: ts=slice:2026-01-01T00:00:06Z level=slice:info n=uint:6 msg=slice:row 6
+row 7: ts=slice:2026-01-01T00:00:07Z level=slice:info n=uint:7 msg=slice:row 7
+row 8: ts=slice:2026-01-01T00:00:08Z level=slice:info n=uint:8 msg=slice:row 8
+row 9: ts=slice:2026-01-01T00:00:09Z level=slice:info n=uint:9 msg=slice:row 9
+row 10: ts=slice:2026-01-01T00:00:10Z level=slice:info n=uint:10 msg=slice:row 10
+row 11: ts=slice:2026-01-01T00:00:11Z level=slice:info n=uint:11 msg=slice:row 11
+row 12: ts=slice:2026-01-01T00:00:12Z level=slice:info n=uint:12 msg=slice:row 12
+row 13: ts=slice:2026-01-01T00:00:13Z level=slice:info n=uint:13 msg=slice:row 13
+row 14: ts=slice:2026-01-01T00:00:14Z level=slice:info n=uint:14 msg=slice:row 14
+row 15: ts=slice:2026-01-01T00:00:15Z level=slice:info n=uint:15 msg=slice:row 15
+row 16: ts=slice:2026-01-01T00:00:16Z level=slice:info n=uint:16 msg=slice:row 16
+row 17: ts=slice:2026-01-01T00:00:17Z level=slice:info n=uint:17 msg=slice:row 17
+row 18: ts=slice:2026-01-01T00:00:18Z level=slice:info n=uint:18 msg=slice:row 18
+row 19: ts=slice:2026-01-01T00:00:19Z level=slice:info n=uint:19 msg=slice:row 19
+row 20: ts=slice:2026-01-01T00:00:20Z level=slice:info n=uint:20 msg=slice:row 20
+row 21: ts=slice:2026-01-01T00:00:21Z level=slice:info n=uint:21 msg=slice:row 21
+row 22: ts=slice:2026-01-01T00:00:22Z level=slice:info n=uint:22 msg=slice:row 22
+row 23: ts=slice:2026-01-01T00:00:23Z level=slice:info n=uint:23 msg=slice:row 23
+row 24: ts=slice:2026-01-01T00:00:24Z level=slice:info n=uint:24 msg=slice:row 24
+row 25: ts=slice:2026-01-01T00:00:25Z level=slice:info n=uint:25 msg=slice:row 25
+row 26: ts=slice:2026-01-01T00:00:26Z level=slice:info n=uint:26 msg=slice:row 26
+row 27: ts=slice:2026-01-01T00:00:27Z level=slice:info n=uint:27 msg=slice:row 27
+row 28: ts=slice:2026-01-01T00:00:28Z level=slice:info n=uint:28 msg=slice:row 28
+row 29: ts=slice:2026-01-01T00:00:29Z level=slice:info n=uint:29 msg=slice:row 29
+row 30: indented=null: is=null: a=null: record=null: start=null:
+# errors
+# offsets
+ 51 102 153 204 255 306 357 408 459 510 563 616 669 722 775 828 881 934 987 1040 1093 1146 1199 1252 1305 1358 1411 1464 1517 1570 1599
+# spans
+# keys
+ts
+level
+n
+msg
+indented
+is
+a
+record
+start
+# last line 31
+# started 1 finished 1 cancelled false

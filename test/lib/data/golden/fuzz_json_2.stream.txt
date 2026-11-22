@@ -1,0 +1,14 @@
+# rows
+row 1: ts=slice:2024-01-01T00:00:00Z level=slice:info msg=slice:hello service=slice:auth
+row 2: ts=slice:2024-01-01T00:00:01Z level=slice:error msg=slice:boom service=slice:auth
+# errors
+# offsets
+
+# spans
+# keys
+ts
+level
+msg
+service
+# last line 2
+# started 1 finished 1 cancelled false

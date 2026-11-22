@@ -1,0 +1,41 @@
+# rows
+row 1: timestamp=time:1767225600000000 n=int:0
+row 2: timestamp=time:1767225601000000 n=int:1
+row 3: timestamp=time:1767225602000000 n=int:2
+row 4: timestamp=time:1767225603000000 n=int:3
+row 5: timestamp=time:1767225604000000 n=int:4
+row 6: timestamp=time:1767225605000000 n=int:5
+row 7: timestamp=time:1767225606000000 n=int:6
+row 8: timestamp=time:1767225607000000 n=int:7
+row 9: timestamp=time:1767225608000000 n=int:8
+row 10: timestamp=time:1767225609000000 n=int:9
+row 11: timestamp=time:1767225610000000 n=int:10
+row 12: timestamp=time:1767225611000000 n=int:11
+row 13: timestamp=time:1767225612000000 n=int:12
+row 14: timestamp=time:1767225613000000 n=int:13
+row 15: timestamp=time:1767225614000000 n=int:14
+row 16: timestamp=time:1767225615000000 n=int:15
+row 17: timestamp=time:1767225616000000 n=int:16
+row 18: timestamp=time:1767225617000000 n=int:17
+row 19: timestamp=time:1767225618000000 n=int:18
+row 20: timestamp=time:1767225619000000 n=int:19
+row 21: timestamp=time:1767225620000000 n=int:20
+row 22: timestamp=time:1767225621000000 n=int:21
+row 23: timestamp=time:1767225622000000 n=int:22
+row 24: timestamp=time:1767225623000000 n=int:23
+row 25: timestamp=time:1767225624000000 n=int:24
+row 26: timestamp=time:1767225625000000 n=int:25
+row 27: timestamp=time:1767225626000000 n=int:26
+row 28: timestamp=time:1767225627000000 n=int:27
+row 29: timestamp=time:1767225628000000 n=int:28
+row 30: timestamp=time:1767225629000000 n=int:29
+row 31: timestamp=slice:not a time n=int:1
+# errors
+# offsets
+
+# spans
+# keys
+timestamp
+n
+# last line 31
+# started 1 finished 1 cancelled false

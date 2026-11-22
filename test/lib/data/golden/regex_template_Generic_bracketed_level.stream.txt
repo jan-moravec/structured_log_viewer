@@ -1,0 +1,22 @@
+# rows
+row 1: Level=slice:INFO Timestamp=slice:2022-02-18T15:37:10.354 Thread=slice:0xBF32 Message=slice:System starting
+row 2: Level=slice:WARNING Timestamp=slice:2022-02-19T15:37:13.427 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
+row 3: Level=slice:ERROR Timestamp=slice:2024-01-01T00:00:00.000 Thread=slice:main Message=slice:Connection refused
+row 4: Level=slice:INFO Timestamp=slice:2022-02-18T15:37:10.354 Thread=slice:0xBF32 Message=slice:System starting
+row 5: Level=slice:WARNING Timestamp=slice:2022-02-19T15:37:13.427 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
+row 6: Level=slice:ERROR Timestamp=slice:2024-01-01T00:00:00.000 Thread=slice:main Message=slice:Connection refused
+row 7: Level=slice:INFO Timestamp=slice:2022-02-18T15:37:10.354 Thread=slice:0xBF32 Message=slice:System starting
+row 8: Level=slice:WARNING Timestamp=slice:2022-02-19T15:37:13.427 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
+row 9: Level=slice:ERROR Timestamp=slice:2024-01-01T00:00:00.000 Thread=slice:main Message=slice:Connection refused
+# errors
+error 5-5: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+Level
+Timestamp
+Thread
+Message
+# last line 11
+# started 1 finished 1 cancelled false

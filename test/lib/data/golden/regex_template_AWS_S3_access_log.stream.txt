@@ -1,0 +1,43 @@
+# rows
+row 1: owner=slice:79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be bucket=slice:DOC-EXAMPLE-BUCKET timestamp=slice:06/Feb/2023:00:00:38 +0000 clientip=slice:192.0.2.3 requester=slice:79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be request_id=slice:3E57427F33A59F07 operation=slice:REST.GET.VERSIONING key=slice:- verb=slice:GET request=slice:/DOC-EXAMPLE-BUCKET?versioning httpversion=double:1.1000000000000001 status=uint:200 error_code=slice:- bytes_sent=uint:113 total_time=uint:7 referrer=slice:- agent=slice:S3Console/0.4 version_id=slice:- host_id=slice:s9lzHYrFp76ZVxRcpX9+5cl40K2lviPsiXqsTuRGFcc9rGE6m4hY/L8nVHGJVcAlbB1Y2L+yMOQOg= sig_version=slice:SigV2 cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 auth_type=slice:AuthHeader host_header=slice:s3.amazonaws.com tls_version=slice:TLSv1.2 access_point_arn=slice:- acl_required=slice:-
+row 2: owner=slice:owner_canonical_id bucket=slice:mybucket timestamp=slice:10/Oct/2020:13:55:36 -0700 clientip=slice:1.2.3.4 requester=slice:- request_id=slice:0123456789ABCDEF operation=slice:REST.PUT.OBJECT key=slice:object/key.txt verb=slice:PUT request=slice:/mybucket/object/key.txt httpversion=double:1.1000000000000001 status=uint:200 error_code=slice:- bytes_sent=uint:0 object_size=uint:1024 total_time=uint:35 turnaround_time=uint:28 referrer=slice:- agent=slice:aws-sdk-go/1.31.0 version_id=slice:-
+row 3: owner=slice:79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be bucket=slice:DOC-EXAMPLE-BUCKET timestamp=slice:06/Feb/2023:00:00:38 +0000 clientip=slice:192.0.2.3 requester=slice:79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be request_id=slice:3E57427F33A59F07 operation=slice:REST.GET.VERSIONING key=slice:- verb=slice:GET request=slice:/DOC-EXAMPLE-BUCKET?versioning httpversion=double:1.1000000000000001 status=uint:200 error_code=slice:- bytes_sent=uint:113 total_time=uint:7 referrer=slice:- agent=slice:S3Console/0.4 version_id=slice:- host_id=slice:s9lzHYrFp76ZVxRcpX9+5cl40K2lviPsiXqsTuRGFcc9rGE6m4hY/L8nVHGJVcAlbB1Y2L+yMOQOg= sig_version=slice:SigV2 cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 auth_type=slice:AuthHeader host_header=slice:s3.amazonaws.com tls_version=slice:TLSv1.2 access_point_arn=slice:- acl_required=slice:-
+row 4: owner=slice:owner_canonical_id bucket=slice:mybucket timestamp=slice:10/Oct/2020:13:55:36 -0700 clientip=slice:1.2.3.4 requester=slice:- request_id=slice:0123456789ABCDEF operation=slice:REST.PUT.OBJECT key=slice:object/key.txt verb=slice:PUT request=slice:/mybucket/object/key.txt httpversion=double:1.1000000000000001 status=uint:200 error_code=slice:- bytes_sent=uint:0 object_size=uint:1024 total_time=uint:35 turnaround_time=uint:28 referrer=slice:- agent=slice:aws-sdk-go/1.31.0 version_id=slice:-
+row 5: owner=slice:79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be bucket=slice:DOC-EXAMPLE-BUCKET timestamp=slice:06/Feb/2023:00:00:38 +0000 clientip=slice:192.0.2.3 requester=slice:79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be request_id=slice:3E57427F33A59F07 operation=slice:REST.GET.VERSIONING key=slice:- verb=slice:GET request=slice:/DOC-EXAMPLE-BUCKET?versioning httpversion=double:1.1000000000000001 status=uint:200 error_code=slice:- bytes_sent=uint:113 total_time=uint:7 referrer=slice:- agent=slice:S3Console/0.4 version_id=slice:- host_id=slice:s9lzHYrFp76ZVxRcpX9+5cl40K2lviPsiXqsTuRGFcc9rGE6m4hY/L8nVHGJVcAlbB1Y2L+yMOQOg= sig_version=slice:SigV2 cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 auth_type=slice:AuthHeader host_header=slice:s3.amazonaws.com tls_version=slice:TLSv1.2 access_point_arn=slice:- acl_required=slice:-
+row 6: owner=slice:owner_canonical_id bucket=slice:mybucket timestamp=slice:10/Oct/2020:13:55:36 -0700 clientip=slice:1.2.3.4 requester=slice:- request_id=slice:0123456789ABCDEF operation=slice:REST.PUT.OBJECT key=slice:object/key.txt verb=slice:PUT request=slice:/mybucket/object/key.txt httpversion=double:1.1000000000000001 status=uint:200 error_code=slice:- bytes_sent=uint:0 object_size=uint:1024 total_time=uint:35 turnaround_time=uint:28 referrer=slice:- agent=slice:aws-sdk-go/1.31.0 version_id=slice:-
+# errors
+error 4-4: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+owner
+bucket
+timestamp
+clientip
+requester
+request_id
+operation
+key
+verb
+request
+httpversion
+status
+error_code
+bytes_sent
+object_size
+total_time
+turnaround_time
+referrer
+agent
+version_id
+host_id
+sig_version
+cipher
+auth_type
+host_header
+tls_version
+access_point_arn
+acl_required
+# last line 8
+# started 1 finished 1 cancelled false

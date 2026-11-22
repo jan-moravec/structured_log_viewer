@@ -1,0 +1,17 @@
+# rows
+row 1: level=slice:INFO message=slice:text code=slice:0\n  more 0
+row 2: level=slice:INFO message=slice:text code=slice:1\n  more 1
+row 3: level=slice:INFO message=slice:text code=slice:2\n  more 2
+row 4: level=slice:INFO message=slice:text code=slice:3\n  more 3
+row 5: level=slice:INFO message=slice:text code=slice:4\n  more 4
+row 6: level=slice:INFO message=slice:text code=slice:5\n  more 5
+# errors
+# offsets
+
+# spans
+# keys
+level
+message
+code
+# last line 12
+# started 1 finished 1 cancelled false

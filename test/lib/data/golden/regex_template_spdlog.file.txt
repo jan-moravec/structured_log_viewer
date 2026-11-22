@@ -1,0 +1,25 @@
+# rows
+row 0: timestamp=slice:2024-04-28 04:02:03.123 level=slice:info message=slice:Server started on port 8080
+row 1: timestamp=slice:2024-04-28 04:02:04.456 logger=slice:console level=slice:warning message=slice:Disk usage above 80%
+row 2: timestamp=slice:2024-04-28 04:02:05.789 logger=slice:trader level=slice:error message=slice:Order rejected by gateway: timeout
+row 3: timestamp=slice:2024-04-28 04:02:06.000 level=slice:critical message=slice:Process aborting
+row 6: timestamp=slice:2024-04-28 04:02:03.123 level=slice:info message=slice:Server started on port 8080
+row 7: timestamp=slice:2024-04-28 04:02:04.456 logger=slice:console level=slice:warning message=slice:Disk usage above 80%
+row 8: timestamp=slice:2024-04-28 04:02:05.789 logger=slice:trader level=slice:error message=slice:Order rejected by gateway: timeout
+row 9: timestamp=slice:2024-04-28 04:02:06.000 level=slice:critical message=slice:Process aborting
+row 10: timestamp=slice:2024-04-28 04:02:03.123 level=slice:info message=slice:Server started on port 8080
+row 11: timestamp=slice:2024-04-28 04:02:04.456 logger=slice:console level=slice:warning message=slice:Disk usage above 80%
+row 12: timestamp=slice:2024-04-28 04:02:05.789 logger=slice:trader level=slice:error message=slice:Order rejected by gateway: timeout
+row 13: timestamp=slice:2024-04-28 04:02:06.000 level=slice:critical message=slice:Process aborting
+# errors
+error 6-6: Line did not match the regex pattern.
+# offsets
+ 61 128 206 260 261 291 352 419 497 551 612 679 757 811
+# spans
+# keys
+timestamp
+logger
+level
+message
+# last line 14
+# started 1 finished 1 cancelled false

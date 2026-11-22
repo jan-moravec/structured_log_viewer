@@ -1,0 +1,9 @@
+# rows
+# errors
+error 0-0: Regex parser requires a non-empty pattern.
+# offsets
+
+# spans
+# keys
+# last line 0
+# started 1 finished 1 cancelled false

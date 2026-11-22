@@ -1,0 +1,14 @@
+# rows
+row 1: time=slice:2024-01-01T00:00:00Z level=slice:info msg=slice:hello n=uint:1
+row 2: time=slice:2024-01-01T00:00:01Z level=slice:error msg=owned:quoted, with "comma" n=uint:2
+# errors
+# offsets
+
+# spans
+# keys
+time
+level
+msg
+n
+# last line 3
+# started 1 finished 1 cancelled false

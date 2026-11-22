@@ -1,0 +1,31 @@
+# rows
+row 0: level=slice:INFO message=owned:record 0\nTraceback (most recent call last):\n  File "x.py", line 0, in <module>\n    run()\nValueError: boom
+row 5: level=slice:INFO message=slice:record 1
+row 6: level=slice:INFO message=slice:record 2
+row 7: level=slice:INFO message=owned:record 3\nTraceback (most recent call last):\n  File "x.py", line 3, in <module>\n    run()\nValueError: boom
+row 12: level=slice:INFO message=slice:record 4
+row 14: level=slice:ERROR message=slice:after a blank line
+row 15: level=slice:INFO message=slice:record 5
+row 16: level=slice:INFO message=owned:record 6\nTraceback (most recent call last):\n  File "x.py", line 6, in <module>\n    run()\nValueError: boom
+row 21: level=slice:INFO message=slice:record 7
+row 22: level=slice:INFO message=slice:record 8
+row 23: level=slice:INFO message=owned:record 9\nTraceback (most recent call last):\n  File "x.py", line 9, in <module>\n    run()\nValueError: boom
+row 29: level=slice:ERROR message=slice:after a blank line
+row 30: level=slice:INFO message=slice:record 10
+row 31: level=slice:INFO message=slice:record 11
+row 32: level=slice:INFO message=owned:record 12\nTraceback (most recent call last):\n  File "x.py", line 12, in <module>\n    run()\nValueError: boom
+row 37: level=slice:INFO message=slice:record 13
+# errors
+# offsets
+ 19 55 91 102 120 136 152 168 204 240 251 269 285 287 314 330 346 382 418 429 447 463 479 495 531 567 578 596 598 625 642 659 676 712 749 760 778 795
+# spans
+span 0-4
+span 7-11
+span 16-20
+span 23-27
+span 32-36
+# keys
+level
+message
+# last line 38
+# started 1 finished 1 cancelled false

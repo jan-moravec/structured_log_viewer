@@ -1,0 +1,43 @@
+# rows
+row 1: timestamp=slice:2026-01-01T00:00:00Z n=uint:0 text=slice:quoted, 0 ratio=double:0.5 flag=bool:true
+row 2: timestamp=slice:2026-01-01T00:00:01Z n=uint:1 text=slice:quoted, 1 ratio=double:1.5 flag=bool:true
+row 3: timestamp=slice:2026-01-01T00:00:02Z n=uint:2 text=slice:quoted, 2 ratio=double:2.5 flag=bool:true
+row 4: timestamp=slice:2026-01-01T00:00:03Z n=uint:3 text=slice:quoted, 3 ratio=double:3.5 flag=bool:true
+row 5: timestamp=slice:2026-01-01T00:00:04Z n=uint:4 text=slice:quoted, 4 ratio=double:4.5 flag=bool:true
+row 6: timestamp=slice:2026-01-01T00:00:05Z n=uint:5 text=slice:quoted, 5 ratio=double:5.5 flag=bool:true
+row 7: timestamp=slice:2026-01-01T00:00:06Z n=uint:6 text=slice:quoted, 6 ratio=double:6.5 flag=bool:true
+row 8: timestamp=slice:2026-01-01T00:00:07Z n=uint:7 text=slice:quoted, 7 ratio=double:7.5 flag=bool:true
+row 9: timestamp=slice:2026-01-01T00:00:08Z n=uint:8 text=slice:quoted, 8 ratio=double:8.5 flag=bool:true
+row 10: timestamp=slice:2026-01-01T00:00:09Z n=uint:9 text=slice:quoted, 9 ratio=double:9.5 flag=bool:true
+row 11: timestamp=slice:2026-01-01T00:00:10Z n=uint:10 text=slice:quoted, 10 ratio=double:10.5 flag=bool:true
+row 12: timestamp=slice:2026-01-01T00:00:11Z n=uint:11 text=slice:quoted, 11 ratio=double:11.5 flag=bool:true
+row 13: timestamp=slice:2026-01-01T00:00:12Z n=uint:12 text=slice:quoted, 12 ratio=double:12.5 flag=bool:true
+row 14: timestamp=slice:2026-01-01T00:00:13Z n=uint:13 text=slice:quoted, 13 ratio=double:13.5 flag=bool:true
+row 15: timestamp=slice:2026-01-01T00:00:14Z n=uint:14 text=slice:quoted, 14 ratio=double:14.5 flag=bool:true
+row 16: timestamp=slice:2026-01-01T00:00:15Z n=uint:15 text=slice:quoted, 15 ratio=double:15.5 flag=bool:true
+row 17: timestamp=slice:2026-01-01T00:00:16Z n=uint:16 text=slice:quoted, 16 ratio=double:16.5 flag=bool:true
+row 18: timestamp=slice:2026-01-01T00:00:17Z n=uint:17 text=slice:quoted, 17 ratio=double:17.5 flag=bool:true
+row 19: timestamp=slice:2026-01-01T00:00:18Z n=uint:18 text=slice:quoted, 18 ratio=double:18.5 flag=bool:true
+row 20: timestamp=slice:2026-01-01T00:00:19Z n=uint:19 text=slice:quoted, 19 ratio=double:19.5 flag=bool:true
+row 21: timestamp=slice:2026-01-01T00:00:20Z n=uint:20 text=slice:quoted, 20 ratio=double:20.5 flag=bool:true
+row 22: timestamp=slice:2026-01-01T00:00:21Z n=uint:21 text=slice:quoted, 21 ratio=double:21.5 flag=bool:true
+row 23: timestamp=slice:2026-01-01T00:00:22Z n=uint:22 text=slice:quoted, 22 ratio=double:22.5 flag=bool:true
+row 24: timestamp=slice:2026-01-01T00:00:23Z n=uint:23 text=slice:quoted, 23 ratio=double:23.5 flag=bool:true
+row 25: timestamp=slice:2026-01-01T00:00:24Z n=uint:24 text=slice:quoted, 24 ratio=double:24.5 flag=bool:true
+row 26: timestamp=slice:2026-01-01T00:00:25Z n=uint:25 text=slice:quoted, 25 ratio=double:25.5 flag=bool:true
+row 27: timestamp=slice:2026-01-01T00:00:26Z n=uint:26 text=slice:quoted, 26 ratio=double:26.5 flag=bool:true
+row 28: timestamp=slice:2026-01-01T00:00:27Z n=uint:27 text=slice:quoted, 27 ratio=double:27.5 flag=bool:true
+row 29: timestamp=slice:2026-01-01T00:00:28Z n=uint:28 text=slice:quoted, 28 ratio=double:28.5 flag=bool:true
+row 30: timestamp=slice:2026-01-01T00:00:29Z n=uint:29 text=slice:quoted, 29 ratio=double:29.5 flag=bool:true
+# errors
+# offsets
+
+# spans
+# keys
+timestamp
+n
+text
+ratio
+flag
+# last line 33
+# started 1 finished 1 cancelled false

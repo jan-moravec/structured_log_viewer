@@ -1,0 +1,33 @@
+# rows
+row 0: timestamp=slice:2024/04/28 04:02:03 level=slice:error pid=uint:12345 tid=uint:67890 cid=uint:42 message=slice:open() "/usr/share/nginx/html/missing.html" failed (2: No such file or directory) clientip=slice:10.0.0.5 server=slice:example.com request=slice:GET /missing.html HTTP/1.1 host=slice:example.com
+row 1: timestamp=slice:2024/04/28 04:02:04 level=slice:warn pid=uint:12345 tid=uint:67890 cid=uint:43 message=slice:upstream server temporarily disabled while connecting to upstream clientip=slice:1.2.3.4 server=slice:api.example.com request=slice:POST /v1/orders HTTP/2.0 upstream=slice:http://10.0.0.10:8080/v1/orders host=slice:api.example.com referrer=slice:https://example.com/checkout
+row 2: timestamp=slice:2024/04/28 04:02:05 level=slice:notice pid=uint:12345 tid=uint:0 message=slice:signal process started
+row 3: timestamp=slice:2024/04/28 04:02:06 level=slice:info pid=uint:12345 tid=uint:67890 cid=uint:44 message=slice:client closed connection while waiting for request clientip=slice:10.0.0.6 server=slice:0.0.0.0:443
+row 6: timestamp=slice:2024/04/28 04:02:03 level=slice:error pid=uint:12345 tid=uint:67890 cid=uint:42 message=slice:open() "/usr/share/nginx/html/missing.html" failed (2: No such file or directory) clientip=slice:10.0.0.5 server=slice:example.com request=slice:GET /missing.html HTTP/1.1 host=slice:example.com
+row 7: timestamp=slice:2024/04/28 04:02:04 level=slice:warn pid=uint:12345 tid=uint:67890 cid=uint:43 message=slice:upstream server temporarily disabled while connecting to upstream clientip=slice:1.2.3.4 server=slice:api.example.com request=slice:POST /v1/orders HTTP/2.0 upstream=slice:http://10.0.0.10:8080/v1/orders host=slice:api.example.com referrer=slice:https://example.com/checkout
+row 8: timestamp=slice:2024/04/28 04:02:05 level=slice:notice pid=uint:12345 tid=uint:0 message=slice:signal process started
+row 9: timestamp=slice:2024/04/28 04:02:06 level=slice:info pid=uint:12345 tid=uint:67890 cid=uint:44 message=slice:client closed connection while waiting for request clientip=slice:10.0.0.6 server=slice:0.0.0.0:443
+row 10: timestamp=slice:2024/04/28 04:02:03 level=slice:error pid=uint:12345 tid=uint:67890 cid=uint:42 message=slice:open() "/usr/share/nginx/html/missing.html" failed (2: No such file or directory) clientip=slice:10.0.0.5 server=slice:example.com request=slice:GET /missing.html HTTP/1.1 host=slice:example.com
+row 11: timestamp=slice:2024/04/28 04:02:04 level=slice:warn pid=uint:12345 tid=uint:67890 cid=uint:43 message=slice:upstream server temporarily disabled while connecting to upstream clientip=slice:1.2.3.4 server=slice:api.example.com request=slice:POST /v1/orders HTTP/2.0 upstream=slice:http://10.0.0.10:8080/v1/orders host=slice:api.example.com referrer=slice:https://example.com/checkout
+row 12: timestamp=slice:2024/04/28 04:02:05 level=slice:notice pid=uint:12345 tid=uint:0 message=slice:signal process started
+row 13: timestamp=slice:2024/04/28 04:02:06 level=slice:info pid=uint:12345 tid=uint:67890 cid=uint:44 message=slice:client closed connection while waiting for request clientip=slice:10.0.0.6 server=slice:0.0.0.0:443
+# errors
+error 6-6: Line did not match the regex pattern.
+# offsets
+ 226 527 588 722 723 753 979 1280 1341 1475 1701 2002 2063 2197
+# spans
+# keys
+timestamp
+level
+pid
+tid
+cid
+message
+clientip
+server
+request
+upstream
+host
+referrer
+# last line 14
+# started 1 finished 1 cancelled false

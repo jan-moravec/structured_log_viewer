@@ -1,0 +1,27 @@
+# rows
+row 0: priority=uint:46 version=uint:1 timestamp=slice:2017-04-27T07:50:47.381967+02:00 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
+row 1: priority=uint:30 version=uint:1 timestamp=slice:2017-04-27T07:59:12+02:00 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
+row 2: priority=uint:78 version=uint:1 timestamp=slice:2017-04-27T08:09:01+02:00 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
+row 5: priority=uint:46 version=uint:1 timestamp=slice:2017-04-27T07:50:47.381967+02:00 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
+row 6: priority=uint:30 version=uint:1 timestamp=slice:2017-04-27T07:59:12+02:00 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
+row 7: priority=uint:78 version=uint:1 timestamp=slice:2017-04-27T08:09:01+02:00 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
+row 8: priority=uint:46 version=uint:1 timestamp=slice:2017-04-27T07:50:47.381967+02:00 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
+row 9: priority=uint:30 version=uint:1 timestamp=slice:2017-04-27T07:59:12+02:00 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
+row 10: priority=uint:78 version=uint:1 timestamp=slice:2017-04-27T08:09:01+02:00 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
+# errors
+error 5-5: Line did not match the regex pattern.
+# offsets
+ 97 169 238 239 269 366 438 507 604 676 745
+# spans
+# keys
+priority
+version
+timestamp
+hostname
+appname
+procid
+msgid
+structured
+message
+# last line 11
+# started 1 finished 1 cancelled false

@@ -1,0 +1,29 @@
+# rows
+row 1: a=owned:esc " \\ \n \t b=slice:bare c=null: d=null: e=owned: f=double:1.5 g=int:-3 h=bool:true i=bool:false j=slice:null
+row 2: no=null: pairs=null: here=null:
+row 3: stray=null: key=null:
+row 4: z=uint:1
+# errors
+error 4-4: Unterminated quoted value.
+# offsets
+
+# spans
+# keys
+a
+b
+c
+d
+e
+f
+g
+h
+i
+j
+no
+pairs
+here
+stray
+key
+z
+# last line 5
+# started 1 finished 1 cancelled false

@@ -1,0 +1,39 @@
+# rows
+row 1: date=slice:2024-04-28 time=slice:04:02:03 edge_location=slice:IAD12-C1 bytes=uint:1234 clientip=slice:192.0.2.10 verb=slice:GET host=slice:d111111abcdef8.cloudfront.net uri_stem=slice:/index.html status=uint:200 referrer=slice:- agent=slice:Mozilla/5.0 query_string=slice:- cookie=slice:- edge_result_type=slice:Hit edge_request_id=slice:abc123-edge-request-id== host_header=slice:www.example.com protocol=slice:https time_taken=double:0.001 forwarded_for=slice:- ssl_protocol=slice:TLSv1.3 ssl_cipher=slice:TLS_AES_128_GCM_SHA256 edge_response_result_type=slice:Hit http_version=slice:HTTP/2.0
+row 2: date=slice:2024-04-28 time=slice:04:02:04 edge_location=slice:FRA50-P1 clientip=slice:2001:db8::1 verb=slice:GET host=slice:distribution.example.net uri_stem=slice:/api/v1/health status=uint:304 referrer=slice:http://example.com/ agent=slice:curl/8.5.0 query_string=slice:q=1&x=2 cookie=slice:- edge_result_type=slice:RefreshHit edge_request_id=slice:reqid=xyz host_header=slice:cdn.example.com protocol=slice:https bytes_received=uint:512 time_taken=double:0.123 forwarded_for=slice:- ssl_protocol=slice:TLSv1.2 ssl_cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 edge_response_result_type=slice:RefreshHit http_version=slice:HTTP/1.1
+row 3: date=slice:2024-04-28 time=slice:04:02:03 edge_location=slice:IAD12-C1 bytes=uint:1234 clientip=slice:192.0.2.10 verb=slice:GET host=slice:d111111abcdef8.cloudfront.net uri_stem=slice:/index.html status=uint:200 referrer=slice:- agent=slice:Mozilla/5.0 query_string=slice:- cookie=slice:- edge_result_type=slice:Hit edge_request_id=slice:abc123-edge-request-id== host_header=slice:www.example.com protocol=slice:https time_taken=double:0.001 forwarded_for=slice:- ssl_protocol=slice:TLSv1.3 ssl_cipher=slice:TLS_AES_128_GCM_SHA256 edge_response_result_type=slice:Hit http_version=slice:HTTP/2.0
+row 4: date=slice:2024-04-28 time=slice:04:02:04 edge_location=slice:FRA50-P1 clientip=slice:2001:db8::1 verb=slice:GET host=slice:distribution.example.net uri_stem=slice:/api/v1/health status=uint:304 referrer=slice:http://example.com/ agent=slice:curl/8.5.0 query_string=slice:q=1&x=2 cookie=slice:- edge_result_type=slice:RefreshHit edge_request_id=slice:reqid=xyz host_header=slice:cdn.example.com protocol=slice:https bytes_received=uint:512 time_taken=double:0.123 forwarded_for=slice:- ssl_protocol=slice:TLSv1.2 ssl_cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 edge_response_result_type=slice:RefreshHit http_version=slice:HTTP/1.1
+row 5: date=slice:2024-04-28 time=slice:04:02:03 edge_location=slice:IAD12-C1 bytes=uint:1234 clientip=slice:192.0.2.10 verb=slice:GET host=slice:d111111abcdef8.cloudfront.net uri_stem=slice:/index.html status=uint:200 referrer=slice:- agent=slice:Mozilla/5.0 query_string=slice:- cookie=slice:- edge_result_type=slice:Hit edge_request_id=slice:abc123-edge-request-id== host_header=slice:www.example.com protocol=slice:https time_taken=double:0.001 forwarded_for=slice:- ssl_protocol=slice:TLSv1.3 ssl_cipher=slice:TLS_AES_128_GCM_SHA256 edge_response_result_type=slice:Hit http_version=slice:HTTP/2.0
+row 6: date=slice:2024-04-28 time=slice:04:02:04 edge_location=slice:FRA50-P1 clientip=slice:2001:db8::1 verb=slice:GET host=slice:distribution.example.net uri_stem=slice:/api/v1/health status=uint:304 referrer=slice:http://example.com/ agent=slice:curl/8.5.0 query_string=slice:q=1&x=2 cookie=slice:- edge_result_type=slice:RefreshHit edge_request_id=slice:reqid=xyz host_header=slice:cdn.example.com protocol=slice:https bytes_received=uint:512 time_taken=double:0.123 forwarded_for=slice:- ssl_protocol=slice:TLSv1.2 ssl_cipher=slice:ECDHE-RSA-AES128-GCM-SHA256 edge_response_result_type=slice:RefreshHit http_version=slice:HTTP/1.1
+# errors
+error 4-4: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+date
+time
+edge_location
+bytes
+clientip
+verb
+host
+uri_stem
+status
+referrer
+agent
+query_string
+cookie
+edge_result_type
+edge_request_id
+host_header
+protocol
+bytes_received
+time_taken
+forwarded_for
+ssl_protocol
+ssl_cipher
+edge_response_result_type
+http_version
+# last line 8
+# started 1 finished 1 cancelled false
