@@ -278,7 +278,7 @@ public:
      *
      * @return The read-only leaf map.
      */
-    [[nodiscard]] const std::unordered_map<std::string, loglib::LeafRule> &SimpleLeaves() const noexcept
+    [[nodiscard]] const std::unordered_map<std::string, loglib::FilterCondition> &SimpleLeaves() const noexcept
     {
         return mSimpleLeaves;
     }
@@ -290,7 +290,7 @@ public:
      *
      * @return The mutable leaf map.
      */
-    [[nodiscard]] std::unordered_map<std::string, loglib::LeafRule> &MutableSimpleLeaves() noexcept
+    [[nodiscard]] std::unordered_map<std::string, loglib::FilterCondition> &MutableSimpleLeaves() noexcept
     {
         return mSimpleLeaves;
     }
@@ -1707,7 +1707,7 @@ private:
     bool mPendingApplySortFromConfig = false;
 
     // Simple-mode leaves and their stable display order.
-    std::unordered_map<std::string, loglib::LeafRule> mSimpleLeaves;
+    std::unordered_map<std::string, loglib::FilterCondition> mSimpleLeaves;
     std::vector<std::string> mSimpleLeafOrder;
 
     // Prevents nested enum-dependent filter rebuilds.

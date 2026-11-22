@@ -31,6 +31,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/filter_expression.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
@@ -1183,7 +1184,7 @@ private slots:
                 Q_ARG(QString, filterId),
                 Q_ARG(int, levelCol),
                 Q_ARG(QString, QStringLiteral("info")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Exactly))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Exactly))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );
@@ -1204,11 +1205,11 @@ private slots:
 
         // Stage 2: replay the saved string filter against the now-enum
         // column. The type-mismatch guard must drop the active rule.
-        loglib::LeafRule savedFilter;
-        savedFilter.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition savedFilter;
+        savedFilter.type = loglib::FilterCondition::Type::String;
         savedFilter.columnKeys = mWindow->Model()->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
         savedFilter.filterString = std::string("info");
-        savedFilter.matchType = loglib::LeafRule::Match::Exactly;
+        savedFilter.matchType = loglib::FilterCondition::Match::Exactly;
 
         mWindow->statusBar()->clearMessage();
         // `AddFilter` is private; invoke via the meta-object system.
@@ -1217,7 +1218,7 @@ private slots:
             "AddFilter",
             Qt::DirectConnection,
             Q_ARG(QString, filterId),
-            Q_ARG(std::optional<loglib::LeafRule>, savedFilter)
+            Q_ARG(std::optional<loglib::FilterCondition>, savedFilter)
         );
         QVERIFY2(invoked, "AddFilter slot must be invocable via meta-object");
         QCoreApplication::processEvents();
@@ -1437,11 +1438,11 @@ private slots:
     }
 
     // Regression: a `Grew` `enumColumnsChanged` must NOT flush the
-    // `EnumDictRank` cache through `MainWindow`'s slot. `EnumRankFor`
-    // self-heals on the next sort via its `DictSize()` check, so
+    // ordering through `MainWindow`'s slot. `CurrentOrdering`
+    // self-heals on the next sort via `RowOrdering::IsOutdated`, so
     // flushing on every batch would re-rebuild ranks per batch and
     // dominate the wall-clock of a busy stream.
-    void TestEnumRankCacheSurvivesGrowthSignalThroughMainWindow()
+    void TestOrderingSurvivesGrowthSignalThroughMainWindow()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
@@ -1475,7 +1476,7 @@ private slots:
         // Warm the rank cache by sorting on the enum column.
         filterModel->sort(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         // Batch 2 grows the dictionary. `Grew` is a no-op for the
         // rank cache so the entry stays.
@@ -1487,7 +1488,7 @@ private slots:
             model->AppendBatch(std::move(batch));
         }
         QCoreApplication::processEvents();
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         model->EndStreaming(false);
     }
@@ -1745,11 +1746,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the `EnumDictRank` cache is keyed by canonical
-    // `KeyId`, not column index, so a column reorder no longer
-    // requires a `columnsMoved` invalidation hook -- the cached rank
-    // stays attached to the same logical column.
-    void TestEnumRankCacheSurvivesColumnsMoved()
+    // Regression: a column reorder needs no invalidation hook. The
+    // proxy keeps the ordering until the next sort, and a sort on the
+    // moved column builds the ordering for its new index.
+    void TestOrderingSurvivesColumnsMoved()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
@@ -1791,11 +1791,9 @@ private slots:
         // Warm the rank cache: sort by the enum column.
         filterModel->sort(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        const std::size_t cacheSizeBefore = filterModel->EnumRankCacheSizeForTest();
-        QVERIFY2(cacheSizeBefore >= std::size_t{1}, "sorting by an enum column must populate the rank cache");
+        QVERIFY2(filterModel->HasOrderingForTest(), "sorting by an enum column must build the ordering");
 
-        // Reorder columns; the rank cache is KeyId-keyed and
-        // survives.
+        // Reorder columns; the ordering stays until the next sort.
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
         // Pin the proxy-level forwarding contract too: `LogFilterModel`
@@ -1819,18 +1817,18 @@ private slots:
         );
         QVERIFY2(filterColumnsMovedSpy.count() >= 1, "LogFilterModel must forward columnsMoved from its source");
 
-        // Cache entry survives the reorder (KeyId-keyed).
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
+        // The ordering survives the reorder.
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         // Re-sort against the column's new position. The proxy
         // tracks the sort column in source-coords, so a reorder
         // shifts what that index points at -- we re-issue `sort()`.
-        // The lookup hits the cache (KeyId match), no rebuild.
+        // The re-sort builds an ordering for the new column index.
         const int levelColAfter = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelColAfter >= 0, "level column must still exist after the move");
         filterModel->sort(levelColAfter, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         QStringList sortedLevelsAfter;
         sortedLevelsAfter.reserve(filterModel->rowCount());
@@ -2039,7 +2037,7 @@ private slots:
                 Q_ARG(QString, msgFilter),
                 Q_ARG(int, msgCol),
                 Q_ARG(QString, QStringLiteral("m1")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );
@@ -2291,8 +2289,8 @@ private slots:
         const std::vector<std::string> levelKeys = configuration.columns[static_cast<size_t>(levelCol)].keys;
         loglib::FilterExpression::And andRoot;
         loglib::FilterExpression leafExpr;
-        leafExpr.node = loglib::FilterExpression::Leaf{loglib::LeafRule{
-            .type = loglib::LeafRule::Type::Enumeration,
+        leafExpr.node = loglib::FilterExpression::Leaf{loglib::FilterCondition{
+            .type = loglib::FilterCondition::Type::Enumeration,
             .columnKeys = levelKeys,
             .matchType = std::nullopt,
             .filterString = std::nullopt,
@@ -2324,7 +2322,7 @@ private slots:
                 return {};
             }
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&asAnd->children[0].node);
-            return leaf != nullptr ? leaf->rule.columnKeys : std::vector<std::string>{};
+            return leaf != nullptr ? leaf->condition.columnKeys : std::vector<std::string>{};
         };
 
         QCOMPARE(extractSoleLeafKeys(mWindow->activeSession()->View().expression), levelKeys);
@@ -2399,7 +2397,7 @@ private slots:
         QCOMPARE(loadedAnd->children.size(), static_cast<size_t>(1));
         const auto *loadedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&loadedAnd->children[0].node);
         QVERIFY(loadedLeaf != nullptr);
-        QCOMPARE(loadedLeaf->rule.columnKeys, expectedKeys);
+        QCOMPARE(loadedLeaf->condition.columnKeys, expectedKeys);
 
         // The rule still targets `level`, so the proxy
         // should keep matching rows visible. A stale `row` would
@@ -2431,11 +2429,11 @@ private slots:
         loglib::HighlightRule rule;
         rule.name = "hl-category-info";
         rule.enabled = true;
-        rule.columnKeys = {"category"};
-        rule.type = loglib::HighlightRule::Type::String;
-        rule.matchType = loglib::HighlightRule::Match::Contains;
-        rule.filterString = "info";
-        rule.backgroundIndex = 1;
+        rule.condition.columnKeys = {"category"};
+        rule.condition.type = loglib::FilterCondition::Type::String;
+        rule.condition.matchType = loglib::FilterCondition::Match::Contains;
+        rule.condition.filterString = "info";
+        rule.style.backgroundIndex = 1;
         highlights->SetRules({rule}, model->Layout().Columns(), &model->Table());
 
         const auto &resolvedBefore = highlights->ResolvedColumnsForTest();
@@ -2770,7 +2768,7 @@ private slots:
     // Regression: the query grammar types `category:info` as a
     // `String` / `Contains` leaf whatever the column's type is, and
     // that matches correctly at runtime because
-    // `CallbackStringRowPredicate` compares the *formatted* value.
+    // `TextRowPredicate` compares the *formatted* value.
     // But `ApplyAdvancedFilterResult` used to extract every top-level
     // Leaf into `mSimpleLeaves`, and `ValidateFilterAgainstColumns`
     // rejects a String leaf on an Enumeration column (the simple
@@ -2802,20 +2800,20 @@ private slots:
         std::vector<loglib::FilterExpression> andChildren;
         andChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = levelKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("info"),
                 }
             )
         );
         andChildren.push_back(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
@@ -2829,8 +2827,8 @@ private slots:
 
         const auto findEnumStringLeaf = [&levelKeys](const loglib::FilterExpression &expression) {
             const auto leaves = AllLeavesOf(expression);
-            return std::ranges::any_of(leaves, [&levelKeys](const loglib::LeafRule &rule) {
-                return rule.type == loglib::LeafRule::Type::String && rule.columnKeys == levelKeys &&
+            return std::ranges::any_of(leaves, [&levelKeys](const loglib::FilterCondition &rule) {
+                return rule.type == loglib::FilterCondition::Type::String && rule.columnKeys == levelKeys &&
                        rule.filterString.has_value() && *rule.filterString == "info";
             });
         };
@@ -2909,8 +2907,8 @@ private slots:
         QVERIFY2(parsed.has_value(), "ParseQuery must accept a well-formed simple leaf");
         const auto *parsedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&parsed->node);
         QVERIFY2(parsedLeaf != nullptr, "parsed root must be a Leaf");
-        QCOMPARE(static_cast<int>(parsedLeaf->rule.columnKeys.size()), 1);
-        QCOMPARE(QString::fromStdString(parsedLeaf->rule.columnKeys.front()), QStringLiteral("svc"));
+        QCOMPARE(static_cast<int>(parsedLeaf->condition.columnKeys.size()), 1);
+        QCOMPARE(QString::fromStdString(parsedLeaf->condition.columnKeys.front()), QStringLiteral("svc"));
 
         mWindow->CommitAdvancedFilterForTest(std::move(*parsed));
         QCoreApplication::processEvents();
@@ -2933,7 +2931,7 @@ private slots:
         QCOMPARE(static_cast<int>(mirroredAnd->children.size()), 1);
         const auto *mirroredLeaf = std::get_if<loglib::FilterExpression::Leaf>(&mirroredAnd->children.front().node);
         QVERIFY2(mirroredLeaf != nullptr, "mirrored child must be the promoted Leaf");
-        QCOMPARE(static_cast<int>(mirroredLeaf->rule.columnKeys.size()), 3);
+        QCOMPARE(static_cast<int>(mirroredLeaf->condition.columnKeys.size()), 3);
     }
 
     // Pinning a string-only column (`msg`) to `Integer` is the
@@ -3010,7 +3008,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-rename")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, needle),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
         QVERIFY2(model->HasFilterForColumn(msgCol), "precondition: filter recorded on msg column");
@@ -3053,7 +3051,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("hf-visibility")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m4")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
         QVERIFY2(model->HasFilterForColumn(msgCol), "precondition: filter installed on msg column");
@@ -3676,7 +3674,7 @@ private slots:
     // `LogModel::ApplyColumnTypeEdit` was introduced the editor path
     // silently skipped it, leaving any active enum filter on the
     // column wired to a now-stale bitset and the proxy's
-    // `EnumDictRank` cache uninvalidated.
+    // ordering uninvalidated.
     //
     // We drive both directions on the `category` column (4 unique
     // values, well within `DEFAULT_ENUM_VALUE_CAP`) returned by
@@ -4283,12 +4281,12 @@ private slots:
         QVERIFY2(withDisambiguator == 2, "both duplicate-headered columns must be disambiguated in View menu");
     }
 
-    // Regression: `EnumRankFor` self-heals when the live dictionary
+    // Regression: `CurrentOrdering` self-heals when the live dictionary
     // has grown or its address changed since the cached rank was
     // built. Production also has a `MainWindow` invalidation tick;
     // this test wires the proxy directly (no `MainWindow`) so the
     // self-heal is the only defence.
-    void TestEnumRankCacheSelfHealsOnDictionaryGrowth()
+    void TestOrderingSelfHealsOnDictionaryGrowth()
     {
         LogModel model;
         LogFilterModel filterModel;
@@ -4325,7 +4323,7 @@ private slots:
 
         // Warm the cache.
         filterModel.sort(levelCol, Qt::AscendingOrder);
-        QVERIFY2(filterModel.EnumRankCacheSizeForTest() == std::size_t{1}, "first sort must populate the rank cache");
+        QVERIFY2(filterModel.HasOrderingForTest(), "first sort must build the ordering");
 
         // Snapshot pre-growth order. Without the self-heal, ids past
         // the cached bitset all collide at the past-the-end rank.
@@ -4353,10 +4351,10 @@ private slots:
         QCOMPARE(static_cast<int>(dict->Size()), 4);
 
         // Re-sort. `rank.DictSize() < live.Size()` trips and
-        // `EnumRankFor` rebuilds; the cache stays at one row (same
+        // `CurrentOrdering` rebuilds; the cache stays at one row (same
         // `KeyId`) but its `mIdToRank` now covers all 4 ids.
         filterModel.sort(levelCol, Qt::AscendingOrder);
-        QCOMPARE(filterModel.EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(filterModel.HasOrderingForTest(), true);
 
         QStringList orderedAfterGrowth;
         orderedAfterGrowth.reserve(filterModel.rowCount());
@@ -4439,10 +4437,10 @@ private slots:
         QVERIFY2(label != nullptr, "MainWindow must own the filter problem label");
         QVERIFY(label->isHidden());
 
-        loglib::LeafRule leaf;
-        leaf.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition leaf;
+        leaf.type = loglib::FilterCondition::Type::String;
         leaf.columnKeys = {"no_such_column"};
-        leaf.matchType = loglib::LeafRule::Match::Contains;
+        leaf.matchType = loglib::FilterCondition::Match::Contains;
         leaf.filterString = "x";
         mWindow->CommitAdvancedFilterForTest(WireLeavesAsExpression({leaf}));
         QVERIFY(!label->isHidden());
@@ -4927,8 +4925,8 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist");
         QCOMPARE(model->Layout().Columns()[static_cast<size_t>(levelCol)].type, loglib::ColumnType::Enumeration);
 
-        loglib::LeafRule savedFilter;
-        savedFilter.type = loglib::LeafRule::Type::Enumeration;
+        loglib::FilterCondition savedFilter;
+        savedFilter.type = loglib::FilterCondition::Type::Enumeration;
         savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(levelCol)].keys;
 
         mWindow->statusBar()->clearMessage();
@@ -4939,7 +4937,7 @@ private slots:
                 "AddFilter",
                 Qt::DirectConnection,
                 Q_ARG(QString, filterId),
-                Q_ARG(std::optional<loglib::LeafRule>, savedFilter)
+                Q_ARG(std::optional<loglib::FilterCondition>, savedFilter)
             ),
             "AddFilter slot must be invocable via meta-object"
         );
@@ -5065,11 +5063,11 @@ private slots:
         QVERIFY2(flagCol >= 0, "flag column must exist");
         QCOMPARE(model->Layout().Columns()[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
-        loglib::LeafRule savedFilter;
-        savedFilter.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition savedFilter;
+        savedFilter.type = loglib::FilterCondition::Type::String;
         savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(flagCol)].keys;
         savedFilter.filterString = "true";
-        savedFilter.matchType = loglib::LeafRule::Match::Exactly;
+        savedFilter.matchType = loglib::FilterCondition::Match::Exactly;
 
         mWindow->statusBar()->clearMessage();
         const QString filterId = QStringLiteral("saved-string-on-bool");
@@ -5079,7 +5077,7 @@ private slots:
                 "AddFilter",
                 Qt::DirectConnection,
                 Q_ARG(QString, filterId),
-                Q_ARG(std::optional<loglib::LeafRule>, savedFilter)
+                Q_ARG(std::optional<loglib::FilterCondition>, savedFilter)
             ),
             "AddFilter slot must be invocable via meta-object"
         );
@@ -5142,11 +5140,11 @@ private slots:
         QVERIFY2(valueCol >= 0, "value column must exist");
         QCOMPARE(model->Layout().Columns()[static_cast<size_t>(valueCol)].type, loglib::ColumnType::Integer);
 
-        loglib::LeafRule savedFilter;
-        savedFilter.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition savedFilter;
+        savedFilter.type = loglib::FilterCondition::Type::String;
         savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(valueCol)].keys;
         savedFilter.filterString = "42";
-        savedFilter.matchType = loglib::LeafRule::Match::Exactly;
+        savedFilter.matchType = loglib::FilterCondition::Match::Exactly;
 
         mWindow->statusBar()->clearMessage();
         const QString filterId = QStringLiteral("saved-string-on-numeric");
@@ -5156,7 +5154,7 @@ private slots:
                 "AddFilter",
                 Qt::DirectConnection,
                 Q_ARG(QString, filterId),
-                Q_ARG(std::optional<loglib::LeafRule>, savedFilter)
+                Q_ARG(std::optional<loglib::FilterCondition>, savedFilter)
             ),
             "AddFilter slot must be invocable via meta-object"
         );

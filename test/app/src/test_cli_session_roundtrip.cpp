@@ -291,7 +291,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("roundtrip-filter")),
             Q_ARG(int, msgColumn),
             Q_ARG(QString, QStringLiteral("l")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
@@ -321,9 +321,7 @@ private slots:
         QVERIFY(!seedPath.isEmpty());
         loglib::LogConfiguration seed = loglib::LoadConfiguration(seedPath.toStdString());
         // Anchor the second source row by its canonical source locator.
-        seed.view.anchors = {
-            {.locator = logapp::CanonicalLocator(mLogPath).toStdString(), .lineId = 1, .colorIndex = 0, .note = "kept"}
-        };
+        seed.view.anchors = {{.pathKey = logapp::PathKeyOf(mLogPath), .lineId = 1, .colorIndex = 0, .note = "kept"}};
         const QString anchoredSeed = mDir.filePath(QStringLiteral("anchored_seed.json"));
         loglib::SaveConfiguration(seed, anchoredSeed.toStdString(), loglib::SaveScope::Full);
 
@@ -420,10 +418,10 @@ private:
         {
             loglib::HighlightRule rule;
             rule.name = "errors";
-            rule.columnKeys = {"level"};
-            rule.type = loglib::HighlightRule::Type::Enumeration;
-            rule.filterValues = {"Error"};
-            rule.backgroundIndex = 1;
+            rule.condition.columnKeys = {"level"};
+            rule.condition.type = loglib::FilterCondition::Type::Enumeration;
+            rule.condition.filterValues = {"Error"};
+            rule.style.backgroundIndex = 1;
             seed.view.highlightRules.push_back(rule);
         }
         const QString seedPath = mDir.filePath(QStringLiteral("seed.json"));

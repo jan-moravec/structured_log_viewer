@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loglib/config/anchor_entry.hpp>
+#include <loglib/config/highlight_rule.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/support/theme.hpp>
 
@@ -278,7 +280,7 @@ private:
     std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorForeground;
 
     /// Highlight-slot brush cache; `mHighlight*[i]` corresponds to
-    /// `HighlightRule::*Index == i + 1` (slot 0 = inherit). Built
+    /// `HighlightStyle::*Index == i + 1` (slot 0 = inherit). Built
     /// by `BuildStyleCache` with a fallback palette for missing
     /// entries.
     std::array<QBrush, loglib::HIGHLIGHT_PALETTE_SIZE> mHighlightBackground;

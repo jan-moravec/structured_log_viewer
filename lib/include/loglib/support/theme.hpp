@@ -204,16 +204,16 @@ struct Theme
     AppStyle app;
 
     /**
-     * @brief Up to ANCHOR_PALETTE_SIZE colors, written as #RRGGBB, for anchored rows. Missing slots use the
-     * application's built-in palette.
+     * @brief Up to ANCHOR_PALETTE_SIZE colors, written as #RRGGBB, for anchored rows. The size is set in the config
+     * module with AnchorEntry. Missing slots use the application's built-in palette.
      */
     std::vector<std::string> anchorPalette;
 
     /**
      * @brief Up to HIGHLIGHT_PALETTE_SIZE color pairs for highlight rules.
      *
-     * HighlightRule refers to them by number starting at 1, and 0 means the normal color. Missing or empty slots use
-     * the built-in palette.
+     * A HighlightStyle refers to them by number starting at 1, and 0 means the normal color. The number of pairs,
+     * HIGHLIGHT_PALETTE_SIZE, is set in the config module. Missing or empty slots use the built-in palette.
      */
     std::vector<HighlightSlot> highlightPalette;
 
@@ -225,15 +225,6 @@ struct Theme
 
     friend bool operator==(const Theme &, const Theme &) = default;
 };
-
-/** @brief The number of anchor colors. It is defined here so that code without a user interface library can use it. */
-inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
-
-/**
- * @brief The number of highlight color pairs. HighlightRule refers to them by number starting at 1, and 0 means no
- * color is chosen.
- */
-inline constexpr std::size_t HIGHLIGHT_PALETTE_SIZE = 16;
 
 /** @brief The style of a level, or an empty style if the theme has none for it. */
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);

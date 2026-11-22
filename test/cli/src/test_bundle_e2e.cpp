@@ -110,7 +110,7 @@ TEST_CASE("slp bundle keeps every row and stores filter, sort, and columns", "[c
     CHECK_FALSE(written.view.expression == loglib::FilterExpression{});
     REQUIRE_FALSE(written.view.sort.columnKeys.empty());
     CHECK(written.view.sort.columnKeys == std::vector<std::string>{"msg"});
-    CHECK(written.view.sort.descending);
+    CHECK(written.view.sort.direction == loglib::SortDirection::Descending);
     REQUIRE(written.columns.size() >= 2);
     CHECK(written.columns[0].header == "msg");
     CHECK(written.columns[1].header == "level");
@@ -181,7 +181,7 @@ TEST_CASE("slp bundle seeds the embedded configuration from --config", "[cli][bu
     CHECK(CountRows(seeded).out == "2\n");
     const loglib::LogConfiguration written = EmbeddedConfiguration(seeded, "seeded_session.json");
     CHECK(written.view.expression == seed.view.expression);
-    CHECK(written.view.sort.descending);
+    CHECK(written.view.sort.direction == loglib::SortDirection::Descending);
 
     const auto missing = RunBundle({"-o", seeded.string(), "--config", (ScratchRoot() / "nope.json").string()});
     CHECK(missing.exitCode == 3);

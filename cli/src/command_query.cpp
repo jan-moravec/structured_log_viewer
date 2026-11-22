@@ -8,7 +8,6 @@
 #include <loglib/output/exports/export_sink.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/query/log_compare.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/query/row_ordering.hpp>
 #include <loglib/table/log_table.hpp>
@@ -89,22 +88,10 @@ void SortRows(
     const loglib::LogTable &table, const SortChoice &sort, const RowWindow &window, std::vector<std::size_t> &rows
 )
 {
-    const auto &columns = table.Layout().Columns();
-    std::optional<loglib::EnumDictRank> rankStorage;
-    const loglib::EnumDictRank *rank = nullptr;
-    if (columns[sort.columnIndex].type == loglib::ColumnType::Enumeration)
-    {
-        const auto lookup = table.ResolveEnumColumn(sort.columnIndex);
-        if (lookup.dictionary != nullptr)
-        {
-            rankStorage.emplace(*lookup.dictionary);
-            rank = &*rankStorage;
-        }
-    }
-    const loglib::RowOrdering ordering(sort.columnIndex, sort.direction, rank);
+    const loglib::RowOrdering ordering(table, sort.columnIndex, sort.direction);
     // The permutation holds positions within rows, not row indices. It is turned into the rows in place.
     std::vector<std::size_t> sorted =
-        ordering.PermuteWindow(table, std::span<const std::size_t>{rows}, window.begin, window.end);
+        ordering.PermuteWindow(std::span<const std::size_t>{rows}, window.begin, window.end);
     for (std::size_t &position : sorted)
     {
         position = rows[position];
@@ -187,7 +174,7 @@ ExitCode RunQuery(
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled = loglib::CompileExpression(session->expression, table.Layout().Columns(), &table);
+    const auto compiled = loglib::CompileFilter(session->expression, table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     console.Stage("filter", rows.size(), filterStarted);
 

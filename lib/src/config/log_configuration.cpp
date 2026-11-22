@@ -20,63 +20,6 @@
 namespace loglib
 {
 
-void SourceDescriptor::ReplaceDisplayPaths(std::vector<std::string> paths)
-{
-    std::vector<std::string> stagedKeys = std::move(pendingDedupKeys);
-    pendingDedupKeys.clear();
-    std::vector<SourceLocator> next(paths.size());
-    for (size_t i = 0; i < paths.size(); ++i)
-    {
-        next[i].displayPath = std::move(paths[i]);
-        if (i < stagedKeys.size())
-        {
-            next[i].dedupKey = std::move(stagedKeys[i]);
-        }
-        else if (i < locators.size())
-        {
-            next[i].dedupKey = std::move(locators[i].dedupKey);
-        }
-    }
-    locators = std::move(next);
-}
-
-void SourceDescriptor::ReplaceDedupKeys(std::vector<std::string> keys)
-{
-    if (locators.empty())
-    {
-        pendingDedupKeys = std::move(keys);
-        return;
-    }
-    pendingDedupKeys.clear();
-    const size_t n = std::min(locators.size(), keys.size());
-    for (size_t i = 0; i < n; ++i)
-    {
-        locators[i].dedupKey = std::move(keys[i]);
-    }
-}
-
-std::vector<std::string> SourceDescriptor::DisplayPaths() const
-{
-    std::vector<std::string> paths;
-    paths.reserve(locators.size());
-    for (const SourceLocator &locator : locators)
-    {
-        paths.push_back(locator.displayPath);
-    }
-    return paths;
-}
-
-std::vector<std::string> SourceDescriptor::DedupKeys() const
-{
-    std::vector<std::string> keys;
-    keys.reserve(locators.size());
-    for (const SourceLocator &locator : locators)
-    {
-        keys.push_back(locator.dedupKey);
-    }
-    return keys;
-}
-
 LogConfiguration LoadConfiguration(const std::filesystem::path &path)
 {
     const std::ifstream file(path);
@@ -110,6 +53,10 @@ LogConfiguration ParseConfiguration(std::string_view content, std::string_view o
                 internal::CONFIGURATION_FORMAT_VERSION
             )
         );
+    }
+    if (const auto problem = internal::FindDocumentProblem(document); problem.has_value())
+    {
+        throw FormatError(fmt::format("Invalid {}: {}", name, *problem));
     }
     return internal::MakeConfiguration(std::move(document));
 }

@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "row_compare_helpers.hpp"
 #include "table_fixture.hpp"
 
 #include <loglib/config/column_layout.hpp>
@@ -9,7 +10,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/query/log_compare.hpp>
+#include <loglib/query/internal/row_compare.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -32,6 +33,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace row_compare_helpers;
 
 namespace
 {
@@ -96,7 +98,7 @@ int SignOf(int v)
 
 } // namespace
 
-TEST_CASE("EnumDictRank orders ids alphabetically by their resolved bytes", "[log_compare][enum_dict_rank]")
+TEST_CASE("EnumSortRank orders ids alphabetically by their resolved bytes", "[log_compare][enum_dict_rank]")
 {
     EnumDictionary dict{16};
     // Insertion order intentionally not alphabetical.
@@ -105,7 +107,7 @@ TEST_CASE("EnumDictRank orders ids alphabetically by their resolved bytes", "[lo
     const EnumValueId errorId = dict.Insert("error");
     const EnumValueId debugId = dict.Insert("debug");
 
-    const EnumDictRank rank{dict};
+    const EnumSortRank rank{dict};
     REQUIRE(rank.DictSize() == 4);
 
     // Alphabetic order: debug < error < info < warn.
@@ -118,10 +120,10 @@ TEST_CASE("EnumDictRank orders ids alphabetically by their resolved bytes", "[lo
     CHECK(rank.RankOf(EnumValueId{rank.DictSize()}) == rank.DictSize());
 }
 
-TEST_CASE("EnumDictRank handles an empty dictionary", "[log_compare][enum_dict_rank]")
+TEST_CASE("EnumSortRank handles an empty dictionary", "[log_compare][enum_dict_rank]")
 {
     const EnumDictionary dict{16};
-    const EnumDictRank rank{dict};
+    const EnumSortRank rank{dict};
     CHECK(rank.DictSize() == 0);
     CHECK(rank.Empty());
 }
@@ -360,7 +362,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
 
-    const EnumDictRank rank{*dict};
+    const EnumSortRank rank{*dict};
 
     // Row 0 = warn, row 1 = info; alphabetic: info < warn so (0 vs 1) > 0.
     CHECK(SignOf(CompareRows(table, 0, 1, 0, &rank)) == 1);
@@ -453,7 +455,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     REQUIRE(categoryKey != INVALID_KEY_ID);
     const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
-    const EnumDictRank rank{*dict};
+    const EnumSortRank rank{*dict};
 
     // Sanity: rows 0 + 1 are DictRef.
     REQUIRE(table.GetEnumValueId(0, 0).has_value());

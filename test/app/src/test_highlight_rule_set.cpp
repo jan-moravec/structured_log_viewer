@@ -8,7 +8,7 @@
 // `RebindColumns` after schema growth, `ClearMatches`, key-based
 // identity survives `MoveColumn`, Boolean / Number predicates,
 // and empty-needle rejection. Also hosts a focused regression
-// test for the shared `CompileExpression` path (`filter_compile`).
+// test for the shared `CompileFilter` path (`filter_compile`).
 
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
@@ -100,10 +100,10 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
     Rule r;
     r.name = name.toStdString();
     r.enabled = true;
-    r.columnKeys = {key};
-    r.type = Rule::Type::String;
-    r.matchType = Rule::Match::Contains;
-    r.filterString = needle;
+    r.condition.columnKeys = {key};
+    r.condition.type = loglib::FilterCondition::Type::String;
+    r.condition.matchType = loglib::FilterCondition::Match::Contains;
+    r.condition.filterString = needle;
     return r;
 }
 
@@ -357,9 +357,9 @@ private slots:
         Rule boolRule;
         boolRule.name = "handled=true";
         boolRule.enabled = true;
-        boolRule.columnKeys = {"handled"};
-        boolRule.type = Rule::Type::Boolean;
-        boolRule.filterValues = {"true"};
+        boolRule.condition.columnKeys = {"handled"};
+        boolRule.condition.type = loglib::FilterCondition::Type::Boolean;
+        boolRule.condition.filterValues = {"true"};
         std::vector<Rule> ruleSet;
         ruleSet.push_back(std::move(boolRule));
         rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
@@ -389,16 +389,20 @@ private slots:
 
         std::vector<Rule> ruleSet;
         // Empty needle across all four string match types.
-        for (const auto matchType :
-             {Rule::Match::Exactly, Rule::Match::Contains, Rule::Match::RegularExpression, Rule::Match::Wildcard})
+        for (const auto matchType : {
+                 loglib::FilterCondition::Match::Exactly,
+                 loglib::FilterCondition::Match::Contains,
+                 loglib::FilterCondition::Match::RegularExpression,
+                 loglib::FilterCondition::Match::Wildcard,
+             })
         {
             Rule r;
             r.name = "empty";
             r.enabled = true;
-            r.columnKeys = {"level"};
-            r.type = Rule::Type::String;
-            r.matchType = matchType;
-            r.filterString = std::string{};
+            r.condition.columnKeys = {"level"};
+            r.condition.type = loglib::FilterCondition::Type::String;
+            r.condition.matchType = matchType;
+            r.condition.filterString = std::string{};
             ruleSet.push_back(std::move(r));
         }
         rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
@@ -440,10 +444,10 @@ private slots:
         Rule r;
         r.name = "blank-note";
         r.enabled = true;
-        r.columnKeys = {"note"};
-        r.type = Rule::Type::String;
-        r.matchType = Rule::Match::Exactly;
-        r.filterString = std::string{};
+        r.condition.columnKeys = {"note"};
+        r.condition.type = loglib::FilterCondition::Type::String;
+        r.condition.matchType = loglib::FilterCondition::Match::Exactly;
+        r.condition.filterString = std::string{};
         std::vector<Rule> ruleSet;
         ruleSet.push_back(std::move(r));
         rules.SetRules(std::move(ruleSet), model.Layout().Columns(), &model.Table());
@@ -480,16 +484,16 @@ private slots:
         Rule minOnly;
         minOnly.name = "slow";
         minOnly.enabled = true;
-        minOnly.columnKeys = {"latency_ms"};
-        minOnly.type = Rule::Type::Number;
-        minOnly.filterMinValue = 200.0;
+        minOnly.condition.columnKeys = {"latency_ms"};
+        minOnly.condition.type = loglib::FilterCondition::Type::Number;
+        minOnly.condition.filterMinValue = 200.0;
 
         // Bounds-less: rejected at compile time (no min, no max).
         Rule empty;
         empty.name = "no-bounds";
         empty.enabled = true;
-        empty.columnKeys = {"latency_ms"};
-        empty.type = Rule::Type::Number;
+        empty.condition.columnKeys = {"latency_ms"};
+        empty.condition.type = loglib::FilterCondition::Type::Number;
 
         std::vector<Rule> ruleSet;
         ruleSet.push_back(std::move(minOnly));
@@ -559,14 +563,14 @@ private slots:
 
         // `NOT (missing:x AND other_missing:y)` -- both leaves
         // reference unknown columns, so both compile absent.
-        loglib::LeafRule leftLeaf;
-        leftLeaf.type = loglib::LeafRule::Type::String;
-        leftLeaf.matchType = loglib::LeafRule::Match::Contains;
+        loglib::FilterCondition leftLeaf;
+        leftLeaf.type = loglib::FilterCondition::Type::String;
+        leftLeaf.matchType = loglib::FilterCondition::Match::Contains;
         leftLeaf.columnKeys = {"missing"};
         leftLeaf.filterString = "x";
-        loglib::LeafRule rightLeaf;
-        rightLeaf.type = loglib::LeafRule::Type::String;
-        rightLeaf.matchType = loglib::LeafRule::Match::Contains;
+        loglib::FilterCondition rightLeaf;
+        rightLeaf.type = loglib::FilterCondition::Type::String;
+        rightLeaf.matchType = loglib::FilterCondition::Match::Contains;
         rightLeaf.columnKeys = {"other_missing"};
         rightLeaf.filterString = "y";
         std::vector<loglib::FilterExpression> andChildren;
@@ -574,12 +578,13 @@ private slots:
         andChildren.push_back(loglib::MakeLeaf(std::move(rightLeaf)));
         const loglib::FilterExpression expr = loglib::MakeNot(loglib::MakeAnd(std::move(andChildren)));
 
-        const loglib::CompiledFilterExpression compiled = loglib::CompileExpression(expr, columns, /*table=*/nullptr);
+        const loglib::CompiledFilterExpression compiled =
+            loglib::CompileFilter(expr, loglib::LogTable(loglib::ColumnLayout(columns)));
 
         // Absence propagates: whole tree compiles to match-all,
-        // not match-none. `IsMatchAllCompiled` catches the fix
+        // not match-none. `AcceptsEverything` catches the fix
         // (bug shape would have left a `Not` at the root).
-        QVERIFY(loglib::IsMatchAllCompiled(compiled));
+        QVERIFY(loglib::AcceptsEverything(compiled));
     }
 
     /// Companion: a sibling `And` next to the same `NOT
@@ -594,18 +599,18 @@ private slots:
         svcCol.type = loglib::ColumnType::String;
         const std::vector<loglib::Column> columns{svcCol};
 
-        loglib::LeafRule svcLeaf;
-        svcLeaf.type = loglib::LeafRule::Type::String;
-        svcLeaf.matchType = loglib::LeafRule::Match::Contains;
+        loglib::FilterCondition svcLeaf;
+        svcLeaf.type = loglib::FilterCondition::Type::String;
+        svcLeaf.matchType = loglib::FilterCondition::Match::Contains;
         svcLeaf.columnKeys = {"svc"};
         svcLeaf.filterString = "auth";
 
-        loglib::LeafRule missingA;
-        missingA.type = loglib::LeafRule::Type::String;
-        missingA.matchType = loglib::LeafRule::Match::Contains;
+        loglib::FilterCondition missingA;
+        missingA.type = loglib::FilterCondition::Type::String;
+        missingA.matchType = loglib::FilterCondition::Match::Contains;
         missingA.columnKeys = {"missing_a"};
         missingA.filterString = "x";
-        loglib::LeafRule missingB = missingA;
+        loglib::FilterCondition missingB = missingA;
         missingB.columnKeys = {"missing_b"};
         std::vector<loglib::FilterExpression> notInner;
         notInner.push_back(loglib::MakeLeaf(std::move(missingA)));
@@ -616,7 +621,8 @@ private slots:
         topChildren.push_back(loglib::MakeNot(loglib::MakeAnd(std::move(notInner))));
         const loglib::FilterExpression expr = loglib::MakeAnd(std::move(topChildren));
 
-        const loglib::CompiledFilterExpression compiled = loglib::CompileExpression(expr, columns, /*table=*/nullptr);
+        const loglib::CompiledFilterExpression compiled =
+            loglib::CompileFilter(expr, loglib::LogTable(loglib::ColumnLayout(columns)));
         // Sibling survives: top-level `And` has one child (the
         // svc leaf) and one referenced column (svc's index).
         const auto *rootAnd = std::get_if<loglib::CompiledFilterExpression::And>(&compiled.node);
@@ -651,18 +657,18 @@ private slots:
         loglib::FilterExpression bareNullNot;
         bareNullNot.node = loglib::FilterExpression::Not{};
         const loglib::CompiledFilterExpression compiledBare =
-            loglib::CompileExpression(bareNullNot, columns, /*table=*/nullptr);
+            loglib::CompileFilter(bareNullNot, loglib::LogTable(loglib::ColumnLayout(columns)));
         QVERIFY2(
-            loglib::IsMatchAllCompiled(compiledBare),
+            loglib::AcceptsEverything(compiledBare),
             "`Not{child=null}` at the root must compile to match-all, matching `EvaluateExpression`"
         );
 
         // Sibling under `Or`: the whole `Or` must reduce to
         // match-all too (Not{null} = match-all short-circuits the
         // Or), not to just the surviving leaf.
-        loglib::LeafRule svcLeaf;
-        svcLeaf.type = loglib::LeafRule::Type::String;
-        svcLeaf.matchType = loglib::LeafRule::Match::Contains;
+        loglib::FilterCondition svcLeaf;
+        svcLeaf.type = loglib::FilterCondition::Type::String;
+        svcLeaf.matchType = loglib::FilterCondition::Match::Contains;
         svcLeaf.columnKeys = {"svc"};
         svcLeaf.filterString = "auth";
 
@@ -674,9 +680,9 @@ private slots:
         const loglib::FilterExpression orExpr = loglib::MakeOr(std::move(orChildren));
 
         const loglib::CompiledFilterExpression compiledOr =
-            loglib::CompileExpression(orExpr, columns, /*table=*/nullptr);
+            loglib::CompileFilter(orExpr, loglib::LogTable(loglib::ColumnLayout(columns)));
         // Cheap-first ordering plus short-circuit accept means the
-        // Or contains a match-all child; `IsMatchAllCompiled` only
+        // Or contains a match-all child; `AcceptsEverything` only
         // catches the fully-collapsed shape, so assert the
         // structural presence of match-all inside the Or instead.
         const auto *rootOr = std::get_if<loglib::CompiledFilterExpression::Or>(&compiledOr.node);
@@ -684,7 +690,7 @@ private slots:
         bool sawMatchAll = false;
         for (const auto &child : rootOr->children)
         {
-            if (loglib::IsMatchAllCompiled(child))
+            if (loglib::AcceptsEverything(child))
             {
                 sawMatchAll = true;
             }

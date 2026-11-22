@@ -31,6 +31,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/filter_expression.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/bytes_producer.hpp>
@@ -1153,8 +1154,8 @@ private slots:
         // Stable sort order: locator-first, then lineId.
         const auto entries = manager.Entries();
         QCOMPARE(entries.size(), std::size_t{2});
-        QCOMPARE(entries[0].locator, std::string{"c:/logs/a.json"});
-        QCOMPARE(entries[1].locator, std::string{"c:/logs/b.json"});
+        QCOMPARE(entries[0].pathKey, std::string{"c:/logs/a.json"});
+        QCOMPARE(entries[1].pathKey, std::string{"c:/logs/b.json"});
 
         // RemoveAnchor: emits exactly once when the key existed,
         // no-ops + returns false otherwise.
@@ -1175,9 +1176,9 @@ private slots:
         // value counts the remapped entries so the GUI can surface
         // the colour drift.
         std::vector<loglib::AnchorEntry> incoming;
-        incoming.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"});
+        incoming.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"});
         incoming.push_back(
-            loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"}
+            loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"}
         );
         QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
@@ -1197,7 +1198,7 @@ private slots:
         // All-valid input returns 0 clamped (it is a schema-drift
         // signal, not an input size).
         std::vector<loglib::AnchorEntry> clean;
-        clean.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1});
+        clean.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 3, .colorIndex = 1});
         QCOMPARE(manager.Replace(clean), std::size_t{0});
     }
 
@@ -1219,15 +1220,15 @@ private slots:
         // Save path keeps only the persistable anchor.
         const auto saved = manager.Entries();
         QCOMPARE(saved.size(), std::size_t{1});
-        QCOMPARE(saved.front().locator, std::string{"c:/logs/persistent.json"});
+        QCOMPARE(saved.front().pathKey, std::string{"c:/logs/persistent.json"});
         QCOMPARE(saved.front().lineId, std::uint64_t{7});
         QCOMPARE(saved.front().colorIndex, std::uint8_t{1});
 
         // Diagnostics path keeps both, deterministic order.
         const auto all = manager.EntriesIncludingRuntimeOnly();
         QCOMPARE(all.size(), std::size_t{2});
-        QCOMPARE(all[0].locator, std::string{""});
-        QCOMPARE(all[1].locator, std::string{"c:/logs/persistent.json"});
+        QCOMPARE(all[0].pathKey, std::string{""});
+        QCOMPARE(all[1].pathKey, std::string{"c:/logs/persistent.json"});
 
         // The runtime-only anchor still lives in the manager
         // (the filter is at the snapshot, not the mutation).
@@ -1244,8 +1245,8 @@ private slots:
 
         // Seed two anchors.
         std::vector<loglib::AnchorEntry> entries;
-        entries.push_back(loglib::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
-        entries.push_back(loglib::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5});
+        entries.push_back(loglib::AnchorEntry{.pathKey = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
+        entries.push_back(loglib::AnchorEntry{.pathKey = "c:/logs/b.json", .lineId = 9, .colorIndex = 5});
         QCOMPARE(manager.Replace(entries), std::size_t{0});
         QCOMPARE(resetSpy.count(), 1);
         QCOMPARE(manager.Count(), std::size_t{2});
@@ -1253,16 +1254,16 @@ private slots:
         // Same content, shuffled order: comparison is map-equality,
         // so this must NOT emit.
         std::vector<loglib::AnchorEntry> shuffled;
-        shuffled.push_back(loglib::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5});
-        shuffled.push_back(loglib::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
+        shuffled.push_back(loglib::AnchorEntry{.pathKey = "c:/logs/b.json", .lineId = 9, .colorIndex = 5});
+        shuffled.push_back(loglib::AnchorEntry{.pathKey = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
         QCOMPARE(manager.Replace(shuffled), std::size_t{0});
         QCOMPARE(resetSpy.count(), 1);
 
         // Same keys, different colour: content changed, listeners
         // must be told.
         std::vector<loglib::AnchorEntry> mutated;
-        mutated.push_back(loglib::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
-        mutated.push_back(loglib::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 6});
+        mutated.push_back(loglib::AnchorEntry{.pathKey = "c:/logs/a.json", .lineId = 1, .colorIndex = 2});
+        mutated.push_back(loglib::AnchorEntry{.pathKey = "c:/logs/b.json", .lineId = 9, .colorIndex = 6});
         QCOMPARE(manager.Replace(mutated), std::size_t{0});
         QCOMPARE(resetSpy.count(), 2);
         QCOMPARE(manager.ColorFor({.locator = "c:/logs/b.json", .lineId = 9}).value_or(255U), uint8_t{6});
@@ -1953,7 +1954,7 @@ private slots:
         std::vector<loglib::AnchorEntry> entries;
         entries.push_back(
             loglib::AnchorEntry{
-                .locator = "c:/logs/a.json",
+                .pathKey = "c:/logs/a.json",
                 .lineId = 1,
                 .colorIndex = 0,
                 .note = "  first\r\nsecond\t ",
@@ -1961,7 +1962,7 @@ private slots:
         );
         entries.push_back(
             loglib::AnchorEntry{
-                .locator = "c:/logs/b.json",
+                .pathKey = "c:/logs/b.json",
                 .lineId = 2,
                 .colorIndex = 3,
                 .note = "clean",
@@ -2702,8 +2703,8 @@ private slots:
         // Case A: same key twice, out-of-range first, valid second.
         // Final persisted colour is valid, so `clampedCount` = 0.
         std::vector<loglib::AnchorEntry> aInput;
-        aInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"});
-        aInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"});
+        aInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"});
+        aInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"});
         QCOMPARE(manager.Replace(aInput), std::size_t{0});
         QCOMPARE(manager.Count(), std::size_t{1});
         QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), static_cast<std::uint8_t>(3));
@@ -2711,8 +2712,8 @@ private slots:
         // Case B: same key twice, valid first, out-of-range second.
         // Final persisted colour is the clamped one, so count = 1.
         std::vector<loglib::AnchorEntry> bInput;
-        bInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"});
-        bInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"});
+        bInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"});
+        bInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"});
         QCOMPARE(manager.Replace(bInput), std::size_t{1});
         QCOMPARE(manager.Count(), std::size_t{1});
         QCOMPARE(
@@ -2723,16 +2724,16 @@ private slots:
         // Case C: three duplicates: valid, out-of-range, valid.
         // Only the final state counts (valid), so count = 0.
         std::vector<loglib::AnchorEntry> cInput;
-        cInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""});
-        cInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""});
-        cInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""});
+        cInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""});
+        cInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""});
+        cInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""});
         QCOMPARE(manager.Replace(cInput), std::size_t{0});
 
         // Case D: two distinct keys, both clamped -> count = 2
         // (proves we still count per-key, not just once).
         std::vector<loglib::AnchorEntry> dInput;
-        dInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""});
-        dInput.push_back(loglib::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""});
+        dInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""});
+        dInput.push_back(loglib::AnchorEntry{.pathKey = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""});
         QCOMPARE(manager.Replace(dInput), std::size_t{2});
     }
 
@@ -2791,7 +2792,7 @@ private slots:
         // hint warns the user about.
         const auto persistable = manager.Entries();
         QVERIFY2(
-            std::ranges::none_of(persistable, [](const loglib::AnchorEntry &e) { return e.locator.empty(); }),
+            std::ranges::none_of(persistable, [](const loglib::AnchorEntry &e) { return e.pathKey.empty(); }),
             "Entries() must not persist runtime-only anchors (or their notes)"
         );
 
@@ -2799,7 +2800,7 @@ private slots:
         const auto all = manager.EntriesIncludingRuntimeOnly();
         QVERIFY2(
             std::ranges::any_of(
-                all, [](const loglib::AnchorEntry &e) { return e.locator.empty() && e.note == "session note"; }
+                all, [](const loglib::AnchorEntry &e) { return e.pathKey.empty() && e.note == "session note"; }
             ),
             "EntriesIncludingRuntimeOnly() must retain the runtime-only note for diagnostics"
         );
@@ -3762,7 +3763,7 @@ private slots:
         const auto it = mWindow->Filters().find(preSeededId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "pre-seeded filter must survive the menu trigger");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QVERIFY(it->second.filterBegin.has_value());
         QVERIFY(it->second.filterEnd.has_value());
         // NOLINTBEGIN(bugprone-unchecked-optional-access)
@@ -3887,7 +3888,7 @@ private slots:
         const auto it = mWindow->Filters().find(filterId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(it->second.columnKeys, model->Layout().Columns()[static_cast<size_t>(timeCol)].keys);
         QVERIFY2(it->second.filterBegin.has_value(), "uncheck must promote begin from nullopt to the seed value");
         QVERIFY(it->second.filterEnd.has_value());
@@ -3902,7 +3903,7 @@ private slots:
     // `msg:a OR msg:b`), `mSimpleLeaves` is empty but the expression
     // is non-match-all -- rows are actively being filtered.
     // `actionClearAllFilters` correctly stays enabled (its gate is
-    // `IsMatchAll(expression)`), but the status-bar button used to
+    // `AcceptsEverything(expression)`), but the status-bar button used to
     // gate on `!mSimpleLeaves.empty()` and hide itself, leaving the
     // user with no visible affordance to clear the filter. Both must
     // now agree: button visible + action enabled whenever the
@@ -3939,10 +3940,10 @@ private slots:
         // and installs the whole tree as the non-Leaf remainder.
         loglib::FilterExpression advancedTree = loglib::MakeNot(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
@@ -3955,7 +3956,7 @@ private slots:
         // action does.
         QVERIFY2(mWindow->Filters().empty(), "Advanced-only commit must not populate mSimpleLeaves");
         QVERIFY2(
-            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            !loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "Advanced NOT tree must produce a non-match-all expression"
         );
         QVERIFY2(clearAction->isEnabled(), "clear-all action must be enabled with an active Advanced tree");

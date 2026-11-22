@@ -1,5 +1,6 @@
 #pragma once
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/support/theme.hpp>
 
@@ -21,7 +22,7 @@
 /// (note text edits), and `anchorsReset` (bulk mutation).
 ///
 /// Key layout:
-/// - `locator`: canonical file path (matches `SourceLocator::dedupKey`);
+/// - `locator`: canonical file path (matches `SourceLocator::key`);
 ///   empty for in-memory streams.
 /// - `lineId`: monotonic parser id, unique within a `LineSource`.
 ///

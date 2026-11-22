@@ -333,7 +333,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         loglib::LogConfiguration named;
         named.source = mCurrentSource;
         snapshot.shortLabel = SessionHistoryManager::BuildLabel(named);
-        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front().displayPath);
+        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front().path);
         snapshot.sourceLabel = snapshot.tooltip;
         if (snapshot.tooltip.isEmpty() && !mStreamingFileName.isEmpty())
         {
@@ -561,7 +561,7 @@ void LogSession::RebuildFilterExpressionFromSimpleLeaves()
     )
     {
         const bool alreadyInSimple = std::ranges::any_of(mSimpleLeaves, [&existingLeaf](const auto &entry) {
-            return entry.second == existingLeaf->rule;
+            return entry.second == existingLeaf->condition;
         });
         if (!alreadyInSimple)
         {
@@ -589,7 +589,8 @@ void LogSession::MirrorSortToConfiguration()
         {
             sort.columnKeys = columns[static_cast<std::size_t>(proxySortColumn)].keys;
         }
-        sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
+        sort.direction = mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder ? loglib::SortDirection::Descending
+                                                                                   : loglib::SortDirection::Ascending;
         mView.sort = std::move(sort);
     }
 }

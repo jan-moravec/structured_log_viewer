@@ -4,6 +4,7 @@
 #include <loglib/config/filter_expression.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
+#include <loglib/core/path_key.hpp>
 #include <loglib/query/filter_compile.hpp>
 
 #include <test_common/temp_dir.hpp>
@@ -34,7 +35,7 @@ using namespace loglib;
 namespace
 {
 
-[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<LeafRule> leaves)
+[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<FilterCondition> leaves)
 {
     FilterExpression::And node;
     for (auto &rule : leaves)
@@ -92,24 +93,24 @@ namespace
     hidden.autoDetect = false;
     configuration.columns.push_back(hidden);
 
-    LeafRule leaf;
-    leaf.type = LeafRule::Type::String;
+    FilterCondition leaf;
+    leaf.type = FilterCondition::Type::String;
     leaf.columnKeys = {"msg", "message"};
-    leaf.matchType = LeafRule::Match::Contains;
+    leaf.matchType = FilterCondition::Match::Contains;
     leaf.filterString = "boot";
     configuration.view.expression = LeavesAsExpression({leaf});
-    configuration.view.sort = Sort{.columnKeys = {"ts"}, .descending = true};
+    configuration.view.sort = Sort{.columnKeys = {"ts"}, .direction = loglib::SortDirection::Descending};
     configuration.view.highlightRules.push_back(
-        HighlightRule{.name = "errors", .columnKeys = {"level"}, .filterString = std::string{"error"}}
+        HighlightRule{.name = "errors", .condition = {.columnKeys = {"level"}, .filterString = std::string{"error"}}}
     );
     configuration.view.anchors.push_back(
-        AnchorEntry{.locator = "c:/logs/app.json", .lineId = 7, .colorIndex = 2, .note = "start"}
+        AnchorEntry{.pathKey = "c:/logs/app.json", .lineId = 7, .colorIndex = 2, .note = "start"}
     );
 
     SourceDescriptor source;
     source.kind = SourceDescriptor::Kind::File;
     source.format.format = loglib::LogFormat::Json;
-    source.locators = {{"C:/Logs/App.json", "c:/logs/app.json"}};
+    source.locators = {{.path = "C:/Logs/App.json", .key = "c:/logs/app.json"}};
     configuration.source = source;
     return configuration;
 }
@@ -160,13 +161,12 @@ TEST_CASE("A full configuration round-trips through a file", "[log_configuration
     CheckSameColumns(loaded.columns, original.columns);
     CHECK(loaded.view.expression == original.view.expression);
     CHECK(loaded.view.sort.columnKeys == original.view.sort.columnKeys);
-    CHECK(loaded.view.sort.descending);
+    CHECK(loaded.view.sort.direction == loglib::SortDirection::Descending);
     CHECK(loaded.view.highlightRules == original.view.highlightRules);
     CHECK(loaded.view.anchors == original.view.anchors);
     REQUIRE(loaded.source.has_value());
     CHECK(loaded.source->kind == SourceDescriptor::Kind::File);
-    CHECK(loaded.source->DisplayPaths() == original.source->DisplayPaths());
-    CHECK(loaded.source->DedupKeys() == original.source->DedupKeys());
+    CHECK(loaded.source->locators == original.source->locators);
 }
 
 TEST_CASE("Saving a loaded configuration again gives the same bytes", "[log_configuration]")
@@ -225,7 +225,7 @@ TEST_CASE("A Columns save writes the columns and nothing else", "[log_configurat
 
     const LogConfiguration loaded = LoadConfiguration(file.GetFilePath());
     CHECK(loaded.columns.size() == 4);
-    CHECK(IsMatchAll(loaded.view.expression));
+    CHECK(AcceptsEverything(loaded.view.expression));
     CHECK(loaded.view.sort.columnKeys.empty());
     CHECK(loaded.view.anchors.empty());
     CHECK_FALSE(loaded.source.has_value());
@@ -234,25 +234,12 @@ TEST_CASE("A Columns save writes the columns and nothing else", "[log_configurat
 TEST_CASE("A Full save writes the documented keys", "[log_configuration][wire_format]")
 {
     const std::string raw = SerializeConfiguration(MakeFullConfiguration());
-    for (const char *key :
-         {"\"version\": 1",
-          "\"columns\"",
-          "\"view\"",
-          "\"source\"",
-          "\"header\"",
-          "\"keys\"",
-          "\"printFormat\"",
-          "\"parseFormats\"",
-          "\"visible\"",
-          "\"levelMapping\"",
-          "\"expression\"",
-          "\"sort\"",
-          "\"columnKeys\"",
-          "\"descending\"",
-          "\"highlightRules\"",
-          "\"anchors\"",
-          "\"locators\"",
-          "\"locatorDedupKeys\""})
+    for (const char *key : {
+             "\"version\": 1", "\"columns\"",     "\"view\"",         "\"source\"",    "\"header\"",
+             "\"keys\"",       "\"printFormat\"", "\"parseFormats\"", "\"visible\"",   "\"levelMapping\"",
+             "\"expression\"", "\"sort\"",        "\"columnKeys\"",   "\"direction\"", "\"highlightRules\"",
+             "\"anchors\"",    "\"locators\"",    "\"path\"",         "\"key\"",
+         })
     {
         INFO(key);
         CHECK(raw.contains(key));
@@ -314,16 +301,17 @@ TEST_CASE("A detected type is not saved even when the column holds one", "[log_c
 TEST_CASE("Every ColumnType survives a round trip when chosen", "[log_configuration][type_round_trip]")
 {
     LogConfiguration configuration;
-    for (const ColumnType type :
-         {ColumnType::Any,
-          ColumnType::String,
-          ColumnType::Boolean,
-          ColumnType::Integer,
-          ColumnType::Floating,
-          ColumnType::Number,
-          ColumnType::Time,
-          ColumnType::Enumeration,
-          ColumnType::Level})
+    for (const ColumnType type : {
+             ColumnType::Any,
+             ColumnType::String,
+             ColumnType::Boolean,
+             ColumnType::Integer,
+             ColumnType::Floating,
+             ColumnType::Number,
+             ColumnType::Time,
+             ColumnType::Enumeration,
+             ColumnType::Level,
+         })
     {
         Column column;
         column.header = "c" + std::to_string(static_cast<int>(type));
@@ -348,9 +336,9 @@ TEST_CASE("Missing optional fields take the defaults of their members", "[log_co
     CHECK(loaded.columns[0].levelMapping == defaults.levelMapping);
     CHECK(loaded.columns[0].type == ColumnType::Any);
     CHECK(loaded.columns[0].autoDetect);
-    CHECK(IsMatchAll(loaded.view.expression));
+    CHECK(AcceptsEverything(loaded.view.expression));
     CHECK(loaded.view.sort.columnKeys.empty());
-    CHECK_FALSE(loaded.view.sort.descending);
+    CHECK(loaded.view.sort.direction == loglib::SortDirection::Ascending);
     CHECK(loaded.view.highlightRules.empty());
     CHECK(loaded.view.anchors.empty());
     CHECK_FALSE(loaded.source.has_value());
@@ -359,12 +347,28 @@ TEST_CASE("Missing optional fields take the defaults of their members", "[log_co
 TEST_CASE("A view may leave out any of its parts", "[log_configuration][defaults]")
 {
     const LogConfiguration loaded = ParseConfiguration(
-        R"({"version":1,"columns":[],"view":{"sort":{"columnKeys":["a"],"descending":true}}})", "view.json"
+        R"({"version":1,"columns":[],"view":{"sort":{"columnKeys":["a"],"direction":"descending"}}})", "view.json"
     );
     CHECK(loaded.view.sort.columnKeys == std::vector<std::string>{"a"});
-    CHECK(loaded.view.sort.descending);
-    CHECK(IsMatchAll(loaded.view.expression));
+    CHECK(loaded.view.sort.direction == loglib::SortDirection::Descending);
+    CHECK(AcceptsEverything(loaded.view.expression));
     CHECK(loaded.view.anchors.empty());
+}
+
+TEST_CASE("A sort direction is saved by name", "[log_configuration][view]")
+{
+    for (const auto &[direction, name] : {
+             std::pair{SortDirection::Ascending, std::string_view{"ascending"}},
+             std::pair{SortDirection::Descending, std::string_view{"descending"}},
+         })
+    {
+        LogConfiguration configuration;
+        configuration.view.sort = Sort{.columnKeys = {"ts"}, .direction = direction};
+        const std::string json = SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact);
+        CHECK(json.contains(R"("sort":{"columnKeys":["ts"],"direction":")" + std::string(name) + R"("})"));
+        CHECK(ParseConfiguration(json).view.sort.direction == direction);
+    }
+    CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"sort":{"direction":"sideways"}}})").size() > 0);
 }
 
 TEST_CASE("A missing version is a FormatError that names the file", "[log_configuration][version]")
@@ -419,6 +423,13 @@ TEST_CASE("An unknown key is a FormatError that names the key and the file", "[l
                   .contains("extraAnchorKey"));
         CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"highlightRules":[{"extraRuleKey":1}]}})")
                   .contains("extraRuleKey"));
+    }
+    SECTION("in the condition and the style of a highlight rule")
+    {
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"highlightRules":[{"condition":{"extraConditionKey":1}}]}})")
+                  .contains("extraConditionKey"));
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"highlightRules":[{"style":{"extraStyleKey":1}}]}})")
+                  .contains("extraStyleKey"));
     }
     SECTION("the old autoDetect key is not known")
     {
@@ -496,7 +507,7 @@ TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configura
         SourceDescriptor source;
         source.kind = kind;
         source.format.format = loglib::LogFormat::Logfmt;
-        source.locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}};
+        source.locators = {{.path = "tcp://127.0.0.1:9000", .key = "tcp://127.0.0.1:9000"}};
         source.followRotationSiblings = false;
         configuration.source = source;
 
@@ -505,7 +516,7 @@ TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configura
         CHECK(loaded.source->kind == kind);
         CHECK(loaded.source->format.format == loglib::LogFormat::Logfmt);
         CHECK_FALSE(loaded.source->followRotationSiblings);
-        CHECK(loaded.source->DisplayPaths() == source.DisplayPaths());
+        CHECK(loaded.source->locators == source.locators);
     }
 }
 
@@ -515,30 +526,77 @@ TEST_CASE("Source round-trips a multi-file descriptor and a regex pattern", "[lo
     SourceDescriptor source;
     source.kind = SourceDescriptor::Kind::File;
     source.format.format = loglib::LogFormat::Regex;
-    source.locators = {{"C:/Logs/a.log", "c:/logs/a.log"}, {"C:/Logs/b.log", "c:/logs/b.log"}};
+    source.locators = {
+        {.path = "C:/Logs/a.log", .key = "c:/logs/a.log"},
+        {.path = "C:/Logs/b.log", .key = "c:/logs/b.log"},
+    };
     source.format.regex.pattern = "(?<msg>.*)";
     source.format.regex.continuation = ContinuationMode::Indented;
     configuration.source = source;
 
     const LogConfiguration loaded = ParseConfiguration(SerializeConfiguration(configuration));
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->DisplayPaths() == source.DisplayPaths());
-    CHECK(loaded.source->DedupKeys() == source.DedupKeys());
+    CHECK(loaded.source->locators == source.locators);
     CHECK(loaded.source->format.regex.pattern == "(?<msg>.*)");
     CHECK(loaded.source->format.regex.continuation == ContinuationMode::Indented);
 }
 
-TEST_CASE("Source zips locators with locatorDedupKeys regardless of key order", "[log_configuration][source]")
+TEST_CASE("Locators are saved as objects with a path and a key", "[log_configuration][source]")
 {
     const LogConfiguration loaded = ParseConfiguration(
-        R"({"version":1,"columns":[],"source":{"kind":"file","locatorDedupKeys":["k1","k2"],"locators":["p1","p2"]}})"
+        R"({"version":1,"columns":[],"source":{"kind":"file","locators":[{"path":"C:/p1","key":"c:/p1"},{"path":"p2","key":"k2"}]}})"
     );
     REQUIRE(loaded.source.has_value());
     REQUIRE(loaded.source->locators.size() == 2);
-    CHECK(loaded.source->locators[0].displayPath == "p1");
-    CHECK(loaded.source->locators[0].dedupKey == "k1");
-    CHECK(loaded.source->locators[1].displayPath == "p2");
-    CHECK(loaded.source->locators[1].dedupKey == "k2");
+    CHECK(loaded.source->locators[0].path == "C:/p1");
+    CHECK(loaded.source->locators[0].key == "c:/p1");
+    CHECK(loaded.source->locators[1].path == "p2");
+    CHECK(loaded.source->locators[1].key == "k2");
+
+    LogConfiguration configuration;
+    configuration.source = SourceDescriptor{.locators = {{.path = "C:/p1", .key = "c:/p1"}}};
+    CHECK(SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact)
+              .contains(R"("locators":[{"path":"C:/p1","key":"c:/p1"}])"));
+}
+
+TEST_CASE("A locator without a key does not load and the message names the key", "[log_configuration][source]")
+{
+    SECTION("the key is missing")
+    {
+        const std::string message =
+            ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"path":"a.log"}]}})", "nokey.json");
+        CHECK(message.contains("key"));
+        CHECK(message.contains("nokey.json"));
+    }
+    SECTION("the key is empty")
+    {
+        const std::string message =
+            ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"path":"a.log","key":""}]}})", "emptykey.json");
+        CHECK(message.contains("key"));
+        CHECK(message.contains("a.log"));
+    }
+    SECTION("the path is missing")
+    {
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"key":"k"}]}})").contains("path"));
+    }
+    SECTION("an unknown key in a locator")
+    {
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"path":"a","key":"a","extra":1}]}})")
+                  .contains("extra"));
+    }
+}
+
+TEST_CASE("AppendLocator computes the key and ContainsPathKey finds it", "[log_configuration][source]")
+{
+    SourceDescriptor source;
+    AppendLocator(source, "logs/app.log");
+    REQUIRE(source.locators.size() == 1);
+    CHECK(source.locators[0].path == "logs/app.log");
+    CHECK(source.locators[0].key == loglib::MakePathKey("logs/app.log"));
+    CHECK(ContainsPathKey(source, loglib::MakePathKey("./logs/../logs/app.log")));
+    CHECK_FALSE(ContainsPathKey(source, "other"));
+    ClearLocators(source);
+    CHECK_FALSE(HasLocators(source));
 }
 
 TEST_CASE("An empty list of locators round-trips as an empty array", "[log_configuration][source]")
@@ -552,27 +610,16 @@ TEST_CASE("An empty list of locators round-trips as an empty array", "[log_confi
     CHECK(loaded.source->locators.empty());
 }
 
-TEST_CASE("ReplaceDedupKeys stages keys until display paths arrive", "[log_configuration][source]")
-{
-    SourceDescriptor source;
-    source.ReplaceDedupKeys({"k1", "k2"});
-    CHECK(source.locators.empty());
-    source.ReplaceDisplayPaths({"p1", "p2"});
-    REQUIRE(source.locators.size() == 2);
-    CHECK(source.locators[0].dedupKey == "k1");
-    CHECK(source.locators[1].dedupKey == "k2");
-}
-
 TEST_CASE("Anchors and highlight rules round-trip in the view", "[log_configuration][view]")
 {
     LogConfiguration configuration;
     configuration.view.anchors = {
-        AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 1, .note = ""},
-        AnchorEntry{.locator = "c:/logs/a.json", .lineId = 7, .colorIndex = 2, .note = "n"},
+        AnchorEntry{.pathKey = "c:/logs/b.json", .lineId = 9, .colorIndex = 1, .note = ""},
+        AnchorEntry{.pathKey = "c:/logs/a.json", .lineId = 7, .colorIndex = 2, .note = "n"},
     };
     configuration.view.highlightRules = {
-        HighlightRule{.name = "first", .columnKeys = {"a"}},
-        HighlightRule{.name = "second", .enabled = false, .columnKeys = {"b"}, .bold = true},
+        HighlightRule{.name = "first", .condition = {.columnKeys = {"a"}}},
+        HighlightRule{.name = "second", .enabled = false, .condition = {.columnKeys = {"b"}}, .style = {.bold = true}},
     };
 
     const LogConfiguration loaded = ParseConfiguration(SerializeConfiguration(configuration));
@@ -580,10 +627,66 @@ TEST_CASE("Anchors and highlight rules round-trip in the view", "[log_configurat
     CHECK(loaded.view.highlightRules == configuration.view.highlightRules);
 }
 
+TEST_CASE(
+    "A highlight rule of every condition type round-trips with a nested condition and style",
+    "[log_configuration][view]"
+)
+{
+    LogConfiguration configuration;
+    configuration.view.highlightRules = {
+        {
+            .name = "text",
+            .condition =
+                {
+                    .type = FilterCondition::Type::String,
+                    .columnKeys = {"msg"},
+                    .matchType = FilterCondition::Match::Wildcard,
+                    .filterString = "a*",
+                },
+            .style = {.foregroundIndex = 1, .backgroundIndex = 2, .bold = true, .italic = true},
+        },
+        {
+            .name = "time",
+            .condition =
+                {.type = FilterCondition::Type::Time, .columnKeys = {"ts"}, .filterBegin = 10, .filterEnd = 20},
+        },
+        {
+            .name = "level",
+            .condition =
+                {
+                    .type = FilterCondition::Type::Enumeration,
+                    .columnKeys = {"level"},
+                    .filterValues = {"Error", "Warn"},
+                },
+        },
+        {
+            .name = "latency",
+            .condition =
+                {
+                    .type = FilterCondition::Type::Number,
+                    .columnKeys = {"latency"},
+                    .filterMinValue = 1.5,
+                    .filterMaxValue = 9.0,
+                },
+        },
+        {
+            .name = "flag",
+            .condition = {.type = FilterCondition::Type::Boolean, .columnKeys = {"ok"}, .filterValues = {"false"}},
+        },
+    };
+
+    const std::string json = SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact);
+    CHECK(ParseConfiguration(json).view.highlightRules == configuration.view.highlightRules);
+    CHECK(
+        json.contains(R"("condition":{"type":"string","columnKeys":["msg"],"matchType":"wildcard","filterString":"a*")")
+    );
+    CHECK(json.contains(R"("style":{"foregroundIndex":1,"backgroundIndex":2,"bold":true,"italic":true})"));
+}
+
 TEST_CASE("An anchor without a note loads with an empty note", "[log_configuration][view]")
 {
     const LogConfiguration loaded = ParseConfiguration(
-        R"({"version":1,"columns":[],"view":{"anchors":[{"locator":"c:/l.json","lineId":7,"colorIndex":2}]}})"
+        R"({"version":1,"columns":[],"view":{"anchors":[{"pathKey":"c:/l.json","lineId":7,"colorIndex":2}]}})"
     );
     REQUIRE(loaded.view.anchors.size() == 1);
     CHECK(loaded.view.anchors[0].note.empty());
@@ -591,19 +694,19 @@ TEST_CASE("An anchor without a note loads with an empty note", "[log_configurati
 
 TEST_CASE("A filter of every kind round-trips", "[log_configuration][view]")
 {
-    LeafRule number;
-    number.type = LeafRule::Type::Number;
+    FilterCondition number;
+    number.type = FilterCondition::Type::Number;
     number.columnKeys = {"latency"};
     number.filterMinValue = 1.5;
     number.filterMaxValue = 9.0;
 
-    LeafRule boolean;
-    boolean.type = LeafRule::Type::Boolean;
+    FilterCondition boolean;
+    boolean.type = FilterCondition::Type::Boolean;
     boolean.columnKeys = {"ok"};
     boolean.filterValues = {"true"};
 
-    LeafRule enumeration;
-    enumeration.type = LeafRule::Type::Enumeration;
+    FilterCondition enumeration;
+    enumeration.type = FilterCondition::Type::Enumeration;
     enumeration.columnKeys = {"level"};
     enumeration.filterValues = {"Warn", "Error"};
 
@@ -701,7 +804,7 @@ TEST_CASE("A format spec round-trips for every format and continuation mode", "[
         LogConfiguration configuration;
         SourceDescriptor source;
         source.format = spec;
-        source.locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}};
+        source.locators = {{.path = "tcp://127.0.0.1:9000", .key = "tcp://127.0.0.1:9000"}};
         configuration.source = source;
 
         const std::string json = SerializeConfiguration(configuration);

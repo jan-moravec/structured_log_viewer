@@ -1,29 +1,36 @@
 /**
  * @brief A saved bookmark on one log line.
  *
- * An anchor is identified by the source it belongs to and the line number the parser gave the line. It carries a color
- * index into the theme's anchor palette and an optional one-line note. Anchors are stored in the configuration so they
- * survive reopening the log.
+ * An anchor is identified by the path key of the source it belongs to and the line number the parser gave the line. It
+ * carries a color index into the theme's anchor palette and an optional one-line note. Anchors are stored in the
+ * configuration so they survive reopening the log.
  *
  * This is part of the config module.
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace loglib
 {
 
+/** @brief The number of anchor colors a theme offers. An anchor refers to them by index, starting at 0. */
+inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
+
 /**
  * @brief A saved bookmark on one log line.
  *
- * A line is identified by the locator of its source together with the line id the parser gave it.
+ * A line is identified by the path key of its source together with the line id the parser gave it.
  */
 struct AnchorEntry
 {
-    /** @brief Tells the source files of a session apart. Empty for a session with one file or a network source. */
-    std::string locator;
+    /**
+     * @brief The MakePathKey of the file the line belongs to, which tells the source files of a session apart. Empty
+     * for a session with one file or a network source.
+     */
+    std::string pathKey;
 
     /** @brief The parser's line id, which grows by one for each line of a source. */
     uint64_t lineId = 0;

@@ -1,5 +1,6 @@
 #include "anchor_manager.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/support/theme.hpp>
 
 #include <algorithm>
@@ -274,7 +275,7 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::AnchorEntry> &entri
         {
             colorIndex = static_cast<uint8_t>(loglib::ANCHOR_PALETTE_SIZE - 1);
         }
-        Key key{.locator = entry.locator, .lineId = entry.lineId};
+        Key key{.locator = entry.pathKey, .lineId = entry.lineId};
         clampedByKey.insert_or_assign(key, clamped);
         // Sanitise on load so hand-edited JSON can't smuggle
         // multi-line notes past the one-line invariant.
@@ -322,7 +323,7 @@ std::vector<loglib::AnchorEntry> AnchorManager::BuildSortedEntries(bool dropRunt
         }
         out.push_back(
             loglib::AnchorEntry{
-                .locator = key.locator,
+                .pathKey = key.locator,
                 .lineId = key.lineId,
                 .colorIndex = value.colorIndex,
                 .note = value.note,
@@ -330,9 +331,9 @@ std::vector<loglib::AnchorEntry> AnchorManager::BuildSortedEntries(bool dropRunt
         );
     }
     std::ranges::sort(out, [](const loglib::AnchorEntry &lhs, const loglib::AnchorEntry &rhs) {
-        if (lhs.locator != rhs.locator)
+        if (lhs.pathKey != rhs.pathKey)
         {
-            return lhs.locator < rhs.locator;
+            return lhs.pathKey < rhs.pathKey;
         }
         return lhs.lineId < rhs.lineId;
     });

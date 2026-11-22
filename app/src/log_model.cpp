@@ -1350,7 +1350,7 @@ void LogModel::PrewarmCanonicalLocatorCache()
             continue;
         }
         // Preserve non-ASCII paths in Windows anchor keys.
-        std::string canonical = logapp::CanonicalLocator(logapp::FsPathToQString(source->Path())).toStdString();
+        std::string canonical = loglib::MakePathKey(source->Path());
         mCanonicalLocatorCache.emplace(source, std::move(canonical));
     }
 }
@@ -1577,9 +1577,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
             {
                 const auto &rule = mHighlights->Rules()[*ruleIndex];
-                if (rule.backgroundIndex != 0)
+                if (rule.style.backgroundIndex != 0)
                 {
-                    const QBrush brush = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::BackgroundRole);
+                    const QBrush brush = mTheme->HighlightBrushFor(rule.style.backgroundIndex, Qt::BackgroundRole);
                     if (brush.style() != Qt::NoBrush)
                     {
                         return QVariant(brush);
@@ -1624,9 +1624,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
             {
                 const auto &rule = mHighlights->Rules()[*ruleIndex];
-                if (rule.foregroundIndex != 0)
+                if (rule.style.foregroundIndex != 0)
                 {
-                    const QBrush brush = mTheme->HighlightBrushFor(rule.foregroundIndex, Qt::ForegroundRole);
+                    const QBrush brush = mTheme->HighlightBrushFor(rule.style.foregroundIndex, Qt::ForegroundRole);
                     if (brush.style() != Qt::NoBrush)
                     {
                         return QVariant(brush);
@@ -1653,7 +1653,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
             {
                 const auto &rule = mHighlights->Rules()[*ruleIndex];
-                if (rule.bold || rule.italic)
+                if (rule.style.bold || rule.style.italic)
                 {
                     QFont font = qApp->font();
                     // Compose on top of the level font so the
@@ -1665,11 +1665,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                             font = mTheme->FontFor(*level);
                         }
                     }
-                    if (rule.bold)
+                    if (rule.style.bold)
                     {
                         font.setBold(true);
                     }
-                    if (rule.italic)
+                    if (rule.style.italic)
                     {
                         font.setItalic(true);
                     }

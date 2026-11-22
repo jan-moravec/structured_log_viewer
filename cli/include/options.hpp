@@ -1,6 +1,6 @@
 #pragma once
 
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <chrono>
 #include <cstdint>

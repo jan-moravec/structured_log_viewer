@@ -27,6 +27,7 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/ascii_case.hpp>
 #include <loglib/core/bytes_producer.hpp>
@@ -154,7 +155,7 @@ namespace
         [&columns]<class N>(const N &node) -> bool {
             if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
             {
-                return !loglib::FindColumnByKeys(node.rule.columnKeys, columns).has_value();
+                return !loglib::FindColumnByKeys(node.condition.columnKeys, columns).has_value();
             }
             else if constexpr (
                 std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
@@ -429,10 +430,10 @@ QString FilterValidationReasonString(FilterValidationReason reason)
 
 // Validate saved leaves before load or editing; nullopt means valid.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
-    const loglib::LeafRule &filter, const std::vector<loglib::Column> &columns
+    const loglib::FilterCondition &filter, const std::vector<loglib::Column> &columns
 )
 {
-    using LeafType = loglib::LeafRule::Type;
+    using LeafType = loglib::FilterCondition::Type;
     using ColumnType = loglib::ColumnType;
 
     const std::optional<size_t> resolvedColumn = loglib::FindColumnByKeys(filter.columnKeys, columns);
@@ -783,7 +784,7 @@ MainWindow::MainWindow(
     // Session and view construction guarantees a complete proxy and selection-model chain.
     //
     // `LogFilterModel::setSortRole` is intentionally never called:
-    // it sorts via `loglib::CompareRows` straight against `LogTable`
+    // it sorts via `loglib::RowOrdering` straight against `LogTable`
     // (no `data(role)` round-trip), so the sort role no longer
     // drives behaviour. The deprecated no-op stays on the class for
     // one release for test and benchmark compatibility.
@@ -2195,7 +2196,7 @@ void MainWindow::RebuildFilterMenuFromActiveSession()
             continue;
         }
         const QString id = QString::fromStdString(idKey);
-        const loglib::LeafRule &filter = it->second;
+        const loglib::FilterCondition &filter = it->second;
         const QString title = BuildFilterTitle(filter);
         QMenu *menuItem = ui->menuFilters->addMenu(title);
         menuItem->setObjectName(id);
@@ -3719,7 +3720,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     files.reserve(static_cast<qsizetype>(source.locators.size()));
     for (const auto &locator : source.locators)
     {
-        files.append(QString::fromStdString(locator.displayPath));
+        files.append(QString::fromStdString(locator.path));
     }
 
     // Append mode so loaded filters survive into the streamed rows.
@@ -3906,14 +3907,14 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         if (loadedSortColumn.has_value())
         {
             mTableView->sortByColumn(
-                static_cast<int>(*loadedSortColumn), loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                static_cast<int>(*loadedSortColumn),
+                loadedSort.direction == loglib::SortDirection::Descending ? Qt::DescendingOrder : Qt::AscendingOrder
             );
         }
 
         // Mirror the loaded source so the next save round-trips it.
         // No auto-bind.
         mSession->MutableCurrentSource() = std::move(loaded.source);
-        logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
         mSession->NotifyPresentationChanged();
         // Loaded source preferences replace the prior session's Undo state.
         ClearRotationExpansionUndoState();
@@ -4089,7 +4090,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
         suppressKeys.reserve(currentSource->locators.size());
         for (const auto &locator : currentSource->locators)
         {
-            suppressKeys.push_back(locator.dedupKey);
+            suppressKeys.push_back(locator.key);
         }
     }
 
@@ -4120,7 +4121,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
 
     loglib::SourcePlanOptions options;
     options.rotationHistory = true;
-    options.suppressKeys = suppressKeys;
+    options.skipPathKeys = suppressKeys;
     const std::vector<loglib::ResolvedSource> plan =
         loglib::ResolveSourcePlan(std::span<const std::filesystem::path>(fsPaths), options);
 
@@ -4666,13 +4667,13 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     origin->SetStreamingFileName(QFileInfo(originalPath).fileName());
     // Record every appended file in load order so SaveSession +
     // Recent Sessions can reopen the full set. Two forms per locator:
-    //   - `displayPath`: original case, slash-normalised (user-visible).
-    //   - `dedupKey`: lower-cased on Windows for byte-equality dedup.
+    //   - `path`: original case, slash-normalised (user-visible).
+    //   - `key`: the loglib path key, for byte-equality dedup.
     // Both derived from the ORIGINAL (compressed) path so a saved
     // session reopens the `.gz` and re-runs decompression fresh --
     // temp paths never enter the locator vectors.
     const std::string displayPath = logapp::CanonicalDisplayPath(originalPath).toStdString();
-    const std::string dedupKey = logapp::CanonicalLocator(originalPath).toStdString();
+    const std::string pathKey = logapp::PathKeyOf(originalPath);
     auto &currentSource = origin->MutableCurrentSource();
     if (isFirstFileInSession)
     {
@@ -4680,7 +4681,7 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
         currentSource = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
             .format = std::move(detected),
-            .locators = {{displayPath, dedupKey}},
+            .locators = {{.path = displayPath, .key = pathKey}},
         };
         // Seed the source from the global preference and CLI override.
         currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
@@ -4691,10 +4692,10 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     }
     else if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File)
     {
-        const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
+        const bool alreadyPresent = loglib::ContainsPathKey(*currentSource, pathKey);
         if (!alreadyPresent)
         {
-            loglib::AppendLocator(*currentSource, displayPath, dedupKey);
+            loglib::AppendLocator(*currentSource, displayPath);
         }
     }
     if (isFirstFileInSession)
@@ -5182,11 +5183,11 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     if (opened && opened->bundle.has_value() && armedForThisFile && sessionStillFresh && model != nullptr)
     {
         loglib::LogConfiguration embedded = std::move(opened->bundle->configuration);
-        const std::string dedupKey = logapp::CanonicalLocator(origin->DecompressionOriginalPath()).toStdString();
-        // Anchors use the same canonical locator as source deduplication.
+        const std::string pathKey = logapp::PathKeyOf(origin->DecompressionOriginalPath());
+        // Anchors use the same path key as source deduplication.
         for (auto &anchor : embedded.view.anchors)
         {
-            anchor.locator = dedupKey;
+            anchor.pathKey = pathKey;
         }
 
         model->MutableLayout().SetColumns(std::move(embedded.columns));
@@ -5393,7 +5394,7 @@ void MainWindow::ExportFilteredRows()
     if (const auto &currentSource = mSession->CurrentSource();
         currentSource.has_value() && !currentSource->locators.empty())
     {
-        const QFileInfo info(QString::fromStdString(currentSource->locators.front().displayPath));
+        const QFileInfo info(QString::fromStdString(currentSource->locators.front().path));
         const QString base = info.completeBaseName();
         if (!base.isEmpty())
         {
@@ -5620,7 +5621,7 @@ void MainWindow::ExportSessionBundle()
     if (const auto &currentSource = mSession->CurrentSource();
         currentSource.has_value() && !currentSource->locators.empty())
     {
-        const QString primary = QString::fromStdString(currentSource->locators.front().displayPath);
+        const QString primary = QString::fromStdString(currentSource->locators.front().path);
         const QFileInfo info(primary);
         defaultStem = info.completeBaseName();
         // Avoid repeating the extension for names such as
@@ -5749,10 +5750,6 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
         options.stopToken = stopToken;
         options.progress = [rowsWrittenAtomic](std::uint64_t rowsWritten, std::uint64_t /*rowsTotal*/) {
             rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(rowsWritten));
-        };
-        // Match `AnchorManager::Key` canonicalization on Windows.
-        options.canonicalizeSourceLocator = [](const std::filesystem::path &path) {
-            return logapp::CanonicalLocator(logapp::FsPathToQString(path)).toStdString();
         };
         loglib::WriteSessionBundle(*tablePtr, configSnapshot, destination, options);
     });
@@ -6337,15 +6334,15 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
     mSession->SetStreamingFileName(QFileInfo(tailPath).fileName());
     auto &currentSource = mSession->MutableCurrentSource();
-    // Live-tail single-file open: pair display path and dedup key.
+    // Live-tail single-file open: pair display path and path key.
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
-        const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
+        const std::string pathKey = logapp::PathKeyOf(tailPath);
         FormatSpec detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
         currentSource = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
             .format = std::move(detected),
-            .locators = {{displayPath, dedupKey}},
+            .locators = {{.path = displayPath, .key = pathKey}},
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6434,17 +6431,17 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     }
 
     const std::string displayPath = logapp::CanonicalDisplayPath(primary).toStdString();
-    const std::string dedupKey = logapp::CanonicalLocator(primary).toStdString();
+    const std::string pathKey = logapp::PathKeyOf(primary);
 
     auto &currentSource = origin->MutableCurrentSource();
     // Append the primary onto the session's locator list so the
     // full [siblings..., primary] set persists.
     if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File)
     {
-        const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
+        const bool alreadyPresent = loglib::ContainsPathKey(*currentSource, pathKey);
         if (!alreadyPresent)
         {
-            loglib::AppendLocator(*currentSource, displayPath, dedupKey);
+            loglib::AppendLocator(*currentSource, displayPath);
         }
     }
     else
@@ -6454,7 +6451,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
         currentSource = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
             .format = std::move(detected),
-            .locators = {{displayPath, dedupKey}},
+            .locators = {{.path = displayPath, .key = pathKey}},
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6636,7 +6633,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     mSession->MutableCurrentSource() = loglib::SourceDescriptor{
         .kind = loglib::SourceDescriptor::Kind::Stdin,
         .format = detected,
-        .locators = {{displayName, displayName}},
+        .locators = {{.path = displayName, .key = displayName}},
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6808,7 +6805,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
                         .headerAnchor = cfg.regex.headerAnchor.toStdString(),
                     },
             },
-        .locators = {{displayName, displayName}},
+        .locators = {{.path = displayName, .key = displayName}},
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6952,7 +6949,7 @@ QString CurrentSourceLabel(const std::optional<loglib::SourceDescriptor> &source
     }
     // Non-const so the trailing `return first` can move; see
     // clang-tidy `performance-no-automatic-move`.
-    QString first = QString::fromStdString(source->locators.front().displayPath);
+    QString first = QString::fromStdString(source->locators.front().path);
     // Bundles surface as `Kind::File` (the receiver rewrites the
     // embedded locator to the current path in
     // `OnDecompressionFinished`), so this branch covers them too.
@@ -7097,7 +7094,7 @@ void MainWindow::UpdateWindowTitle()
         currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File &&
         !currentSource->locators.empty())
     {
-        setWindowFilePath(QString::fromStdString(currentSource->locators.front().displayPath));
+        setWindowFilePath(QString::fromStdString(currentSource->locators.front().path));
     }
     else
     {
@@ -7364,7 +7361,7 @@ void MainWindow::UpdateFilterProblemStatus()
     if (mModel != nullptr && mModel->rowCount() > 0)
     {
         const std::vector<std::string> problems =
-            loglib::FindFilterProblems(mSession->View().expression, mModel->Layout().Columns());
+            loglib::FindFilterProblems(mSession->View().expression, mModel->Layout());
         if (!problems.empty())
         {
             text = tr("Filter: %1").arg(QString::fromStdString(problems.front()));
@@ -7435,7 +7432,7 @@ void MainWindow::UpdateRowsShownStatus()
     // Mirrors the enabled-state check on `actionClearAllFilters` --
     // the button triggers that action, so the two must agree or a
     // visible button becomes a no-op on click.
-    const bool isMatchAll = (mModel != nullptr) && loglib::IsMatchAll(mSession->View().expression);
+    const bool isMatchAll = (mModel != nullptr) && loglib::AcceptsEverything(mSession->View().expression);
     mClearFiltersStatusButton->setVisible(!isMatchAll);
 }
 
@@ -8325,9 +8322,6 @@ int MainWindow::LastDroppedFilterCountForTest() const
 void MainWindow::SetCurrentSourceForTest(std::optional<loglib::SourceDescriptor> source)
 {
     mSession->MutableCurrentSource() = std::move(source);
-    // Test fixtures often omit dedup keys; backfill so downstream
-    // dedup loops behave correctly.
-    logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
 }
 
 const std::optional<loglib::SourceDescriptor> &MainWindow::CurrentSourceForTest() const noexcept
@@ -8506,22 +8500,21 @@ loglib::LogConfiguration MainWindow::SnapshotConfiguration(LogSession *session)
         !session->MutablePendingOpenFiles().isEmpty())
     {
         loglib::SourceDescriptor mirrored = *currentSource;
-        // Seed `seen` with existing dedup keys (case-insensitive on
-        // Windows) so pending duplicates of already-streamed paths
-        // are skipped.
+        // Seed `seen` with the existing path keys so pending
+        // duplicates of already-streamed paths are skipped.
         std::unordered_set<std::string> seen;
         seen.reserve(mirrored.locators.size() + static_cast<size_t>(session->MutablePendingOpenFiles().size()));
         for (const auto &locator : mirrored.locators)
         {
-            seen.insert(locator.dedupKey);
+            seen.insert(locator.key);
         }
         for (const QString &pending : session->MutablePendingOpenFiles())
         {
             const std::string displayPath = logapp::CanonicalDisplayPath(pending).toStdString();
-            const std::string dedupKey = logapp::CanonicalLocator(pending).toStdString();
-            if (seen.insert(dedupKey).second)
+            const std::string pathKey = logapp::PathKeyOf(pending);
+            if (seen.insert(pathKey).second)
             {
-                loglib::AppendLocator(mirrored, displayPath, dedupKey);
+                loglib::AppendLocator(mirrored, displayPath);
             }
         }
         return session->BuildConfiguration(std::move(mirrored));
@@ -9838,7 +9831,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
     //     on the slow string-set fallback forever; rebuild so it
     //     picks up the bitset hot path. The signal doesn't say which
     //     column promoted, so any active enum filter triggers a
-    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
+    //     rebuild. `LogFilterModel::CurrentOrdering` self-heals on the next sort, so no
     //     cache flush is needed.
     //   - `Grew`: existing predicates still work (bitset for resolved
     //     ids, string-set fallback for unresolved). Rebuild only when
@@ -9850,9 +9843,9 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
     }
     if (reason == EnumColumnsChangeReason::Demoted)
     {
-        // Broad flush: rank cache keys alias across columns via
-        // `EnumRankFor`, so invalidate everything to be safe.
-        mSortFilterProxyModel->InvalidateEnumRanks();
+        // The ordering holds ranks of a dictionary that is gone, so
+        // drop it.
+        mSortFilterProxyModel->InvalidateOrdering();
 
         // A `Type::Level -> Type::String` demote orphans any saved
         // canonical-name filter (`"Info"`, ...) because those
@@ -9881,13 +9874,13 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                                                           : nullptr;
                 for (auto &kv : mSession->MutableSimpleLeaves())
                 {
-                    loglib::LeafRule &filter = kv.second;
+                    loglib::FilterCondition &filter = kv.second;
                     const std::optional<size_t> resolvedRow = loglib::FindColumnByKeys(filter.columnKeys, columnsCfg);
                     if (!resolvedRow.has_value() || std::cmp_not_equal(*resolvedRow, columnIndex))
                     {
                         continue;
                     }
-                    if (filter.type != loglib::LeafRule::Type::Enumeration)
+                    if (filter.type != loglib::FilterCondition::Type::Enumeration)
                     {
                         continue;
                     }
@@ -9943,17 +9936,17 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
     {
     case EnumColumnsChangeReason::Demoted:
         rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
-            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+            return kv.second.type == loglib::FilterCondition::Type::Enumeration && matchesAffectedColumn(kv);
         });
         break;
     case EnumColumnsChangeReason::Promoted:
         rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
-            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+            return kv.second.type == loglib::FilterCondition::Type::Enumeration && matchesAffectedColumn(kv);
         });
         break;
     case EnumColumnsChangeReason::Grew:
         rebuild = std::ranges::any_of(Filters(), [this, &matchesAffectedColumn](const auto &kv) {
-            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
+            return kv.second.type == loglib::FilterCondition::Type::Enumeration && matchesAffectedColumn(kv) &&
                    !EnumFilterFullyResolved(kv.second);
         });
         break;
@@ -10093,7 +10086,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const
             {
                 mTableView->sortByColumn(
                     static_cast<int>(*loadedSortColumn),
-                    loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                    loadedSort.direction == loglib::SortDirection::Descending ? Qt::DescendingOrder : Qt::AscendingOrder
                 );
             }
         }
@@ -10101,7 +10094,6 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const
         // Mirror the loaded source so the next save round-trips
         // it; no auto-bind (foreign sessions would be hostile).
         mSession->MutableCurrentSource() = std::move(parsed.source);
-        logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
         mSession->NotifyPresentationChanged();
         // Session loading updates the menu but does not clear this
         // window's CLI opt-out; an explicit menu change does.
@@ -10194,7 +10186,7 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
     // children and non-`And` roots are Advanced clauses and are
     // preserved by `SyncSessionView`. UUIDs are
     // GUI-only and regenerated here.
-    std::vector<loglib::LeafRule> loadedFilters;
+    std::vector<loglib::FilterCondition> loadedFilters;
     const auto &loadedExpression = session->View().expression;
     if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node); rootAnd != nullptr)
     {
@@ -10203,13 +10195,13 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
         {
             if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); leaf != nullptr)
             {
-                loadedFilters.push_back(leaf->rule);
+                loadedFilters.push_back(leaf->condition);
             }
         }
     }
     else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&loadedExpression.node); leaf != nullptr)
     {
-        loadedFilters.push_back(leaf->rule);
+        loadedFilters.push_back(leaf->condition);
     }
 
     // Suppress per-filter dirty/title updates; emit one consolidated state
@@ -10553,7 +10545,7 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 }
 
 void MainWindow::AddFilter(
-    const QString &filterId, const std::optional<loglib::LeafRule> &filter, bool openEditor, int initialColumn
+    const QString &filterId, const std::optional<loglib::FilterCondition> &filter, bool openEditor, int initialColumn
 )
 {
     if (mModel->rowCount() == 0)
@@ -10576,7 +10568,7 @@ void MainWindow::AddFilter(
     // this pre-guard adapts its result to the existing status-bar UX.
     // The post-editor "missing payload" guards remain inline because
     // they need to delete the editor on failure.
-    std::optional<loglib::LeafRule> resolvedFilter = filter;
+    std::optional<loglib::FilterCondition> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
         const auto &columns = mModel->Layout().Columns();
@@ -10675,7 +10667,7 @@ void MainWindow::AddFilter(
             loglib::FindColumnByKeys(resolvedFilter->columnKeys, mModel->Layout().Columns());
         // The editor takes a Qt row and uses -1 for a filter whose column is gone.
         const int editorRow = editorColumn.has_value() ? static_cast<int>(*editorColumn) : -1;
-        if (resolvedFilter->type == loglib::LeafRule::Type::Time)
+        if (resolvedFilter->type == loglib::FilterCondition::Type::Time)
         {
             // At least one bound must be set; the other side may be
             // `nullopt` (shown as "No begin/end limit" in the editor).
@@ -10699,7 +10691,7 @@ void MainWindow::AddFilter(
                     : std::nullopt;
             filterEditor->Load(editorRow, begin, end);
         }
-        else if (resolvedFilter->type == loglib::LeafRule::Type::Enumeration)
+        else if (resolvedFilter->type == loglib::FilterCondition::Type::Enumeration)
         {
             QStringList values;
             values.reserve(static_cast<qsizetype>(resolvedFilter->filterValues.size()));
@@ -10709,7 +10701,7 @@ void MainWindow::AddFilter(
             }
             filterEditor->Load(editorRow, values);
         }
-        else if (resolvedFilter->type == loglib::LeafRule::Type::Number)
+        else if (resolvedFilter->type == loglib::FilterCondition::Type::Number)
         {
             if (!resolvedFilter->filterMinValue.has_value() && !resolvedFilter->filterMaxValue.has_value())
             {
@@ -10723,7 +10715,7 @@ void MainWindow::AddFilter(
             }
             filterEditor->Load(editorRow, resolvedFilter->filterMinValue, resolvedFilter->filterMaxValue);
         }
-        else if (resolvedFilter->type == loglib::LeafRule::Type::Boolean)
+        else if (resolvedFilter->type == loglib::FilterCondition::Type::Boolean)
         {
             const BooleanFilterSides sides = DecodeBooleanFilterSides(resolvedFilter->filterValues);
             if (!sides.includeTrue && !sides.includeFalse)
@@ -10760,7 +10752,7 @@ void MainWindow::AddFilter(
     filterEditor->show();
 }
 
-const std::unordered_map<std::string, loglib::LeafRule> &MainWindow::Filters() const
+const std::unordered_map<std::string, loglib::FilterCondition> &MainWindow::Filters() const
 {
     return mSession->SimpleLeaves();
 }
@@ -10798,7 +10790,7 @@ void MainWindow::SyncClearAllFiltersEnabled()
     {
         return;
     }
-    ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mSession->View().expression));
+    ui->actionClearAllFilters->setDisabled(loglib::AcceptsEverything(mSession->View().expression));
     // Status-bar button gates on the same condition via
     // `UpdateRowsShownStatus`; route through it so the two stay in
     // lockstep on filter changes that don't shift row counts.
@@ -10860,7 +10852,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // (e.g. `level:error` as String vs. an Enumeration column) --
     // those need to stay Advanced so the next load doesn't drop
     // them as a column-type mismatch.
-    const auto isSimpleRepresentable = [&columns](const loglib::LeafRule &rule) {
+    const auto isSimpleRepresentable = [&columns](const loglib::FilterCondition &rule) {
         return !ValidateFilterAgainstColumns(rule, columns).has_value();
     };
 
@@ -10873,7 +10865,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     // resolved column's full `keys` vector when extracting into
     // `mSimpleLeaves`; safe because `isSimpleRepresentable` already
     // proved the resolve.
-    const auto promoteToColumnKeys = [&columns](loglib::LeafRule rule) {
+    const auto promoteToColumnKeys = [&columns](loglib::FilterCondition rule) {
         const std::optional<std::size_t> resolved = loglib::FindColumnByKeys(rule.columnKeys, columns);
         if (resolved.has_value())
         {
@@ -10882,7 +10874,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
         return rule;
     };
 
-    std::vector<loglib::LeafRule> extractedLeaves;
+    std::vector<loglib::FilterCondition> extractedLeaves;
     loglib::FilterExpression::And rest;
     // Wrap a bare `Leaf` remainder in a single-child `And`:
     // `SyncSessionView` drops top-level Leaves
@@ -10902,9 +10894,9 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
 
     if (const auto *rootLeaf = std::get_if<loglib::FilterExpression::Leaf>(&result.node); rootLeaf != nullptr)
     {
-        if (isSimpleRepresentable(rootLeaf->rule))
+        if (isSimpleRepresentable(rootLeaf->condition))
         {
-            extractedLeaves.push_back(promoteToColumnKeys(rootLeaf->rule));
+            extractedLeaves.push_back(promoteToColumnKeys(rootLeaf->condition));
         }
         else
         {
@@ -10917,9 +10909,9 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
         for (auto &child : rootAnd->children)
         {
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
-            if (leaf != nullptr && isSimpleRepresentable(leaf->rule))
+            if (leaf != nullptr && isSimpleRepresentable(leaf->condition))
             {
-                extractedLeaves.push_back(promoteToColumnKeys(leaf->rule));
+                extractedLeaves.push_back(promoteToColumnKeys(leaf->condition));
             }
             else
             {
@@ -10996,12 +10988,12 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
-    const auto match = static_cast<loglib::LeafRule::Match>(matchType);
+    const auto match = static_cast<loglib::FilterCondition::Match>(matchType);
 
     // Reject an invalid regex up front; the downstream
     // `QRegularExpression` would otherwise compile to an invalid
     // object and silently hide every row. Wildcards always compile.
-    if (match == loglib::LeafRule::Match::RegularExpression)
+    if (match == loglib::FilterCondition::Match::RegularExpression)
     {
         const QRegularExpression probe(filterString);
         if (!probe.isValid())
@@ -11019,8 +11011,8 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     // (pathological on large logs).
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::String;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::String;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterString = filterString.toStdString();
     filter.matchType = match;
@@ -11067,8 +11059,8 @@ void MainWindow::FilterTimeStampSubmitted(
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Time;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Time;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
@@ -11080,8 +11072,8 @@ void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QSt
 {
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Enumeration;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Enumeration;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
     for (const QString &v : selectedValues)
@@ -11125,8 +11117,8 @@ void MainWindow::FilterNumericRangeSubmitted(
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Number;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Number;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     filter.filterMinValue = minValue;
     filter.filterMaxValue = maxValue;
@@ -11148,8 +11140,8 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LeafRule filter;
-    filter.type = loglib::LeafRule::Type::Boolean;
+    loglib::FilterCondition filter;
+    filter.type = loglib::FilterCondition::Type::Boolean;
     filter.columnKeys = ColumnKeysForRow(row, mModel->Layout().Columns());
     if (includeTrue)
     {
@@ -11163,9 +11155,9 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
     AddLogFilter(filterID, filter);
 }
 
-QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
+QString MainWindow::BuildFilterTitle(const loglib::FilterCondition &filter) const
 {
-    // No `default:`: a new `LeafRule::Type` must trip `-Wswitch`
+    // No `default:`: a new `FilterCondition::Type` must trip `-Wswitch`
     // rather than silently fall through and deref a `nullopt`.
     //
     // Every leaf in `mSimpleLeaves` is supposed to carry a fully
@@ -11183,7 +11175,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
     // translatable entry.
     switch (filter.type)
     {
-    case loglib::LeafRule::Type::Time:
+    case loglib::FilterCondition::Type::Time:
     {
         // `nullopt` renders as "any" rather than formatting the INT64
         // sentinels (which produced absurd 294247 AD / 292277 BC dates).
@@ -11200,7 +11192,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
                 : "any";
         return QString::fromStdString(beginStr + " - " + endStr);
     }
-    case loglib::LeafRule::Type::Enumeration:
+    case loglib::FilterCondition::Type::Enumeration:
     {
         if (filter.filterValues.empty())
         {
@@ -11214,7 +11206,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         }
         return values.join(QStringLiteral(", "));
     }
-    case loglib::LeafRule::Type::Number:
+    case loglib::FilterCondition::Type::Number:
     {
         // Unbounded on both sides renders as `[-inf, +inf]` below,
         // which reads as "matches anything" -- accurate, and the same
@@ -11234,7 +11226,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
                 : QStringLiteral("+inf");
         return QStringLiteral("[%1, %2]").arg(minStr, maxStr);
     }
-    case loglib::LeafRule::Type::Boolean:
+    case loglib::FilterCondition::Type::Boolean:
     {
         // Canonicalise to "true, false" order regardless of how
         // `filter.filterValues` is laid out (the submit slot always
@@ -11255,7 +11247,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         }
         return values.join(QStringLiteral(", "));
     }
-    case loglib::LeafRule::Type::String:
+    case loglib::FilterCondition::Type::String:
         if (!filter.filterString.has_value())
         {
             return tr("(unset)");
@@ -11266,20 +11258,22 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         // validation before they can reach the simple-mode surface.
         if (filter.filterString->empty())
         {
-            return filter.matchType == loglib::LeafRule::Match::Exactly ? QStringLiteral("\"\"") : tr("(unset)");
+            return filter.matchType == loglib::FilterCondition::Match::Exactly ? QStringLiteral("\"\"") : tr("(unset)");
         }
         return QString::fromStdString(*filter.filterString);
     }
-    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LeafRule::Type");
+    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled FilterCondition::Type");
     return tr("(unset)");
 }
 
-void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync)
+void MainWindow::AddLogFilter(const QString &id, const loglib::FilterCondition &filter, bool deferSync)
 {
     AddLogFilter(mSession, id, filter, deferSync);
 }
 
-void MainWindow::AddLogFilter(LogSession *session, const QString &id, const loglib::LeafRule &filter, bool deferSync)
+void MainWindow::AddLogFilter(
+    LogSession *session, const QString &id, const loglib::FilterCondition &filter, bool deferSync
+)
 {
     if (session == nullptr)
     {
@@ -11322,7 +11316,7 @@ void MainWindow::AddLogFilter(LogSession *session, const QString &id, const logl
     // targets the right row. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     //
-    // Lint suppression: `mSimpleLeaves.find` and `LeafRule` copy
+    // Lint suppression: `mSimpleLeaves.find` and `FilterCondition` copy
     // can technically throw, but the body has no real source of
     // exceptions. Same for the matching lambda in
     // `BuildHeaderContextMenu`.
@@ -11570,13 +11564,14 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
         return;
     }
     table->sortByColumn(
-        static_cast<int>(*cfgSortColumn), cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+        static_cast<int>(*cfgSortColumn),
+        cfgSort.direction == loglib::SortDirection::Descending ? Qt::DescendingOrder : Qt::AscendingOrder
     );
 }
 
-bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
+bool MainWindow::EnumFilterFullyResolved(const loglib::FilterCondition &filter) const
 {
-    if (filter.type != loglib::LeafRule::Type::Enumeration)
+    if (filter.type != loglib::FilterCondition::Type::Enumeration)
     {
         return true;
     }
@@ -11629,8 +11624,7 @@ void MainWindow::UpdateFilters(LogSession *session)
     // `CompiledFilterExpression` via the shared factory (handles
     // predicate construction, level-column expansion, and
     // cost-based ordering).
-    loglib::CompiledFilterExpression compiled =
-        loglib::CompileExpression(session->View().expression, model->Layout().Columns(), &model->Table());
+    loglib::CompiledFilterExpression compiled = loglib::CompileFilter(session->View().expression, model->Table());
     filter->SetFilterExpression(std::move(compiled));
     UpdateFilterProblemStatus();
 }
@@ -11934,7 +11928,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         std::string id;
         QString title;
-        loglib::LeafRule::Type type;
+        loglib::FilterCondition::Type type;
     };
     std::vector<FilterEntry> filtersForColumn;
     filtersForColumn.reserve(Filters().size());

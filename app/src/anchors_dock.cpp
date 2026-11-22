@@ -138,7 +138,7 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     return filename.isEmpty() ? displayPath : filename;
 }
 
-/// Map @p locator (a canonical `locatorDedupKey`) back to the
+/// Map @p locator (a path key) back to the
 /// display-case path. Falls back to @p locator on a miss.
 [[nodiscard]] QString DisplayPathForLocator(const LogSession *session, const std::string &locator)
 {
@@ -154,9 +154,9 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     const auto &entries = configurationSource->locators;
     for (const auto &entry : entries)
     {
-        if (entry.dedupKey == locator)
+        if (entry.key == locator)
         {
-            return QString::fromStdString(entry.displayPath);
+            return QString::fromStdString(entry.path);
         }
     }
     return QString::fromStdString(locator);
@@ -221,7 +221,7 @@ void PopulateAnchorCellForEntry(
     int swatchPx
 )
 {
-    const QString displayPath = DisplayPathForLocator(session, entry.locator);
+    const QString displayPath = DisplayPathForLocator(session, entry.pathKey);
     const QString filename = FilenameFromDisplayPath(displayPath);
     const QString label = filename.isEmpty() ? AnchorsDock::tr("line %1").arg(entry.lineId)
                                              : AnchorsDock::tr("line %1 - %2").arg(entry.lineId).arg(filename);
@@ -229,7 +229,7 @@ void PopulateAnchorCellForEntry(
 
     item->setIcon(COLUMN_ANCHOR, SwatchIconFor(theme, entry.colorIndex, swatchPx));
     item->setText(COLUMN_ANCHOR, label);
-    item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
+    item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.pathKey));
     item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
 
     // Item-wide editable flag (Qt has no per-column equivalent);
@@ -879,7 +879,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
     // `SetAnchor` seeds); the note flow goes through
     // `OnAnchorNoteChanged` instead.
     const loglib::AnchorEntry entry{
-        .locator = key.locator,
+        .pathKey = key.locator,
         .lineId = key.lineId,
         .colorIndex = *colourOpt,
         .note = mAnchors->NoteFor(key).value_or(std::string{}),

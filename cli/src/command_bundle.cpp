@@ -121,8 +121,7 @@ ExitCode RunBundle(
     if (options.filteredRows)
     {
         const auto filterStarted = std::chrono::steady_clock::now();
-        const auto compiled =
-            loglib::CompileExpression(session->expression, loaded->table.Layout().Columns(), &loaded->table);
+        const auto compiled = loglib::CompileFilter(session->expression, loaded->table);
         filteredRows = loglib::FilterAcceptedRows(loaded->table, compiled);
         console.Stage("filter", filteredRows->size(), filterStarted);
         configuration.view.expression = loglib::FilterExpression{};
@@ -137,7 +136,6 @@ ExitCode RunBundle(
     writeOptions.compressionLevel = options.compressionLevel;
     writeOptions.totalWorkers = static_cast<int>(options.bundleThreads);
     writeOptions.stopToken = runtime.stop;
-    writeOptions.canonicalizeSourceLocator = CanonicalSourceLocator;
     writeOptions.progress = [&progress](std::uint64_t written, std::uint64_t total) {
         progress.Update(written, total);
     };

@@ -1,5 +1,7 @@
 #include "loglib/ingest/rotation_siblings.hpp"
 
+#include "loglib/core/path_key.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -356,32 +358,6 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
 
 } // namespace
 
-std::string CanonicalKeyForPath(const std::filesystem::path &path)
-{
-    // Normalize syntactically without resolving symlinks or requiring the
-    // target to exist. This must remain compatible with locator dedup keys.
-    std::filesystem::path normalised;
-    std::error_code ec;
-    std::filesystem::path abs = std::filesystem::absolute(path, ec);
-    if (ec || abs.empty())
-    {
-        abs = path;
-    }
-    normalised = abs.lexically_normal();
-    if (normalised.empty())
-    {
-        normalised = path;
-    }
-    // Generic UTF-8 preserves non-ASCII paths and uses forward slashes.
-    const std::u8string u8 = normalised.generic_u8string();
-    std::string s(reinterpret_cast<const char *>(u8.data()), u8.size());
-#ifdef _WIN32
-    return ToLower(std::move(s));
-#else
-    return s;
-#endif
-}
-
 RotationSeries EnumerateRotatedSiblings(const std::filesystem::path &primary)
 {
     RotationSeries series;
@@ -397,14 +373,14 @@ RotationSeries EnumerateRotatedSiblings(const std::filesystem::path &primary)
     {
         RotatedFile rf;
         rf.path = std::move(c.path);
-        rf.canonicalKey = CanonicalKeyForPath(rf.path);
+        rf.pathKey = MakePathKey(rf.path);
         rf.origin = c.origin;
         series.files.push_back(std::move(rf));
     }
 
     RotatedFile primaryEntry;
     primaryEntry.path = primary;
-    primaryEntry.canonicalKey = CanonicalKeyForPath(primary);
+    primaryEntry.pathKey = MakePathKey(primary);
     primaryEntry.origin = RotatedFile::Origin::Primary;
     series.files.push_back(std::move(primaryEntry));
 
@@ -424,7 +400,7 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
     inputKeys.reserve(paths.size());
     for (const std::filesystem::path &p : paths)
     {
-        inputKeys.push_back(CanonicalKeyForPath(p));
+        inputKeys.push_back(MakePathKey(p));
     }
 
     // A derived primary owns the input only when it exists or is selected.
@@ -456,7 +432,7 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
         std::string candidatePrimaryKey = selfKey;
         if (auto derived = DeriveRotationPrimary(p); derived.has_value())
         {
-            std::string derivedKey = CanonicalKeyForPath(*derived);
+            std::string derivedKey = MakePathKey(*derived);
             std::error_code ec;
             const bool derivedExists = std::filesystem::exists(*derived, ec);
             const bool derivedListed = inputByKey.contains(derivedKey);
@@ -519,7 +495,7 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
         seen.reserve(series.files.size() + inputMemberCount);
         for (const RotatedFile &rf : series.files)
         {
-            seen.insert(rf.canonicalKey);
+            seen.insert(rf.pathKey);
         }
         for (size_t i = 0; i < paths.size(); ++i)
         {
@@ -532,7 +508,7 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
             {
                 RotatedFile extra;
                 extra.path = paths[i];
-                extra.canonicalKey = k;
+                extra.pathKey = k;
                 extra.origin = RotatedFile::Origin::CallerListed;
                 // Unranked explicit inputs retain input order before the primary.
                 if (series.files.empty())
@@ -548,9 +524,9 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
 
         for (const RotatedFile &rf : series.files)
         {
-            if (inputByKey.contains(rf.canonicalKey))
+            if (inputByKey.contains(rf.pathKey))
             {
-                emittedInputKeys.insert(rf.canonicalKey);
+                emittedInputKeys.insert(rf.pathKey);
             }
         }
 

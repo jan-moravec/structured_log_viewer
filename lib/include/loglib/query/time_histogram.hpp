@@ -1,8 +1,8 @@
 /**
  * @brief Counts rows per time bucket for the histogram.
  *
- * Rows are grouped into fixed-width time buckets from one second up to one day. The index can pick a bucket size that
- * fits the time range of the data and counts rows per bucket. The interface uses it to draw the histogram.
+ * Rows are grouped into fixed-width time buckets from one second up to one day. The histogram can pick a bucket size
+ * that fits the time range of the data and counts rows per bucket. The interface uses it to draw the histogram.
  *
  * This is part of the query module.
  */
@@ -40,7 +40,7 @@ enum class HistogramBucketSize : uint8_t
 inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
 
 /**
- * @brief The most buckets a HistogramBucketIndex holds. A row that would need more makes the buckets wider, so one
+ * @brief The most buckets a TimeHistogram holds. A row that would need more makes the buckets wider, so one
  * stray timestamp cannot use up memory.
  */
 inline constexpr size_t HISTOGRAM_MAX_BUCKETS = size_t{1} << 20U;
@@ -98,19 +98,19 @@ struct LevelBucket
  * timestamp before the origin shifts all buckets once, which is cheap for append-only streams but costly for sources
  * that deliver old rows late.
  *
- * A row that would need more than HISTOGRAM_MAX_BUCKETS buckets makes the index switch to the next wider size that
+ * A row that would need more than HISTOGRAM_MAX_BUCKETS buckets makes the histogram switch to the next wider size that
  * covers it, and BucketSize reports the new size. Beyond the widest size the row is counted in the nearest bucket.
  */
-class HistogramBucketIndex
+class TimeHistogram
 {
 public:
-    HistogramBucketIndex() = default;
+    TimeHistogram() = default;
 
     /**
-     * @brief Creates an index with the given bucket width. Existing buckets are kept, so call Reset first when
-     * changing the width of an index that holds rows.
+     * @brief Creates a histogram with the given bucket width. Existing buckets are kept, so call Reset first when
+     * changing the width of a histogram that holds rows.
      */
-    explicit HistogramBucketIndex(HistogramBucketSize size) noexcept;
+    explicit TimeHistogram(HistogramBucketSize size) noexcept;
 
     /** @brief Counts one row in the bucket that contains ts. A row with an unknown level goes in the Unknown count. */
     void AddRow(TimeStamp ts, LogLevel level);
@@ -164,7 +164,7 @@ public:
         return {mBuckets.data(), mBuckets.size()};
     }
 
-    /** @brief The start of the first bucket. Only valid when the index is not empty. */
+    /** @brief The start of the first bucket. Only valid when the histogram is not empty. */
     [[nodiscard]] TimeStamp Origin() const noexcept
     {
         return mOrigin;
@@ -192,7 +192,7 @@ public:
     [[nodiscard]] TimeStamp BucketEnd(size_t index) const noexcept;
 
     /**
-     * @brief The earliest and the latest timestamp added so far, or nullopt while the index is empty.
+     * @brief The earliest and the latest timestamp added so far, or nullopt while the histogram is empty.
      *
      * They are exact. The edges of the first and last bucket are rounded to bucket boundaries and can be up to one
      * bucket width away, which would make AutoBucketSize see a wider span than the data has.

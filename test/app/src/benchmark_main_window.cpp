@@ -27,8 +27,8 @@
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/query/log_compare.hpp>
 #include <loglib/query/row_filter.hpp>
+#include <loglib/query/row_ordering.hpp>
 #include <loglib/support/tzdata_search.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -306,8 +306,8 @@ private slots:
     // `Type::Enumeration` on older builds) and the `component` column
     // (always `Type::Enumeration`, since `component` is not in the
     // level field-name heuristic). The two columns gate the two
-    // `SortPermutationByColumn` fast paths -- level rank cache vs.
-    // `EnumDictRank` -- so a regression in either surfaces here.
+    // `RowOrdering` fast paths -- level rank cache vs. the enumeration
+    // rank -- so a regression in either surfaces here.
     void BenchEnumColumnSort()
     {
         const ProxyChain chain = BuildLoadedChain();
@@ -330,9 +330,9 @@ private slots:
             "component column must remain Enumeration (no level promotion)"
         );
 
-        // Lib-level gate on the level path. `CompareRows` for level
-        // columns ignores `EnumDictRank` and dispatches to
-        // `CompareLevel`, which calls `GetLevelForRow` per side --
+        // Lib-level gate on the level path. Comparing rows of a level
+        // column dispatches to `CompareLevel`, which calls
+        // `GetLevelForRow` per side --
         // an extra `Keys().Find` + `unordered_map::find` per compare
         // on top of the enum sibling's array-indexed rank read. The
         // lib sibling in `benchmark_row_filter.cpp` (multi-sample
@@ -344,28 +344,28 @@ private slots:
             chain,
             levelCol,
             QStringLiteral("Lib-only sort by level column over %1 rows: %2 ms"),
-            QStringLiteral("lib-only CompareRows level sort regressed: %1 ms"),
+            QStringLiteral("lib-only RowOrdering level sort regressed: %1 ms"),
             /*useEnumRank=*/false,
             /*ceilingMs=*/3500.0
         );
 
-        // Lib-level gate on the enum path. `CompareRows` for
-        // Enumeration consults the precomputed `EnumDictRank`
-        // (`CompareEnum`); catches a regression that drops the rank
+        // Lib-level gate on the enum path. Comparing rows of an
+        // Enumeration column consults the rank that `RowOrdering`
+        // builds (`CompareEnum`); catches a regression that drops the rank
         // lookup or routes through a per-row string compare.
         BenchLibOnlySort(
             chain,
             componentCol,
             QStringLiteral("Lib-only sort by enum (component) column over %1 rows: %2 ms"),
-            QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms"),
+            QStringLiteral("lib-only RowOrdering enum sort regressed: %1 ms"),
             /*useEnumRank=*/true,
             /*ceilingMs=*/1500.0
         );
 
         // Proxy-roundtrip sort over the production
         // `LogModel -> RowOrderProxyModel -> LogFilterModel` chain.
-        // `SortPermutationByColumn` has dedicated parallel fast paths
-        // for both Enumeration (uint16_t `EnumDictRank`) and Level
+        // `RowOrdering::Permute` has dedicated parallel fast paths
+        // for both Enumeration (uint16_t enumeration rank) and Level
         // (uint8_t `LevelRankCache`); we sort the level column here
         // because that's the common user path -- the enum proxy path
         // is covered implicitly by the lib gate above.
@@ -373,7 +373,7 @@ private slots:
 
         // Drop any cached ranks so the very first `lessThan` triggers a
         // rebuild and the time below covers the cold-cache cost too.
-        chain.filterProxy->InvalidateEnumRanks();
+        chain.filterProxy->InvalidateOrdering();
         chain.filterProxy->sort(-1);
 
         const auto t0 = std::chrono::steady_clock::now();
@@ -389,7 +389,7 @@ private slots:
 
         QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
         // Proxy-roundtrip sort gate. After the Phase 1 rewrite the
-        // sort runs through `loglib::SortPermutationByColumn`: log
+        // sort runs through `loglib::RowOrdering::Permute`: log
         // rows resolve once (no per-compare proxy walk), a uint16_t
         // rank is pre-materialised in parallel for enum columns, and
         // `tbb::parallel_sort` permutes them. Level columns use a
@@ -424,43 +424,49 @@ private slots:
         QVERIFY2(componentCol >= 0, "fixture must produce a `component` column");
 
         using Rule = loglib::HighlightRule;
-        auto makeRule =
-            [](const std::string &name, const std::string &key, Rule::Match matchType, const std::string &needle) {
-                Rule r;
-                r.name = name;
-                r.enabled = true;
-                r.columnKeys = {key};
-                r.type = Rule::Type::String;
-                r.matchType = matchType;
-                r.filterString = needle;
-                r.foregroundIndex = 1;
-                r.backgroundIndex = 2;
-                return r;
-            };
+        auto makeRule = [](const std::string &name,
+                           const std::string &key,
+                           loglib::FilterCondition::Match matchType,
+                           const std::string &needle) {
+            Rule r;
+            r.name = name;
+            r.enabled = true;
+            r.condition.columnKeys = {key};
+            r.condition.type = loglib::FilterCondition::Type::String;
+            r.condition.matchType = matchType;
+            r.condition.filterString = needle;
+            r.style.foregroundIndex = 1;
+            r.style.backgroundIndex = 2;
+            return r;
+        };
 
         // Ten rules across columns and match types so the rebuild
         // covers the `Contains` fast path, regex, and enum-column
         // paths. Overlaps on `info` force the last-match-wins loop
         // to do real work per row instead of short-circuiting.
         std::vector<Rule> ruleSet;
-        ruleSet.push_back(makeRule("level-info", "level", Rule::Match::Contains, "info"));
-        ruleSet.push_back(makeRule("level-warn", "level", Rule::Match::Contains, "warn"));
-        ruleSet.push_back(makeRule("level-err", "level", Rule::Match::Contains, "err"));
-        ruleSet.push_back(makeRule("comp-auth", "component", Rule::Match::Contains, "auth"));
-        ruleSet.push_back(makeRule("comp-net", "component", Rule::Match::Contains, "net"));
-        ruleSet.push_back(makeRule("comp-db", "component", Rule::Match::Contains, "db"));
-        ruleSet.push_back(makeRule("comp-exact", "component", Rule::Match::Exactly, "component-2"));
-        ruleSet.push_back(makeRule("comp-wild", "component", Rule::Match::Wildcard, "component-?"));
+        ruleSet.push_back(makeRule("level-info", "level", loglib::FilterCondition::Match::Contains, "info"));
+        ruleSet.push_back(makeRule("level-warn", "level", loglib::FilterCondition::Match::Contains, "warn"));
+        ruleSet.push_back(makeRule("level-err", "level", loglib::FilterCondition::Match::Contains, "err"));
+        ruleSet.push_back(makeRule("comp-auth", "component", loglib::FilterCondition::Match::Contains, "auth"));
+        ruleSet.push_back(makeRule("comp-net", "component", loglib::FilterCondition::Match::Contains, "net"));
+        ruleSet.push_back(makeRule("comp-db", "component", loglib::FilterCondition::Match::Contains, "db"));
+        ruleSet.push_back(makeRule("comp-exact", "component", loglib::FilterCondition::Match::Exactly, "component-2"));
+        ruleSet.push_back(makeRule("comp-wild", "component", loglib::FilterCondition::Match::Wildcard, "component-?"));
         if (bodyCol >= 0)
         {
-            ruleSet.push_back(makeRule("body-oops", "body", Rule::Match::Contains, "oops"));
-            ruleSet.push_back(makeRule("body-rx", "body", Rule::Match::RegularExpression, R"(msg \d{4}$)"));
+            ruleSet.push_back(makeRule("body-oops", "body", loglib::FilterCondition::Match::Contains, "oops"));
+            ruleSet.push_back(
+                makeRule("body-rx", "body", loglib::FilterCondition::Match::RegularExpression, R"(msg \d{4}$)")
+            );
         }
         else
         {
             // Keep the total at 10 when the fixture lacks `body`.
-            ruleSet.push_back(makeRule("level-debug", "level", Rule::Match::Contains, "debug"));
-            ruleSet.push_back(makeRule("level-any", "level", Rule::Match::RegularExpression, R"(.*)"));
+            ruleSet.push_back(makeRule("level-debug", "level", loglib::FilterCondition::Match::Contains, "debug"));
+            ruleSet.push_back(
+                makeRule("level-any", "level", loglib::FilterCondition::Match::RegularExpression, R"(.*)")
+            );
         }
 
         HighlightRuleSet rules;
@@ -543,10 +549,11 @@ private:
         return -1;
     }
 
-    /// Time a single-threaded `CompareRows` sort. When @p useEnumRank
-    /// is true the column must be Enumeration and a precomputed
-    /// `EnumDictRank` is passed; otherwise the rank pointer is null
-    /// (Level columns read the rank cache off the table directly).
+    /// Time a single-threaded sort that compares rows with
+    /// `RowOrdering::Compare`. When @p useEnumRank is true the column
+    /// must be Enumeration, and the ordering ranks its values;
+    /// otherwise it is a Level column, which reads the rank cache off
+    /// the table directly.
     static void BenchLibOnlySort(
         const ProxyChain &chain,
         int columnIndex,
@@ -564,8 +571,6 @@ private:
         const auto &columns = chain.model->Layout().Columns();
         const auto &column = columns[static_cast<size_t>(columnIndex)];
 
-        const loglib::EnumDictRank *rankPtr = nullptr;
-        std::optional<loglib::EnumDictRank> rankStorage;
         if (useEnumRank)
         {
             QVERIFY2(
@@ -575,11 +580,9 @@ private:
             );
             const loglib::KeyId keyId = table.Keys().Find(column.keys.front());
             QVERIFY2(keyId != loglib::INVALID_KEY_ID, "enum column key must resolve in the table");
-            const loglib::EnumDictionary *dictionary = table.EnumDictionaries().Find(keyId);
-            QVERIFY2(dictionary != nullptr, "enum column must have a dictionary");
-            rankStorage.emplace(*dictionary);
-            rankPtr = &rankStorage.value();
+            QVERIFY2(table.EnumDictionaries().Find(keyId) != nullptr, "enum column must have a dictionary");
         }
+        const loglib::RowOrdering ordering(table, static_cast<size_t>(columnIndex), loglib::SortDirection::Ascending);
 
         std::vector<size_t> indices(rowCount);
         // `std::iota` rather than `std::ranges::iota`: the latter is
@@ -587,9 +590,7 @@ private:
         std::iota(indices.begin(), indices.end(), size_t{0});
 
         const auto libT0 = std::chrono::steady_clock::now();
-        std::ranges::sort(indices, [&](size_t a, size_t b) {
-            return loglib::CompareRows(table, a, b, static_cast<size_t>(columnIndex), rankPtr) < 0;
-        });
+        std::ranges::sort(indices, [&](size_t a, size_t b) { return ordering.Compare(a, b) < 0; });
         const auto libElapsed = std::chrono::steady_clock::now() - libT0;
 
         qDebug().noquote()

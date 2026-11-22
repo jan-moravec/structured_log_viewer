@@ -240,29 +240,29 @@ void AppendExpression(const FilterExpression &expr, Precedence parent, std::stri
  * Emit one leaf. Barewords for common cases; quoted forms when the payload would collide with a keyword / operator /
  * number.
  */
-void AppendLeaf(const LeafRule &rule, std::string &out)
+void AppendLeaf(const FilterCondition &rule, std::string &out)
 {
     const std::string columnText = rule.columnKeys.empty() ? std::string() : FormatIdent(rule.columnKeys.front());
     out.append(columnText);
     switch (rule.type)
     {
-    case LeafRule::Type::String:
+    case FilterCondition::Type::String:
     {
-        const LeafRule::Match match = rule.matchType.value_or(LeafRule::Match::Contains);
+        const FilterCondition::Match match = rule.matchType.value_or(FilterCondition::Match::Contains);
         const std::string value = rule.filterString.value_or(std::string{});
         switch (match)
         {
-        case LeafRule::Match::Contains:
+        case FilterCondition::Match::Contains:
             out.push_back(':');
             out.append(FormatIdent(value));
             break;
-        case LeafRule::Match::Exactly:
+        case FilterCondition::Match::Exactly:
             out.push_back('=');
             // Always quoted so the round-trip stays unambiguous
             // vs. numeric / boolean = literals.
             out.append(QuoteString(value));
             break;
-        case LeafRule::Match::RegularExpression:
+        case FilterCondition::Match::RegularExpression:
             out.push_back('~');
             out.push_back('/');
             for (const char ch : value)
@@ -278,14 +278,14 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
             }
             out.push_back('/');
             break;
-        case LeafRule::Match::Wildcard:
+        case FilterCondition::Match::Wildcard:
             out.push_back('%');
             out.append(QuoteString(value));
             break;
         }
         break;
     }
-    case LeafRule::Type::Number:
+    case FilterCondition::Type::Number:
     {
         // Single value -> =N; one-sided -> >=N / <=N;
         // both sides -> IN [min..max].
@@ -322,7 +322,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         break;
     }
-    case LeafRule::Type::Time:
+    case FilterCondition::Type::Time:
     {
         const bool hasBegin = rule.filterBegin.has_value();
         const bool hasEnd = rule.filterEnd.has_value();
@@ -350,7 +350,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         break;
     }
-    case LeafRule::Type::Boolean:
+    case FilterCondition::Type::Boolean:
     {
         // Collapse to =true / =false / IN [true, false].
         bool hasTrue = false;
@@ -390,7 +390,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         break;
     }
-    case LeafRule::Type::Enumeration:
+    case FilterCondition::Type::Enumeration:
         out.append(" IN [");
         for (std::size_t i = 0; i < rule.filterValues.size(); ++i)
         {
@@ -490,7 +490,7 @@ void AppendExpression(const FilterExpression &expr, Precedence parent, std::stri
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, FilterExpression::Leaf>)
             {
-                AppendLeaf(node.rule, out);
+                AppendLeaf(node.condition, out);
             }
             else if constexpr (std::is_same_v<T, FilterExpression::And>)
             {
@@ -514,7 +514,7 @@ void AppendExpression(const FilterExpression &expr, Precedence parent, std::stri
 std::string FormatExpression(const FilterExpression &expression)
 {
     // Match-all -> empty string (round-trip contract in the header).
-    if (IsMatchAll(expression))
+    if (AcceptsEverything(expression))
     {
         return {};
     }
@@ -525,7 +525,7 @@ std::string FormatExpression(const FilterExpression &expression)
     while (true)
     {
         const auto *andNode = std::get_if<FilterExpression::And>(&effective->node);
-        if (andNode == nullptr || andNode->children.size() != 1 || IsMatchAll(andNode->children.front()))
+        if (andNode == nullptr || andNode->children.size() != 1 || AcceptsEverything(andNode->children.front()))
         {
             break;
         }

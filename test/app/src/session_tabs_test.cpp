@@ -165,11 +165,11 @@ QString WriteBundleFixture(const QString &path, int rowCount, const QString &fil
         {
             return {};
         }
-        loglib::LeafRule rule;
-        rule.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition rule;
+        rule.type = loglib::FilterCondition::Type::String;
         rule.columnKeys = configuration.columns.front().keys;
         rule.filterString = filterToken.toStdString();
-        rule.matchType = loglib::LeafRule::Match::Contains;
+        rule.matchType = loglib::FilterCondition::Match::Contains;
         configuration.view.expression = loglib::MakeAnd({loglib::MakeLeaf(std::move(rule))});
         loglib::WriteSessionBundle(table, configuration, logapp::QStringToFsPath(path));
         return path;
@@ -252,11 +252,11 @@ QStringList FilterMenuTitles(const MainWindow &window)
 
 void AddContainsFilter(MainWindow &window, const QString &token)
 {
-    loglib::LeafRule rule;
-    rule.type = loglib::LeafRule::Type::String;
+    loglib::FilterCondition rule;
+    rule.type = loglib::FilterCondition::Type::String;
     rule.columnKeys = {"n"};
     rule.filterString = token.toStdString();
-    rule.matchType = loglib::LeafRule::Match::Contains;
+    rule.matchType = loglib::FilterCondition::Match::Contains;
     window.AddLogFilterForTest(QUuid::createUuid().toString(), rule);
 }
 
@@ -278,7 +278,7 @@ void AddContainsFilter(MainWindow &window, const QString &token)
     const auto visit = [&](const loglib::FilterExpression &node, const auto &self) -> bool {
         if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&node.node); leaf != nullptr)
         {
-            return leaf->rule.filterString.has_value() && *leaf->rule.filterString == needle;
+            return leaf->condition.filterString.has_value() && *leaf->condition.filterString == needle;
         }
         if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&node.node); asAnd != nullptr)
         {
@@ -316,10 +316,10 @@ void AddContainsFilter(MainWindow &window, const QString &token)
 {
     loglib::HighlightRule rule;
     rule.name = "draft-rule";
-    rule.columnKeys = {"n"};
-    rule.type = loglib::HighlightRule::Type::String;
-    rule.matchType = loglib::HighlightRule::Match::Contains;
-    rule.filterString = std::string{"draft-needle"};
+    rule.condition.columnKeys = {"n"};
+    rule.condition.type = loglib::FilterCondition::Type::String;
+    rule.condition.matchType = loglib::FilterCondition::Match::Contains;
+    rule.condition.filterString = std::string{"draft-needle"};
     return rule;
 }
 
@@ -535,7 +535,7 @@ private slots:
 
         loglib::SourceDescriptor source;
         source.kind = loglib::SourceDescriptor::Kind::File;
-        source.locators = {"/tmp/example.log"};
+        source.locators = {{.path = "/tmp/example.log", .key = "/tmp/example.log"}};
         source.followRotationSiblings = false;
         session->SetCurrentSource(source);
 
@@ -1526,7 +1526,7 @@ private slots:
         // `EnsureFreshActiveTab` from reuse to add).
         loglib::SourceDescriptor src;
         src.kind = loglib::SourceDescriptor::Kind::File;
-        src.locators = {{std::string{"/tmp/pretend.log"}, std::string{"/tmp/pretend.log"}}};
+        src.locators = {{.path = std::string{"/tmp/pretend.log"}, .key = std::string{"/tmp/pretend.log"}}};
         originalSession->MutableCurrentSource() = src;
 
         window.EnsureFreshActiveTab();
@@ -1564,22 +1564,22 @@ private slots:
         loglib::SourceDescriptor srcA;
         srcA.kind = loglib::SourceDescriptor::Kind::File;
         srcA.locators = {
-            {std::string{"/tmp/a.log"}, std::string{"/tmp/a.log"}},
-            {std::string{"/tmp/a.log.1"}, std::string{"/tmp/a.log.1"}}
+            {.path = std::string{"/tmp/a.log"}, .key = std::string{"/tmp/a.log"}},
+            {.path = std::string{"/tmp/a.log.1"}, .key = std::string{"/tmp/a.log.1"}},
         };
         sessionA->MutableCurrentSource() = srcA;
 
         loglib::SourceDescriptor srcB;
         srcB.kind = loglib::SourceDescriptor::Kind::File;
-        srcB.locators = {{std::string{"/tmp/b.log"}, std::string{"/tmp/b.log"}}};
+        srcB.locators = {{.path = std::string{"/tmp/b.log"}, .key = std::string{"/tmp/b.log"}}};
         sessionB->MutableCurrentSource() = srcB;
 
         QVERIFY(sessionA->CurrentSource().has_value());
         QVERIFY(sessionB->CurrentSource().has_value());
         QCOMPARE(sessionA->CurrentSource()->locators.size(), std::size_t{2});
         QCOMPARE(sessionB->CurrentSource()->locators.size(), std::size_t{1});
-        QCOMPARE(sessionA->CurrentSource()->locators.front().displayPath, std::string{"/tmp/a.log"});
-        QCOMPARE(sessionB->CurrentSource()->locators.front().displayPath, std::string{"/tmp/b.log"});
+        QCOMPARE(sessionA->CurrentSource()->locators.front().path, std::string{"/tmp/a.log"});
+        QCOMPARE(sessionB->CurrentSource()->locators.front().path, std::string{"/tmp/b.log"});
     }
 
     static void TestTwoStaticTabsHaveIndependentDirtyState()
@@ -1627,10 +1627,10 @@ private slots:
         // this pin is about the ownership boundary, not the shell
         // route.
         sessionA->MutableSimpleLeafOrder().emplace_back("leaf-A");
-        sessionA->MutableSimpleLeaves()[std::string{"leaf-A"}] = loglib::LeafRule{};
+        sessionA->MutableSimpleLeaves()[std::string{"leaf-A"}] = loglib::FilterCondition{};
 
         sessionB->MutableSimpleLeafOrder().emplace_back("leaf-B");
-        sessionB->MutableSimpleLeaves()[std::string{"leaf-B"}] = loglib::LeafRule{};
+        sessionB->MutableSimpleLeaves()[std::string{"leaf-B"}] = loglib::FilterCondition{};
 
         QCOMPARE(sessionA->SimpleLeafOrder().size(), std::size_t{1});
         QCOMPARE(sessionB->SimpleLeafOrder().size(), std::size_t{1});
@@ -1869,13 +1869,13 @@ private slots:
         // Distinct rotation-history preferences per session.
         loglib::SourceDescriptor srcA;
         srcA.kind = loglib::SourceDescriptor::Kind::File;
-        srcA.locators = {std::string{"/var/log/a.log"}};
+        srcA.locators = {{.path = std::string{"/var/log/a.log"}, .key = std::string{"/var/log/a.log"}}};
         srcA.followRotationSiblings = true;
         tailA->MutableCurrentSource() = srcA;
 
         loglib::SourceDescriptor srcB;
         srcB.kind = loglib::SourceDescriptor::Kind::File;
-        srcB.locators = {std::string{"/var/log/b.log"}};
+        srcB.locators = {{.path = std::string{"/var/log/b.log"}, .key = std::string{"/var/log/b.log"}}};
         srcB.followRotationSiblings = false;
         tailB->MutableCurrentSource() = srcB;
 
@@ -2153,7 +2153,10 @@ private slots:
 
         loglib::SourceDescriptor fileSource;
         fileSource.kind = loglib::SourceDescriptor::Kind::File;
-        fileSource.locators = {std::string{"C:/logs/app.log"}, std::string{"C:/logs/app.log.1"}};
+        fileSource.locators = {
+            {.path = std::string{"C:/logs/app.log"}, .key = std::string{"C:/logs/app.log"}},
+            {.path = std::string{"C:/logs/app.log.1"}, .key = std::string{"C:/logs/app.log.1"}},
+        };
         session->MutableCurrentSource() = fileSource;
         session->NotifyPresentationChanged();
         const auto captured = window.CaptureWorkspaceWindow();
@@ -2174,7 +2177,7 @@ private slots:
 
         loglib::SourceDescriptor fileSource;
         fileSource.kind = loglib::SourceDescriptor::Kind::File;
-        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        fileSource.locators = {{.path = std::string{"C:/logs/app.log"}, .key = std::string{"C:/logs/app.log"}}};
         session->MutableCurrentSource() = fileSource;
         session->NotifyPresentationChanged();
         window.RenameTabForTest(0, QStringLiteral("Incident 42"));
@@ -2804,7 +2807,7 @@ private slots:
                            "simpleLeaves=[%1] matchAll=%2 dropped=%3 rows=%4"
             )
                            .arg(originLeafStrings.join(QLatin1Char(',')))
-                           .arg(loglib::IsMatchAll(sessionA->View().expression))
+                           .arg(loglib::AcceptsEverything(sessionA->View().expression))
                            .arg(window.LastDroppedFilterCountForTest())
                            .arg(originModel->rowCount()))
         );
@@ -3275,13 +3278,13 @@ private slots:
         source.AddNewTabForTest(/*makeActive=*/true);
         loglib::SourceDescriptor network;
         network.kind = loglib::SourceDescriptor::Kind::NetworkStream;
-        network.locators = {std::string{"tcp://127.0.0.1:5514"}};
+        network.locators = {{.path = std::string{"tcp://127.0.0.1:5514"}, .key = std::string{"tcp://127.0.0.1:5514"}}};
         source.activeSession()->MutableCurrentSource() = network;
 
         source.AddNewTabForTest(/*makeActive=*/true);
         loglib::SourceDescriptor stdinSource;
         stdinSource.kind = loglib::SourceDescriptor::Kind::Stdin;
-        stdinSource.locators = {std::string{"<stdin>"}};
+        stdinSource.locators = {{.path = std::string{"<stdin>"}, .key = std::string{"<stdin>"}}};
         source.activeSession()->MutableCurrentSource() = stdinSource;
 
         source.ActivateTabForTest(0);

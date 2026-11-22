@@ -2,6 +2,8 @@
 
 #include "icon_loader.hpp"
 
+#include <loglib/config/anchor_entry.hpp>
+#include <loglib/config/highlight_rule.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/support/theme.hpp>
 
@@ -58,7 +60,7 @@ constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_
 /// background tints; foreground is derived from luma at bake
 /// time (see `BuildStyleCache`). Overridden per-slot via
 /// `Theme::highlightPalette`. Slot `i` maps to
-/// `HighlightRule::backgroundIndex == i + 1` (0 = inherit).
+/// `HighlightStyle::backgroundIndex == i + 1` (0 = inherit).
 constexpr std::array<const char *, loglib::HIGHLIGHT_PALETTE_SIZE> HIGHLIGHT_FALLBACK_BACKGROUND_PALETTE = {
     "#FCA5A5", // red-300
     "#FDBA74", // orange-300

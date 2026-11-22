@@ -2,7 +2,6 @@
 
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/enum_dictionary.hpp>
-#include <loglib/query/log_compare.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/query/row_ordering.hpp>
 #include <loglib/table/log_table.hpp>
@@ -34,7 +33,7 @@ LogFilterModel::~LogFilterModel() = default;
 void LogFilterModel::SetLogModel(LogModel *logModel)
 {
     mLogModel = logModel;
-    mEnumRanks.clear();
+    mOrdering.reset();
     if (sourceModel() != nullptr)
     {
         RebuildAcceptedRows();
@@ -50,7 +49,7 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
     // re-binds via `SetLogModel` before installing rules.
     mCompiledExpression = loglib::CompiledFilterExpression{};
     mLogModel = nullptr;
-    mEnumRanks.clear();
+    mOrdering.reset();
     mAcceptedSourceRows.clear();
     mSourceRowToProxyRow.clear();
     mProxyChainAbove.clear();
@@ -131,8 +130,8 @@ void LogFilterModel::RewireSourceConnections()
 
 void LogFilterModel::SetFilterExpression(loglib::CompiledFilterExpression expression)
 {
-    const bool wasMatchAll = loglib::IsMatchAllCompiled(mCompiledExpression);
-    const bool nowMatchAll = loglib::IsMatchAllCompiled(expression);
+    const bool wasMatchAll = loglib::AcceptsEverything(mCompiledExpression);
+    const bool nowMatchAll = loglib::AcceptsEverything(expression);
     if (wasMatchAll && nowMatchAll)
     {
         // Both trees match every row; skip the rebuild churn.
@@ -173,9 +172,9 @@ void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> rules)
     SetFilterExpression(std::move(compiled));
 }
 
-void LogFilterModel::InvalidateEnumRanks()
+void LogFilterModel::InvalidateOrdering()
 {
-    mEnumRanks.clear();
+    mOrdering.reset();
 }
 
 QModelIndex LogFilterModel::index(int row, int column, const QModelIndex &parent) const
@@ -332,18 +331,12 @@ void LogFilterModel::ApplySortPermutation()
         logRows.push_back(logRow >= 0 ? static_cast<size_t>(logRow) : size_t{0});
     }
 
-    const loglib::EnumDictRank *rank = nullptr;
-    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::ColumnType::Enumeration)
+    const loglib::RowOrdering *ordering = CurrentOrdering();
+    if (ordering == nullptr)
     {
-        rank = EnumRankFor(mSortColumn);
+        return;
     }
-
-    const loglib::RowOrdering ordering(
-        static_cast<size_t>(mSortColumn),
-        mSortOrder == Qt::AscendingOrder ? loglib::SortDirection::Ascending : loglib::SortDirection::Descending,
-        rank
-    );
-    const std::vector<size_t> permutation = ordering.Permute(mLogModel->Table(), std::span<const size_t>{logRows});
+    const std::vector<size_t> permutation = ordering->Permute(std::span<const size_t>{logRows});
 
     std::vector<int> sorted;
     sorted.reserve(mAcceptedSourceRows.size());
@@ -371,18 +364,12 @@ bool LogFilterModel::LessThanSourceRows(int leftSource, int rightSource) const
     {
         return leftSource < rightSource;
     }
-    const loglib::EnumDictRank *rank = nullptr;
-    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::ColumnType::Enumeration)
+    const loglib::RowOrdering *ordering = CurrentOrdering();
+    if (ordering == nullptr)
     {
-        rank = EnumRankFor(mSortColumn);
+        return leftSource < rightSource;
     }
-    const loglib::RowOrdering ordering(
-        static_cast<size_t>(mSortColumn),
-        mSortOrder == Qt::AscendingOrder ? loglib::SortDirection::Ascending : loglib::SortDirection::Descending,
-        rank
-    );
-    return ordering.LessThan(
-        mLogModel->Table(),
+    return ordering->LessThan(
         static_cast<size_t>(leftLog),
         static_cast<size_t>(rightLog),
         static_cast<size_t>(leftSource),
@@ -469,7 +456,7 @@ void LogFilterModel::RebuildProxyChainCache()
 
 bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
 {
-    if (loglib::IsMatchAllCompiled(mCompiledExpression))
+    if (loglib::AcceptsEverything(mCompiledExpression))
     {
         return true;
     }
@@ -509,7 +496,7 @@ void LogFilterModel::RecomputeAcceptedRows()
 
     const int n = src->rowCount();
     mAcceptedSourceRows.reserve(static_cast<size_t>(n));
-    if (loglib::IsMatchAllCompiled(mCompiledExpression))
+    if (loglib::AcceptsEverything(mCompiledExpression))
     {
         // Match-all: every row passes, even without a `LogModel`.
         for (int i = 0; i < n; ++i)
@@ -930,7 +917,7 @@ void LogFilterModel::OnSourceModelReset()
 {
     mAcceptedSourceRows.clear();
     mSourceRowToProxyRow.clear();
-    mEnumRanks.clear();
+    mOrdering.reset();
     if (sourceModel() != nullptr)
     {
         // Route through the parallel-filter helper. A sequential
@@ -1077,41 +1064,22 @@ void LogFilterModel::OnSourceHeaderDataChanged(Qt::Orientation orientation, int 
     emit headerDataChanged(orientation, first, last);
 }
 
-loglib::KeyId LogFilterModel::EnumKeyForColumn(int columnIndex) const
+const loglib::RowOrdering *LogFilterModel::CurrentOrdering() const
 {
-    if (mLogModel == nullptr || columnIndex < 0)
-    {
-        return loglib::INVALID_KEY_ID;
-    }
-    return mLogModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex)).canonicalKey;
-}
-
-const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
-{
-    if (mLogModel == nullptr || columnIndex < 0)
+    if (mLogModel == nullptr || mSortColumn < 0 ||
+        static_cast<size_t>(mSortColumn) >= mLogModel->Layout().Columns().size())
     {
         return nullptr;
     }
-    const auto lookup = mLogModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex));
-    if (lookup.canonicalKey == loglib::INVALID_KEY_ID || lookup.dictionary == nullptr)
+    const auto column = static_cast<size_t>(mSortColumn);
+    const loglib::SortDirection direction =
+        mSortOrder == Qt::AscendingOrder ? loglib::SortDirection::Ascending : loglib::SortDirection::Descending;
+    if (!mOrdering.has_value() || mOrdering->Column() != column || mOrdering->Direction() != direction ||
+        mOrdering->IsOutdated())
     {
-        return nullptr;
+        mOrdering.emplace(mLogModel->Table(), column, direction);
     }
-    // Rebuild when the cached rank is missing, smaller than the live
-    // dictionary, or attached to a different `EnumDictionary` instance
-    // (the last case covers demote -> re-promote that re-creates the
-    // registry entry at the same `Size()`).
-    if (auto it = mEnumRanks.find(lookup.canonicalKey); it != mEnumRanks.end() &&
-                                                        it->second.source == lookup.dictionary &&
-                                                        it->second.rank.DictSize() >= lookup.dictionary->Size())
-    {
-        return &it->second.rank;
-    }
-    const auto [it, inserted] = mEnumRanks.insert_or_assign(
-        lookup.canonicalKey,
-        EnumRankEntry{.rank = loglib::EnumDictRank{*lookup.dictionary}, .source = lookup.dictionary}
-    );
-    return &it->second.rank;
+    return &*mOrdering;
 }
 
 void LogFilterModel::ForEachMatchingRow(

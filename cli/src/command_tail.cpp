@@ -554,7 +554,7 @@ private:
             return;
         }
 
-        const auto compiled = loglib::CompileExpression(session->expression, mTable->Layout().Columns(), mTable);
+        const auto compiled = loglib::CompileFilter(session->expression, *mTable);
         std::vector<std::size_t> accepted;
         std::string buffer;
         for (std::size_t row = mNextRow; row < total; ++row)

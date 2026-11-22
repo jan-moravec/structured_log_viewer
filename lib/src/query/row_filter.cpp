@@ -238,12 +238,12 @@ bool BoolRowPredicate::MatchesRow(const LogTable &table, size_t row) const
     return cell->payload != 0 ? mIncludeTrue : mIncludeFalse;
 }
 
-CallbackStringRowPredicate::CallbackStringRowPredicate(size_t columnIndex, MatchFn match)
+TextRowPredicate::TextRowPredicate(size_t columnIndex, MatchFn match)
     : mColumnIndex(columnIndex), mMatch(std::move(match))
 {
 }
 
-bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) const
+bool TextRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
     if (!mMatch)
     {
@@ -287,7 +287,7 @@ int EstimatedLeafCost(const RowPredicate &predicate) noexcept
             }
             else
             {
-                // CallbackString: regex / UTF-8 walk.
+                // TextRowPredicate: regex / UTF-8 walk.
                 return STRING_LEAF_COST;
             }
         },
@@ -313,7 +313,7 @@ int CompiledFilterExpression::EstimatedCost() const noexcept
     return std::visit([](const auto &n) noexcept -> int { return n.estimatedCost; }, node);
 }
 
-bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept
+bool AcceptsEverything(const CompiledFilterExpression &expression) noexcept
 {
     const auto *asAnd = std::get_if<CompiledFilterExpression::And>(&expression.node);
     return asAnd != nullptr && asAnd->children.empty();

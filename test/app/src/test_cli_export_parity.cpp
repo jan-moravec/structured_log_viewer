@@ -121,7 +121,7 @@ namespace
         }
         expression = std::move(*parsed);
     }
-    const auto compiled = loglib::CompileExpression(expression, model.Layout().Columns(), &model.Table());
+    const auto compiled = loglib::CompileFilter(expression, model.Table());
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(model.Table(), compiled);
 
     if (sort.has_value())
@@ -157,10 +157,9 @@ namespace
             *error = QStringLiteral("sort column not found");
             return std::nullopt;
         }
-        const loglib::RowOrdering ordering(static_cast<std::size_t>(columnIndex), direction, nullptr);
+        const loglib::RowOrdering ordering(model.Table(), static_cast<std::size_t>(columnIndex), direction);
         // `Permute` returns positions within `rows`, not table row indices.
-        const std::vector<std::size_t> permutation =
-            ordering.Permute(model.Table(), std::span<const std::size_t>{rows});
+        const std::vector<std::size_t> permutation = ordering.Permute(std::span<const std::size_t>{rows});
         std::vector<std::size_t> sorted;
         sorted.reserve(permutation.size());
         for (const std::size_t position : permutation)

@@ -1,4 +1,4 @@
-#include "loglib/query/log_compare.hpp"
+#include "loglib/query/internal/row_compare.hpp"
 
 #include "loglib/config/log_configuration.hpp"
 #include "loglib/core/compact_log_value.hpp"
@@ -28,10 +28,10 @@
 #include <variant>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
-EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
+EnumSortRank::EnumSortRank(const EnumDictionary &dictionary)
 {
     const auto &values = dictionary.Values();
     const size_t size = values.size();
@@ -49,7 +49,7 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
     }
 }
 
-uint16_t EnumDictRank::RankOf(EnumValueId id) const noexcept
+uint16_t EnumSortRank::RankOf(EnumValueId id) const noexcept
 {
     const auto idx = static_cast<size_t>(id);
     if (idx >= mIdToRank.size())
@@ -60,9 +60,9 @@ uint16_t EnumDictRank::RankOf(EnumValueId id) const noexcept
     return mIdToRank[idx];
 }
 
-uint16_t EnumDictRank::DictSize() const noexcept
+uint16_t EnumSortRank::DictSize() const noexcept
 {
-    assert(mIdToRank.size() <= std::numeric_limits<uint16_t>::max() && "EnumDictRank exceeds uint16_t capacity");
+    assert(mIdToRank.size() <= std::numeric_limits<uint16_t>::max() && "EnumSortRank exceeds uint16_t capacity");
     return static_cast<uint16_t>(mIdToRank.size());
 }
 
@@ -120,7 +120,9 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
  * is needed only by columns that hold mixed cells. The string sort keys use the same text for each cell, so a bulk sort
  * and a row by row comparison agree.
  */
-int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
+int CompareLogValuesBytewise(
+    const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column, CompareScratch &scratch
+)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);
     const LogValue rhs = LoadValue(table, rhsRow, column);
@@ -144,36 +146,7 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
         return ThreeWay(*lhsSv, *rhsSv);
     }
 
-    // The formatted text goes to buffers of the thread, so a steady state allocates nothing. That makes the function
-    // not re-entrant, which the guard checks in debug builds.
-#ifndef NDEBUG
-    // MSVC rejects a static member in a local class, so the counter lives at function scope.
-    thread_local int sDepth = 0;
-    class ReentryGuard
-    {
-    public:
-        explicit ReentryGuard(int &d)
-            : mDepth(d)
-        {
-            assert(mDepth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
-            ++mDepth;
-        }
-        ~ReentryGuard()
-        {
-            --mDepth;
-        }
-        ReentryGuard(const ReentryGuard &) = delete;
-        ReentryGuard(ReentryGuard &&) = delete;
-        ReentryGuard &operator=(const ReentryGuard &) = delete;
-        ReentryGuard &operator=(ReentryGuard &&) = delete;
-
-    private:
-        int &mDepth;
-    };
-    const ReentryGuard guard(sDepth);
-#endif
-    thread_local std::string lhsFormatted;
-    thread_local std::string rhsFormatted;
+    // The formatted text goes to the caller's buffers, so a steady state allocates nothing.
     const auto textOf = [&table, column](const std::optional<std::string_view> &raw, size_t row, std::string &buffer) {
         if (raw.has_value())
         {
@@ -182,7 +155,7 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
         buffer = table.GetFormattedValue(row, column);
         return std::string_view(buffer);
     };
-    return ThreeWay(textOf(lhsSv, lhsRow, lhsFormatted), textOf(rhsSv, rhsRow, rhsFormatted));
+    return ThreeWay(textOf(lhsSv, lhsRow, scratch.lhs), textOf(rhsSv, rhsRow, scratch.rhs));
 }
 
 /**
@@ -386,7 +359,14 @@ int CompareByKey(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t col
     return CompareKeys(KeyOf(table.FindCell(lhsRow, column)), KeyOf(table.FindCell(rhsRow, column)));
 }
 
-int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column, const EnumDictRank *rank)
+int CompareEnum(
+    const LogTable &table,
+    size_t lhsRow,
+    size_t rhsRow,
+    size_t column,
+    const EnumSortRank *rank,
+    CompareScratch &scratch
+)
 {
     const auto lhsId = table.GetEnumValueId(lhsRow, column);
     const auto rhsId = table.GetEnumValueId(rhsRow, column);
@@ -399,7 +379,7 @@ int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t colu
     {
         // Without a rank table, compare the bytes. This happens only between a column's promotion to an enumeration
         // and the first rebuild of its ranks.
-        return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
+        return CompareLogValuesBytewise(table, lhsRow, rhsRow, column, scratch);
     }
 
     // A cell that is not a dictionary reference (empty, a string not yet promoted, another type, or too long) sorts
@@ -416,7 +396,7 @@ int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t colu
     return -1;
 }
 
-int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
+int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column, CompareScratch &scratch)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);
     const LogValue rhs = LoadValue(table, rhsRow, column);
@@ -424,7 +404,7 @@ int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t co
     {
         return *order;
     }
-    return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
+    return CompareLogValuesBytewise(table, lhsRow, rhsRow, column, scratch);
 }
 
 /**
@@ -468,7 +448,12 @@ int CompareLevel(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t col
 } // namespace
 
 int CompareRows(
-    const LogTable &table, size_t lhsRow, size_t rhsRow, size_t columnIndex, const EnumDictRank *rankForEnumColumn
+    const LogTable &table,
+    size_t lhsRow,
+    size_t rhsRow,
+    size_t columnIndex,
+    const EnumSortRank *rankForEnumColumn,
+    CompareScratch &scratch
 )
 {
     if (lhsRow == rhsRow)
@@ -494,13 +479,13 @@ int CompareRows(
     case ColumnType::Time:
         return CompareByKey<TimeKey>(table, lhsRow, rhsRow, columnIndex);
     case ColumnType::Enumeration:
-        return CompareEnum(table, lhsRow, rhsRow, columnIndex, rankForEnumColumn);
+        return CompareEnum(table, lhsRow, rhsRow, columnIndex, rankForEnumColumn, scratch);
     case ColumnType::Level:
         return CompareLevel(table, lhsRow, rhsRow, columnIndex);
     case ColumnType::String:
     case ColumnType::Any:
     default:
-        return CompareString(table, lhsRow, rhsRow, columnIndex);
+        return CompareString(table, lhsRow, rhsRow, columnIndex, scratch);
     }
 }
 
@@ -942,10 +927,11 @@ std::vector<size_t> SortPermutationByColumn(
     const LogTable &table,
     std::span<const size_t> logRows,
     size_t columnIndex,
-    bool ascending,
-    const EnumDictRank *rankForEnumColumn
+    SortDirection direction,
+    const EnumSortRank *rankForEnumColumn
 )
 {
+    const bool ascending = direction == SortDirection::Ascending;
     const size_t n = logRows.size();
     std::vector<size_t> permutation(n);
     std::iota(permutation.begin(), permutation.end(), size_t{0});
@@ -1029,8 +1015,10 @@ std::vector<size_t> SortPermutationByColumn(
 
     // An enumeration column without a rank table, or a column that does not exist, compares rows one by one through
     // CompareRows.
-    const auto compare = [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
-        return CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
+    // Every worker of the parallel sort formats into its own scratch.
+    tbb::enumerable_thread_specific<CompareScratch> scratches;
+    const auto compare = [&table, &logRows, columnIndex, rankForEnumColumn, &scratches](size_t a, size_t b) {
+        return CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn, scratches.local());
     };
     if (ascending)
     {
@@ -1047,18 +1035,19 @@ std::vector<size_t> SortPermutationWindowByColumn(
     const LogTable &table,
     std::span<const size_t> logRows,
     size_t columnIndex,
-    bool ascending,
+    SortDirection direction,
     size_t begin,
     size_t end,
-    const EnumDictRank *rankForEnumColumn
+    const EnumSortRank *rankForEnumColumn
 )
 {
+    const bool ascending = direction == SortDirection::Ascending;
     const size_t n = logRows.size();
     end = std::min(end, n);
     begin = std::min(begin, end);
     if (begin == 0 && end == n)
     {
-        return SortPermutationByColumn(table, logRows, columnIndex, ascending, rankForEnumColumn);
+        return SortPermutationByColumn(table, logRows, columnIndex, direction, rankForEnumColumn);
     }
     if (n > 1)
     {
@@ -1069,8 +1058,8 @@ std::vector<size_t> SortPermutationWindowByColumn(
         }
     }
     // The other column types sort in linear time or compare rows one by one, so the whole order is built and cut.
-    const std::vector<size_t> full = SortPermutationByColumn(table, logRows, columnIndex, ascending, rankForEnumColumn);
+    const std::vector<size_t> full = SortPermutationByColumn(table, logRows, columnIndex, direction, rankForEnumColumn);
     return {full.begin() + static_cast<std::ptrdiff_t>(begin), full.begin() + static_cast<std::ptrdiff_t>(end)};
 }
 
-} // namespace loglib
+} // namespace loglib::internal

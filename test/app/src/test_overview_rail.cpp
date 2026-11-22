@@ -2110,7 +2110,7 @@ private slots:
         QVERIFY(spy.isValid());
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(
-            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            std::in_place_type<loglib::TextRowPredicate>,
             /*columnIndex=*/static_cast<std::size_t>(0),
             /*match=*/
             [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
@@ -2498,7 +2498,7 @@ private slots:
 
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(
-            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            std::in_place_type<loglib::TextRowPredicate>,
             static_cast<std::size_t>(bodyCol),
             [](std::string_view value) {
                 if (value.empty())
@@ -2557,7 +2557,7 @@ private slots:
 
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(
-            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            std::in_place_type<loglib::TextRowPredicate>,
             static_cast<std::size_t>(0),
             [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
                 return ((*callCount)++ % 2) == 0;

@@ -16,8 +16,8 @@
 #include <loglib/core/log_value.hpp>
 #include <loglib/output/exports/row_exporter.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
 #include <loglib/query/row_filter.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <algorithm>
 #include <array>
@@ -345,7 +345,7 @@ template <typename Counts, typename Visit> void ForEachLevel(const Counts &count
 
 struct TimeHistogram
 {
-    loglib::HistogramBucketIndex index{loglib::HistogramBucketSize::OneMinute};
+    loglib::TimeHistogram index{loglib::HistogramBucketSize::OneMinute};
     std::optional<loglib::TimeStamp> minTs;
     std::optional<loglib::TimeStamp> maxTs;
 };
@@ -397,7 +397,7 @@ struct TimeHistogram
     {
         budget = static_cast<int>(*options.maxBuckets);
     }
-    return loglib::HistogramBucketIndex::AutoBucketSize(*histogram.minTs, *histogram.maxTs, budget);
+    return loglib::TimeHistogram::AutoBucketSize(*histogram.minTs, *histogram.maxTs, budget);
 }
 
 [[nodiscard]] TimeReport SummarizeTime(
@@ -648,7 +648,7 @@ ExitCode RunStats(
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled = loglib::CompileExpression(session->expression, table.Layout().Columns(), &table);
+    const auto compiled = loglib::CompileFilter(session->expression, table);
     const std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     console.Stage("filter", rows.size(), filterStarted);
     const StageOnExit reportStage(console, "report", rows.size());

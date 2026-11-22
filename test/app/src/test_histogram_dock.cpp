@@ -20,7 +20,7 @@
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
 #include <QAbstractItemModel>
@@ -768,7 +768,7 @@ private slots:
         const auto &filters = window.Filters();
         const auto it = filters.find("histogram-time-range");
         QVERIFY2(it != filters.end(), "sentinel filter ID must be installed");
-        QCOMPARE(it->second.type, loglib::LeafRule::Type::Time);
+        QCOMPARE(it->second.type, loglib::FilterCondition::Type::Time);
         QCOMPARE(
             it->second.columnKeys, window.Model()->Layout().Columns()[static_cast<size_t>(hm->TimeColumnIndex())].keys
         );

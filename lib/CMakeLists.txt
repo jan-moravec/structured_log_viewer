@@ -32,7 +32,7 @@ add_library(
     src/ingest/file_identity.cpp
     src/core/file_line_source.cpp
     src/parse/format_detection.cpp
-    src/query/histogram_bucket_index.cpp
+    src/query/time_histogram.cpp
     src/core/key_index.cpp
     src/core/row_batch.cpp
     src/parse/static_parser_pipeline.cpp
@@ -49,7 +49,7 @@ add_library(
     src/table/column_type_health.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/clang_tidy_stubs/glaze_options.cpp
-    src/query/log_compare.cpp
+    src/query/row_compare.cpp
     src/core/log_data.cpp
     src/query/row_filter.cpp
     src/query/row_filter_evaluation.cpp
@@ -72,6 +72,7 @@ add_library(
     src/core/stable_byte_arena.cpp
     src/support/tzdata_search.cpp
     src/support/user_paths.cpp
+    src/core/path_key.cpp
     src/core/worker_threads.cpp
     src/core/version.cpp
     src/query/row_ordering.cpp
@@ -120,11 +121,10 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/config/format_spec.hpp
     include/loglib/parse/format_detection.hpp
     include/loglib/config/highlight_rule.hpp
-    include/loglib/query/histogram_bucket_index.hpp
+    include/loglib/query/time_histogram.hpp
     include/loglib/core/key_index.hpp
     include/loglib/query/filter_compile.hpp
     include/loglib/core/line_source.hpp
-    include/loglib/query/log_compare.hpp
     include/loglib/config/log_configuration.hpp
     include/loglib/core/log_data.hpp
     include/loglib/query/row_filter.hpp
@@ -164,6 +164,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/udp_server_producer.hpp
     include/loglib/support/tzdata_search.hpp
     include/loglib/support/user_paths.hpp
+    include/loglib/core/path_key.hpp
     include/loglib/core/worker_threads.hpp
     include/loglib/time/time_input.hpp
     include/loglib/core/version.hpp

@@ -2,6 +2,7 @@
 
 #include "log_session_presentation.hpp"
 
+#include <loglib/config/highlight_rule.hpp>
 #include <loglib/config/log_configuration.hpp>
 
 #include <QIcon>
@@ -220,7 +221,7 @@ private:
     QComboBox *mColumnCombo = nullptr;
     QComboBox *mTypeCombo = nullptr;
 
-    /// Type-specific match panes. Index matches `HighlightRule::Type`:
+    /// Type-specific match panes. Index matches `FilterCondition::Type`:
     /// 0=String, 1=Time (read-only), 2=Enumeration (read-only),
     /// 3=Number, 4=Boolean.
     QStackedWidget *mMatchStack = nullptr;

@@ -1,9 +1,9 @@
 /**
- * @brief Filter rules and the boolean tree that combines them.
+ * @brief Filter conditions and the boolean tree that combines them.
  *
- * A LeafRule matches one column. A FilterExpression combines leaves with And, Or and Not. Leaves refer to columns by
- * key, not by position, so a rule keeps working when columns are moved or added. Compiling an expression into something
- * fast to run is the job of the query module.
+ * A FilterCondition tests one column. A FilterExpression combines conditions with And, Or and Not. A condition refers
+ * to its column by key, not by position, so it keeps working when columns are moved or added. Highlight rules hold the
+ * same condition. Compiling a condition or an expression into something fast to run is the job of the query module.
  *
  * This is part of the config module.
  */
@@ -20,16 +20,16 @@ namespace loglib
 {
 
 /**
- * @brief One condition of a filter, on a single column.
+ * @brief A test on the cells of a single column.
  *
- * A leaf finds its column by columnKeys, which are matched against Column::keys, so it keeps working when columns are
- * moved or added. HighlightRule finds its column the same way. A leaf without keys does nothing. Only the filter fields
- * that belong to the leaf's type are used; the others stay at their defaults.
+ * A condition finds its column by columnKeys, which are matched against Column::keys, so it keeps working when columns
+ * are moved or added. Filters and highlight rules use the same condition. A condition without keys does nothing. Only
+ * the fields that belong to the type are used; the others stay at their defaults.
  */
-struct LeafRule
+struct FilterCondition
 {
     /**
-     * @brief The kind of condition. It decides which row predicate is built from the leaf.
+     * @brief The kind of condition. It decides which row predicate is built from the condition.
      *
      * The saved files store these values, so add new kinds at the end and never reorder them.
      */
@@ -39,7 +39,7 @@ struct LeafRule
         Time,
         /**
          * @brief Several selected values of an enumeration column, saved as strings and turned into a bit set when the
-         * leaf is compiled.
+         * condition is compiled.
          */
         Enumeration,
         /**
@@ -55,8 +55,8 @@ struct LeafRule
     };
 
     /**
-     * @brief How a String leaf compares text. The query language writes ~ for RegularExpression, = for Exactly, : for
-     * Contains and % for Wildcard.
+     * @brief How a String condition compares text. The query language writes ~ for RegularExpression, = for Exactly, :
+     * for Contains and % for Wildcard.
      */
     enum class Match
     {
@@ -74,31 +74,31 @@ struct LeafRule
      */
     std::vector<std::string> columnKeys;
 
-    /** @brief How to compare text. Needed for a String leaf. */
+    /** @brief How to compare text. Needed for a String condition. */
     std::optional<Match> matchType;
 
-    /** @brief The text to look for. Needed for a String leaf. */
+    /** @brief The text to look for. Needed for a String condition. */
     std::optional<std::string> filterString;
 
-    /** @brief The bounds of a Time leaf, as microseconds since the epoch, both included. Set at least one. */
+    /** @brief The bounds of a Time condition, as microseconds since the epoch, both included. Set at least one. */
     std::optional<int64_t> filterBegin;
     std::optional<int64_t> filterEnd;
 
-    /** @brief The bounds of a Number leaf, both included. A missing bound means no limit. */
+    /** @brief The bounds of a Number condition, both included. A missing bound means no limit. */
     std::optional<double> filterMinValue;
     std::optional<double> filterMaxValue;
 
-    /** @brief The selected values of an Enumeration or Boolean leaf. */
+    /** @brief The selected values of an Enumeration or Boolean condition. */
     std::vector<std::string> filterValues;
 
-    friend bool operator==(const LeafRule &, const LeafRule &) = default;
+    friend bool operator==(const FilterCondition &, const FilterCondition &) = default;
 };
 
 /**
  * @brief A tree of conditions that says which rows the user wants to see.
  *
  * A node is one of:
- * - Leaf: one LeafRule.
+ * - Leaf: one FilterCondition.
  * - And: accepts a row when every child does. An empty And accepts every row, and it is the default.
  * - Or: accepts a row when any child does. An empty Or accepts no row.
  * - Not: accepts a row when its child rejects it.
@@ -108,10 +108,10 @@ struct LeafRule
 // NOLINTBEGIN(misc-non-private-member-variables-in-classes,misc-no-recursion)
 struct FilterExpression
 {
-    /** @brief A single rule. */
+    /** @brief A single condition. */
     struct Leaf
     {
-        LeafRule rule;
+        FilterCondition condition;
 
         friend bool operator==(const Leaf &, const Leaf &) = default;
     };
@@ -183,17 +183,17 @@ struct FilterExpression
 // NOLINTEND(misc-non-private-member-variables-in-classes,misc-no-recursion)
 
 /** @brief True if the expression is an empty And, which accepts every row. */
-[[nodiscard]] inline bool IsMatchAll(const FilterExpression &expr) noexcept
+[[nodiscard]] inline bool AcceptsEverything(const FilterExpression &expr) noexcept
 {
     const auto *asAnd = std::get_if<FilterExpression::And>(&expr.node);
     return asAnd != nullptr && asAnd->children.empty();
 }
 
 /** @brief Builders for the node kinds of a FilterExpression, so that callers do not set the variant by hand. */
-[[nodiscard]] inline FilterExpression MakeLeaf(LeafRule rule)
+[[nodiscard]] inline FilterExpression MakeLeaf(FilterCondition condition)
 {
     FilterExpression expr;
-    expr.node = FilterExpression::Leaf{std::move(rule)};
+    expr.node = FilterExpression::Leaf{std::move(condition)};
     return expr;
 }
 

@@ -134,8 +134,7 @@ struct Resolved
         FAIL(session.error().text);
     }
 
-    const auto compiled =
-        loglib::CompileExpression(session->expression, loaded.table.Layout().Columns(), &loaded.table);
+    const auto compiled = loglib::CompileFilter(session->expression, loaded.table);
     auto rows = loglib::FilterAcceptedRows(loaded.table, compiled);
     return Resolved{.loaded = std::move(loaded), .session = std::move(*session), .rows = std::move(rows)};
 }
@@ -177,7 +176,7 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
     loglib::LogConfiguration configuration = DetectedConfiguration();
     const int msg = ColumnIndex(configuration.columns, "msg");
     configuration.view.sort.columnKeys = configuration.columns[static_cast<std::size_t>(msg)].keys;
-    configuration.view.sort.descending = true;
+    configuration.view.sort.direction = loglib::SortDirection::Descending;
     const auto path = WriteConfig("sort.json", configuration, loglib::SaveScope::Full);
 
     const Resolved fromConfig = Resolve({"--config", path.string()});
@@ -193,7 +192,7 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
         )
     );
     CHECK(overridden.session.sort->direction == loglib::SortDirection::Ascending);
-    CHECK_FALSE(overridden.session.configuration.view.sort.descending);
+    CHECK(overridden.session.configuration.view.sort.direction == loglib::SortDirection::Ascending);
 }
 
 TEST_CASE("session precedence: column flags replace configuration visibility", "[cli][session]")
@@ -232,7 +231,7 @@ TEST_CASE("session precedence: --config discards the embedded source", "[cli][se
 {
     loglib::LogConfiguration configuration = DetectedConfiguration();
     loglib::SourceDescriptor source;
-    loglib::AppendLocator(source, "C:/elsewhere/other.jsonl", "c:/elsewhere/other.jsonl");
+    loglib::AppendLocator(source, "C:/elsewhere/other.jsonl");
     configuration.source = std::move(source);
     const auto path = WriteConfig("source.json", configuration, loglib::SaveScope::Full);
 
@@ -342,7 +341,7 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
     const loglib::LogConfiguration written = loglib::LoadConfiguration(sessionPath);
     REQUIRE_FALSE(written.view.sort.columnKeys.empty());
     CHECK(written.view.sort.columnKeys == std::vector<std::string>{"msg"});
-    CHECK(written.view.sort.descending);
+    CHECK(written.view.sort.direction == loglib::SortDirection::Descending);
     REQUIRE(written.columns.size() >= 2);
     CHECK(written.columns[0].header == "msg");
     CHECK(written.columns[1].header == "level");
@@ -351,7 +350,7 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
 
     REQUIRE(written.source.has_value());
     REQUIRE(written.source->locators.size() == 1);
-    const std::filesystem::path locator = written.source->locators[0].displayPath;
+    const std::filesystem::path locator = written.source->locators[0].path;
     CHECK(locator.is_absolute());
     CHECK(locator.filename() == log.filename());
     CHECK(written.source->format.format == loglib::LogFormat::Json);
@@ -385,10 +384,10 @@ TEST_CASE("slp query --save-columns omits session state", "[cli][session][e2e]")
     loglib::LogConfiguration configuration = DetectedConfiguration();
     loglib::HighlightRule rule;
     rule.name = "errors";
-    rule.columnKeys = {"level"};
-    rule.type = loglib::HighlightRule::Type::Enumeration;
-    rule.filterValues = {"Error"};
-    rule.backgroundIndex = 1;
+    rule.condition.columnKeys = {"level"};
+    rule.condition.type = loglib::FilterCondition::Type::Enumeration;
+    rule.condition.filterValues = {"Error"};
+    rule.style.backgroundIndex = 1;
     configuration.view.highlightRules.push_back(rule);
     const auto configPath = WriteConfig("with_rules.json", configuration, loglib::SaveScope::Full);
 
@@ -473,7 +472,7 @@ TEST_CASE("slp query --save-session records the compressed primary path only", "
     REQUIRE(manager.source.has_value());
     const auto &locators = manager.source->locators;
     REQUIRE(locators.size() == 1);
-    CHECK(std::filesystem::path(locators[0].displayPath).filename() == "app.log");
+    CHECK(std::filesystem::path(locators[0].path).filename() == "app.log");
     CHECK(manager.source->followRotationSiblings);
 }
 
@@ -606,7 +605,7 @@ TEST_CASE("slp query --config rejects a configuration filter on an unknown colum
     const std::string config = WriteConfigText(
         "unknown_column_filter.json",
         ConfigWithExpression(
-            R"({"kind":"leaf","rule":{"type":"string","columnKeys":["missing"],"matchType":"contains","filterString":"x"}})"
+            R"({"kind":"leaf","condition":{"type":"string","columnKeys":["missing"],"matchType":"contains","filterString":"x"}})"
         )
     );
     const auto result =
@@ -619,7 +618,7 @@ TEST_CASE("slp query --config rejects a configuration filter on an unknown colum
 TEST_CASE("slp query --config handles deep filter trees", "[cli][session][e2e][nesting]")
 {
     const std::string leaf =
-        R"({"kind":"leaf","rule":{"type":"string","columnKeys":["msg"],"matchType":"contains","filterString":"alpha"}})";
+        R"({"kind":"leaf","condition":{"type":"string","columnKeys":["msg"],"matchType":"contains","filterString":"alpha"}})";
 
     const std::string deep = WriteConfigText("deep_filter.json", ConfigWithExpression(NotChain(250, leaf)));
     const auto accepted = RunSlp(

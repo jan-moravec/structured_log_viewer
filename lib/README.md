@@ -47,17 +47,17 @@ The library is one static target, `loglib`. Its files sit in nine module folders
                                    core
 ```
 
-| Module  | Its one job                                  | Main headers                                                                                                                                                                     |
-| ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| core    | What a log row is, and where its bytes live  | `log_line`, `log_value`, `compact_log_value`, `key_index`, `enum_dictionary`, `line_source`, `file_line_source`, `stream_line_source`, `bytes_producer`, `row_batch`, `log_data` |
-| config  | What the user configured, as saveable values | `log_configuration`, `column`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                        |
-| time    | Reading timestamps and converting time zones | `time_zone_context`, `time_input`                                                                                                                                                |
-| ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                  |
-| parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                               |
-| table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                              |
-| query   | Finding, ordering and summarizing rows       | `row_filter`, `filter_compile`, `query_parser`, `query_format`, `log_string_matcher`, `log_compare`, `row_ordering`, `histogram_bucket_index`                                    |
-| output  | Writing and reading whole files of rows      | `exports/*`, `session_bundle`, `file_loading`                                                                                                                                    |
-| support | Helpers both programs share, not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                           |
+| Module  | Its one job                                  | Main headers                                                                                                                                                                                 |
+| ------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| core    | What a log row is, and where its bytes live  | `log_line`, `log_value`, `compact_log_value`, `key_index`, `enum_dictionary`, `line_source`, `file_line_source`, `stream_line_source`, `bytes_producer`, `row_batch`, `log_data`, `path_key` |
+| config  | What the user configured, as saveable values | `log_configuration`, `column`, `filter_expression`, `highlight_rule`, `source_descriptor`, `session_view`, `anchor_entry`                                                                    |
+| time    | Reading timestamps and converting time zones | `time_zone_context`, `time_input`                                                                                                                                                            |
+| ingest  | Getting bytes from the outside world         | `tailing_bytes_producer`, `tcp_server_producer`, `udp_server_producer`, `stdin_bytes_producer`, `decompressing_byte_source`, `rotation_siblings`, `source_plan`                              |
+| parse   | Turning bytes into rows                      | `log_parser`, `parsers/*`, `format_detection`, `regex_templates`, `log_parse_sink`                                                                                                           |
+| table   | Holding rows and working out column types    | `log_table`, `table_loader`, `enum_inference`, `column_type_health`                                                                                                                          |
+| query   | Finding, ordering and summarizing rows       | `row_filter`, `filter_compile`, `query_parser`, `query_format`, `log_string_matcher`, `row_ordering`, `time_histogram`                                                                       |
+| output  | Writing and reading whole files of rows      | `exports/*`, `session_bundle`, `file_loading`                                                                                                                                                |
+| support | Helpers both programs share, not about logs  | `theme`, `user_paths`, `tzdata_search`                                                                                                                                                       |
 
 Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit and CI:
 
@@ -73,7 +73,7 @@ Rules that `scripts/check-loglib-internal-includes.py` enforces in pre-commit an
 1. **Parse.** For a file, `parse/internal/static_parser_pipeline.hpp` splits the bytes into batches and decodes them on worker threads. For a live stream, `parse/internal/streaming_parse_loop.hpp` does the same on one thread. Each line becomes a `core/log_line.hpp` made of `core/compact_log_value.hpp` fields, with keys interned by `core/key_index.hpp`. Time columns are converted on the way with `time/timestamp_parsing.hpp`. The parser does not touch the table. It writes rows, copied text and keys to three different places, described in [Data flow and threads](#data-flow-and-threads).
 1. **Deliver.** `parse/internal/batch_coalescer.hpp` groups lines into `core/row_batch.hpp` batches and hands them to a `parse/log_parse_sink.hpp`.
 1. **Fill the table.** The sink passes each batch to `table/log_table.hpp`, which appends it. `table/table_loader.hpp` has the sink that `slp` and LoadFile use (TableSink) and ParseIntoTable, which adds a source to a table and parses it. `table/internal/enum_inference.hpp` (internal) turns columns with few distinct values into enumerations, and LogTable fixes time columns after the fact when a column becomes a time column.
-1. **Filter and sort.** Rules from `config/filter_expression.hpp`, or text parsed by `query/query_parser.hpp`, are compiled by `query/filter_compile.hpp` and run by `query/row_filter.hpp`. `query/row_ordering.hpp` and `query/log_compare.hpp` order the rows.
+1. **Filter and sort.** Rules from `config/filter_expression.hpp`, or text parsed by `query/query_parser.hpp`, are compiled by `query/filter_compile.hpp` and run by `query/row_filter.hpp`. `query/row_ordering.hpp` orders the rows, and builds the ranks it needs itself.
 1. **Write out.** `query/column_projection.hpp` picks the visible columns, `output/exports/row_exporter.hpp` writes the rows to an `output/exports/export_sink.hpp`, and `output/session_bundle.hpp` saves a whole session.
 
 ## Data flow and threads
@@ -138,7 +138,7 @@ The readers of all four saved formats reject keys they do not know, and the mess
 
 ## Worked example: `slp`
 
-[`cli/`](../cli) is a complete `loglib`-only host. It links no Qt target and builds with `-DSLV_BUILD_GUI=OFF`. It shows the whole composition: source resolution (`ResolveSourcePlan`), format detection, streaming parse into a `LogTable`, filter compilation (`CompileExpression`), sorting (`RowOrdering`), export sinks, session bundles, and the live producers behind `slp tail`. See the [`slp` reference](../doc/cli.md).
+[`cli/`](../cli) is a complete `loglib`-only host. It links no Qt target and builds with `-DSLV_BUILD_GUI=OFF`. It shows the whole composition: source resolution (`ResolveSourcePlan`), format detection, streaming parse into a `LogTable`, filter compilation (`CompileFilter`), sorting (`RowOrdering`), export sinks, session bundles, and the live producers behind `slp tail`. See the [`slp` reference](../doc/cli.md).
 
 ## API stability
 
@@ -149,5 +149,6 @@ Supported headers are `LOGLIB_PUBLIC_HEADERS` in [`lib/CMakeLists.txt`](CMakeLis
 - Timezone type: `TimeZoneContext`. `Load` throws `IoError` if the tzdata folder does not exist and `FormatError` if the zone is not available.
 - `FileLineSource` hides the mapping backend behind an incomplete type and an out-of-line destructor.
 - Config module: `ColumnLayout` holds the columns of a table and the operations on them. `SessionView` holds the filter, the sort, the highlight rules and the anchors of a session, and every part of it finds its column by keys. `LogConfiguration` is the content of a configuration file: `columns`, `view` and `source`. `LoadConfiguration`, `ParseConfiguration`, `SaveConfiguration` and `SerializeConfiguration` read and write it, and a session bundle stores the same JSON.
+- Path keys: `MakePathKey` is the one function that makes a comparison key from a file path. Rotation series, source plans, saved source locators, anchors and session bundles all use it, so the application and `slp` agree on whether two paths are one file. It lower-cases on Windows only.
 - Configuration file: JSON with a required `version`, which is 1. Unknown keys are errors that name the key and the file. A column is written with its `type` only when the user chose it. See [the format](../CONTRIBUTING.md#configuration-file).
 - Table collaborators: `EnumInference`, `ColumnTypeHealth`, and `internal::RefreshColumnKeyIds`. `LogTable` remains the row facade.

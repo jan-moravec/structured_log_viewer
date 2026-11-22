@@ -314,7 +314,7 @@ private slots:
                 Q_ARG(QString, filterId),
                 Q_ARG(int, msgCol),
                 Q_ARG(QString, QStringLiteral("m1")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );
@@ -329,7 +329,7 @@ private slots:
         auto mirrored = WireLeavesOf(mWindow->activeSession()->View().expression);
         QCOMPARE(mirrored.size(), static_cast<size_t>(1));
         QCOMPARE(mirrored[0].columnKeys, msgKeys);
-        QCOMPARE(mirrored[0].type, loglib::LeafRule::Type::String);
+        QCOMPARE(mirrored[0].type, loglib::FilterCondition::Type::String);
 
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
@@ -342,7 +342,7 @@ private slots:
         QMetaObject::invokeMethod(mWindow, "ClearAllFilters", Qt::DirectConnection);
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
-        QVERIFY(loglib::IsMatchAll(mWindow->activeSession()->View().expression));
+        QVERIFY(loglib::AcceptsEverything(mWindow->activeSession()->View().expression));
 
         // Suppress the modal so the test thread does not block.
         // No drops are expected here, but the load path always
@@ -354,12 +354,12 @@ private slots:
         QCOMPARE(mWindow->LastDroppedFilterCountForTest(), 0);
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &revived = mWindow->Filters().begin()->second;
-        QCOMPARE(revived.type, loglib::LeafRule::Type::String);
+        QCOMPARE(revived.type, loglib::FilterCondition::Type::String);
         QCOMPARE(revived.columnKeys, msgKeys);
         QVERIFY(revived.filterString.has_value());
         QCOMPARE(*revived.filterString, std::string("m1"));
         QVERIFY(revived.matchType.has_value());
-        QCOMPARE(*revived.matchType, loglib::LeafRule::Match::Contains);
+        QCOMPARE(*revived.matchType, loglib::FilterCondition::Match::Contains);
 
         // The wire-format expression also reflects the revived state.
         QCOMPARE(WireLeavesOf(mWindow->activeSession()->View().expression).size(), static_cast<size_t>(1));
@@ -385,7 +385,7 @@ private slots:
             Q_ARG(QString, stringId),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m1")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         // Enum filter on level (auto-promoted to enum by the streaming threshold).
         const QString enumId = QStringLiteral("persisted-enum");
@@ -429,13 +429,13 @@ private slots:
         bool sawEnum = false;
         for (const auto &[id, f] : mWindow->Filters())
         {
-            if (f.type == loglib::LeafRule::Type::String && f.columnKeys == msgKeys)
+            if (f.type == loglib::FilterCondition::Type::String && f.columnKeys == msgKeys)
             {
                 sawString = true;
                 QVERIFY(f.filterString.has_value());
                 QCOMPARE(*f.filterString, std::string("m1"));
             }
-            else if (f.type == loglib::LeafRule::Type::Enumeration && f.columnKeys == levelKeys)
+            else if (f.type == loglib::FilterCondition::Type::Enumeration && f.columnKeys == levelKeys)
             {
                 sawEnum = true;
                 QCOMPARE(f.filterValues.size(), static_cast<size_t>(2));
@@ -479,8 +479,8 @@ private slots:
         loglib::LogConfiguration configuration{.columns = model->Layout().Columns()};
         const std::vector<std::string> levelKeys = configuration.columns[static_cast<size_t>(levelCol)].keys;
         configuration.view.expression = WireLeavesAsExpression({
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::Enumeration,
+            loglib::FilterCondition{
+                .type = loglib::FilterCondition::Type::Enumeration,
                 .columnKeys = levelKeys,
                 .matchType = std::nullopt,
                 .filterString = std::nullopt,
@@ -490,10 +490,10 @@ private slots:
                 .filterMaxValue = std::nullopt,
                 .filterValues = {"info"},
             },
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::String,
+            loglib::FilterCondition{
+                .type = loglib::FilterCondition::Type::String,
                 .columnKeys = {"__does_not_exist__"},
-                .matchType = loglib::LeafRule::Match::Contains,
+                .matchType = loglib::FilterCondition::Match::Contains,
                 .filterString = std::string("nope"),
                 .filterBegin = std::nullopt,
                 .filterEnd = std::nullopt,
@@ -515,7 +515,7 @@ private slots:
         QCOMPARE(mWindow->LastDroppedFilterCountForTest(), 1);
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &surviving = mWindow->Filters().begin()->second;
-        QCOMPARE(surviving.type, loglib::LeafRule::Type::Enumeration);
+        QCOMPARE(surviving.type, loglib::FilterCondition::Type::Enumeration);
         const int levelColAfterLoad = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelColAfterLoad >= 0, "level column must reload");
         QCOMPARE(surviving.columnKeys, model->Layout().Columns()[static_cast<size_t>(levelColAfterLoad)].keys);
@@ -553,7 +553,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("a-string-msg")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m1")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QMetaObject::invokeMethod(
             mWindow,
@@ -562,7 +562,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("m-string-msg-2")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m2")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         QCoreApplication::processEvents();
 
@@ -620,17 +620,17 @@ private slots:
         // `Not` (both shapes trigger the fixed preservation path).
         loglib::FilterExpression notLeaf = loglib::MakeNot(
             loglib::MakeLeaf(
-                loglib::LeafRule{
-                    .type = loglib::LeafRule::Type::String,
+                loglib::FilterCondition{
+                    .type = loglib::FilterCondition::Type::String,
                     .columnKeys = msgKeys,
-                    .matchType = loglib::LeafRule::Match::Contains,
+                    .matchType = loglib::FilterCondition::Match::Contains,
                     .filterString = std::string("m1"),
                 }
             )
         );
         loglib::FilterExpression enumLeaf = loglib::MakeLeaf(
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::Enumeration,
+            loglib::FilterCondition{
+                .type = loglib::FilterCondition::Type::Enumeration,
                 .columnKeys = levelKeys,
                 .filterValues = {"info"},
             }
@@ -657,7 +657,7 @@ private slots:
         // but going through the manager keeps the intent explicit.
         mWindow->activeSession()->MutableView().expression = loglib::FilterExpression{};
         QCoreApplication::processEvents();
-        QVERIFY(loglib::IsMatchAll(mWindow->activeSession()->View().expression));
+        QVERIFY(loglib::AcceptsEverything(mWindow->activeSession()->View().expression));
 
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(savedPath);
@@ -701,7 +701,7 @@ private slots:
             Q_ARG(QString, QStringLiteral("columns-only-filter")),
             Q_ARG(int, msgCol),
             Q_ARG(QString, QStringLiteral("m1")),
-            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+            Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
         );
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
@@ -720,7 +720,7 @@ private slots:
         // fields back at their inert defaults.
         const loglib::LogConfiguration probe = loglib::LoadConfiguration(columnsOnlyPath.toStdString());
         QVERIFY(!probe.columns.empty());
-        QVERIFY2(loglib::IsMatchAll(probe.view.expression), "SaveScope::Columns must omit filter expression");
+        QVERIFY2(loglib::AcceptsEverything(probe.view.expression), "SaveScope::Columns must omit filter expression");
         QVERIFY(probe.view.sort.columnKeys.empty());
         QVERIFY2(!probe.source.has_value(), "SaveScope::Columns must omit source");
     }
@@ -787,7 +787,10 @@ private slots:
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
         mWindow->SetCurrentSourceForTest(
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {syntheticSource}}
+            loglib::SourceDescriptor{
+                .kind = loglib::SourceDescriptor::Kind::File,
+                .locators = {{.path = syntheticSource, .key = syntheticSource}},
+            }
         );
 
         const QTemporaryDir savedDir;
@@ -804,9 +807,7 @@ private slots:
         );
         QCOMPARE(static_cast<int>(probe.source->kind), static_cast<int>(loglib::SourceDescriptor::Kind::File));
         QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(
-            QString::fromStdString(probe.source->locators.front().displayPath), QString::fromStdString(syntheticSource)
-        );
+        QCOMPARE(QString::fromStdString(probe.source->locators.front().path), QString::fromStdString(syntheticSource));
 
         // Now load the freshly-saved session back into the running
         // window and re-save: the descriptor must survive that round
@@ -823,7 +824,7 @@ private slots:
         const loglib::LogConfiguration resaveProbe = loglib::LoadConfiguration(resavePath.toStdString());
         QVERIFY2(resaveProbe.source.has_value(), "Load -> Save round trip must preserve a loaded source descriptor");
         QCOMPARE(resaveProbe.source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(resaveProbe.source->locators.front().displayPath, syntheticSource);
+        QCOMPARE(resaveProbe.source->locators.front().path, syntheticSource);
     }
 
     // Configuration-only refresh clears stale rotation Undo state.
@@ -1011,8 +1012,8 @@ private slots:
         QVERIFY2(flagCol >= 0, "flag column must exist");
         QCOMPARE(model->Layout().Columns()[static_cast<size_t>(flagCol)].type, loglib::ColumnType::Boolean);
 
-        loglib::LeafRule savedFilter;
-        savedFilter.type = loglib::LeafRule::Type::Boolean;
+        loglib::FilterCondition savedFilter;
+        savedFilter.type = loglib::FilterCondition::Type::Boolean;
         savedFilter.columnKeys = model->Layout().Columns()[static_cast<size_t>(flagCol)].keys;
         // Non-canonical casing: lower path must still recognise both.
         savedFilter.filterValues = {"True", "FALSE"};
@@ -1025,7 +1026,7 @@ private slots:
                 "AddFilter",
                 Qt::DirectConnection,
                 Q_ARG(QString, filterId),
-                Q_ARG(std::optional<loglib::LeafRule>, savedFilter)
+                Q_ARG(std::optional<loglib::FilterCondition>, savedFilter)
             ),
             "AddFilter slot must be invocable via meta-object"
         );
@@ -1219,7 +1220,7 @@ private slots:
         {
             const loglib::LogConfiguration probe = loglib::LoadConfiguration(lastPath->toStdString());
             QCOMPARE(probe.view.sort.columnKeys, std::vector<std::string>{"category"});
-            QVERIFY(probe.view.sort.descending);
+            QVERIFY(probe.view.sort.direction == loglib::SortDirection::Descending);
         }
 
         // Fresh window restores the snapshot.
@@ -1431,7 +1432,8 @@ private slots:
         QVERIFY(spy.isValid());
 
         const QStringList forwardFiles{
-            QStringLiteral("C:/logs/forward-a.json"), QStringLiteral("C:/logs/forward-b.json")
+            QStringLiteral("C:/logs/forward-a.json"),
+            QStringLiteral("C:/logs/forward-b.json"),
         };
 
         // Wire format: magic `STRUCTLOG`, `quint8` version (2),
@@ -2120,10 +2122,10 @@ private slots:
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Two fixtures sharing a schema so we can assert on a sum.
-        const TempJsonFile fixtureA(
-            {QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
-             QStringLiteral(R"({"category": "beta", "msg": "second"})")}
-        );
+        const TempJsonFile fixtureA({
+            QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
+            QStringLiteral(R"({"category": "beta", "msg": "second"})"),
+        });
         const TempJsonFile fixtureB({QStringLiteral(R"({"category": "alpha", "msg": "third"})")});
         const int expectedRows = 3;
 
@@ -2139,16 +2141,16 @@ private slots:
         loglib::LogConfiguration builder{.columns = builderLayout.Columns()};
         builder.source = loglib::SourceDescriptor{};
 
-        loglib::LeafRule filter;
-        filter.type = loglib::LeafRule::Type::String;
+        loglib::FilterCondition filter;
+        filter.type = loglib::FilterCondition::Type::String;
         filter.columnKeys = {"category"};
         filter.filterString = "alpha";
-        filter.matchType = loglib::LeafRule::Match::Contains;
+        filter.matchType = loglib::FilterCondition::Match::Contains;
         builder.view.expression = WireLeavesAsExpression({filter});
 
         loglib::Sort sort;
         sort.columnKeys = {"category"};
-        sort.descending = true;
+        sort.direction = loglib::SortDirection::Descending;
         builder.view.sort = sort;
 
         loglib::SaveConfiguration(builder, cfgPath.toStdString(), loglib::SaveScope::Full);
@@ -2355,8 +2357,8 @@ private slots:
             {QStringLiteral(R"({"value":1,"msg":"first"})"), QStringLiteral(R"({"value":2,"msg":"second"})")},
             [](loglib::LogConfiguration &configuration) {
                 configuration.columns.at(0).header = "Embedded value";
-                configuration.view.sort = {.columnKeys = {"value"}, .descending = true};
-                configuration.view.anchors = {{.locator = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
+                configuration.view.sort = {.columnKeys = {"value"}, .direction = loglib::SortDirection::Descending};
+                configuration.view.anchors = {{.pathKey = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
             }
         );
         const QString moved = bundleDir.filePath(QStringLiteral("renamed.slvbundle"));
@@ -2379,14 +2381,15 @@ private slots:
         const auto &source = wired->CurrentSourceForTest();
         QVERIFY(source.has_value());
         QCOMPARE(source->kind, loglib::SourceDescriptor::Kind::File);
-        QCOMPARE(source->DisplayPaths(), std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
-        QCOMPARE(source->DedupKeys(), std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
+        QCOMPARE(source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(source->locators.front().path, logapp::CanonicalDisplayPath(moved).toStdString());
+        QCOMPARE(source->locators.front().key, logapp::PathKeyOf(moved));
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
         QCOMPARE(wired->activeSession()->View().anchors.size(), static_cast<size_t>(1));
-        // Anchor locators must match `Source::locatorDedupKeys`
-        // (canonical form) so `AnchorManager::Key` compares hit; the
-        // display path silently mismatched on Windows.
-        QCOMPARE(wired->activeSession()->View().anchors.front().locator, logapp::CanonicalLocator(moved).toStdString());
+        // Anchors must carry the path key of the source so
+        // `AnchorManager::Key` compares hit; the display path
+        // silently mismatched on Windows.
+        QCOMPARE(wired->activeSession()->View().anchors.front().pathKey, logapp::PathKeyOf(moved));
         // Fixture anchored line-id 1 -> source row 1 must actually be
         // reachable through `LogModel`. Guards a load-side
         // canonicalization regression where `AnchorSlotForRow` would
@@ -2423,13 +2426,13 @@ private slots:
                 loglib::HighlightRule rule{};
                 rule.name = "Errors";
                 rule.enabled = true;
-                rule.columnKeys = {"severity"};
-                rule.type = loglib::HighlightRule::Type::String;
-                rule.matchType = loglib::HighlightRule::Match::Exactly;
-                rule.filterString = "err";
-                rule.foregroundIndex = 2;
-                rule.backgroundIndex = 0;
-                rule.bold = true;
+                rule.condition.columnKeys = {"severity"};
+                rule.condition.type = loglib::FilterCondition::Type::String;
+                rule.condition.matchType = loglib::FilterCondition::Match::Exactly;
+                rule.condition.filterString = "err";
+                rule.style.foregroundIndex = 2;
+                rule.style.backgroundIndex = 0;
+                rule.style.bold = true;
                 configuration.view.highlightRules = {rule};
             }
         );
@@ -2965,7 +2968,10 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
-                loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"/tmp/live.log"}}
+                loglib::SourceDescriptor{
+                    .kind = loglib::SourceDescriptor::Kind::File,
+                    .locators = {{.path = "/tmp/live.log", .key = "/tmp/live.log"}},
+                }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -2983,7 +2989,7 @@ private slots:
             wired->SetCurrentSourceForTest(
                 loglib::SourceDescriptor{
                     .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-                    .locators = {"tcp://127.0.0.1:5170"},
+                    .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
                 }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
@@ -3021,7 +3027,7 @@ private slots:
         }
         builder.source = (loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5170"},
+            .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
         });
         loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
@@ -3066,7 +3072,7 @@ private slots:
         }
         builder.source = (loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {fixture.Path().toStdString()},
+            .locators = {{.path = fixture.Path().toStdString(), .key = fixture.Path().toStdString()}},
         });
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         loglib::SaveConfiguration(builder, adhocPath.toStdString(), loglib::SaveScope::Full);
@@ -3224,7 +3230,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5170"},
+            .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -3261,7 +3267,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5171"},
+            .locators = {{.path = "tcp://127.0.0.1:5171", .key = "tcp://127.0.0.1:5171"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -3298,7 +3304,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/will-be-corrupted.json"},
+            .locators = {{.path = "C:/logs/will-be-corrupted.json", .key = "C:/logs/will-be-corrupted.json"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());

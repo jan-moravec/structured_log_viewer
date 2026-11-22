@@ -42,7 +42,7 @@ int main(int argc, char **argv)
     bench::RegisterCsvBenchmarks();
     bench::RegisterDecompressionBenchmarks();
     bench::RegisterExportBenchmarks();
-    bench::RegisterHistogramBucketIndexBenchmarks();
+    bench::RegisterTimeHistogramBenchmarks();
     bench::RegisterJsonBenchmarks();
     bench::RegisterRowFilterBenchmarks();
     bench::RegisterLogfmtBenchmarks();

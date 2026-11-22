@@ -23,7 +23,7 @@
 #include <loglib/core/stop_token.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/json_parser.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <QItemSelectionModel>
 #include <QObject>

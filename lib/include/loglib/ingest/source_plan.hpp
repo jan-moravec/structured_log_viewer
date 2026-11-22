@@ -23,7 +23,7 @@ namespace loglib
  * Turn rotationHistory off to open exactly the paths given. Then the paths come back in the order given, including
  * duplicates, and none is marked as added automatically.
  *
- * suppressKeys lists files that must not be opened again. The keys are matched against CanonicalKeyForPath, and they
+ * skipPathKeys lists files that must not be opened again. The keys are matched against MakePathKey, and they
  * apply whether rotation history is on or not. When files are appended to what is already shown, pass the keys of the
  * files still visible. When the user replaces the content, or opens something that does not show earlier rows, pass an
  * empty span, so a file the user just asked for is not hidden. The span must stay valid during the call.
@@ -31,7 +31,7 @@ namespace loglib
 struct SourcePlanOptions
 {
     bool rotationHistory = true;
-    std::span<const std::string> suppressKeys;
+    std::span<const std::string> skipPathKeys;
 };
 
 /**
@@ -44,7 +44,7 @@ struct SourcePlanOptions
 struct ResolvedSource
 {
     std::filesystem::path path;
-    std::string canonicalKey;
+    std::string pathKey;
 
     /**
      * @brief The primary file of the series this file belongs to. Empty when rotation history is off or the file

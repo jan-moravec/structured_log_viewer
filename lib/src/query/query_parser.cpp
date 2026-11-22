@@ -307,7 +307,7 @@ private:
         {
             return std::unexpected(columnTok.error());
         }
-        LeafRule rule;
+        FilterCondition rule;
         rule.columnKeys.push_back(columnTok->text);
 
         // Operator.
@@ -319,7 +319,7 @@ private:
             {
                 return std::unexpected(ok.error());
             }
-            return FinishStringLeaf(std::move(rule), LeafRule::Match::Contains);
+            return FinishStringLeaf(std::move(rule), FilterCondition::Match::Contains);
         case TokenKind::Eq:
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -339,8 +339,8 @@ private:
                 err.message = "expected a regex literal '/.../' after '~'";
                 return std::unexpected(err);
             }
-            rule.type = LeafRule::Type::String;
-            rule.matchType = LeafRule::Match::RegularExpression;
+            rule.type = FilterCondition::Type::String;
+            rule.matchType = FilterCondition::Match::RegularExpression;
             rule.filterString = mLookahead.text;
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -361,8 +361,8 @@ private:
                 err.message = "expected a pattern after '%' (wildcard operator)";
                 return std::unexpected(err);
             }
-            rule.type = LeafRule::Type::String;
-            rule.matchType = LeafRule::Match::Wildcard;
+            rule.type = FilterCondition::Type::String;
+            rule.matchType = FilterCondition::Match::Wildcard;
             rule.filterString = mLookahead.text;
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -423,7 +423,7 @@ private:
     }
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishStringLeaf(
-        LeafRule rule, LeafRule::Match matchType
+        FilterCondition rule, FilterCondition::Match matchType
     )
     {
         if (mLookahead.kind != TokenKind::Quoted && mLookahead.kind != TokenKind::Ident &&
@@ -435,7 +435,7 @@ private:
             err.message = "expected a value after ':' operator";
             return std::unexpected(err);
         }
-        rule.type = LeafRule::Type::String;
+        rule.type = FilterCondition::Type::String;
         rule.matchType = matchType;
         rule.filterString = mLookahead.text;
         if (auto ok = Advance(); !ok.has_value())
@@ -445,7 +445,7 @@ private:
         return MakeLeaf(std::move(rule));
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishEqLeaf(LeafRule rule)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishEqLeaf(FilterCondition rule)
     {
         // Payload picks the concrete leaf type:
         //   "text"    -> String Exactly    (also bareword ident)
@@ -455,8 +455,8 @@ private:
         {
         case TokenKind::Quoted:
         case TokenKind::Ident:
-            rule.type = LeafRule::Type::String;
-            rule.matchType = LeafRule::Match::Exactly;
+            rule.type = FilterCondition::Type::String;
+            rule.matchType = FilterCondition::Match::Exactly;
             rule.filterString = mLookahead.text;
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -473,7 +473,7 @@ private:
                 err.message = "invalid numeric literal";
                 return std::unexpected(err);
             }
-            rule.type = LeafRule::Type::Number;
+            rule.type = FilterCondition::Type::Number;
             rule.filterMinValue = value;
             rule.filterMaxValue = value;
             if (auto ok = Advance(); !ok.has_value())
@@ -483,7 +483,7 @@ private:
             return MakeLeaf(std::move(rule));
         }
         case TokenKind::True:
-            rule.type = LeafRule::Type::Boolean;
+            rule.type = FilterCondition::Type::Boolean;
             rule.filterValues.emplace_back("true");
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -491,7 +491,7 @@ private:
             }
             return MakeLeaf(std::move(rule));
         case TokenKind::False:
-            rule.type = LeafRule::Type::Boolean;
+            rule.type = FilterCondition::Type::Boolean;
             rule.filterValues.emplace_back("false");
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -508,7 +508,9 @@ private:
         }
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishCompareLeaf(LeafRule rule, const Token &opTok)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishCompareLeaf(
+        FilterCondition rule, const Token &opTok
+    )
     {
         // col {>,>=,<,<=} <ISO timestamp | number>. Type picked
         // from the literal shape.
@@ -542,7 +544,7 @@ private:
         const bool isTimestamp = asTimestamp.has_value();
         if (isTimestamp)
         {
-            rule.type = LeafRule::Type::Time;
+            rule.type = FilterCondition::Type::Time;
             switch (opTok.kind)
             {
             case TokenKind::Gt:
@@ -570,7 +572,7 @@ private:
         }
         else
         {
-            rule.type = LeafRule::Type::Number;
+            rule.type = FilterCondition::Type::Number;
             // Strict >/< -> use the ULP-adjacent double via
             // nextafter so the inclusive-range predicate still
             // expresses "strictly greater / less".
@@ -595,7 +597,7 @@ private:
         return MakeLeaf(std::move(rule));
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishInLeaf(LeafRule rule)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishInLeaf(FilterCondition rule)
     {
         if (mLookahead.kind != TokenKind::LBracket)
         {
@@ -667,7 +669,7 @@ private:
     }
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishRangeUpper(
-        LeafRule rule, std::optional<Token> firstTok
+        FilterCondition rule, std::optional<Token> firstTok
     )
     {
         std::optional<Token> secondTok;
@@ -772,20 +774,22 @@ private:
         }
         if (tsMin.has_value() || tsMax.has_value())
         {
-            rule.type = LeafRule::Type::Time;
+            rule.type = FilterCondition::Type::Time;
             rule.filterBegin = tsMin;
             rule.filterEnd = tsMax;
         }
         else
         {
-            rule.type = LeafRule::Type::Number;
+            rule.type = FilterCondition::Type::Number;
             rule.filterMinValue = numMin;
             rule.filterMaxValue = numMax;
         }
         return MakeLeaf(std::move(rule));
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishListLeaf(LeafRule rule, const Token &firstTok)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishListLeaf(
+        FilterCondition rule, const Token &firstTok
+    )
     {
         // All-boolean list ([true, false]) is the printer's wire
         // form for Type::Boolean; detect that so the round-trip
@@ -828,7 +832,7 @@ private:
         }
         if (allBool)
         {
-            rule.type = LeafRule::Type::Boolean;
+            rule.type = FilterCondition::Type::Boolean;
             // A boolean list is a set of at most two values. Keep it in the printer's form, true before false and
             // each value once, so a printed list parses back to the same rule.
             bool hasTrue = false;
@@ -868,26 +872,26 @@ private:
                     err.message = "time range must not end before the epoch";
                     return std::unexpected(err);
                 }
-                rule.type = LeafRule::Type::Time;
+                rule.type = FilterCondition::Type::Time;
                 rule.filterBegin = asTs;
                 rule.filterEnd = asTs;
                 rule.filterValues.clear();
             }
             else if (const auto asNum = ParseDouble(only); asNum.has_value())
             {
-                rule.type = LeafRule::Type::Number;
+                rule.type = FilterCondition::Type::Number;
                 rule.filterMinValue = asNum;
                 rule.filterMaxValue = asNum;
                 rule.filterValues.clear();
             }
             else
             {
-                rule.type = LeafRule::Type::Enumeration;
+                rule.type = FilterCondition::Type::Enumeration;
             }
         }
         else
         {
-            rule.type = LeafRule::Type::Enumeration;
+            rule.type = FilterCondition::Type::Enumeration;
         }
         return MakeLeaf(std::move(rule));
     }

@@ -5,6 +5,7 @@
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"
 #include "common.hpp"
+#include "row_compare_helpers.hpp"
 #include "table_fixture.hpp"
 
 #include <loglib/config/column.hpp>
@@ -19,7 +20,7 @@
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/query/log_compare.hpp>
+#include <loglib/query/internal/row_compare.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -43,6 +44,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace row_compare_helpers;
 
 namespace bench
 {
@@ -392,14 +394,13 @@ void RegisterRegexFilter(const Tier &tier, const SharedMixed &table, const char 
             const MixedTable &fixture = table->Get();
             const LogTable &logTable = *fixture.table;
             FilterExpression expression;
-            LeafRule rule;
-            rule.type = LeafRule::Type::String;
+            FilterCondition rule;
+            rule.type = FilterCondition::Type::String;
             rule.columnKeys = {"message"};
-            rule.matchType = LeafRule::Match::RegularExpression;
+            rule.matchType = FilterCondition::Match::RegularExpression;
             rule.filterString = pattern;
             expression.node = FilterExpression::Leaf{rule};
-            const CompiledFilterExpression compiled =
-                CompileExpression(expression, logTable.Layout().Columns(), &logTable);
+            const CompiledFilterExpression compiled = CompileFilter(expression, logTable);
             std::size_t accepted = 0;
             for (const auto _ : state)
             {
@@ -428,7 +429,11 @@ void RegisterRegexFilter(const Tier &tier, const SharedMixed &table, const char 
 // with plain reads, outside the timed part.
 template <typename Expected>
 void RegisterLeafFilter(
-    const Tier &tier, const SharedMixed &table, const std::string &label, const LeafRule &rule, const Expected &expected
+    const Tier &tier,
+    const SharedMixed &table,
+    const std::string &label,
+    const FilterCondition &rule,
+    const Expected &expected
 )
 {
     RegisterSmall(
@@ -438,8 +443,7 @@ void RegisterLeafFilter(
             const LogTable &logTable = *fixture.table;
             FilterExpression expression;
             expression.node = FilterExpression::Leaf{rule};
-            const CompiledFilterExpression compiled =
-                CompileExpression(expression, logTable.Layout().Columns(), &logTable);
+            const CompiledFilterExpression compiled = CompileFilter(expression, logTable);
             std::size_t accepted = 0;
             for (const auto _ : state)
             {
@@ -629,10 +633,10 @@ void RegisterTableBenchmarks()
 
     // Contains on the column with doubled spaces: the filter must still find the timeout rows. Half of the cells need
     // their whitespace collapsed first.
-    LeafRule contains;
-    contains.type = LeafRule::Type::String;
+    FilterCondition contains;
+    contains.type = FilterCondition::Type::String;
     contains.columnKeys = {"spaced"};
-    contains.matchType = LeafRule::Match::Contains;
+    contains.matchType = FilterCondition::Match::Contains;
     contains.filterString = "timeout after";
     RegisterLeafFilter(
         FULL_TIER, text, "Contains filter on cells with doubled spaces", contains, [](const MixedTable &fixture) {
@@ -641,10 +645,10 @@ void RegisterTableBenchmarks()
     );
 
     // The same Contains filter on rows of a live stream, whose cells resolve through the stream source.
-    LeafRule streamContains;
-    streamContains.type = LeafRule::Type::String;
+    FilterCondition streamContains;
+    streamContains.type = FilterCondition::Type::String;
     streamContains.columnKeys = {"message"};
-    streamContains.matchType = LeafRule::Match::Contains;
+    streamContains.matchType = FilterCondition::Match::Contains;
     streamContains.filterString = "timeout after";
     RegisterLeafFilter(
         FULL_TIER,
@@ -657,8 +661,8 @@ void RegisterTableBenchmarks()
     // The Time range covers the middle quarter of the day the times are spread over. The counts come from plain reads.
     constexpr std::int64_t DAY_START_MICROS = std::int64_t{1767225600} * 1'000'000;
     constexpr std::int64_t HOUR_MICROS = std::int64_t{3600} * 1'000'000;
-    LeafRule timeRange;
-    timeRange.type = LeafRule::Type::Time;
+    FilterCondition timeRange;
+    timeRange.type = FilterCondition::Type::Time;
     timeRange.columnKeys = {"time"};
     timeRange.filterBegin = DAY_START_MICROS + (6 * HOUR_MICROS);
     timeRange.filterEnd = DAY_START_MICROS + (12 * HOUR_MICROS);
@@ -673,8 +677,8 @@ void RegisterTableBenchmarks()
         return count;
     });
 
-    LeafRule integerRange;
-    integerRange.type = LeafRule::Type::Number;
+    FilterCondition integerRange;
+    integerRange.type = FilterCondition::Type::Number;
     integerRange.columnKeys = {"count"};
     integerRange.filterMinValue = 250'000.0;
     integerRange.filterMaxValue = 500'000.0;
@@ -688,8 +692,8 @@ void RegisterTableBenchmarks()
         return count;
     });
 
-    LeafRule doubleRange;
-    doubleRange.type = LeafRule::Type::Number;
+    FilterCondition doubleRange;
+    doubleRange.type = FilterCondition::Type::Number;
     doubleRange.columnKeys = {"ratio"};
     doubleRange.filterMinValue = 100.0;
     doubleRange.filterMaxValue = 400.0;

@@ -107,6 +107,25 @@ struct ConfigurationDocument
 }
 
 /**
+ * @brief Describes what is wrong with a document that was read without error, or gives nothing if it is sound. A
+ * locator must have a key, because the key is how anchors and duplicate files find their source.
+ */
+[[nodiscard]] inline std::optional<std::string> FindDocumentProblem(const ConfigurationDocument &document)
+{
+    if (document.source.has_value())
+    {
+        for (const SourceLocator &locator : document.source->locators)
+        {
+            if (locator.key.empty())
+            {
+                return fmt::format("the locator '{}' has an empty key.", locator.path);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+/**
  * @brief Describes a read error of a configuration document. For an unknown or missing key the first line names the
  * key, because callers often show only that line. The lines after it point at the place in the content.
  */
@@ -160,21 +179,19 @@ template <> struct glz::meta<loglib::ColumnType>
     static constexpr std::array value{Any, String, Boolean, Integer, Floating, Number, Time, Enumeration, Level};
 };
 
-template <> struct glz::meta<loglib::LeafRule::Type>
+template <> struct glz::meta<loglib::FilterCondition::Type>
 {
-    using enum loglib::LeafRule::Type;
+    using enum loglib::FilterCondition::Type;
     static constexpr std::array keys{"string", "time", "enumeration", "number", "boolean"};
     static constexpr std::array value{String, Time, Enumeration, Number, Boolean};
 };
 
-template <> struct glz::meta<loglib::LeafRule::Match>
+template <> struct glz::meta<loglib::FilterCondition::Match>
 {
-    using enum loglib::LeafRule::Match;
+    using enum loglib::FilterCondition::Match;
     static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
-
-// The types of HighlightRule are aliases of the LeafRule ones, so they use the specializations above.
 
 template <> struct glz::meta<loglib::SourceDescriptor::Kind>
 {
@@ -223,30 +240,29 @@ template <> struct glz::meta<loglib::FormatSpec> : loglib::internal::AllKeysOpti
         object("type", &T::format, "regex", glz::custom<readRegex, writeRegex>, "logfmtMultiline", &T::logfmtMultiline);
 };
 
+// A locator needs both of its keys. An empty key is rejected after reading, see FindDocumentProblem.
+template <> struct glz::meta<loglib::SourceLocator>
+{
+    using T = loglib::SourceLocator;
+    static constexpr bool requires_key(std::string_view key, bool /*nullable*/)
+    {
+        return key == "path" || key == "key";
+    }
+    static constexpr auto value = object("path", &T::path, "key", &T::key);
+};
+
 // The saved field names of the nested types are listed explicitly. Renaming a member then fails to compile and cannot
 // silently change the saved format.
 template <> struct glz::meta<loglib::SourceDescriptor> : loglib::internal::AllKeysOptional
 {
     using T = loglib::SourceDescriptor;
-
-    static constexpr auto readDisplayPaths = [](T &self, std::vector<std::string> paths) {
-        self.ReplaceDisplayPaths(std::move(paths));
-    };
-    static constexpr auto writeDisplayPaths = [](const T &self) { return self.DisplayPaths(); };
-    static constexpr auto readDedupKeys = [](T &self, std::vector<std::string> keys) {
-        self.ReplaceDedupKeys(std::move(keys));
-    };
-    static constexpr auto writeDedupKeys = [](const T &self) { return self.DedupKeys(); };
-
     static constexpr auto value = object(
         "kind",
         &T::kind,
         "format",
         &T::format,
         "locators",
-        glz::custom<readDisplayPaths, writeDisplayPaths>,
-        "locatorDedupKeys",
-        glz::custom<readDedupKeys, writeDedupKeys>,
+        &T::locators,
         "followRotationSiblings",
         &T::followRotationSiblings
     );
@@ -298,10 +314,10 @@ template <> struct glz::meta<loglib::SessionView> : loglib::internal::AllKeysOpt
     );
 };
 
-// A leaf of the filter tree. It finds its column by matching its keys against Column::keys.
-template <> struct glz::meta<loglib::LeafRule> : loglib::internal::AllKeysOptional
+// A condition of a filter or a highlight rule. It finds its column by matching its keys against Column::keys.
+template <> struct glz::meta<loglib::FilterCondition> : loglib::internal::AllKeysOptional
 {
-    using T = loglib::LeafRule;
+    using T = loglib::FilterCondition;
     static constexpr auto value = object(
         "type",
         &T::type,
@@ -328,12 +344,12 @@ template <> struct glz::meta<loglib::LeafRule> : loglib::internal::AllKeysOption
 //   { "kind": "and", "children": [ ... ] }
 //   { "kind": "or",  "children": [ ... ] }
 //   { "kind": "not", "child": <sub-expression> }
-//   { "kind": "leaf", "rule": <LeafRule> }
+//   { "kind": "leaf", "condition": <FilterCondition> }
 // The kind comes from the tag of the variant specialization below, and each node type exposes only its payload.
 template <> struct glz::meta<loglib::FilterExpression::Leaf> : loglib::internal::AllKeysOptional
 {
     using T = loglib::FilterExpression::Leaf;
-    static constexpr auto value = object("rule", &T::rule);
+    static constexpr auto value = object("condition", &T::condition);
 };
 
 template <> struct glz::meta<loglib::FilterExpression::And> : loglib::internal::AllKeysOptional
@@ -375,14 +391,21 @@ template <> struct glz::meta<loglib::FilterExpression>
     static constexpr auto value = &T::node;
 };
 
+template <> struct glz::meta<loglib::SortDirection>
+{
+    using enum loglib::SortDirection;
+    static constexpr std::array keys{"ascending", "descending"};
+    static constexpr std::array value{Ascending, Descending};
+};
+
 template <> struct glz::meta<loglib::Sort> : loglib::internal::AllKeysOptional
 {
     using T = loglib::Sort;
-    static constexpr auto value = object("columnKeys", &T::columnKeys, "descending", &T::descending);
+    static constexpr auto value = object("columnKeys", &T::columnKeys, "direction", &T::direction);
 };
 
 // The saved form of one anchor:
-//   { "locator": "...",    // identifies the source
+//   { "pathKey": "...",    // identifies the source file
 //     "lineId":  1234,     // the line id from the parser
 //     "colorIndex": 0,     // the palette color
 //     "note":    "..." }   // optional, loads as an empty string when missing
@@ -391,35 +414,13 @@ template <> struct glz::meta<loglib::AnchorEntry> : loglib::internal::AllKeysOpt
 {
     using T = loglib::AnchorEntry;
     static constexpr auto value =
-        object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
+        object("pathKey", &T::pathKey, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
 };
 
-template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysOptional
+template <> struct glz::meta<loglib::HighlightStyle> : loglib::internal::AllKeysOptional
 {
-    using T = loglib::HighlightRule;
+    using T = loglib::HighlightStyle;
     static constexpr auto value = object(
-        "name",
-        &T::name,
-        "enabled",
-        &T::enabled,
-        "columnKeys",
-        &T::columnKeys,
-        "type",
-        &T::type,
-        "matchType",
-        &T::matchType,
-        "filterString",
-        &T::filterString,
-        "filterBegin",
-        &T::filterBegin,
-        "filterEnd",
-        &T::filterEnd,
-        "filterMinValue",
-        &T::filterMinValue,
-        "filterMaxValue",
-        &T::filterMaxValue,
-        "filterValues",
-        &T::filterValues,
         "foregroundIndex",
         &T::foregroundIndex,
         "backgroundIndex",
@@ -429,5 +430,12 @@ template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysO
         "italic",
         &T::italic
     );
+};
+
+template <> struct glz::meta<loglib::HighlightRule> : loglib::internal::AllKeysOptional
+{
+    using T = loglib::HighlightRule;
+    static constexpr auto value =
+        object("name", &T::name, "enabled", &T::enabled, "condition", &T::condition, "style", &T::style);
 };
 // NOLINTEND(readability-identifier-naming)

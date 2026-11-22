@@ -1,4 +1,4 @@
-// Micro-benchmarks for loglib::HistogramBucketIndex: rebuilding the index over 1 M rows has to take well under a
+// Micro-benchmarks for loglib::TimeHistogram: rebuilding the index over 1 M rows has to take well under a
 // frame. The figures are reported, not capped; CI machines vary, and the comparison script flags regressions.
 
 #include "benchmark_common.hpp"
@@ -6,7 +6,7 @@
 
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <benchmark/benchmark.h>
 
@@ -89,7 +89,7 @@ void RegisterRebuild(const char *name, HistogramBucketSize size, std::chrono::mi
         std::size_t total = 0;
         for (const auto _ : state)
         {
-            HistogramBucketIndex index{size};
+            TimeHistogram index{size};
             for (const auto &ev : fixture.events)
             {
                 index.AddRow(ev.ts, ev.level);
@@ -108,17 +108,15 @@ void RegisterRebuild(const char *name, HistogramBucketSize size, std::chrono::mi
 
 } // namespace
 
-void RegisterHistogramBucketIndexBenchmarks()
+void RegisterTimeHistogramBenchmarks()
 {
     // 1 ms/row -> 1000 s span with a heavy fill per bucket (hot path).
     RegisterRebuild(
-        "HistogramBucketIndex rebuild (1M rows / 1s buckets)",
-        HistogramBucketSize::OneSecond,
-        std::chrono::microseconds{1000}
+        "TimeHistogram rebuild (1M rows / 1s buckets)", HistogramBucketSize::OneSecond, std::chrono::microseconds{1000}
     );
     // 60 ms/row -> 60000 s span.
     RegisterRebuild(
-        "HistogramBucketIndex rebuild (1M rows / 1min buckets)",
+        "TimeHistogram rebuild (1M rows / 1min buckets)",
         HistogramBucketSize::OneMinute,
         std::chrono::microseconds{60'000}
     );
@@ -139,40 +137,38 @@ void RegisterHistogramBucketIndexBenchmarks()
         created->tail = GenerateEvents(BATCH * BATCHES, tailStep);
         return created;
     });
-    RegisterSmall(
-        "HistogramBucketIndex live-tail (100x 1k row batches)", [tailInput, tailStep](benchmark::State &state) {
-            const TailInput &fixture = tailInput->Get();
-            std::size_t total = 0;
-            for (const auto _ : state)
+    RegisterSmall("TimeHistogram live-tail (100x 1k row batches)", [tailInput, tailStep](benchmark::State &state) {
+        const TailInput &fixture = tailInput->Get();
+        std::size_t total = 0;
+        for (const auto _ : state)
+        {
+            TimeHistogram index{HistogramBucketSize::OneSecond};
+            for (const auto &ev : fixture.preload)
             {
-                HistogramBucketIndex index{HistogramBucketSize::OneSecond};
-                for (const auto &ev : fixture.preload)
-                {
-                    index.AddRow(ev.ts, ev.level);
-                }
-                const auto tailStart = BenchBase() + tailStep * (PRELOAD + 1);
-                for (std::size_t b = 0; b < BATCHES; ++b)
-                {
-                    for (std::size_t i = 0; i < BATCH; ++i)
-                    {
-                        const auto idx = (b * BATCH) + i;
-                        index.AddRow(tailStart + tailStep * idx, fixture.tail[idx].level);
-                    }
-                }
-                total = index.TotalRowCount();
-                benchmark::DoNotOptimize(total);
+                index.AddRow(ev.ts, ev.level);
             }
-            if (total != PRELOAD + (BATCH * BATCHES))
+            const auto tailStart = BenchBase() + tailStep * (PRELOAD + 1);
+            for (std::size_t b = 0; b < BATCHES; ++b)
             {
-                Fail(state, "the index holds the wrong number of rows");
-                return;
+                for (std::size_t i = 0; i < BATCH; ++i)
+                {
+                    const auto idx = (b * BATCH) + i;
+                    index.AddRow(tailStart + tailStep * idx, fixture.tail[idx].level);
+                }
             }
-            state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * total));
+            total = index.TotalRowCount();
+            benchmark::DoNotOptimize(total);
         }
-    );
+        if (total != PRELOAD + (BATCH * BATCHES))
+        {
+            Fail(state, "the index holds the wrong number of rows");
+            return;
+        }
+        state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations() * total));
+    });
 
     // AutoBucketSize is O(1): a million calls take as long as a million additions of two numbers.
-    RegisterSmall("HistogramBucketIndex::AutoBucketSize (1M calls)", [](benchmark::State &state) {
+    RegisterSmall("TimeHistogram::AutoBucketSize (1M calls)", [](benchmark::State &state) {
         const TimeStamp min = BenchBase();
         const TimeStamp max = BenchBase() + std::chrono::hours{24 * 365};
         HistogramBucketSize last = HistogramBucketSize::OneSecond;
@@ -180,7 +176,7 @@ void RegisterHistogramBucketIndexBenchmarks()
         {
             for (std::size_t i = 0; i < 1'000'000; ++i)
             {
-                last = HistogramBucketIndex::AutoBucketSize(min, max);
+                last = TimeHistogram::AutoBucketSize(min, max);
                 benchmark::DoNotOptimize(last);
             }
         }

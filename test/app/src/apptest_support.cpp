@@ -3,6 +3,7 @@
 #include "log_table_view.hpp"
 #include "qt_streaming_log_sink.hpp"
 
+#include "uuid_utils.hpp"
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/output/session_bundle.hpp>
@@ -280,9 +281,9 @@ QString WriteBundleFixture(
     configure(configuration);
     for (auto &anchor : configuration.view.anchors)
     {
-        if (anchor.locator.empty())
+        if (anchor.pathKey.empty())
         {
-            anchor.locator = source.Path().toStdString();
+            anchor.pathKey = logapp::PathKeyOf(source.Path());
         }
     }
 

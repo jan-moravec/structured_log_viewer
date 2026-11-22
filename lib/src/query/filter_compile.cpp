@@ -47,36 +47,20 @@ std::optional<std::size_t> FindColumnByKeys(
     return std::nullopt;
 }
 
-loglib::LeafRule ToLeafRule(const loglib::HighlightRule &rule)
+namespace
 {
-    // Plain copy of shared payload; rendering fields (name,
-    // enabled, colours, bold/italic) stay on HighlightRule.
-    loglib::LeafRule leaf;
-    leaf.type = rule.type;
-    leaf.columnKeys = rule.columnKeys;
-    leaf.matchType = rule.matchType;
-    leaf.filterString = rule.filterString;
-    leaf.filterBegin = rule.filterBegin;
-    leaf.filterEnd = rule.filterEnd;
-    leaf.filterMinValue = rule.filterMinValue;
-    leaf.filterMaxValue = rule.filterMaxValue;
-    leaf.filterValues = rule.filterValues;
-    return leaf;
-}
 
-std::optional<loglib::RowPredicate> CompileLeaf(
-    const loglib::LeafRule &rule,
-    std::optional<std::size_t> resolvedColumn,
+/**
+ * Builds the predicate of a condition whose column is already found. The columns are those of the table.
+ */
+std::optional<loglib::RowPredicate> CompileResolved(
+    const loglib::FilterCondition &rule,
+    std::size_t column,
     const std::vector<loglib::Column> &columns,
-    const loglib::LogTable *table
+    const loglib::LogTable &table
 )
 {
-    if (!resolvedColumn.has_value())
-    {
-        return std::nullopt;
-    }
-    const std::size_t column = *resolvedColumn;
-    using T = loglib::LeafRule::Type;
+    using T = loglib::FilterCondition::Type;
     switch (rule.type)
     {
     case T::Time:
@@ -142,11 +126,11 @@ std::optional<loglib::RowPredicate> CompileLeaf(
     }
     case T::Enumeration:
     {
-        if (rule.filterValues.empty() || table == nullptr)
+        if (rule.filterValues.empty())
         {
             return std::nullopt;
         }
-        const loglib::EnumDictionary *dictionary = table->ResolveEnumColumn(column).dictionary;
+        const loglib::EnumDictionary *dictionary = table.ResolveEnumColumn(column).dictionary;
         // Level columns store canonical names ("Info", ...); expand
         // via LevelRankCache so a rule saved as Info matches
         // INFO, warning, or any levelMapping alias.
@@ -157,7 +141,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         const bool isLevelColumn = column < columns.size() && columns[column].type == loglib::ColumnType::Level;
         if (isLevelColumn)
         {
-            const std::vector<loglib::LogLevel> *ranks = table->LevelRankCache(column);
+            const std::vector<loglib::LogLevel> *ranks = table.LevelRankCache(column);
             if (ranks == nullptr || dictionary == nullptr)
             {
                 // Column not promoted yet; rebuild on next Grew.
@@ -215,24 +199,19 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         // matches every row and would silently blank / paint the
         // whole view. Exactly "" is genuinely useful (match
         // empty column values), so allow it.
-        if (rule.filterString->empty() && *rule.matchType != loglib::LeafRule::Match::Exactly)
+        if (rule.filterString->empty() && *rule.matchType != loglib::FilterCondition::Match::Exactly)
         {
             return std::nullopt;
         }
         return loglib::RowPredicate{
-            std::in_place_type<loglib::CallbackStringRowPredicate>,
-            column,
-            MakeStringMatcher(*rule.filterString, *rule.matchType)
+            std::in_place_type<loglib::TextRowPredicate>, column, MakeStringMatcher(*rule.filterString, *rule.matchType)
         };
     }
     }
     // Unreachable: switch is exhaustive with no default, so a
-    // new LeafRule::Type triggers -Wswitch here.
+    // new FilterCondition::Type triggers -Wswitch here.
     return std::nullopt;
 }
-
-namespace
-{
 
 // NOLINTNEXTLINE(misc-no-recursion)
 void CollectFilterProblems(
@@ -246,14 +225,14 @@ void CollectFilterProblems(
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)
             {
-                if (!n.rule.columnKeys.empty() && !FindColumnByKeys(n.rule.columnKeys, columns).has_value())
+                if (!n.condition.columnKeys.empty() && !FindColumnByKeys(n.condition.columnKeys, columns).has_value())
                 {
-                    out.push_back("unknown column '" + n.rule.columnKeys.front() + "'");
+                    out.push_back("unknown column '" + n.condition.columnKeys.front() + "'");
                 }
-                if (n.rule.type == loglib::LeafRule::Type::String && n.rule.filterString.has_value() &&
-                    n.rule.matchType.has_value())
+                if (n.condition.type == loglib::FilterCondition::Type::String && n.condition.filterString.has_value() &&
+                    n.condition.matchType.has_value())
                 {
-                    if (auto problem = StringPatternProblem(*n.rule.filterString, *n.rule.matchType))
+                    if (auto problem = StringPatternProblem(*n.condition.filterString, *n.condition.matchType))
                     {
                         out.push_back(std::move(*problem));
                     }
@@ -301,7 +280,7 @@ void CollectFilterProblems(
 std::optional<loglib::CompiledFilterExpression> CompileNode(
     const loglib::FilterExpression &expr,
     const std::vector<loglib::Column> &columns,
-    const loglib::LogTable *table,
+    const loglib::LogTable &table,
     std::vector<std::size_t> &referencedColumns
 )
 {
@@ -312,8 +291,12 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)
             {
-                const std::optional<std::size_t> resolved = FindColumnByKeys(n.rule.columnKeys, columns);
-                auto predicate = CompileLeaf(n.rule, resolved, columns, table);
+                const std::optional<std::size_t> resolved = FindColumnByKeys(n.condition.columnKeys, columns);
+                if (!resolved.has_value())
+                {
+                    return std::nullopt;
+                }
+                auto predicate = CompileResolved(n.condition, *resolved, columns, table);
                 if (!predicate.has_value())
                 {
                     return std::nullopt;
@@ -419,7 +402,7 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                     // EvaluateExpression, so callers that build
                     // a compiled Not{} directly (tests, benches)
                     // see the same per-row verdict as callers that
-                    // go through CompileExpression. Crucially
+                    // go through CompileFilter. Crucially
                     // this is *not* the same case as the branch
                     // below: a null child is a structural anomaly
                     // (user wrote nothing), while an absent child
@@ -446,23 +429,34 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
 
 } // namespace
 
+std::optional<loglib::RowPredicate> CompileCondition(
+    const loglib::FilterCondition &condition, const loglib::LogTable &table
+)
+{
+    const auto &columns = table.Layout().Columns();
+    const std::optional<std::size_t> column = FindColumnByKeys(condition.columnKeys, columns);
+    if (!column.has_value())
+    {
+        return std::nullopt;
+    }
+    return CompileResolved(condition, *column, columns, table);
+}
+
 std::vector<std::string> FindFilterProblems(
-    const loglib::FilterExpression &expression, const std::vector<loglib::Column> &columns
+    const loglib::FilterExpression &expression, const loglib::ColumnLayout &layout
 )
 {
     std::vector<std::string> problems;
-    CollectFilterProblems(expression, columns, problems);
+    CollectFilterProblems(expression, layout.Columns(), problems);
     return problems;
 }
 
-loglib::CompiledFilterExpression CompileExpression(
-    const loglib::FilterExpression &expression,
-    const std::vector<loglib::Column> &columns,
-    const loglib::LogTable *table
+loglib::CompiledFilterExpression CompileFilter(
+    const loglib::FilterExpression &expression, const loglib::LogTable &table
 )
 {
     std::vector<std::size_t> referencedColumns;
-    auto compiled = CompileNode(expression, columns, table, referencedColumns);
+    auto compiled = CompileNode(expression, table.Layout().Columns(), table, referencedColumns);
     loglib::CompiledFilterExpression result;
     if (compiled.has_value())
     {

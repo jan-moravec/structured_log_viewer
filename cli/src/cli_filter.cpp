@@ -180,8 +180,8 @@ std::expected<loglib::FilterExpression, Failure> BuildRowFilter(
         {
             return std::unexpected(FilterFail(command, "'--until' must not be earlier than '--since'."));
         }
-        loglib::LeafRule rule;
-        rule.type = loglib::LeafRule::Type::Time;
+        loglib::FilterCondition rule;
+        rule.type = loglib::FilterCondition::Type::Time;
         rule.columnKeys = timeColumn.keys;
         rule.filterBegin = begin;
         rule.filterEnd = end;
@@ -210,8 +210,8 @@ std::expected<loglib::FilterExpression, Failure> BuildRowFilter(
                 )
             ));
         }
-        loglib::LeafRule rule;
-        rule.type = loglib::LeafRule::Type::Enumeration;
+        loglib::FilterCondition rule;
+        rule.type = loglib::FilterCondition::Type::Enumeration;
         rule.columnKeys = columns[static_cast<std::size_t>(levelIndex)].keys;
         for (int value = static_cast<int>(*level); value <= static_cast<int>(loglib::LogLevel::Fatal); ++value)
         {

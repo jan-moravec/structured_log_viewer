@@ -182,7 +182,7 @@ private slots:
 
         loglib::LogConfiguration cfg;
         loglib::SourceDescriptor src;
-        src.locators = {"C:/logs/locked.json"};
+        src.locators = {{.path = "C:/logs/locked.json", .key = "C:/logs/locked.json"}};
         cfg.source = src;
 
         // Fail-closed: empty uuid, no write, bounded duration.
@@ -215,7 +215,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/contended.json"},
+            .locators = {{.path = "C:/logs/contended.json", .key = "C:/logs/contended.json"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());

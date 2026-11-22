@@ -45,12 +45,12 @@ namespace
 /// `Leaf` nor `And`. Sufficient for the legacy filters-vector-
 /// style assertions -- the historical simple-mode UX only ever
 /// wrote flat AND trees.
-[[nodiscard]] std::vector<LeafRule> LegacyLeavesOf(const FilterExpression &expression)
+[[nodiscard]] std::vector<FilterCondition> LegacyLeavesOf(const FilterExpression &expression)
 {
-    std::vector<LeafRule> out;
+    std::vector<FilterCondition> out;
     if (const auto *leaf = std::get_if<FilterExpression::Leaf>(&expression.node); leaf != nullptr)
     {
-        out.push_back(leaf->rule);
+        out.push_back(leaf->condition);
         return out;
     }
     if (const auto *asAnd = std::get_if<FilterExpression::And>(&expression.node); asAnd != nullptr)
@@ -59,7 +59,7 @@ namespace
         {
             if (const auto *childLeaf = std::get_if<FilterExpression::Leaf>(&child.node); childLeaf != nullptr)
             {
-                out.push_back(childLeaf->rule);
+                out.push_back(childLeaf->condition);
             }
         }
     }
@@ -67,7 +67,7 @@ namespace
 }
 
 /// Test helper: install @p leaves as a top-level `And` expression.
-[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<LeafRule> leaves)
+[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<FilterCondition> leaves)
 {
     FilterExpression::And node;
     node.children.reserve(leaves.size());

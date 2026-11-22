@@ -82,6 +82,10 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
             " (expected " + std::to_string(internal::CONFIGURATION_FORMAT_VERSION) + ")"
         );
     }
+    if (const auto problem = internal::FindDocumentProblem(envelope.bundle->configuration); problem.has_value())
+    {
+        throw FormatError("Session bundle metadata is malformed: " + *problem);
+    }
     return SessionBundleMetadata{
         .formatVersion = envelope.bundle->formatVersion,
         .rowCount = envelope.bundle->rowCount,

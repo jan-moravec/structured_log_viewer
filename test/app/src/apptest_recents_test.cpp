@@ -181,7 +181,10 @@ private slots:
         cfg.columns.push_back(loglib::Column{.header = "msg", .keys = {"msg"}, .type = loglib::ColumnType::String});
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/first.json", "C:/logs/second.json"},
+            .locators = {
+                {.path = "C:/logs/first.json", .key = "C:/logs/first.json"},
+                {.path = "C:/logs/second.json", .key = "C:/logs/second.json"},
+            },
         };
 
         const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
@@ -219,7 +222,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"TCP 127.0.0.1:5170"},
+            .locators = {{.path = "TCP 127.0.0.1:5170", .key = "TCP 127.0.0.1:5170"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -245,7 +248,12 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
-                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()},
+                .locators = {
+                    {
+                        .path = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                    },
+                },
             };
             const QString uuid = manager.WriteSnapshot(cfg);
             QVERIFY(!uuid.isEmpty());
@@ -287,13 +295,17 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfgA;
-        cfgA.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/a.json"}};
+        cfgA.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/a.json", .key = "C:/logs/a.json"}},
+        };
         const QString uuidA = manager.WriteSnapshot(cfgA);
 
         loglib::LogConfiguration cfgB;
-        cfgB.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/b.json"}};
+        cfgB.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/b.json", .key = "C:/logs/b.json"}},
+        };
         const QString uuidB = manager.WriteSnapshot(cfgB);
 
         // Newest (B) is the head; LastSessionPath points at B.
@@ -320,8 +332,10 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/only.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/only.json", .key = "C:/logs/only.json"}},
+        };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
 
@@ -348,7 +362,12 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
-                .locators = {QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()},
+                .locators = {
+                    {
+                        .path = QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString(),
+                    },
+                },
             };
             uuids.append(manager.WriteSnapshot(cfg));
         }
@@ -506,7 +525,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/versioned.json"},
+            .locators = {{.path = "C:/logs/versioned.json", .key = "C:/logs/versioned.json"}},
         };
         QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
 
@@ -644,8 +663,7 @@ private slots:
         QVERIFY(probeA.source.has_value());
         QCOMPARE(probeA.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.source->locators.front().displayPath),
-            logapp::CanonicalDisplayPath(fixtureA.Path())
+            QString::fromStdString(probeA.source->locators.front().path), logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
 
@@ -744,8 +762,7 @@ private slots:
         QVERIFY(probeA.source.has_value());
         QCOMPARE(probeA.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.source->locators.front().displayPath),
-            logapp::CanonicalDisplayPath(fixtureA.Path())
+            QString::fromStdString(probeA.source->locators.front().path), logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
 
@@ -824,8 +841,7 @@ private slots:
         QVERIFY(probeA.source.has_value());
         QCOMPARE(probeA.source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.source->locators.front().displayPath),
-            logapp::CanonicalDisplayPath(fixtureA.Path())
+            QString::fromStdString(probeA.source->locators.front().path), logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
 
@@ -873,7 +889,7 @@ private slots:
                 Q_ARG(QString, QStringLiteral("survives-failed-probe")),
                 Q_ARG(int, msgCol),
                 Q_ARG(QString, QStringLiteral("alpha")),
-                Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+                Q_ARG(int, static_cast<int>(loglib::FilterCondition::Match::Contains))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );
@@ -928,8 +944,10 @@ private slots:
 
         // Seed one valid entry.
         loglib::LogConfiguration cfg;
-        cfg.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/kept.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/kept.json", .key = "C:/logs/kept.json"}},
+        };
         const QString keptUuid = manager.WriteSnapshot(cfg);
         QVERIFY(!keptUuid.isEmpty());
         const QString keptPath = manager.PathForUuid(keptUuid);
@@ -979,8 +997,10 @@ private slots:
 
         // Seed an entry to mkpath the directory.
         loglib::LogConfiguration cfg;
-        cfg.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/seed.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/seed.json", .key = "C:/logs/seed.json"}},
+        };
         const QString seedUuid = manager.WriteSnapshot(cfg);
         QVERIFY(!seedUuid.isEmpty());
 
@@ -1025,7 +1045,7 @@ private slots:
         wired->SetCurrentSourceForTest(
             loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
-                .locators = {"/tmp/livetail-finished.log"},
+                .locators = {{.path = "/tmp/livetail-finished.log", .key = "/tmp/livetail-finished.log"}},
             }
         );
         wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
@@ -1112,7 +1132,12 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
-                .locators = {QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()},
+                .locators = {
+                    {
+                        .path = QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString(),
+                    },
+                },
             };
             const QString uuid = manager.WriteSnapshot(cfg);
             QVERIFY(!uuid.isEmpty());
@@ -1280,7 +1305,12 @@ private slots:
             loglib::LogConfiguration cfg;
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
-                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()},
+                .locators = {
+                    {
+                        .path = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                    },
+                },
             };
             QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
         }
@@ -1303,8 +1333,10 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/atomic.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/atomic.json", .key = "C:/logs/atomic.json"}},
+        };
 
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
         QVERIFY(!uuid.isEmpty());
@@ -1335,8 +1367,10 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/noopen.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/noopen.json", .key = "C:/logs/noopen.json"}},
+        };
 
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
         QVERIFY(!uuid.isEmpty());
@@ -1356,8 +1390,10 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.source =
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/reuse.json"}};
+        cfg.source = loglib::SourceDescriptor{
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {{.path = "C:/logs/reuse.json", .key = "C:/logs/reuse.json"}},
+        };
 
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -1386,7 +1422,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/initial.json"},
+            .locators = {{.path = "C:/logs/initial.json", .key = "C:/logs/initial.json"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -1395,7 +1431,10 @@ private slots:
         // equality check rejects and rewrites the entry slot.
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/initial.json", "C:/logs/added.json"},
+            .locators = {
+                {.path = "C:/logs/initial.json", .key = "C:/logs/initial.json"},
+                {.path = "C:/logs/added.json", .key = "C:/logs/added.json"},
+            },
         };
         const QString reuse = manager.WriteSnapshot(cfg, uuid);
         QCOMPARE(reuse, uuid);
@@ -1426,7 +1465,12 @@ private slots:
                 loglib::LogConfiguration cfg;
                 cfg.source = loglib::SourceDescriptor{
                     .kind = loglib::SourceDescriptor::Kind::File,
-                    .locators = {QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()},
+                    .locators = {
+                        {
+                            .path = QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString(),
+                            .key = QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString(),
+                        },
+                    },
                 };
                 if (!manager.WriteSnapshot(cfg).isEmpty())
                 {

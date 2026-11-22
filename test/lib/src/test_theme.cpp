@@ -1,3 +1,4 @@
+#include <loglib/config/anchor_entry.hpp>
 #include <loglib/core/error.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/support/theme.hpp>
