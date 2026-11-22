@@ -278,7 +278,9 @@ TEST_CASE("Every time conversion path gives the same table for JSON", "[time_con
 {
     const JsonParser parser;
     const auto kind = GENERATE(TimeText::Offset, TimeText::Naive, TimeText::Mixed);
-    RequireEveryPathAgrees({"json time key", &parser, JsonInput("timestamp", kind), {"timestamp"}});
+    RequireEveryPathAgrees(
+        {.name = "json time key", .parser = &parser, .bytes = JsonInput("timestamp", kind), .timeKeys = {"timestamp"}}
+    );
 }
 
 TEST_CASE(
@@ -287,14 +289,18 @@ TEST_CASE(
 {
     const JsonParser parser;
     const auto kind = GENERATE(TimeText::Offset, TimeText::Mixed);
-    RequireEveryPathAgrees({"json other key", &parser, JsonInput("when", kind), {}});
+    RequireEveryPathAgrees(
+        {.name = "json other key", .parser = &parser, .bytes = JsonInput("when", kind), .timeKeys = {}}
+    );
 }
 
 TEST_CASE("Every time conversion path gives the same table for logfmt", "[time_conversion_paths][logfmt]")
 {
     const LogfmtParser parser;
     const auto kind = GENERATE(TimeText::Offset, TimeText::Naive, TimeText::Mixed);
-    RequireEveryPathAgrees({"logfmt time key", &parser, LogfmtInput("ts", kind), {"ts"}});
+    RequireEveryPathAgrees(
+        {.name = "logfmt time key", .parser = &parser, .bytes = LogfmtInput("ts", kind), .timeKeys = {"ts"}}
+    );
 }
 
 TEST_CASE(
@@ -303,14 +309,18 @@ TEST_CASE(
 )
 {
     const LogfmtParser parser;
-    RequireEveryPathAgrees({"logfmt other key", &parser, LogfmtInput("seen", TimeText::Offset), {}});
+    RequireEveryPathAgrees(
+        {.name = "logfmt other key", .parser = &parser, .bytes = LogfmtInput("seen", TimeText::Offset), .timeKeys = {}}
+    );
 }
 
 TEST_CASE("Every time conversion path gives the same table for CSV", "[time_conversion_paths][csv]")
 {
     const CsvParser parser;
     const auto kind = GENERATE(TimeText::Offset, TimeText::Naive, TimeText::Mixed);
-    RequireEveryPathAgrees({"csv time key", &parser, CsvInput("time", kind), {"time"}});
+    RequireEveryPathAgrees(
+        {.name = "csv time key", .parser = &parser, .bytes = CsvInput("time", kind), .timeKeys = {"time"}}
+    );
 }
 
 TEST_CASE(
@@ -319,7 +329,9 @@ TEST_CASE(
 )
 {
     const CsvParser parser;
-    RequireEveryPathAgrees({"csv other key", &parser, CsvInput("seen", TimeText::Offset), {}});
+    RequireEveryPathAgrees(
+        {.name = "csv other key", .parser = &parser, .bytes = CsvInput("seen", TimeText::Offset), .timeKeys = {}}
+    );
 }
 
 TEST_CASE("Every time conversion path gives the same table for the syslog template", "[time_conversion_paths][regex]")
@@ -328,5 +340,7 @@ TEST_CASE("Every time conversion path gives the same table for the syslog templa
     REQUIRE(tmpl != nullptr);
     const RegexParser parser{tmpl->regex};
     const auto kind = GENERATE(TimeText::Offset, TimeText::Naive, TimeText::Mixed);
-    RequireEveryPathAgrees({"syslog", &parser, SyslogInput(kind), {"timestamp"}});
+    RequireEveryPathAgrees(
+        {.name = "syslog", .parser = &parser, .bytes = SyslogInput(kind), .timeKeys = {"timestamp"}}
+    );
 }

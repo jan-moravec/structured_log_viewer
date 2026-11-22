@@ -178,7 +178,9 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
         RegexSettings{.pattern = pythonPattern, .continuation = ContinuationMode::UntilNextHeader}
     );
     const auto untilHeaderAnchored = std::make_shared<RegexParser>(RegexSettings{
-        .pattern = pythonPattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = pythonAnchor
+        .pattern = pythonPattern,
+        .continuation = ContinuationMode::UntilNextHeader,
+        .headerAnchor = pythonAnchor,
     });
     cases.emplace_back("regex_python_traceback", untilHeader, traceback);
     cases.emplace_back("regex_python_traceback_anchored", untilHeaderAnchored, traceback);
@@ -186,7 +188,8 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
     cases.emplace_back("regex_bom_and_crlf", untilHeader, "\xEF\xBB\xBF" + CrLf(traceback));
 
     const auto optionalGroup = std::make_shared<RegexParser>(RegexSettings{
-        .pattern = R"(^(?<level>\w+) (?<code>\d+)(?: (?<note>.*))?$)", .continuation = ContinuationMode::Indented
+        .pattern = R"(^(?<level>\w+) (?<code>\d+)(?: (?<note>.*))?$)",
+        .continuation = ContinuationMode::Indented,
     });
     cases.push_back(
         {"regex_optional_last_group",
@@ -197,7 +200,8 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
     cases.push_back(
         {"regex_numeric_last_group",
          std::make_shared<RegexParser>(RegexSettings{
-             .pattern = R"(^(?<level>\w+) (?<message>.*) (?<code>\d+)$)", .continuation = ContinuationMode::Indented
+             .pattern = R"(^(?<level>\w+) (?<message>.*) (?<code>\d+)$)",
+             .continuation = ContinuationMode::Indented,
          }),
          Repeat(6, [](int i) { return std::format("INFO text {}\n  more {}\n", i, i); }),
          {}}
@@ -350,9 +354,9 @@ void AddFuzzCorpusCases(std::vector<GoldenCase> &cases)
         const char *folder;
         std::shared_ptr<const LogParser> parser;
     } formats[] = {
-        {"json", std::make_shared<JsonParser>()},
-        {"logfmt", std::make_shared<LogfmtParser>()},
-        {"csv", std::make_shared<CsvParser>()},
+        {.folder = "json", .parser = std::make_shared<JsonParser>()},
+        {.folder = "logfmt", .parser = std::make_shared<LogfmtParser>()},
+        {.folder = "csv", .parser = std::make_shared<CsvParser>()},
     };
     for (const auto &format : formats)
     {

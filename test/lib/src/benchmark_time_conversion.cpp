@@ -98,7 +98,7 @@ public:
         {
             std::ofstream file(mPath, std::ios::binary);
             // The fixture is pinned, so every run measures the same bytes.
-            // NOLINTNEXTLINE(bugprone-random-generator-seed)
+            // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
             std::mt19937 rng(LARGE_FIXTURE_SEED);
             for (std::size_t i = 0; i < rows; ++i)
             {
@@ -353,7 +353,7 @@ void RegisterTimeConversionBenchmarks()
                 .name = Title("JSON", "", TABLE_SINK) + suffix,
                 .shape = Shape::JsonOffset,
                 .path = TimePath::TableSink,
-                .threads = threads
+                .threads = threads,
             }
         );
         RegisterVariant(
@@ -361,7 +361,7 @@ void RegisterTimeConversionBenchmarks()
                 .name = Title("JSON", "", NO_FEEDBACK) + suffix,
                 .shape = Shape::JsonOffset,
                 .path = TimePath::NoFeedback,
-                .threads = threads
+                .threads = threads,
             }
         );
         RegisterVariant(
@@ -369,7 +369,7 @@ void RegisterTimeConversionBenchmarks()
                 .name = Title("JSON", "", UP_FRONT) + suffix,
                 .shape = Shape::JsonOffset,
                 .path = TimePath::UpFront,
-                .threads = threads
+                .threads = threads,
             }
         );
     }
@@ -381,21 +381,21 @@ void RegisterTimeConversionBenchmarks()
         Variant{
             .name = Title("JSON", "naive time text, ", TABLE_SINK),
             .shape = Shape::JsonNaive,
-            .path = TimePath::TableSink
+            .path = TimePath::TableSink,
         }
     );
     RegisterVariant(
         Variant{
             .name = Title("JSON", "integer time values, ", TABLE_SINK),
             .shape = Shape::JsonInteger,
-            .path = TimePath::TableSink
+            .path = TimePath::TableSink,
         }
     );
     RegisterVariant(
         Variant{
             .name = Title("JSON", "two time keys, ", TABLE_SINK),
             .shape = Shape::JsonTwoKeys,
-            .path = TimePath::TableSink
+            .path = TimePath::TableSink,
         }
     );
 }
