@@ -102,7 +102,9 @@ namespace
     {
         absolute = path;
     }
-    return absolute.lexically_normal().generic_string();
+    // UTF-8 keeps non-ASCII names intact on Windows, where generic_string would use the system code page.
+    const std::u8string utf8 = absolute.lexically_normal().generic_u8string();
+    return {utf8.begin(), utf8.end()};
 }
 
 /**

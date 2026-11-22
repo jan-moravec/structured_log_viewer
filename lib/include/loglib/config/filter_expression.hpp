@@ -29,7 +29,7 @@ namespace loglib
 struct FilterCondition
 {
     /**
-     * @brief The kind of condition. It decides which row predicate is built from the leaf.
+     * @brief The kind of condition. It decides which row predicate is built from the condition.
      *
      * The saved files store these values, so add new kinds at the end and never reorder them.
      */
@@ -39,7 +39,7 @@ struct FilterCondition
         Time,
         /**
          * @brief Several selected values of an enumeration column, saved as strings and turned into a bit set when the
-         * leaf is compiled.
+         * condition is compiled.
          */
         Enumeration,
         /**
@@ -55,8 +55,8 @@ struct FilterCondition
     };
 
     /**
-     * @brief How a String leaf compares text. The query language writes ~ for RegularExpression, = for Exactly, : for
-     * Contains and % for Wildcard.
+     * @brief How a String condition compares text. The query language writes ~ for RegularExpression, = for Exactly, :
+     * for Contains and % for Wildcard.
      */
     enum class Match
     {
@@ -74,21 +74,21 @@ struct FilterCondition
      */
     std::vector<std::string> columnKeys;
 
-    /** @brief How to compare text. Needed for a String leaf. */
+    /** @brief How to compare text. Needed for a String condition. */
     std::optional<Match> matchType;
 
-    /** @brief The text to look for. Needed for a String leaf. */
+    /** @brief The text to look for. Needed for a String condition. */
     std::optional<std::string> filterString;
 
-    /** @brief The bounds of a Time leaf, as microseconds since the epoch, both included. Set at least one. */
+    /** @brief The bounds of a Time condition, as microseconds since the epoch, both included. Set at least one. */
     std::optional<int64_t> filterBegin;
     std::optional<int64_t> filterEnd;
 
-    /** @brief The bounds of a Number leaf, both included. A missing bound means no limit. */
+    /** @brief The bounds of a Number condition, both included. A missing bound means no limit. */
     std::optional<double> filterMinValue;
     std::optional<double> filterMaxValue;
 
-    /** @brief The selected values of an Enumeration or Boolean leaf. */
+    /** @brief The selected values of an Enumeration or Boolean condition. */
     std::vector<std::string> filterValues;
 
     friend bool operator==(const FilterCondition &, const FilterCondition &) = default;

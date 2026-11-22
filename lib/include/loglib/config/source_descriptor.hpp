@@ -86,10 +86,12 @@ struct SourceDescriptor
     return source.has_value() && !source->locators.empty();
 }
 
-/** @brief Adds a file to a source, with the key that MakePathKey gives for it. */
+/** @brief Adds a file, given as UTF-8 text, to a source with the key that MakePathKey gives for it. */
 inline void AppendLocator(SourceDescriptor &target, std::string path)
 {
-    std::string key = MakePathKey(path);
+    // Read the text as UTF-8. A plain string would be read in the code page of the system on Windows, and a non-ASCII
+    // name would get a key that differs from the key of the same file elsewhere.
+    std::string key = MakePathKey(std::filesystem::path(std::u8string(path.begin(), path.end())));
     target.locators.push_back({.path = std::move(path), .key = std::move(key)});
 }
 

@@ -1,3 +1,4 @@
+#include <loglib/config/source_descriptor.hpp>
 #include <loglib/core/path_key.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -36,6 +37,16 @@ TEST_CASE("MakePathKey produces UTF-8 bytes for non-ASCII paths", "[path_key]")
     // Match the six UTF-8 bytes for the two CJK characters.
     const std::string_view utf8Marker(reinterpret_cast<const char *>(u8"\u65e5\u5fd7"), 6);
     CHECK(key.contains(utf8Marker));
+}
+
+TEST_CASE("AppendLocator reads a non-ASCII path as UTF-8", "[path_key]")
+{
+    const std::filesystem::path p(u8"/logs/日志/app.log"); // /logs/日志/app.log
+    const std::u8string utf8 = p.u8string();
+    loglib::SourceDescriptor source;
+    loglib::AppendLocator(source, std::string(utf8.begin(), utf8.end()));
+    REQUIRE(source.locators.size() == 1);
+    CHECK(source.locators.front().key == MakePathKey(p));
 }
 
 #ifdef _WIN32

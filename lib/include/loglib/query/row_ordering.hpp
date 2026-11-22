@@ -39,8 +39,8 @@ class EnumSortRank;
  * key from the caller, ascending, as Permute orders them by their input position. Comparing and sorting give the same
  * order.
  *
- * All members are const and only read the table. Compare and LessThan may be called from one thread at a time for each
- * thread that uses them, and Permute uses several threads inside.
+ * All members are const and only read the table, so several threads may use one ordering at once while the table does
+ * not change. Permute and PermuteWindow use several threads inside.
  */
 class RowOrdering
 {
@@ -64,13 +64,15 @@ public:
     }
 
     /**
-     * @brief True if the table's enumeration dictionary for the column is no longer the one the ranks were built from,
-     * because it grew or was replaced. Build a new ordering then. Always false for other column types.
+     * @brief True if the ranks no longer fit the column: its enumeration dictionary grew or was replaced, or the column
+     * became an enumeration or stopped being one. Build a new ordering then.
      */
     [[nodiscard]] bool IsOutdated() const;
 
-    /** @brief Compares two rows of the table on this column. The result is negative, zero or positive. The direction is
-     * not applied. */
+    /**
+     * @brief Compares two rows of the table on this column. The result is negative, zero or positive. The direction is
+     * not applied.
+     */
     [[nodiscard]] int Compare(std::size_t lhsRow, std::size_t rhsRow) const;
 
     /**
