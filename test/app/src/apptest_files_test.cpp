@@ -963,8 +963,10 @@ private slots:
         spoof.kind = loglib::SourceDescriptor::Kind::File;
         spoof.format.format = loglib::LogFormat::Json;
         spoof.locators = {
-            {.path = dir.filePath(QStringLiteral("unrelated.log")).toStdString(),
-             .key = dir.filePath(QStringLiteral("unrelated.log")).toStdString()}
+            {
+                .path = dir.filePath(QStringLiteral("unrelated.log")).toStdString(),
+                .key = dir.filePath(QStringLiteral("unrelated.log")).toStdString(),
+            },
         };
         spoof.followRotationSiblings = false;
         mWindow->SetCurrentSourceForTest(spoof);

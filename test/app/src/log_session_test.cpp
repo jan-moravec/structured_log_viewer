@@ -953,7 +953,7 @@ private slots:
         loglib::SourceDescriptor networkSource;
         networkSource.kind = loglib::SourceDescriptor::Kind::NetworkStream;
         networkSource.locators = {
-            {.path = std::string{"tcp://logs.example.com:5514"}, .key = std::string{"tcp://logs.example.com:5514"}}
+            {.path = std::string{"tcp://logs.example.com:5514"}, .key = std::string{"tcp://logs.example.com:5514"}},
         };
         session.MutableCurrentSource() = networkSource;
         session.SetMode(LogSession::Mode::LiveTail);
@@ -1033,7 +1033,7 @@ private slots:
         multiSource.locators = {
             {.path = std::string{"C:/logs/app.log"}, .key = std::string{"C:/logs/app.log"}},
             {.path = std::string{"C:/logs/app.log.1"}, .key = std::string{"C:/logs/app.log.1"}},
-            {.path = std::string{"C:/logs/app.log.2"}, .key = std::string{"C:/logs/app.log.2"}}
+            {.path = std::string{"C:/logs/app.log.2"}, .key = std::string{"C:/logs/app.log.2"}},
         };
         session.MutableCurrentSource() = multiSource;
         {
@@ -1140,7 +1140,7 @@ private slots:
         fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {
             {.path = std::string{"C:/logs/app.log"}, .key = std::string{"C:/logs/app.log"}},
-            {.path = std::string{"C:/logs/app.log.1"}, .key = std::string{"C:/logs/app.log.1"}}
+            {.path = std::string{"C:/logs/app.log.1"}, .key = std::string{"C:/logs/app.log.1"}},
         };
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
@@ -1246,7 +1246,7 @@ private slots:
         loglib::SourceDescriptor networkSource;
         networkSource.kind = loglib::SourceDescriptor::Kind::NetworkStream;
         networkSource.locators = {
-            {.path = std::string{"tcp://127.0.0.1:1234"}, .key = std::string{"tcp://127.0.0.1:1234"}}
+            {.path = std::string{"tcp://127.0.0.1:1234"}, .key = std::string{"tcp://127.0.0.1:1234"}},
         };
         session.MutableCurrentSource() = networkSource;
         session.SetMode(LogSession::Mode::LiveTail);

@@ -389,11 +389,12 @@ private slots:
 
         std::vector<Rule> ruleSet;
         // Empty needle across all four string match types.
-        for (const auto matchType :
-             {loglib::FilterCondition::Match::Exactly,
-              loglib::FilterCondition::Match::Contains,
-              loglib::FilterCondition::Match::RegularExpression,
-              loglib::FilterCondition::Match::Wildcard})
+        for (const auto matchType : {
+                 loglib::FilterCondition::Match::Exactly,
+                 loglib::FilterCondition::Match::Contains,
+                 loglib::FilterCondition::Match::RegularExpression,
+                 loglib::FilterCondition::Match::Wildcard,
+             })
         {
             Rule r;
             r.name = "empty";

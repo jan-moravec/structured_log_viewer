@@ -273,22 +273,26 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
 
     loglib::LogConfiguration configuration;
     configuration.columns = {
-        {.header = "Count renamed",
-         .keys = {"count"},
-         .printFormat = "%d",
-         .type = loglib::ColumnType::Integer,
-         .parseFormats = {},
-         .visible = false,
-         .levelMapping = {},
-         .autoDetect = false},
-        {.header = "Service",
-         .keys = {"service"},
-         .printFormat = {},
-         .type = loglib::ColumnType::String,
-         .parseFormats = {},
-         .visible = true,
-         .levelMapping = {},
-         .autoDetect = false},
+        {
+            .header = "Count renamed",
+            .keys = {"count"},
+            .printFormat = "%d",
+            .type = loglib::ColumnType::Integer,
+            .parseFormats = {},
+            .visible = false,
+            .levelMapping = {},
+            .autoDetect = false,
+        },
+        {
+            .header = "Service",
+            .keys = {"service"},
+            .printFormat = {},
+            .type = loglib::ColumnType::String,
+            .parseFormats = {},
+            .visible = true,
+            .levelMapping = {},
+            .autoDetect = false,
+        },
     };
     const loglib::FilterCondition filter{
         .type = loglib::FilterCondition::Type::String,
@@ -309,14 +313,18 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
         .locators = {{.path = "tcp://127.0.0.1:9000", .key = "tcp://127.0.0.1:9000"}},
     };
     configuration.view.highlightRules = {
-        {.name = "Auth",
-         .enabled = true,
-         .condition =
-             {.type = loglib::FilterCondition::Type::String,
-              .columnKeys = {"service"},
-              .matchType = loglib::FilterCondition::Match::Contains,
-              .filterString = "auth"},
-         .style = {.foregroundIndex = 2, .backgroundIndex = 3, .bold = true, .italic = false}},
+        {
+            .name = "Auth",
+            .enabled = true,
+            .condition =
+                {
+                    .type = loglib::FilterCondition::Type::String,
+                    .columnKeys = {"service"},
+                    .matchType = loglib::FilterCondition::Match::Contains,
+                    .filterString = "auth",
+                },
+            .style = {.foregroundIndex = 2, .backgroundIndex = 3, .bold = true, .italic = false},
+        },
     };
 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());

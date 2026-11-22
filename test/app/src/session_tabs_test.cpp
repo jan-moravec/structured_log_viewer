@@ -1565,7 +1565,7 @@ private slots:
         srcA.kind = loglib::SourceDescriptor::Kind::File;
         srcA.locators = {
             {.path = std::string{"/tmp/a.log"}, .key = std::string{"/tmp/a.log"}},
-            {.path = std::string{"/tmp/a.log.1"}, .key = std::string{"/tmp/a.log.1"}}
+            {.path = std::string{"/tmp/a.log.1"}, .key = std::string{"/tmp/a.log.1"}},
         };
         sessionA->MutableCurrentSource() = srcA;
 
@@ -2155,7 +2155,7 @@ private slots:
         fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {
             {.path = std::string{"C:/logs/app.log"}, .key = std::string{"C:/logs/app.log"}},
-            {.path = std::string{"C:/logs/app.log.1"}, .key = std::string{"C:/logs/app.log.1"}}
+            {.path = std::string{"C:/logs/app.log.1"}, .key = std::string{"C:/logs/app.log.1"}},
         };
         session->MutableCurrentSource() = fileSource;
         session->NotifyPresentationChanged();

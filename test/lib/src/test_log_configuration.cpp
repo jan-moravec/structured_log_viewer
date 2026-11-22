@@ -234,26 +234,12 @@ TEST_CASE("A Columns save writes the columns and nothing else", "[log_configurat
 TEST_CASE("A Full save writes the documented keys", "[log_configuration][wire_format]")
 {
     const std::string raw = SerializeConfiguration(MakeFullConfiguration());
-    for (const char *key :
-         {"\"version\": 1",
-          "\"columns\"",
-          "\"view\"",
-          "\"source\"",
-          "\"header\"",
-          "\"keys\"",
-          "\"printFormat\"",
-          "\"parseFormats\"",
-          "\"visible\"",
-          "\"levelMapping\"",
-          "\"expression\"",
-          "\"sort\"",
-          "\"columnKeys\"",
-          "\"direction\"",
-          "\"highlightRules\"",
-          "\"anchors\"",
-          "\"locators\"",
-          "\"path\"",
-          "\"key\""})
+    for (const char *key : {
+             "\"version\": 1", "\"columns\"",     "\"view\"",         "\"source\"",    "\"header\"",
+             "\"keys\"",       "\"printFormat\"", "\"parseFormats\"", "\"visible\"",   "\"levelMapping\"",
+             "\"expression\"", "\"sort\"",        "\"columnKeys\"",   "\"direction\"", "\"highlightRules\"",
+             "\"anchors\"",    "\"locators\"",    "\"path\"",         "\"key\"",
+         })
     {
         INFO(key);
         CHECK(raw.contains(key));
@@ -315,16 +301,17 @@ TEST_CASE("A detected type is not saved even when the column holds one", "[log_c
 TEST_CASE("Every ColumnType survives a round trip when chosen", "[log_configuration][type_round_trip]")
 {
     LogConfiguration configuration;
-    for (const ColumnType type :
-         {ColumnType::Any,
-          ColumnType::String,
-          ColumnType::Boolean,
-          ColumnType::Integer,
-          ColumnType::Floating,
-          ColumnType::Number,
-          ColumnType::Time,
-          ColumnType::Enumeration,
-          ColumnType::Level})
+    for (const ColumnType type : {
+             ColumnType::Any,
+             ColumnType::String,
+             ColumnType::Boolean,
+             ColumnType::Integer,
+             ColumnType::Floating,
+             ColumnType::Number,
+             ColumnType::Time,
+             ColumnType::Enumeration,
+             ColumnType::Level,
+         })
     {
         Column column;
         column.header = "c" + std::to_string(static_cast<int>(type));
@@ -370,9 +357,10 @@ TEST_CASE("A view may leave out any of its parts", "[log_configuration][defaults
 
 TEST_CASE("A sort direction is saved by name", "[log_configuration][view]")
 {
-    for (const auto &[direction, name] :
-         {std::pair{SortDirection::Ascending, std::string_view{"ascending"}},
-          std::pair{SortDirection::Descending, std::string_view{"descending"}}})
+    for (const auto &[direction, name] : {
+             std::pair{SortDirection::Ascending, std::string_view{"ascending"}},
+             std::pair{SortDirection::Descending, std::string_view{"descending"}},
+         })
     {
         LogConfiguration configuration;
         configuration.view.sort = Sort{.columnKeys = {"ts"}, .direction = direction};
@@ -539,7 +527,8 @@ TEST_CASE("Source round-trips a multi-file descriptor and a regex pattern", "[lo
     source.kind = SourceDescriptor::Kind::File;
     source.format.format = loglib::LogFormat::Regex;
     source.locators = {
-        {.path = "C:/Logs/a.log", .key = "c:/logs/a.log"}, {.path = "C:/Logs/b.log", .key = "c:/logs/b.log"}
+        {.path = "C:/Logs/a.log", .key = "c:/logs/a.log"},
+        {.path = "C:/Logs/b.log", .key = "c:/logs/b.log"},
     };
     source.format.regex.pattern = "(?<msg>.*)";
     source.format.regex.continuation = ContinuationMode::Indented;
@@ -645,26 +634,43 @@ TEST_CASE(
 {
     LogConfiguration configuration;
     configuration.view.highlightRules = {
-        {.name = "text",
-         .condition =
-             {.type = FilterCondition::Type::String,
-              .columnKeys = {"msg"},
-              .matchType = FilterCondition::Match::Wildcard,
-              .filterString = "a*"},
-         .style = {.foregroundIndex = 1, .backgroundIndex = 2, .bold = true, .italic = true}},
-        {.name = "time",
-         .condition = {.type = FilterCondition::Type::Time, .columnKeys = {"ts"}, .filterBegin = 10, .filterEnd = 20}},
-        {.name = "level",
-         .condition =
-             {.type = FilterCondition::Type::Enumeration, .columnKeys = {"level"}, .filterValues = {"Error", "Warn"}}},
-        {.name = "latency",
-         .condition =
-             {.type = FilterCondition::Type::Number,
-              .columnKeys = {"latency"},
-              .filterMinValue = 1.5,
-              .filterMaxValue = 9.0}},
-        {.name = "flag",
-         .condition = {.type = FilterCondition::Type::Boolean, .columnKeys = {"ok"}, .filterValues = {"false"}}},
+        {
+            .name = "text",
+            .condition =
+                {
+                    .type = FilterCondition::Type::String,
+                    .columnKeys = {"msg"},
+                    .matchType = FilterCondition::Match::Wildcard,
+                    .filterString = "a*",
+                },
+            .style = {.foregroundIndex = 1, .backgroundIndex = 2, .bold = true, .italic = true},
+        },
+        {
+            .name = "time",
+            .condition =
+                {.type = FilterCondition::Type::Time, .columnKeys = {"ts"}, .filterBegin = 10, .filterEnd = 20},
+        },
+        {
+            .name = "level",
+            .condition =
+                {.type = FilterCondition::Type::Enumeration,
+                 .columnKeys = {"level"},
+                 .filterValues = {"Error", "Warn"}},
+        },
+        {
+            .name = "latency",
+            .condition =
+                {
+                    .type = FilterCondition::Type::Number,
+                    .columnKeys = {"latency"},
+                    .filterMinValue = 1.5,
+                    .filterMaxValue = 9.0,
+                },
+        },
+        {
+            .name = "flag",
+            .condition = {.type = FilterCondition::Type::Boolean, .columnKeys = {"ok"}, .filterValues = {"false"}},
+        },
     };
 
     const std::string json = SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact);

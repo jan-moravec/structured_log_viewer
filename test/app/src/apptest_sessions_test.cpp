@@ -789,7 +789,7 @@ private slots:
         mWindow->SetCurrentSourceForTest(
             loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
-                .locators = {{.path = syntheticSource, .key = syntheticSource}}
+                .locators = {{.path = syntheticSource, .key = syntheticSource}},
             }
         );
 
@@ -1432,7 +1432,8 @@ private slots:
         QVERIFY(spy.isValid());
 
         const QStringList forwardFiles{
-            QStringLiteral("C:/logs/forward-a.json"), QStringLiteral("C:/logs/forward-b.json")
+            QStringLiteral("C:/logs/forward-a.json"),
+            QStringLiteral("C:/logs/forward-b.json"),
         };
 
         // Wire format: magic `STRUCTLOG`, `quint8` version (2),
@@ -2121,10 +2122,10 @@ private slots:
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Two fixtures sharing a schema so we can assert on a sum.
-        const TempJsonFile fixtureA(
-            {QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
-             QStringLiteral(R"({"category": "beta", "msg": "second"})")}
-        );
+        const TempJsonFile fixtureA({
+            QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
+            QStringLiteral(R"({"category": "beta", "msg": "second"})"),
+        });
         const TempJsonFile fixtureB({QStringLiteral(R"({"category": "alpha", "msg": "third"})")});
         const int expectedRows = 3;
 
@@ -2969,7 +2970,7 @@ private slots:
             wired->SetCurrentSourceForTest(
                 loglib::SourceDescriptor{
                     .kind = loglib::SourceDescriptor::Kind::File,
-                    .locators = {{.path = "/tmp/live.log", .key = "/tmp/live.log"}}
+                    .locators = {{.path = "/tmp/live.log", .key = "/tmp/live.log"}},
                 }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);

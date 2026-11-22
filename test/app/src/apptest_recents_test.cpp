@@ -183,7 +183,7 @@ private slots:
             .kind = loglib::SourceDescriptor::Kind::File,
             .locators = {
                 {.path = "C:/logs/first.json", .key = "C:/logs/first.json"},
-                {.path = "C:/logs/second.json", .key = "C:/logs/second.json"}
+                {.path = "C:/logs/second.json", .key = "C:/logs/second.json"},
             },
         };
 
@@ -249,8 +249,10 @@ private slots:
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
                 .locators = {
-                    {.path = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
-                     .key = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+                    {
+                        .path = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                    },
                 },
             };
             const QString uuid = manager.WriteSnapshot(cfg);
@@ -295,14 +297,14 @@ private slots:
         loglib::LogConfiguration cfgA;
         cfgA.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/a.json", .key = "C:/logs/a.json"}}
+            .locators = {{.path = "C:/logs/a.json", .key = "C:/logs/a.json"}},
         };
         const QString uuidA = manager.WriteSnapshot(cfgA);
 
         loglib::LogConfiguration cfgB;
         cfgB.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/b.json", .key = "C:/logs/b.json"}}
+            .locators = {{.path = "C:/logs/b.json", .key = "C:/logs/b.json"}},
         };
         const QString uuidB = manager.WriteSnapshot(cfgB);
 
@@ -332,7 +334,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/only.json", .key = "C:/logs/only.json"}}
+            .locators = {{.path = "C:/logs/only.json", .key = "C:/logs/only.json"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
@@ -361,8 +363,10 @@ private slots:
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
                 .locators = {
-                    {.path = QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString(),
-                     .key = QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()}
+                    {
+                        .path = QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString(),
+                    },
                 },
             };
             uuids.append(manager.WriteSnapshot(cfg));
@@ -942,7 +946,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/kept.json", .key = "C:/logs/kept.json"}}
+            .locators = {{.path = "C:/logs/kept.json", .key = "C:/logs/kept.json"}},
         };
         const QString keptUuid = manager.WriteSnapshot(cfg);
         QVERIFY(!keptUuid.isEmpty());
@@ -995,7 +999,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/seed.json", .key = "C:/logs/seed.json"}}
+            .locators = {{.path = "C:/logs/seed.json", .key = "C:/logs/seed.json"}},
         };
         const QString seedUuid = manager.WriteSnapshot(cfg);
         QVERIFY(!seedUuid.isEmpty());
@@ -1129,8 +1133,10 @@ private slots:
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
                 .locators = {
-                    {.path = QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString(),
-                     .key = QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()}
+                    {
+                        .path = QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString(),
+                    },
                 },
             };
             const QString uuid = manager.WriteSnapshot(cfg);
@@ -1300,8 +1306,10 @@ private slots:
             cfg.source = loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::File,
                 .locators = {
-                    {.path = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
-                     .key = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+                    {
+                        .path = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                        .key = QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString(),
+                    },
                 },
             };
             QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
@@ -1327,7 +1335,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/atomic.json", .key = "C:/logs/atomic.json"}}
+            .locators = {{.path = "C:/logs/atomic.json", .key = "C:/logs/atomic.json"}},
         };
 
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
@@ -1361,7 +1369,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/noopen.json", .key = "C:/logs/noopen.json"}}
+            .locators = {{.path = "C:/logs/noopen.json", .key = "C:/logs/noopen.json"}},
         };
 
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
@@ -1384,7 +1392,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {{.path = "C:/logs/reuse.json", .key = "C:/logs/reuse.json"}}
+            .locators = {{.path = "C:/logs/reuse.json", .key = "C:/logs/reuse.json"}},
         };
 
         const QString uuid = manager.WriteSnapshot(cfg);
@@ -1425,7 +1433,7 @@ private slots:
             .kind = loglib::SourceDescriptor::Kind::File,
             .locators = {
                 {.path = "C:/logs/initial.json", .key = "C:/logs/initial.json"},
-                {.path = "C:/logs/added.json", .key = "C:/logs/added.json"}
+                {.path = "C:/logs/added.json", .key = "C:/logs/added.json"},
             },
         };
         const QString reuse = manager.WriteSnapshot(cfg, uuid);
@@ -1458,8 +1466,10 @@ private slots:
                 cfg.source = loglib::SourceDescriptor{
                     .kind = loglib::SourceDescriptor::Kind::File,
                     .locators = {
-                        {.path = QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString(),
-                         .key = QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()}
+                        {
+                            .path = QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString(),
+                            .key = QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString(),
+                        },
                     },
                 };
                 if (!manager.WriteSnapshot(cfg).isEmpty())

@@ -256,13 +256,13 @@ TEST_CASE("RowOrdering Enumeration builds its own ranks and keeps input-index ti
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
-    cfg.columns.push_back(
-        {.header = "category",
-         .keys = {"category"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
-    );
+    cfg.columns.push_back({
+        .header = "category",
+        .keys = {"category"},
+        .printFormat = "{}",
+        .type = ColumnType::Enumeration,
+        .parseFormats = {},
+    });
     const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -361,12 +361,14 @@ TEST_CASE("RowOrdering mixed-column table sorts the requested column only", "[ro
 
     RowBatch batch;
     batch.firstLineNumber = 1;
-    const std::array<std::pair<LogValue, LogValue>, 4> rows = {{
-        {int64_t{2}, std::string("a")},
-        {std::monostate{}, std::string("c")},
-        {int64_t{1}, std::string("b")},
-        {int64_t{2}, std::monostate{}},
-    }};
+    const std::array<std::pair<LogValue, LogValue>, 4> rows = {
+        {
+            {int64_t{2}, std::string("a")},
+            {std::monostate{}, std::string("c")},
+            {int64_t{1}, std::string("b")},
+            {int64_t{2}, std::monostate{}},
+        },
+    };
     for (const auto &[n, s] : rows)
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"n", n}, {"s", s}}));
@@ -421,7 +423,7 @@ TEST_CASE("RowOrdering LessThan and Permute agree for every pair on a mixed colu
         std::monostate{},
         int64_t{1},
         nan,
-        int64_t{3}
+        int64_t{3},
     };
     const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
     const auto logRows = IotaRows(values.size());
@@ -440,13 +442,13 @@ TEST_CASE("RowOrdering on an Enumeration column builds its ranks and sorts alpha
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
-    cfg.columns.push_back(
-        {.header = "category",
-         .keys = {"category"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
-    );
+    cfg.columns.push_back({
+        .header = "category",
+        .keys = {"category"},
+        .printFormat = "{}",
+        .type = ColumnType::Enumeration,
+        .parseFormats = {},
+    });
     const ColumnLayout mgr(cfg.columns);
     loglib::LogTable table(mgr);
     table.BeginStreaming(std::move(source));
@@ -468,6 +470,7 @@ TEST_CASE("RowOrdering on an Enumeration column builds its ranks and sorts alpha
     REQUIRE_FALSE(ascending.IsOutdated());
     const auto perm = ascending.Permute(logRows);
     std::vector<std::string> sorted;
+    sorted.reserve(perm.size());
     for (const std::size_t index : perm)
     {
         sorted.push_back(rowValues[logRows[index]]);
