@@ -489,13 +489,13 @@ void RunStaticParserPipelineBody(
 /**
  * @brief Parses a memory-mapped file in parallel and sends the result to the sink in file order.
  *
- * - The first stage runs in order and cuts the file into batches. It stops cutting when the stop token fires.
- * - The second stage runs in parallel and decodes the batches with the line decoder that makeDecoder returns for each
+ * - The cut stage runs in order and cuts the file into batches. It stops cutting when the stop token fires.
+ * - The decode stage runs in parallel and decodes the batches with the line decoder that makeDecoder returns for each
  *   worker. It gives every row its source and a line id counted inside the batch, and converts the time columns.
- * - The third stage runs in order. It shifts the line ids to file positions, appends each batch's strings to the arena
- *   of the file, coalesces batches, announces the new keys and calls the sink.
+ * - The delivery stage runs in order. It shifts the line ids to file positions, appends each batch's strings to the
+ *   arena of the file, coalesces batches, announces the new keys and calls the sink.
  *
- * The decoding stage records the keys it meets first in each batch, and the third stage announces them in batch order,
+ * The decode stage records the keys it meets first in each batch, and the delivery stage announces them in batch order,
  * so the new keys come in the order they first appear in the file, however the workers were scheduled. declaredKeys are
  * announced before the first row. A parser that interns its keys before the pipeline starts, such as CSV with its
  * header, passes them there so they appear even if no row has a value.

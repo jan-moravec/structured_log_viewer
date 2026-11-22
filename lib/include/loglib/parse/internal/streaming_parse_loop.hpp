@@ -72,7 +72,7 @@ void SliceValuesOfRawLine(std::vector<CompactLogValue> &values, std::string &own
  *
  * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
  */
-template <class Decoder>
+template <LineDecoder Decoder>
 void RunStreamingParseLoopBody(
     StreamLineSource &source,
     Decoder &decoder,
@@ -467,7 +467,7 @@ void RunStreamingParseLoopBody(
  * When the loop throws, the sink still gets one last batch with an error that says so and the record that was still
  * open, and OnFinished, and the exception goes on to the caller. See BatchCoalescer::FinishAfterException.
  */
-template <class Decoder>
+template <LineDecoder Decoder>
 void RunStreamingParseLoop(
     StreamLineSource &source,
     Decoder &decoder,

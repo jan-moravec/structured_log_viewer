@@ -47,10 +47,11 @@ using loglib::RowBatch;
 namespace
 {
 
-/// Mock text-format decoder used to exercise the shared pipeline harness independently of `JsonParser`. Format: one
-/// record per line, fields separated by a single space, each field of the form `key=value`. A line beginning with `!`
-/// is treated as a parse error so the harness's per-line error propagation can be covered without inventing a
-/// syntax-error fixture. With multiline set, an indented line continues the last field of the previous record.
+/**
+ * A small decoder that tests the shared drivers without a real format. Each line is one record of space-separated
+ * key=value fields. A line that starts with an exclamation mark is a parse error, which covers per-line errors without
+ * a syntax-error fixture. With multiline set, an indented line continues the last field of the previous record.
+ */
 class KeyValueLineDecoder
 {
 public:

@@ -1,11 +1,11 @@
 /**
  * @brief Decodes one line-aligned batch of a mapped file with a format's line decoder.
  *
- * Every format used to repeat the same loop to read a batch: split the bytes into lines, drop the carriage return and
- * the byte order mark, note where each line ends, count blank lines, number the lines and the errors, collect
- * continuation lines and convert the time columns. DecodeBatch is that loop, written once. A format supplies only a
- * LineDecoder that turns one line into a row. The result has the shape that the serial stage of the static pipeline
- * expects, so it can join the batches in file order.
+ * DecodeBatch does the work that every format shares when it reads a batch: it splits the bytes into lines, drops the
+ * carriage return and the byte order mark, notes where each line ends, counts blank lines, numbers the lines and the
+ * errors, collects continuation lines and converts the time columns. A format supplies only a LineDecoder that turns
+ * one line into a row. The result has the shape that the delivery stage of the static pipeline expects, so it can join
+ * the batches in file order.
  *
  * This is part of the parse module.
  */
@@ -35,12 +35,12 @@ namespace loglib::internal
 {
 
 /**
- * @brief Decodes the lines of one batch into rows, errors, line offsets and the facts the serial stage needs.
+ * @brief Decodes the lines of one batch into rows, errors, line offsets and the facts the delivery stage needs.
  *
- * Line numbers are counted from 1 inside the batch, and the serial stage shifts them to file positions. A record that
+ * Line numbers are counted from 1 inside the batch, and the delivery stage shifts them to file positions. A record that
  * continues over several lines becomes one row. A record that is still open at the end of the batch is the last row,
  * and the batch says so, because the next batch may continue it. Continuation lines at the start of the batch, before
- * any record, are returned as text for the serial stage to add to the record it holds from the previous batch.
+ * any record, are returned as text for the delivery stage to add to the record it holds from the previous batch.
  */
 template <LineDecoder Decoder>
 void DecodeBatch(
@@ -97,7 +97,7 @@ void DecodeBatch(
         LogLine logLine(rowValues, parsed.fields, source, headerLine - 1);
         parsed.lines.push_back(std::move(logLine));
         // Inline promotion: the values are still hot. OwnedString payloads still point into the batch arena, which the
-        // serial stage rebases later, so the arena is passed explicitly.
+        // delivery stage rebases later, so the arena is passed explicitly.
         worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
     };
 

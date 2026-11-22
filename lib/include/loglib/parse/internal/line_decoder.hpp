@@ -32,7 +32,7 @@ namespace loglib::internal
  *   header. The line counter still moves on.
  * - Error: add no row. The driver turns the error text into "Error on line N: ...".
  * - Continue: do not emit now; the driver appends the line to the previous record. Without a previous record the line
- * is reported as a continuation with nothing to continue.
+ *   is reported as a continuation with nothing to continue.
  */
 enum class LineDecodeResult : uint8_t
 {
