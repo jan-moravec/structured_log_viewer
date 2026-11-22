@@ -142,17 +142,27 @@ void RecordAssembler::Open(std::vector<CompactLogValue> &values, size_t firstLin
     mFirstLine = firstLine;
     mLastLine = firstLine;
     mTarget = target;
-    mTargetStatus = CheckContinuationTarget(mValues, target);
-    mAccepts = mTargetStatus == ContinuationSpliceOutcome::Ok;
+    mStatusKnown = false;
     mPendingBlanks = 0;
     mDropped = 0;
     mContinuation.clear();
     mRawText.clear();
 }
 
-void RecordAssembler::AddBlank() noexcept
+void RecordAssembler::EnsureTargetStatus() const
 {
-    if (mOpen && mAccepts)
+    if (mStatusKnown)
+    {
+        return;
+    }
+    mTargetStatus = CheckContinuationTarget(mValues, mTarget);
+    mAccepts = mTargetStatus == ContinuationSpliceOutcome::Ok;
+    mStatusKnown = true;
+}
+
+void RecordAssembler::AddBlank()
+{
+    if (mOpen && AcceptsContinuation())
     {
         ++mPendingBlanks;
     }
@@ -160,6 +170,7 @@ void RecordAssembler::AddBlank() noexcept
 
 bool RecordAssembler::AddContinuation(std::string_view line, size_t lineNumber, size_t maxContinuationBytes)
 {
+    EnsureTargetStatus();
     if (mAccepts && mContinuation.size() + line.size() >= maxContinuationBytes)
     {
         mAccepts = false;

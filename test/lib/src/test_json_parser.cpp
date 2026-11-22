@@ -184,11 +184,11 @@ TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
 }
 
 // Regression: `DecodeJsonBatch` used to format errors with the line number
-// *relative to the current Stage A batch*, which resets to 1 at each new
+// *relative to the current batch*, which resets to 1 at each new
 // pipeline batch. For files larger than `batchSizeBytes` this caused every
 // error past batch 1 to report the wrong line — e.g. a malformed line at file
 // line 1500 surfacing as "Error on line 500" because it was the 500th line of
-// the second batch. The fix moves the formatting into Stage C, which knows the
+// the second batch. The fix moves the formatting into the delivery stage, which knows the
 // running absolute line cursor and composes "Error on line N: <body>" itself.
 TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[json_parser][error_line_numbers]")
 {
@@ -226,7 +226,7 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     const MemoryLogFile testFile;
     testFile.Write(body);
 
-    // Force several Stage A batches by capping `batchSizeBytes` well below
+    // Force several batches by capping `batchSizeBytes` well below
     // the file size; the INVALID_LINE_NUMBER_A line therefore lands in batch 2+.
     loglib::ParserOptions options;
     options.batchSizeBytes = 8 * 1024;
@@ -646,7 +646,7 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     // `string` / `string_view` distinctions into one bytes comparison).
     using namespace loglib;
 
-    // Generate a fixture sized to span multiple Stage A batches (1 MiB default) so the
+    // Generate a fixture sized to span multiple batches (1 MiB default) so the
     // multi-threaded run actually exercises more than one worker. ~5'000 lines × ~200 bytes
     // each ≈ 1 MB, large enough to split.
     std::vector<test_common::LogRecord> records;

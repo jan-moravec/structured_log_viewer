@@ -38,6 +38,7 @@ add_library(
     src/core/row_batch.cpp
     src/parse/static_parser_pipeline.cpp
     src/core/stream_line_source.cpp
+    src/parse/streaming_parse_loop.cpp
     src/ingest/tailing_bytes_producer.cpp
     src/ingest/tcp_server_producer.cpp
     src/ingest/udp_server_producer.cpp

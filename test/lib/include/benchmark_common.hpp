@@ -445,7 +445,7 @@ inline StreamingRunResult RunStreamingFlow(
         table.SetDefaultSourceTimeZone(TestTimeZone());
 
         // Mirror MainWindow::OpenJsonStreaming: the parser borrows the
-        // same FileLineSource the table owns, so Stage C's offsets and
+        // same FileLineSource the table owns, so the delivery stage's offsets and
         // owned-string arena land in the FileLineSource value accesses read
         // from. Splitting them would dangle LogValues and under-count
         // structural bytes.

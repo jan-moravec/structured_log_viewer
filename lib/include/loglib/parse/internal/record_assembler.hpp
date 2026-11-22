@@ -89,19 +89,21 @@ public:
     }
 
     /** @brief Ok when continuation text can be kept, otherwise why it is dropped. Valid while the record is open. */
-    [[nodiscard]] ContinuationSpliceOutcome TargetStatus() const noexcept
+    [[nodiscard]] ContinuationSpliceOutcome TargetStatus() const
     {
+        EnsureTargetStatus();
         return mTargetStatus;
     }
 
     /** @brief True when a continuation line would be kept. */
-    [[nodiscard]] bool AcceptsContinuation() const noexcept
+    [[nodiscard]] bool AcceptsContinuation() const
     {
+        EnsureTargetStatus();
         return mAccepts;
     }
 
     /** @brief Notes a blank line after the record. It joins the record only if another continuation follows. */
-    void AddBlank() noexcept;
+    void AddBlank();
 
     /**
      * @brief Adds a continuation line.
@@ -148,10 +150,15 @@ public:
     void Close(std::vector<CompactLogValue> &valuesOut);
 
 private:
+    /** Looks at the target field the first time it is needed, so a record without continuation lines never pays for it.
+     */
+    void EnsureTargetStatus() const;
+
     bool mKeepRawText;
     bool mOpen = false;
-    bool mAccepts = false;
-    ContinuationSpliceOutcome mTargetStatus = ContinuationSpliceOutcome::MissingTarget;
+    mutable bool mStatusKnown = false;
+    mutable bool mAccepts = false;
+    mutable ContinuationSpliceOutcome mTargetStatus = ContinuationSpliceOutcome::MissingTarget;
     KeyId mTarget = INVALID_KEY_ID;
     size_t mFirstLine = 0;
     size_t mLastLine = 0;

@@ -65,35 +65,7 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
  * are not in the line, such as decoded escapes or text added from continuation lines, stay owned, and ownedArena is
  * rebuilt to hold only those.
  */
-inline void SliceValuesOfRawLine(
-    std::vector<CompactLogValue> &values, std::string &ownedArena, std::string_view rawLine
-)
-{
-    if (ownedArena.empty())
-    {
-        return;
-    }
-    const std::string_view arena(ownedArena);
-    std::string kept;
-    for (CompactLogValue &field : values)
-    {
-        if (field.tag != CompactTag::OwnedString)
-        {
-            continue;
-        }
-        const std::string_view text = arena.substr(field.payload, field.aux);
-        const size_t position = text.empty() ? std::string_view::npos : rawLine.find(text);
-        if (position != std::string_view::npos)
-        {
-            field = CompactLogValue::MakeMmapSlice(position, field.aux).WithKey(field.Key());
-            continue;
-        }
-        const uint64_t offset = kept.size();
-        kept.append(text);
-        field.payload = offset;
-    }
-    ownedArena = std::move(kept);
-}
+void SliceValuesOfRawLine(std::vector<CompactLogValue> &values, std::string &ownedArena, std::string_view rawLine);
 
 /**
  * @brief The body of RunStreamingParseLoop, after the sink was started. It may throw.

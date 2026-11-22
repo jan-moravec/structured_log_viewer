@@ -49,7 +49,7 @@ using internal::Pcre2MatchDataPtr;
 // ---------------------------------------------------------------------
 
 /**
- * Pre-intern every named group as a KeyId so Stage B does not
+ * Pre-intern every named group as a KeyId so the decoder does not
  * touch the global KeyIndex per cell. Mirrors CSV's eager header
  * intern step.
  */
@@ -396,7 +396,7 @@ void RegexParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOption
     }
 
     // Compile once on the orchestrator thread; the pipeline
-    // shares the compiled code read-only across Stage B workers.
+    // shares the compiled code read-only across the decoding workers.
     // RunStaticParserPipeline runs synchronously (joins every
     // TBB worker before returning) so a stack value captured by
     // reference outlives all concurrent uses — no shared_ptr or
@@ -422,7 +422,7 @@ void RegexParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOption
     const std::string &headerAnchorSource = mHeaderAnchor;
 
     // The synchronous pipeline guarantees this stack-owned pattern
-    // outlives every Stage B worker.
+    // outlives every decoding worker.
     CompiledPattern headerAnchor;
     const CompiledPattern *anchorPtr = nullptr;
     if (staticContinuationMode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())

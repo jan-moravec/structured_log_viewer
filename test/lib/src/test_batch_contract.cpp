@@ -119,7 +119,7 @@ private:
     KeyIndex mKeys;
 };
 
-/** Runs a parser over bytes as a file, with a given Stage A batch size, and keeps the sink for inspection. */
+/** Runs a parser over bytes as a file, with a given batch size, and keeps the sink for inspection. */
 void ParseAsFile(
     const LogParser &parser,
     const std::string &fileName,

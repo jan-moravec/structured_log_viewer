@@ -456,7 +456,7 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
     // misidentify the header when leading blanks or a tiny
     // `batchSizeBytes` pushed it into a later batch. Fixed by
     // recording the header's byte offset and skipping that exact
-    // offset in Stage B.
+    // offset in the decoder.
     //
     // See the static-columns test for why we bypass
     // `MemoryLogFile::CreateFileLineSource()`.

@@ -409,8 +409,8 @@ void CsvParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions 
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
     // Eagerly find and parse the header. Outputs:
-    //  * columnKeys -- shared column -> KeyId table for Stage B.
-    //  * headerLineOffset -- exact byte offset Stage B uses to skip
+    //  * columnKeys -- shared column -> KeyId table for the decoders.
+    //  * headerLineOffset -- exact byte offset the decoder uses to skip
     //    the header (handles the case where leading blanks push the
     //    header past batch 0).
     //  * headerParseFailed -- short-circuits the data pipeline so a

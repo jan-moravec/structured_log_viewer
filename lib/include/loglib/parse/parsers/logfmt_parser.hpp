@@ -34,7 +34,7 @@ class StreamLineSource;
  * with a point or an exponent become doubles, and everything else is a string. Quoted values stay strings even when
  * they look like numbers, so pid="42" keeps what the writer meant.
  *
- * It uses the same parallel pipeline and streaming loop as JsonParser, through CompactLineDecoder.
+ * It uses the same parallel pipeline and streaming loop as JsonParser, through one LineDecoder.
  */
 class LogfmtParser : public LogParser
 {

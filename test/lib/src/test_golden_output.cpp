@@ -372,6 +372,20 @@ std::vector<GoldenCase> BuildCases()
     return cases;
 }
 
+/** True when LOGLIB_UPDATE_GOLDEN is set, which makes the tests write the golden files instead of reading them. */
+bool UpdateRequested()
+{
+#ifdef _WIN32
+    char *value = nullptr;
+    size_t length = 0;
+    const bool set = _dupenv_s(&value, &length, "LOGLIB_UPDATE_GOLDEN") == 0 && value != nullptr;
+    std::free(value);
+    return set;
+#else
+    return std::getenv("LOGLIB_UPDATE_GOLDEN") != nullptr;
+#endif
+}
+
 void CompareWithGolden(
     const std::string &caseName,
     const std::string &mode,
@@ -381,7 +395,7 @@ void CompareWithGolden(
 )
 {
     const std::filesystem::path path = std::filesystem::path(LOGLIB_TEST_GOLDEN_DIR) / (caseName + "." + mode + ".txt");
-    if (std::getenv("LOGLIB_UPDATE_GOLDEN") != nullptr)
+    if (UpdateRequested())
     {
         // Only the default run writes the file, so the other runs are compared with it afterwards.
         if (canonical)
