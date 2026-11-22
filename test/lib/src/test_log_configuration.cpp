@@ -689,10 +689,10 @@ TEST_CASE("A format spec round-trips for every format and continuation mode", "[
     for (const ContinuationMode mode :
          {ContinuationMode::None, ContinuationMode::Indented, ContinuationMode::UntilNextHeader})
     {
-        specs.push_back(
-            {.format = loglib::LogFormat::Regex,
-             .regex = {.pattern = "^(?<a>\d+) (?<b>.*)$", .continuation = mode, .headerAnchor = "^\d+"}}
-        );
+        specs.push_back({
+            .format = loglib::LogFormat::Regex,
+            .regex = {.pattern = "^(?<a>\d+) (?<b>.*)$", .continuation = mode, .headerAnchor = "^\d+"},
+        });
     }
 
     for (const loglib::FormatSpec &spec : specs)
@@ -706,7 +706,7 @@ TEST_CASE("A format spec round-trips for every format and continuation mode", "[
 
         const std::string json = SerializeConfiguration(configuration);
         // The regex settings are written for the regex format only.
-        CHECK((json.find("\"regex\"") != std::string::npos) == (spec.format == loglib::LogFormat::Regex));
+        CHECK(json.contains("\"regex\"") == (spec.format == loglib::LogFormat::Regex));
         const LogConfiguration loaded = ParseConfiguration(json);
         REQUIRE(loaded.source.has_value());
         CHECK(loaded.source->format == spec);

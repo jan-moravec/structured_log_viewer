@@ -682,10 +682,10 @@ TEST_CASE("The same bytes as a file and as a stream give the same batches", "[ba
     }
     SECTION("multi-line regex")
     {
-        const RegexParser parser(
-            {.pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)",
-             .continuation = ContinuationMode::UntilNextHeader}
-        );
+        const RegexParser parser({
+            .pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)",
+            .continuation = ContinuationMode::UntilNextHeader,
+        });
         CheckStaticAndStreamAgree(parser, RegexInput(), "batch_contract_eq_regex.log");
     }
 }
@@ -713,10 +713,10 @@ TEST_CASE(
         }
         SECTION("multi-line regex")
         {
-            const RegexParser parser(
-                {.pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)",
-                 .continuation = ContinuationMode::UntilNextHeader}
-            );
+            const RegexParser parser({
+                .pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)",
+                .continuation = ContinuationMode::UntilNextHeader,
+            });
             CheckStaticAndStreamAgree(parser, lead + RegexInput(), "batch_contract_orphan_regex.log");
         }
     }
@@ -1215,10 +1215,10 @@ TEST_CASE(
     }
     SECTION("regex")
     {
-        const RegexParser parser(
-            {.pattern = R"(^(?<id>\d+) (?<num>\S+) (?<level>[A-Z]+) (?<msg>.*)$)",
-             .continuation = ContinuationMode::UntilNextHeader}
-        );
+        const RegexParser parser({
+            .pattern = R"(^(?<id>\d+) (?<num>\S+) (?<level>[A-Z]+) (?<msg>.*)$)",
+            .continuation = ContinuationMode::UntilNextHeader,
+        });
         CheckDeterministic(parser, DeterminismRegexInput(), "batch_contract_determinism_regex.log");
     }
 }

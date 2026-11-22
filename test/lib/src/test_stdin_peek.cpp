@@ -179,19 +179,25 @@ TEST_CASE("StdinPeek bytes and a file head give the same detection for the same 
         loglib::LogFormat expected;
     };
     const Sample samples[] = {
-        {.label = "json",
-         .bytes = R"({"level":"info","message":"first"}
+        {
+            .label = "json",
+            .bytes = R"({"level":"info","message":"first"}
 {"level":"warn","message":"second"}
 )",
-         .expected = loglib::LogFormat::Json},
-        {.label = "logfmt",
-         .bytes = "level=info msg=first\nlevel=warn msg=second\n",
-         .expected = loglib::LogFormat::Logfmt},
+            .expected = loglib::LogFormat::Json,
+        },
+        {
+            .label = "logfmt",
+            .bytes = "level=info msg=first\nlevel=warn msg=second\n",
+            .expected = loglib::LogFormat::Logfmt,
+        },
         {.label = "csv", .bytes = "level,message\ninfo,first\nwarn,second\n", .expected = loglib::LogFormat::Csv},
-        {.label = "regex-syslog",
-         .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
-                  "Jun 27 01:47:20 host-b configd[17]: network changed\n",
-         .expected = loglib::LogFormat::Regex},
+        {
+            .label = "regex-syslog",
+            .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
+                     "Jun 27 01:47:20 host-b configd[17]: network changed\n",
+            .expected = loglib::LogFormat::Regex,
+        },
     };
 
     for (const Sample &s : samples)

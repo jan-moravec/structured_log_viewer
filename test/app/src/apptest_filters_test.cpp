@@ -5022,7 +5022,8 @@ private slots:
                 builder.columns = builderLayout.Columns();
             }
             builder.source = (loglib::SourceDescriptor{
-                .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+                .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+                .locators = {"tcp://127.0.0.1:5170"},
             });
             loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
 

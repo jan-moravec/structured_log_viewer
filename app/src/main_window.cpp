@@ -6829,7 +6829,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
     // keep their pinned parser factory.
     if (autoDetect)
     {
-        auto parserFactory = [catalog = CatalogOf(mRegexTemplateRegistry)]() -> std::unique_ptr<loglib::LogParser> {
+        auto parserFactory = [catalog = CatalogOf(mRegexTemplateRegistry)] -> std::unique_ptr<loglib::LogParser> {
             return std::make_unique<loglib::AutoDetectParser>(
                 loglib::PROBE_BYTES_BUDGET,
                 loglib::AutoDetectParser::DEFAULT_PEEK_TIMEOUT,

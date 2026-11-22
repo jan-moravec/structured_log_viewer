@@ -2982,7 +2982,8 @@ private slots:
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
                 loglib::SourceDescriptor{
-                    .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+                    .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+                    .locators = {"tcp://127.0.0.1:5170"},
                 }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
@@ -3019,7 +3020,8 @@ private slots:
             builder.columns = builderLayout.Columns();
         }
         builder.source = (loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+            .locators = {"tcp://127.0.0.1:5170"},
         });
         loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
@@ -3063,7 +3065,8 @@ private slots:
             builder.columns = builderLayout.Columns();
         }
         builder.source = (loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::File, .locators = {fixture.Path().toStdString()}
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {fixture.Path().toStdString()},
         });
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         loglib::SaveConfiguration(builder, adhocPath.toStdString(), loglib::SaveScope::Full);
@@ -3220,7 +3223,8 @@ private slots:
         // it, `Touch` would short-circuit and mask the gate.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+            .locators = {"tcp://127.0.0.1:5170"},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -3256,7 +3260,8 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+            .locators = {"tcp://127.0.0.1:5171"},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -3292,7 +3297,8 @@ private slots:
         // the corrupt entry is removed from the index.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {"C:/logs/will-be-corrupted.json"},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());

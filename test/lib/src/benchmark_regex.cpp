@@ -247,7 +247,7 @@ void RegisterRegexBenchmarks()
         [sample = DetectionSample()](benchmark::State &state) {
             // The first call builds the compiled patterns, so it stays out of the timed part.
             benchmark::DoNotOptimize(loglib::DetectFormat(sample));
-            for (auto _ : state)
+            for (const auto _ : state)
             {
                 benchmark::DoNotOptimize(loglib::DetectFormat(sample));
             }

@@ -214,7 +214,8 @@ private slots:
         // call reaches the cross-process lock.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/contended.json"}
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {"C:/logs/contended.json"},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());

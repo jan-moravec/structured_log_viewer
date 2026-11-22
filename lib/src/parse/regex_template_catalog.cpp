@@ -155,7 +155,7 @@ struct RegexTemplateCatalog::Data
 
     [[nodiscard]] const std::vector<CompiledProbe> &Probes() const
     {
-        std::call_once(probesOnce, [this]() {
+        std::call_once(probesOnce, [this] {
             const std::scoped_lock compileLock(CompileMutex());
             probes.reserve(templates.size());
             for (const RegexTemplate &tmpl : templates)
@@ -203,7 +203,7 @@ const RegexTemplateCatalog &RegexTemplateCatalog::Builtin()
                 std::string slug = source.ends_with(JSON_SUFFIX)
                                        ? std::string(source.substr(0, source.size() - JSON_SUFFIX.size()))
                                        : std::string(source);
-                entries.push_back(Entry{std::move(slug), ParseEmbeddedOrThrow(embedded)});
+                entries.push_back(Entry{.slug = std::move(slug), .tmpl = ParseEmbeddedOrThrow(embedded)});
             }
             catch (const std::exception &) // NOLINT(bugprone-empty-catch)
             {

@@ -44,19 +44,25 @@ TEST_CASE("DetectFormat gives the same answer for a file head and for raw bytes"
         loglib::LogFormat expected;
     };
     const Case cases[] = {
-        {.name = "json.log",
-         .bytes = R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
+        {
+            .name = "json.log",
+            .bytes = R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
 {"timestamp":"2026-01-01T00:00:01Z","level":"warn","message":"there"}
 )",
-         .expected = loglib::LogFormat::Json},
-        {.name = "logfmt.log",
-         .bytes = R"(time=2026-01-01T00:00:00Z level=info message=hi
+            .expected = loglib::LogFormat::Json,
+        },
+        {
+            .name = "logfmt.log",
+            .bytes = R"(time=2026-01-01T00:00:00Z level=info message=hi
 time=2026-01-01T00:00:01Z level=warn message=there
 )",
-         .expected = loglib::LogFormat::Logfmt},
-        {.name = "csv.log",
-         .bytes = "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
-         .expected = loglib::LogFormat::Csv},
+            .expected = loglib::LogFormat::Logfmt,
+        },
+        {
+            .name = "csv.log",
+            .bytes = "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
+            .expected = loglib::LogFormat::Csv,
+        },
     };
 
     for (const Case &c : cases)
@@ -170,7 +176,8 @@ TEST_CASE("SampleFitsFormat checks the pinned pattern and not the catalog", "[Fo
         const std::string_view sample = "2026 | first line\n2027 | second line\n";
         REQUIRE_FALSE(DetectFormat(sample).has_value());
         const FormatSpec spec{
-            .format = loglib::LogFormat::Regex, .regex = {.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)"}
+            .format = loglib::LogFormat::Regex,
+            .regex = {.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)"},
         };
         CHECK(SampleFitsFormat(sample, spec));
     }
@@ -181,7 +188,8 @@ TEST_CASE("SampleFitsFormat checks the pinned pattern and not the catalog", "[Fo
                                         "Jun 27 01:47:20 host-b configd[17]: network changed\n";
         REQUIRE(DetectFormat(sample).has_value());
         const FormatSpec spec{
-            .format = loglib::LogFormat::Regex, .regex = {.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)"}
+            .format = loglib::LogFormat::Regex,
+            .regex = {.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)"},
         };
         CHECK_FALSE(SampleFitsFormat(sample, spec));
     }

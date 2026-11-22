@@ -218,7 +218,8 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::NetworkStream, .locators = {"TCP 127.0.0.1:5170"}
+            .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+            .locators = {"TCP 127.0.0.1:5170"},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -504,7 +505,8 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/versioned.json"}
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {"C:/logs/versioned.json"},
         };
         QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
 
@@ -1022,7 +1024,8 @@ private slots:
 
         wired->SetCurrentSourceForTest(
             loglib::SourceDescriptor{
-                .kind = loglib::SourceDescriptor::Kind::File, .locators = {"/tmp/livetail-finished.log"}
+                .kind = loglib::SourceDescriptor::Kind::File,
+                .locators = {"/tmp/livetail-finished.log"},
             }
         );
         wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
@@ -1382,7 +1385,8 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
-            .kind = loglib::SourceDescriptor::Kind::File, .locators = {"C:/logs/initial.json"}
+            .kind = loglib::SourceDescriptor::Kind::File,
+            .locators = {"C:/logs/initial.json"},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
