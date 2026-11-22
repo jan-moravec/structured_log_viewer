@@ -151,6 +151,7 @@ add_executable(
     "src/benchmark_session_bundle.cpp"
     "src/benchmark_stream.cpp"
     "src/benchmark_table.cpp"
+    "src/benchmark_time_conversion.cpp"
     "src/benchmark_timestamp.cpp"
 )
 
