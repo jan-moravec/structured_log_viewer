@@ -132,7 +132,7 @@ void RunStreamingParseLoopBody(
 
     const StopToken stopToken = options.stopToken;
 
-    WorkerScratchBase promoteScratch;
+    WorkerScratch promoteScratch;
     promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
 
     // Bytes that an earlier stage, such as format detection, read from the producer and gave back to the source. They

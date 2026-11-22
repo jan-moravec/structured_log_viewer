@@ -705,7 +705,7 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     }
 }
 
-TEST_CASE("PerWorkerKeyCache interns each key once and keeps its id stable", "[json_parser][per_worker_cache]")
+TEST_CASE("WorkerKeyCache interns each key once and keeps its id stable", "[json_parser][per_worker_cache]")
 {
     using namespace loglib;
     using namespace loglib::internal;
@@ -714,7 +714,7 @@ TEST_CASE("PerWorkerKeyCache interns each key once and keeps its id stable", "[j
     const std::array<std::string_view, 5> names{"key1", "key2", "key3", "key4", "key5"};
 
     KeyIndex keys;
-    PerWorkerKeyCache cache;
+    WorkerKeyCache cache;
     std::array<KeyId, 5> ids{};
     for (size_t i = 0; i < names.size(); ++i)
     {
@@ -744,7 +744,7 @@ namespace
 // Local replicas of the transparent-hash adapters from
 // `loglib/core/transparent_string_hash.hpp` so the move-survival test can stand up the
 // exact `tsl::robin_map<std::string, KeyId, ..., ...>` instantiation that backs
-// `loglib::internal::PerWorkerKeyCache` (defined in `loglib/parse/internal/parse_runtime.hpp`).
+// `loglib::internal::WorkerKeyCache` (defined in `loglib/parse/internal/parse_runtime.hpp`).
 // The wrapper struct adds nothing beyond the map field, so its compiler-generated move
 // constructor delegates straight through to the map's move constructor — exactly what we
 // exercise here.
@@ -792,7 +792,7 @@ struct TestTransparentStringEqual
     }
 };
 
-using TestPerWorkerKeyCache =
+using TestWorkerKeyCache =
     tsl::robin_map<std::string, loglib::KeyId, TestTransparentStringHash, TestTransparentStringEqual>;
 
 } // namespace
@@ -800,7 +800,7 @@ using TestPerWorkerKeyCache =
 TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_cache][move]")
 {
     // `tbb::enumerable_thread_specific<WorkerState>` may move-construct worker
-    // slots when its per-thread table grows. If `PerWorkerKeyCache`'s move
+    // slots when its per-thread table grows. If `WorkerKeyCache`'s move
     // constructor ever drops cached entries (e.g. someone replaces the
     // underlying container with a non-move-preserving one), every worker
     // silently regresses to unbounded canonical `KeyIndex::GetOrInsert`
@@ -809,7 +809,7 @@ TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_
     // type so a future container swap fails fast at the unit-test tier.
     using namespace loglib;
 
-    TestPerWorkerKeyCache source;
+    TestWorkerKeyCache source;
     source.emplace("alpha", static_cast<KeyId>(7));
     source.emplace("beta", static_cast<KeyId>(11));
     source.emplace("gamma", static_cast<KeyId>(13));
@@ -818,7 +818,7 @@ TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_
 
     // Move-construct: this is what `enumerable_thread_specific` does when growing its
     // per-thread slot table.
-    TestPerWorkerKeyCache moved(std::move(source));
+    TestWorkerKeyCache moved(std::move(source));
 
     REQUIRE(moved.size() == 3);
     REQUIRE(moved.count(std::string_view{"alpha"}) == 1);
@@ -830,7 +830,7 @@ TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_
 
     // Move-assignment too: `enumerable_thread_specific` also reassigns slots in some growth
     // strategies. Reuse `moved` as the source so the original test inputs are still in play.
-    TestPerWorkerKeyCache assigned;
+    TestWorkerKeyCache assigned;
     assigned = std::move(moved);
 
     REQUIRE(assigned.size() == 3);

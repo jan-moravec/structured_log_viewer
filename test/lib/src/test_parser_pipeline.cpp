@@ -47,424 +47,123 @@ using loglib::RowBatch;
 namespace
 {
 
-/// Mock text-format parser used to exercise the shared streaming pipeline harness
-/// independently of `JsonParser`. Format: one record per line, fields separated by a
-/// single space, each field of the form `key=value`. A line beginning with `!` is
-/// treated as a parse error so the harness's per-line error propagation can be
-/// covered without inventing a syntax-error fixture.
-class KeyValueLineParser
+/// Mock text-format decoder used to exercise the shared pipeline harness independently of `JsonParser`. Format: one
+/// record per line, fields separated by a single space, each field of the form `key=value`. A line beginning with `!`
+/// is treated as a parse error so the harness's per-line error propagation can be covered without inventing a
+/// syntax-error fixture. With multiline set, an indented line continues the last field of the previous record.
+class KeyValueLineDecoder
 {
 public:
-    struct ByteRange
+    explicit KeyValueLineDecoder(bool multiline)
+        : mMultiline(multiline)
     {
-        const char *bytesBegin = nullptr;
-        const char *bytesEnd = nullptr;
-    };
+    }
 
-    struct WorkerState
+    loglib::internal::LineDecodeResult Decode(
+        std::string_view line,
+        loglib::internal::LineContext &ctx,
+        std::vector<loglib::CompactLogValue> &out,
+        std::string &error
+    )
     {
-    };
+        out.clear();
+        if (mMultiline && (line.front() == ' ' || line.front() == '\t'))
+        {
+            return loglib::internal::LineDecodeResult::Continue;
+        }
+        if (line.front() == '!')
+        {
+            error = "injected parser failure";
+            return loglib::internal::LineDecodeResult::Error;
+        }
 
-    static void Parse(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
-    {
-        FileLineSource *sourcePtr = &source;
-        const char *fileBegin = source.StableBytes().data();
-        const char *fileEnd = (fileBegin != nullptr) ? fileBegin + source.StableBytes().size() : nullptr;
-        const size_t batchBytes =
-            options.batchSizeBytes != 0 ? options.batchSizeBytes : loglib::DEFAULT_PARSE_BATCH_BYTES;
-        const char *cursor = fileBegin;
-
-        auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
-            if (cursor >= fileEnd)
+        loglib::KeyId lastSourceOrderKey = loglib::INVALID_KEY_ID;
+        size_t pos = 0;
+        while (pos < line.size())
+        {
+            while (pos < line.size() && line[pos] == ' ')
             {
-                return false;
+                ++pos;
             }
-            const char *batchBegin = cursor;
-            // Size-bounded advance: `cursor + batchBytes` is UB if it lands
-            // more than one past `fileEnd`, which the default batch size
-            // hits on every sub-batchSize file's final batch.
-            const auto remaining = static_cast<size_t>(fileEnd - cursor);
-            const size_t advance = std::min(batchBytes, remaining);
-            const char *target = cursor + advance;
-            if (advance < remaining)
+            if (pos >= line.size())
             {
-                const char *newline =
-                    static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
-                cursor = (newline != nullptr) ? newline + 1 : fileEnd;
+                break;
+            }
+            const size_t fieldStart = pos;
+            while (pos < line.size() && line[pos] != ' ')
+            {
+                ++pos;
+            }
+            const std::string_view field = line.substr(fieldStart, pos - fieldStart);
+            const size_t eq = field.find('=');
+            if (eq == std::string_view::npos)
+            {
+                continue;
+            }
+            const std::string_view keyView = field.substr(0, eq);
+            const std::string_view valueView = field.substr(eq + 1);
+
+            const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, ctx.keys, ctx.keyCache);
+
+            // Park the value bytes in the owned-bytes buffer and record an `OwnedString` compact value pointing at
+            // them.
+            const uint64_t offset = ctx.ownedBytes.size();
+            ctx.ownedBytes.append(valueView.data(), valueView.size());
+            auto val = loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
+            auto it = out.begin();
+            while (it != out.end() && it->Key() < keyId)
+            {
+                ++it;
+            }
+            if (it != out.end() && it->Key() == keyId)
+            {
+                *it = val.WithKey(keyId);
             }
             else
             {
-                cursor = fileEnd;
+                out.insert(it, val.WithKey(keyId));
             }
-            out.bytesBegin = batchBegin;
-            out.bytesEnd = cursor;
-            return true;
-        };
+            lastSourceOrderKey = keyId;
+        }
 
-        auto stageB = [sourcePtr, fileBegin](
-                          ByteRange token,
-                          loglib::internal::WorkerScratch<WorkerState> &worker,
-                          KeyIndex &keys,
-                          std::span<const loglib::internal::TimeColumnSpec> timeColumns,
-                          loglib::internal::ParsedPipelineBatch &parsed
-                      ) {
-            const char *cur = token.bytesBegin;
-            const char *end = token.bytesEnd;
-            size_t relativeLineNumber = 1;
+        if (out.empty())
+        {
+            error = "no key=value pairs";
+            return loglib::internal::LineDecodeResult::Error;
+        }
+        mContinuationTarget = lastSourceOrderKey;
+        return loglib::internal::LineDecodeResult::Emit;
+    }
 
-            while (cur < end)
-            {
-                const char *lineStart = cur;
-                const char *newline = static_cast<const char *>(memchr(cur, '\n', static_cast<size_t>(end - cur)));
-                const char *lineEnd = (newline != nullptr) ? newline : end;
-                cur = (newline != nullptr) ? newline + 1 : end;
+    [[nodiscard]] loglib::KeyId ContinuationTarget() const noexcept
+    {
+        return mMultiline ? mContinuationTarget : loglib::INVALID_KEY_ID;
+    }
 
-                // Match `FileLineSource::RawLine`'s `stopOffset - startOffset - 1` length
-                // formula: when the last line of the file is unterminated, push
-                // `fileSize + 1` so the final character isn't trimmed off.
-                const uint64_t nextOffset = static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
-                parsed.localLineOffsets.push_back(nextOffset);
+private:
+    bool mMultiline;
+    loglib::KeyId mContinuationTarget = loglib::INVALID_KEY_ID;
+};
 
-                std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
-                if (!line.empty() && line.back() == '\r')
-                {
-                    line.remove_suffix(1);
-                }
-
-                if (line.empty())
-                {
-                    ++relativeLineNumber;
-                    continue;
-                }
-
-                if (line.front() == '!')
-                {
-                    parsed.errors.push_back(
-                        loglib::internal::ParsedLineError{
-                            .relativeLine = relativeLineNumber, .body = "injected parser failure"
-                        }
-                    );
-                    ++relativeLineNumber;
-                    continue;
-                }
-
-                std::vector<loglib::CompactLogValue> values;
-                values.reserve(8);
-                size_t pos = 0;
-                while (pos < line.size())
-                {
-                    while (pos < line.size() && line[pos] == ' ')
-                    {
-                        ++pos;
-                    }
-                    if (pos >= line.size())
-                    {
-                        break;
-                    }
-                    const size_t fieldStart = pos;
-                    while (pos < line.size() && line[pos] != ' ')
-                    {
-                        ++pos;
-                    }
-                    const std::string_view field = line.substr(fieldStart, pos - fieldStart);
-                    const size_t eq = field.find('=');
-                    if (eq == std::string_view::npos)
-                    {
-                        continue;
-                    }
-                    const std::string_view keyView = field.substr(0, eq);
-                    const std::string_view valueView = field.substr(eq + 1);
-
-                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, worker.keyCache);
-
-                    // Park the value bytes in the per-batch arena and
-                    // record an `OwnedString` compact value pointing at
-                    // them. Stage C concatenates this arena onto the
-                    // `FileLineSource` arena and rebases the offsets on the way
-                    // out — the inline `worker.PromoteTimestamps` call
-                    // below sees the per-batch view.
-                    const uint64_t offset = parsed.ownedStringsArena.size();
-                    parsed.ownedStringsArena.append(valueView.data(), valueView.size());
-                    auto val =
-                        loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
-                    auto it = values.begin();
-                    while (it != values.end() && it->Key() < keyId)
-                    {
-                        ++it;
-                    }
-                    if (it != values.end() && it->Key() == keyId)
-                    {
-                        *it = val.WithKey(keyId);
-                    }
-                    else
-                    {
-                        values.insert(it, val.WithKey(keyId));
-                    }
-                }
-
-                // 0-based offset within the batch so that, after Stage C
-                // shifts every line's id by the running line cursor (via
-                // `LogLine::ShiftLineId`), `FileLineSource::RawLine(N)` round-trips
-                // the source bytes for the line.
-                LogLine logLine(std::move(values), *sourcePtr, relativeLineNumber - 1);
-                parsed.lines.push_back(std::move(logLine));
-                worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
-
-                ++relativeLineNumber;
-            }
-
-            parsed.totalLineCount = relativeLineNumber - 1;
-        };
-
-        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(source, sink, options, stageA, stageB);
+class KeyValueLineParser
+{
+public:
+    static void Parse(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
+    {
+        loglib::internal::RunStaticParserPipeline<KeyValueLineDecoder>(source, sink, options, [] {
+            return KeyValueLineDecoder(false);
+        });
     }
 };
 
 class MultilineKeyValueLineParser
 {
 public:
-    struct ByteRange
-    {
-        const char *bytesBegin = nullptr;
-        const char *bytesEnd = nullptr;
-    };
-
-    struct WorkerState
-    {
-    };
-
     static void Parse(FileLineSource &source, LogParseSink &sink, const loglib::ParserOptions &options)
     {
-        FileLineSource *sourcePtr = &source;
-        const char *fileBegin = source.StableBytes().data();
-        const char *fileEnd = (fileBegin != nullptr) ? fileBegin + source.StableBytes().size() : nullptr;
-        const size_t batchBytes =
-            options.batchSizeBytes != 0 ? options.batchSizeBytes : loglib::DEFAULT_PARSE_BATCH_BYTES;
-        const char *cursor = fileBegin;
-
-        auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
-            if (cursor >= fileEnd)
-            {
-                return false;
-            }
-            const char *batchBegin = cursor;
-            const auto remaining = static_cast<size_t>(fileEnd - cursor);
-            const size_t advance = std::min(batchBytes, remaining);
-            const char *target = cursor + advance;
-            if (advance < remaining)
-            {
-                const char *newline =
-                    static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
-                cursor = (newline != nullptr) ? newline + 1 : fileEnd;
-            }
-            else
-            {
-                cursor = fileEnd;
-            }
-            out.bytesBegin = batchBegin;
-            out.bytesEnd = cursor;
-            return true;
-        };
-
-        auto stageB = [sourcePtr, fileBegin, fileEnd](
-                          ByteRange token,
-                          loglib::internal::WorkerScratch<WorkerState> &worker,
-                          KeyIndex &keys,
-                          std::span<const loglib::internal::TimeColumnSpec> timeColumns,
-                          loglib::internal::ParsedPipelineBatch &parsed
-                      ) {
-            const char *cur = token.bytesBegin;
-            const char *end = token.bytesEnd;
-            size_t relativeLineNumber = 1;
-
-            loglib::KeyId lastRecordContinuationTarget = loglib::INVALID_KEY_ID;
-            size_t tailHeaderPhysical = 0;
-            size_t tailLastPhysical = 0;
-
-            if (fileBegin == nullptr || cur == nullptr || end == nullptr)
-            {
-                parsed.totalLineCount = 0;
-                return;
-            }
-
-            while (cur < end)
-            {
-                const char *lineStart = cur;
-                const char *newline = static_cast<const char *>(memchr(cur, '\n', static_cast<size_t>(end - cur)));
-                const char *lineEnd = (newline != nullptr) ? newline : end;
-                cur = (newline != nullptr) ? newline + 1 : end;
-
-                const uint64_t nextOffset = static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
-                parsed.localLineOffsets.push_back(nextOffset);
-
-                std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
-                if (!line.empty() && line.back() == '\r')
-                {
-                    line.remove_suffix(1);
-                }
-
-                if (line.empty())
-                {
-                    ++relativeLineNumber;
-                    continue;
-                }
-
-                if (line.front() == ' ' || line.front() == '\t')
-                {
-                    if (parsed.lines.empty())
-                    {
-                        if (!parsed.leadingContinuationBytes.empty())
-                        {
-                            parsed.leadingContinuationBytes.push_back('\n');
-                        }
-                        parsed.leadingContinuationBytes.append(line.data(), line.size());
-                        parsed.leadingContinuationLineCount++;
-                    }
-                    else
-                    {
-                        std::string continuation;
-                        continuation.reserve(1 + line.size());
-                        continuation.push_back('\n');
-                        continuation.append(line.data(), line.size());
-
-                        auto compactSpan = parsed.lines.back().CompactValues();
-                        std::vector<loglib::CompactLogValue> mutableValues(compactSpan.begin(), compactSpan.end());
-                        const std::string_view mmapView(
-                            fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
-                        );
-                        const loglib::internal::ContinuationSpliceOutcome outcome =
-                            loglib::internal::ExtendContinuationTarget(
-                                mutableValues,
-                                parsed.ownedStringsArena,
-                                lastRecordContinuationTarget,
-                                continuation,
-                                mmapView
-                            );
-                        if (outcome == loglib::internal::ContinuationSpliceOutcome::Ok)
-                        {
-                            const size_t headerLineId = parsed.lines.back().LineId();
-                            parsed.lines.pop_back();
-                            LogLine rebuilt(std::move(mutableValues), *sourcePtr, headerLineId);
-                            parsed.lines.push_back(std::move(rebuilt));
-                            tailLastPhysical = relativeLineNumber - 1;
-                        }
-                        else
-                        {
-                            parsed.errors.push_back(
-                                loglib::internal::ParsedLineError{
-                                    .relativeLine = relativeLineNumber,
-                                    .body = "Continuation dropped: non-string target.",
-                                }
-                            );
-                        }
-                    }
-                    ++relativeLineNumber;
-                    continue;
-                }
-
-                if (line.front() == '!')
-                {
-                    parsed.errors.push_back(
-                        loglib::internal::ParsedLineError{
-                            .relativeLine = relativeLineNumber, .body = "injected parser failure"
-                        }
-                    );
-                    ++relativeLineNumber;
-                    continue;
-                }
-
-                std::vector<loglib::CompactLogValue> values;
-                values.reserve(8);
-                loglib::KeyId lastSourceOrderKey = loglib::INVALID_KEY_ID;
-                size_t pos = 0;
-                while (pos < line.size())
-                {
-                    while (pos < line.size() && line[pos] == ' ')
-                    {
-                        ++pos;
-                    }
-                    if (pos >= line.size())
-                    {
-                        break;
-                    }
-                    const size_t fieldStart = pos;
-                    while (pos < line.size() && line[pos] != ' ')
-                    {
-                        ++pos;
-                    }
-                    const std::string_view field = line.substr(fieldStart, pos - fieldStart);
-                    const size_t eq = field.find('=');
-                    if (eq == std::string_view::npos)
-                    {
-                        continue;
-                    }
-                    const std::string_view keyView = field.substr(0, eq);
-                    const std::string_view valueView = field.substr(eq + 1);
-
-                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, worker.keyCache);
-
-                    const uint64_t offset = parsed.ownedStringsArena.size();
-                    parsed.ownedStringsArena.append(valueView.data(), valueView.size());
-                    auto val =
-                        loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
-                    auto it = values.begin();
-                    while (it != values.end() && it->Key() < keyId)
-                    {
-                        ++it;
-                    }
-                    if (it != values.end() && it->Key() == keyId)
-                    {
-                        *it = val.WithKey(keyId);
-                    }
-                    else
-                    {
-                        values.insert(it, val.WithKey(keyId));
-                    }
-                    lastSourceOrderKey = keyId;
-                }
-
-                if (values.empty())
-                {
-                    parsed.errors.push_back(
-                        loglib::internal::ParsedLineError{
-                            .relativeLine = relativeLineNumber, .body = "no key=value pairs"
-                        }
-                    );
-                    ++relativeLineNumber;
-                    continue;
-                }
-
-                if (!parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
-                {
-                    parsed.completedMultiLineSpans.push_back(
-                        loglib::internal::ParsedPipelineBatch::MultiLineSpan{
-                            .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
-                        }
-                    );
-                }
-
-                LogLine logLine(std::move(values), *sourcePtr, relativeLineNumber - 1);
-                parsed.lines.push_back(std::move(logLine));
-                worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
-
-                lastRecordContinuationTarget = lastSourceOrderKey;
-                tailHeaderPhysical = relativeLineNumber - 1;
-                tailLastPhysical = tailHeaderPhysical;
-
-                ++relativeLineNumber;
-            }
-
-            parsed.totalLineCount = relativeLineNumber - 1;
-            if (!parsed.lines.empty() && lastRecordContinuationTarget != loglib::INVALID_KEY_ID)
-            {
-                parsed.lastRecordOpenForContinuation = true;
-                parsed.continuationTargetKeyId = lastRecordContinuationTarget;
-                parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
-                parsed.tailRecordLastPhysicalLine = tailLastPhysical;
-            }
-        };
-
-        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(source, sink, options, stageA, stageB);
+        loglib::internal::RunStaticParserPipeline<KeyValueLineDecoder>(source, sink, options, [] {
+            return KeyValueLineDecoder(true);
+        });
     }
 };
 

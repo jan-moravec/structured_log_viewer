@@ -43,7 +43,6 @@ using internal::PatternSchema;
 using internal::Pcre2CodePtr;
 using internal::Pcre2MatchContextPtr;
 using internal::Pcre2MatchDataPtr;
-using internal::UTF8_BOM;
 
 // ---------------------------------------------------------------------
 // Schema interning: named groups -> KeyIds, in pcre2 name-table order.
@@ -176,261 +175,6 @@ bool MatchLineAndEmit(
 
 // ---------------------------------------------------------------------
 // Static-pipeline glue.
-// ---------------------------------------------------------------------
-
-struct RegexWorkerState
-{
-    Pcre2MatchDataPtr matchData;
-};
-
-/**
- * Lazily attach @p worker to @p compiled on first use.
- * enumerable_thread_specific default-constructs RegexWorkerState,
- * so we can't allocate at construction: the worker doesn't yet
- * know which compiled pattern to size against. Kept as a free
- * function so RegexWorkerState stays a pure scratch struct
- * (no member functions alongside public data — placates
- * misc-non-private-member-variables-in-classes).
- */
-void EnsureWorkerMatchData(RegexWorkerState &worker, const CompiledPattern &compiled)
-{
-    if (!worker.matchData)
-    {
-        worker.matchData = compiled.NewMatchData();
-    }
-}
-
-bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line);
-
-std::string_view StripCr(std::string_view s) noexcept
-{
-    if (!s.empty() && s.back() == '\r')
-    {
-        s.remove_suffix(1);
-    }
-    return s;
-}
-
-/**
- * Strip a leading UTF-8 BOM from @p sv if present. Mirrors CSV's
- * helper; only valid on the very first line of a file.
- */
-std::string_view StripBom(std::string_view sv) noexcept
-{
-    if (sv.starts_with(UTF8_BOM))
-    {
-        sv.remove_prefix(UTF8_BOM.size());
-    }
-    return sv;
-}
-
-void DecodeRegexBatch(
-    const internal::ByteRange &batch,
-    internal::WorkerScratch<RegexWorkerState> &worker,
-    const KeyIndex &keys,
-    FileLineSource &source,
-    std::span<const internal::TimeColumnSpec> timeColumns,
-    internal::ParsedPipelineBatch &parsed,
-    const CompiledPattern &compiled,
-    const std::vector<KeyId> &columnKeys,
-    ContinuationMode continuationMode,
-    const CompiledPattern *headerAnchor
-)
-{
-    (void)keys; // Schema is pre-interned in columnKeys.
-    parsed.batchIndex = batch.batchIndex;
-
-    EnsureWorkerMatchData(worker.user, compiled);
-
-    // columnKeys follows the schema's group-index sort, so its last
-    // entry is the final named group in pattern source order.
-    const KeyId continuationTargetKey =
-        (continuationMode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID;
-
-    // Match data is per batch because PCRE2 match state is mutable.
-    const CompiledPattern *headerProbe = (headerAnchor != nullptr) ? headerAnchor : &compiled;
-    Pcre2MatchDataPtr headerScratch;
-    if (continuationMode == ContinuationMode::UntilNextHeader)
-    {
-        headerScratch = headerProbe->NewMatchData();
-    }
-
-    const char *cursor = batch.bytesBegin;
-    const char *end = batch.bytesEnd;
-    const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.StableBytes().data();
-    const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
-
-    const auto batchBytes = static_cast<size_t>(end - cursor);
-    const size_t estimatedLines = (batchBytes / 64) + 1;
-    parsed.lines.reserve(estimatedLines);
-    parsed.localLineOffsets.reserve(estimatedLines);
-
-    size_t relativeLineNumber = 1;
-    std::vector<loglib::CompactLogValue> values;
-    std::string lineError;
-    // Batch-relative physical span of the current final record.
-    size_t tailHeaderPhysical = 0;
-    size_t tailLastPhysical = 0;
-    // Leading blanks belong to the held record only when followed by
-    // another continuation.
-    size_t pendingLeadingBlanks = 0;
-
-    while (cursor < end)
-    {
-        const char *lineStart = cursor;
-        const char *newline = static_cast<const char *>(memchr(cursor, '\n', static_cast<size_t>(end - cursor)));
-        const char *lineEnd = (newline != nullptr) ? newline : end;
-        cursor = (newline != nullptr) ? newline + 1 : end;
-
-        std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
-        line = StripCr(line);
-        // Strip a leading UTF-8 BOM only when this line starts at
-        // file byte 0. Keeps ^... anchors in user / built-in
-        // patterns binding after a BOM-prefixed editor save.
-        // Stage A emits batches on line boundaries, so only the
-        // first line of batch 0 can ever match here.
-        if (lineStart == fileBegin)
-        {
-            line = StripBom(line);
-        }
-
-        // Pad by 1 on an unterminated last line so the final
-        // byte isn't lost on FileLineSource::RawLine round-trips
-        // (matches the CSV pipeline).
-        const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1U : 0U);
-        parsed.localLineOffsets.push_back(nextOffset);
-
-        if (line.empty())
-        {
-            if (continuationMode != ContinuationMode::None && parsed.lines.empty())
-            {
-                ++pendingLeadingBlanks;
-            }
-            ++relativeLineNumber;
-            continue;
-        }
-
-        bool isContinuation = false;
-        if (continuationMode == ContinuationMode::Indented)
-        {
-            isContinuation = (line.front() == ' ' || line.front() == '\t');
-        }
-        else if (continuationMode == ContinuationMode::UntilNextHeader)
-        {
-            isContinuation = !RegexLooksLikeHeader(*headerProbe, headerScratch.get(), line);
-        }
-
-        if (isContinuation)
-        {
-            if (parsed.lines.empty())
-            {
-                // Include preceding blanks in the held record's physical span.
-                parsed.leadingContinuationLineCount += pendingLeadingBlanks;
-                pendingLeadingBlanks = 0;
-                if (!parsed.leadingContinuationBytes.empty())
-                {
-                    parsed.leadingContinuationBytes.push_back('\n');
-                }
-                parsed.leadingContinuationBytes.append(line.data(), line.size());
-                parsed.leadingContinuationLineCount++;
-            }
-            else
-            {
-                std::string continuation;
-                continuation.reserve(1 + line.size());
-                continuation.push_back('\n');
-                continuation.append(line.data(), line.size());
-
-                const auto compactSpan = parsed.lines.back().CompactValues();
-                std::vector<loglib::CompactLogValue> mutableValues(compactSpan.begin(), compactSpan.end());
-                const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
-                const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
-                    mutableValues, parsed.ownedStringsArena, continuationTargetKey, continuation, mmapView
-                );
-                if (outcome == internal::ContinuationSpliceOutcome::Ok)
-                {
-                    const size_t headerLineId = parsed.lines.back().LineId();
-                    parsed.lines.pop_back();
-                    LogLine rebuilt(std::move(mutableValues), source, headerLineId);
-                    parsed.lines.push_back(std::move(rebuilt));
-                    tailLastPhysical = relativeLineNumber - 1;
-                }
-                else
-                {
-                    parsed.errors.push_back(
-                        internal::ParsedLineError{
-                            .relativeLine = relativeLineNumber,
-                            .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
-                                        ? "Continuation lines dropped: target field is not present in the record."
-                                        : "Continuation lines dropped: target field is not a string.",
-                        }
-                    );
-                }
-            }
-            ++relativeLineNumber;
-            continue;
-        }
-
-        if (!MatchLineAndEmit(
-                compiled,
-                worker.user.matchData.get(),
-                columnKeys,
-                line,
-                fileBegin,
-                fileSize,
-                parsed.ownedStringsArena,
-                values,
-                lineError,
-                continuationTargetKey
-            ))
-        {
-            parsed.errors.push_back(internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = lineError});
-            lineError.clear();
-            ++relativeLineNumber;
-            continue;
-        }
-
-        pendingLeadingBlanks = 0;
-
-        // Save the span being sealed; Stage C handles the batch tail.
-        if (continuationMode != ContinuationMode::None && !parsed.lines.empty() &&
-            tailLastPhysical > tailHeaderPhysical)
-        {
-            parsed.completedMultiLineSpans.push_back(
-                internal::ParsedPipelineBatch::MultiLineSpan{
-                    .headerPhysicalLine = tailHeaderPhysical,
-                    .lastPhysicalLine = tailLastPhysical,
-                }
-            );
-        }
-
-        // LogLine requires KeyId order, unlike source-order captures.
-        std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
-
-        LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
-        parsed.lines.push_back(std::move(logLine));
-        worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
-        tailHeaderPhysical = relativeLineNumber - 1;
-        tailLastPhysical = tailHeaderPhysical;
-
-        values.clear();
-        ++relativeLineNumber;
-    }
-
-    parsed.totalLineCount = relativeLineNumber - 1;
-
-    if (continuationMode != ContinuationMode::None && !parsed.lines.empty() && continuationTargetKey != INVALID_KEY_ID)
-    {
-        parsed.lastRecordOpenForContinuation = true;
-        parsed.continuationTargetKeyId = continuationTargetKey;
-        parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
-        parsed.tailRecordLastPhysicalLine = tailLastPhysical;
-    }
-}
-
-// ---------------------------------------------------------------------
-// Streaming-loop glue.
 // ---------------------------------------------------------------------
 
 /**
@@ -645,11 +389,6 @@ void RegexParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOption
     // An empty pattern fails with the same error as the streaming overload.
     const std::string &pattern = mPattern;
 
-    const std::span<const char> bytes = source.StableBytes();
-    const char *fileBegin = bytes.data();
-    const size_t fileSize = bytes.size();
-    const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
-
     if (pattern.empty())
     {
         EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.");
@@ -697,35 +436,13 @@ void RegexParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOption
         anchorPtr = &headerAnchor;
     }
 
-    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
-
-    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
-
-    FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, &compiled, &columnKeys, staticContinuationMode, anchorPtr](
-                      internal::ByteRange token,
-                      internal::WorkerScratch<RegexWorkerState> &worker,
-                      KeyIndex &keys,
-                      std::span<const internal::TimeColumnSpec> timeColumns,
-                      internal::ParsedPipelineBatch &parsed
-                  ) {
-        DecodeRegexBatch(
-            token,
-            worker,
-            keys,
-            *sourcePtr,
-            timeColumns,
-            parsed,
-            compiled,
-            columnKeys,
-            staticContinuationMode,
-            anchorPtr
-        );
-    };
-
     // The named groups are interned up front, so the pipeline announces them as declared keys.
-    internal::RunStaticParserPipeline<internal::ByteRange, RegexWorkerState>(
-        source, sink, options, stageA, stageB, columnKeys
+    internal::RunStaticParserPipeline<RegexLineDecoder>(
+        source,
+        sink,
+        options,
+        [&] { return RegexLineDecoder(compiled, columnKeys, staticContinuationMode, anchorPtr); },
+        columnKeys
     );
 }
 

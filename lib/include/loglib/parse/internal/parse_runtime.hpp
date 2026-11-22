@@ -56,7 +56,7 @@ std::vector<KeyId> ConvertedTimeKeys(std::span<const TimeColumnSpec> specs);
  * new batch with BeginBatch and takes the list with TakeFirstSeen. The streaming loop never starts a new batch, so it
  * sees each key once for the whole stream and drains the list as it flushes.
  */
-struct PerWorkerKeyCache
+struct WorkerKeyCache
 {
     tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
     /** The generation of a key's last sighting, indexed by key id. */
@@ -93,14 +93,15 @@ struct PerWorkerKeyCache
 };
 
 /**
- * @brief Scratch data that each worker keeps, used by both the static pipeline and the streaming loop.
+ * @brief Scratch data that each worker keeps, used by both the static pipeline and the streaming loop. A format keeps
+ * its own scratch in its decoder.
  *
  * It holds the key cache and, for each time column, what the last successful parse was, so time columns can be
  * converted while parsing.
  */
-struct WorkerScratchBase
+struct WorkerScratch
 {
-    PerWorkerKeyCache keyCache;
+    WorkerKeyCache keyCache;
     std::vector<std::optional<LastValidTimestampParse>> lastValidTimestamps;
     TimestampParseScratch tsScratch;
     std::vector<LastTimestampBytesHit> lastBytesHits;
@@ -134,19 +135,10 @@ struct WorkerScratchBase
 };
 
 /**
- * @brief The shared scratch plus scratch for one format, such as a simdjson parser and its padded buffer. The static
- * pipeline uses it.
- */
-template <class UserState> struct WorkerScratch : WorkerScratchBase
-{
-    UserState user;
-};
-
-/**
  * @brief Returns the id of a key through the worker's cache and records the key as seen. On a miss the key's bytes are
  * copied into the cache.
  */
-inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache &cache)
+inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, WorkerKeyCache &cache)
 {
     KeyId id = INVALID_KEY_ID;
     if (const auto it = cache.map.find(key); it != cache.map.end())

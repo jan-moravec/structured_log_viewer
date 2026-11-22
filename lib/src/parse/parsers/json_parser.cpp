@@ -227,7 +227,7 @@ void ParseJsonLine(
     KeyIndex &keys,
     ParseCache &cache,
     bool sourceIsStable,
-    internal::PerWorkerKeyCache &keyCache,
+    internal::WorkerKeyCache &keyCache,
     const char *fileBegin,
     size_t fileSize,
     std::string &ownedArena,
@@ -488,161 +488,6 @@ void ParseJsonLine(
     }
 }
 
-/** The scratch memory of one JSON parse worker. */
-struct JsonWorkerState
-{
-    simdjson::ondemand::parser parser;
-    std::string linePadded;
-    size_t maxLineSize = 0;
-    ParseCache cache;
-};
-
-/** @brief Stage B: decodes the JSON lines of one line-aligned batch into compact lines. */
-void DecodeJsonBatch(
-    const internal::ByteRange &batch,
-    internal::WorkerScratch<JsonWorkerState> &worker,
-    KeyIndex &keys,
-    FileLineSource &source,
-    std::span<const internal::TimeColumnSpec> timeColumns,
-    internal::ParsedPipelineBatch &parsed
-)
-{
-    parsed.batchIndex = batch.batchIndex;
-
-    const char *cursor = batch.bytesBegin;
-    const char *end = batch.bytesEnd;
-    const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.StableBytes().data();
-
-    const auto batchBytes = static_cast<size_t>(end - cursor);
-    const size_t estimatedLines = (batchBytes / 64) + 1;
-    parsed.lines.reserve(estimatedLines);
-    parsed.localLineOffsets.reserve(estimatedLines);
-
-    size_t relativeLineNumber = 1;
-    // One scratch for the whole batch; each row copies it into the batch's field arena.
-    std::vector<loglib::CompactLogValue> values;
-
-    while (cursor < end)
-    {
-        const char *lineStart = cursor;
-        const char *newline = static_cast<const char *>(memchr(cursor, '\n', static_cast<size_t>(end - cursor)));
-        const char *lineEnd = newline ? newline : end;
-        cursor = (newline != nullptr) ? newline + 1 : end;
-
-        std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
-        if (!line.empty() && line.back() == '\r')
-        {
-            line.remove_suffix(1);
-        }
-
-        // RawLine subtracts 1 (the '\n'); for an unterminated final
-        // line push fileSize + 1 so we don't lop off the last char.
-        const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
-        parsed.localLineOffsets.push_back(nextOffset);
-
-        if (line.empty())
-        {
-            relativeLineNumber++;
-            continue;
-        }
-
-        try
-        {
-            // mmap fast path needs SIMDJSON_PADDING bytes of slack past
-            // lineEnd; otherwise fall back to a padded scratch copy.
-            const auto remaining = static_cast<size_t>(fileEnd - lineEnd);
-            const bool sourceIsStable = remaining >= simdjson::SIMDJSON_PADDING;
-            auto result =
-                sourceIsStable ? worker.user.parser.iterate(line.data(), line.size(), line.size() + remaining) : [&]() {
-                    const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
-                    if (line.size() > worker.user.maxLineSize || worker.user.linePadded.size() < needed)
-                    {
-                        worker.user.maxLineSize = std::max(worker.user.maxLineSize, line.size());
-                        worker.user.linePadded.resize(
-                            worker.user.maxLineSize + simdjson::SIMDJSON_PADDING + LINE_PADDED_EXTRA_SLACK_BYTES
-                        );
-                    }
-                    std::memcpy(worker.user.linePadded.data(), line.data(), line.size());
-                    std::memset(worker.user.linePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);
-                    return worker.user.parser.iterate(
-                        worker.user.linePadded.data(), line.size(), worker.user.linePadded.size()
-                    );
-                }();
-            if (result.error())
-            {
-                parsed.errors.push_back(
-                    internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber, .body = std::string(simdjson::error_message(result.error()))
-                    }
-                );
-                relativeLineNumber++;
-                continue;
-            }
-
-            auto object = result.get_object();
-            if (object.error())
-            {
-                parsed.errors.push_back(
-                    internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = "Not a JSON object."}
-                );
-                relativeLineNumber++;
-                continue;
-            }
-
-            auto objectValue = object.value();
-            const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
-            simdjson::error_code parseError = simdjson::SUCCESS;
-            ParseJsonLine(
-                values,
-                objectValue,
-                keys,
-                worker.user.cache,
-                sourceIsStable,
-                worker.keyCache,
-                fileBegin,
-                fileSize,
-                parsed.ownedStringsArena,
-                parseError
-            );
-            if (parseError)
-            {
-                parsed.errors.push_back(
-                    internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber,
-                        .body = std::string(simdjson::error_message(parseError)),
-                    }
-                );
-                relativeLineNumber++;
-                continue;
-            }
-
-            // 0-based intra-batch offset; Stage C shifts by the
-            // running cursor so FileLineSource::RawLine(LineId()) indexes
-            // mLineOffsets correctly. relativeLineNumber stays
-            // 1-based for human-facing error messages.
-            LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
-
-            parsed.lines.push_back(std::move(logLine));
-
-            // Inline promotion: values are still hot in L1.
-            // OwnedString payloads still reference the per-batch
-            // arena (Stage C rebases later), so pass it explicitly.
-            worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
-        }
-        catch (const std::exception &e)
-        {
-            parsed.errors.push_back(
-                internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = std::string(e.what())}
-            );
-        }
-
-        relativeLineNumber++;
-    }
-
-    parsed.totalLineCount = relativeLineNumber - 1;
-}
-
 } // namespace
 
 bool LooksLikeJson(std::string_view sniffBuffer)
@@ -741,7 +586,7 @@ public:
         }
     }
 
-    [[nodiscard]] static constexpr KeyId ContinuationTarget() noexcept
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
         return INVALID_KEY_ID;
     }
@@ -778,24 +623,7 @@ void JsonParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOptio
 
 void JsonParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    const std::span<const char> bytes = source.StableBytes();
-    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
-
-    const char *fileBegin = bytes.data();
-    const size_t fileSize = bytes.size();
-    const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
-    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
-
-    FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr](
-                      internal::ByteRange token,
-                      internal::WorkerScratch<JsonWorkerState> &worker,
-                      KeyIndex &keys,
-                      std::span<const internal::TimeColumnSpec> timeColumns,
-                      internal::ParsedPipelineBatch &parsed
-                  ) { DecodeJsonBatch(token, worker, keys, *sourcePtr, timeColumns, parsed); };
-
-    internal::RunStaticParserPipeline<internal::ByteRange, JsonWorkerState>(source, sink, options, stageA, stageB);
+    internal::RunStaticParserPipeline<JsonLineDecoder>(source, sink, options, [] { return JsonLineDecoder{}; });
 }
 
 } // namespace loglib

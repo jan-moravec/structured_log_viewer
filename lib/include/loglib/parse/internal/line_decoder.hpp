@@ -68,7 +68,7 @@ enum class ContinuationSpliceOutcome : uint8_t
 struct LineContext
 {
     KeyIndex &keys;
-    PerWorkerKeyCache &keyCache;
+    WorkerKeyCache &keyCache;
     std::string &ownedBytes;
     std::span<const char> stableBytes;
     size_t bytesAfterLine = 0;
