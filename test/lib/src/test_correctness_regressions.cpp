@@ -21,9 +21,9 @@
 #include <loglib/parse/parsers/json_parser.hpp>
 #include <loglib/parse/parsers/logfmt_parser.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
 #include <loglib/query/query_parser.hpp>
 #include <loglib/query/row_filter.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <loglib/table/log_table.hpp>
 
@@ -353,7 +353,7 @@ TEST_CASE("A level selection with no matching rows matches nothing", "[filter_co
     const auto rowsFor = [&](const char *query) {
         const auto expression = ParseQuery(query, TimeZoneContext{});
         REQUIRE(expression.has_value());
-        return FilterAcceptedRows(table, CompileExpression(*expression, columns, &table)).size();
+        return FilterAcceptedRows(table, CompileFilter(*expression, table)).size();
     };
     CHECK(rowsFor("level IN [Trace]") == 0);
     CHECK(rowsFor("level IN [Warn]") == 1);
@@ -362,11 +362,11 @@ TEST_CASE("A level selection with no matching rows matches nothing", "[filter_co
 
 TEST_CASE("FindFilterProblems reports unknown columns and invalid patterns", "[filter_compile][problems]")
 {
-    const std::vector<Column> columns = {Column{.header = "msg", .keys = {"msg"}}};
+    const ColumnLayout layout({Column{.header = "msg", .keys = {"msg"}}});
     const auto problemsFor = [&](const char *query) {
         const auto expression = ParseQuery(query, TimeZoneContext{});
         REQUIRE(expression.has_value());
-        return FindFilterProblems(*expression, columns);
+        return FindFilterProblems(*expression, layout);
     };
     CHECK(problemsFor("msg:ok").empty());
     CHECK(problemsFor("msg~/ok/").empty());
@@ -433,7 +433,7 @@ TEST_CASE("An outlier timestamp widens histogram buckets instead of allocating",
     constexpr int64_t YEAR = 31'536'000;
     constexpr int64_t BASE = 56 * YEAR;
 
-    HistogramBucketIndex index(HistogramBucketSize::OneSecond);
+    TimeHistogram index(HistogramBucketSize::OneSecond);
     index.AddRow(at(BASE), LogLevel::Info);
     index.AddRow(at(BASE + 1), LogLevel::Warn);
     CHECK(index.BucketSize() == HistogramBucketSize::OneSecond);

@@ -134,8 +134,7 @@ struct Resolved
         FAIL(session.error().text);
     }
 
-    const auto compiled =
-        loglib::CompileExpression(session->expression, loaded.table.Layout().Columns(), &loaded.table);
+    const auto compiled = loglib::CompileFilter(session->expression, loaded.table);
     auto rows = loglib::FilterAcceptedRows(loaded.table, compiled);
     return Resolved{.loaded = std::move(loaded), .session = std::move(*session), .rows = std::move(rows)};
 }

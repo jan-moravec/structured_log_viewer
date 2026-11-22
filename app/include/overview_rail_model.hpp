@@ -4,7 +4,7 @@
 
 #include <loglib/config/anchor_entry.hpp>
 #include <loglib/core/log_level.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 #include <loglib/support/theme.hpp>
 
 #include <QModelIndex>

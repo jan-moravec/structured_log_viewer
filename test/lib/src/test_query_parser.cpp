@@ -55,10 +55,10 @@ TEST_CASE("ParseQuery: empty input is match-all", "[query_parser]")
 {
     const auto parsed = ParseQuery("");
     REQUIRE(parsed.has_value());
-    CHECK(IsMatchAll(*parsed));
+    CHECK(AcceptsEverything(*parsed));
     const auto whitespaceOnly = ParseQuery("   \t\n");
     REQUIRE(whitespaceOnly.has_value());
-    CHECK(IsMatchAll(*whitespaceOnly));
+    CHECK(AcceptsEverything(*whitespaceOnly));
 }
 
 TEST_CASE("ParseQuery: string Contains leaf", "[query_parser]")
@@ -521,14 +521,14 @@ TEST_CASE(
 TEST_CASE("FormatExpression: match-all round-trips as empty string", "[query_parser][pretty][regression]")
 {
     const FilterExpression matchAll{};
-    REQUIRE(IsMatchAll(matchAll));
+    REQUIRE(AcceptsEverything(matchAll));
 
     const std::string formatted = FormatExpression(matchAll);
     CHECK(formatted.empty());
 
     const auto reparsed = ParseQuery(formatted);
     REQUIRE(reparsed.has_value());
-    CHECK(IsMatchAll(*reparsed));
+    CHECK(AcceptsEverything(*reparsed));
 }
 
 // Regression: `LexNumber` used to accept a dangling exponent like
@@ -770,7 +770,7 @@ TEST_CASE("FormatExpression: peels a single-child And wrapper at the root", "[qu
 }
 
 // `col in []` and `col in [..]` used to parse into a leaf with no
-// payload. `CompileLeaf` then reported it absent, so the clause
+// payload. `CompileCondition` then reported it absent, so the clause
 // silently became match-all, and the app's Filters-menu title
 // builder tripped a `Q_ASSERT` on the empty payload in Debug. An
 // inverted range is the same class of problem from the other side:
@@ -1783,8 +1783,8 @@ TEST_CASE("FormatExpression: nested empty `Or` renders as `()`", "[query_parser]
     children.emplace_back(); // default = empty And, will render as "*"
     // Replace first with an empty Or so `AppendOr` fires the empty
     // branch; wrap in an outer And so the Or isn't the root
-    // (root empty-Or would take the `IsMatchAll` early exit? No --
-    // `IsMatchAll` only matches empty `And`).
+    // (root empty-Or would take the `AcceptsEverything` early exit? No --
+    // `AcceptsEverything` only matches empty `And`).
     FilterExpression innerOr;
     innerOr.node = FilterExpression::Or{};
     std::vector<FilterExpression> outerChildren;

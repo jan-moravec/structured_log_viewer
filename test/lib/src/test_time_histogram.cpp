@@ -1,6 +1,6 @@
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -30,7 +30,7 @@ TimeStamp At(TimeStamp base, std::chrono::microseconds offset)
 
 } // namespace
 
-TEST_CASE("HistogramBucketSizeLabel is defined for every rung", "[histogram_bucket_index]")
+TEST_CASE("HistogramBucketSizeLabel is defined for every rung", "[time_histogram]")
 {
     CHECK(HistogramBucketSizeLabel(HistogramBucketSize::OneSecond) == "1 s");
     CHECK(HistogramBucketSizeLabel(HistogramBucketSize::TenSeconds) == "10 s");
@@ -40,7 +40,7 @@ TEST_CASE("HistogramBucketSizeLabel is defined for every rung", "[histogram_buck
     CHECK(HistogramBucketSizeLabel(HistogramBucketSize::OneDay) == "1 d");
 }
 
-TEST_CASE("HistogramBucketWidth matches the ladder", "[histogram_bucket_index]")
+TEST_CASE("HistogramBucketWidth matches the ladder", "[time_histogram]")
 {
     CHECK(HistogramBucketWidth(HistogramBucketSize::OneSecond) == std::chrono::seconds{1});
     CHECK(HistogramBucketWidth(HistogramBucketSize::TenSeconds) == std::chrono::seconds{10});
@@ -50,9 +50,9 @@ TEST_CASE("HistogramBucketWidth matches the ladder", "[histogram_bucket_index]")
     CHECK(HistogramBucketWidth(HistogramBucketSize::OneDay) == std::chrono::hours{24});
 }
 
-TEST_CASE("HistogramBucketIndex is empty on construction", "[histogram_bucket_index]")
+TEST_CASE("TimeHistogram is empty on construction", "[time_histogram]")
 {
-    const HistogramBucketIndex index;
+    const TimeHistogram index;
     CHECK(index.Empty());
     CHECK(index.Buckets().empty());
     CHECK(index.TotalRowCount() == 0);
@@ -61,9 +61,9 @@ TEST_CASE("HistogramBucketIndex is empty on construction", "[histogram_bucket_in
     CHECK(!index.MaxTimestamp().has_value());
 }
 
-TEST_CASE("MinTimestamp / MaxTimestamp track the precise observed range", "[histogram_bucket_index]")
+TEST_CASE("MinTimestamp / MaxTimestamp track the precise observed range", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::TenMinutes};
+    TimeHistogram index{HistogramBucketSize::TenMinutes};
     // Boundary-hugging rows: bucket boundaries at 00:00 and 00:10
     // would overstate the range by 10 minutes on either side. The
     // precise min / max must clamp to the actual first / last row.
@@ -83,9 +83,9 @@ TEST_CASE("MinTimestamp / MaxTimestamp track the precise observed range", "[hist
     CHECK(!index.MaxTimestamp().has_value());
 }
 
-TEST_CASE("MinTimestamp / MaxTimestamp survive out-of-order backfill", "[histogram_bucket_index]")
+TEST_CASE("MinTimestamp / MaxTimestamp survive out-of-order backfill", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     const auto later = At(Base(), std::chrono::minutes{2});
     const auto earlier = Base();
     index.AddRow(later, LogLevel::Info);
@@ -97,9 +97,9 @@ TEST_CASE("MinTimestamp / MaxTimestamp survive out-of-order backfill", "[histogr
     CHECK(*index.MaxTimestamp() == later);
 }
 
-TEST_CASE("AddRow anchors origin at the truncated first timestamp", "[histogram_bucket_index]")
+TEST_CASE("AddRow anchors origin at the truncated first timestamp", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     const TimeStamp firstTs = At(Base(), 42s + 500ms);
 
     index.AddRow(firstTs, LogLevel::Info);
@@ -113,9 +113,9 @@ TEST_CASE("AddRow anchors origin at the truncated first timestamp", "[histogram_
     CHECK(index.Buckets()[0].Total() == 1);
 }
 
-TEST_CASE("AddRow counts by level slot", "[histogram_bucket_index]")
+TEST_CASE("AddRow counts by level slot", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     index.AddRow(Base(), LogLevel::Info);
     index.AddRow(Base() + 15s, LogLevel::Error);
     index.AddRow(Base() + 30s, LogLevel::Error);
@@ -130,9 +130,9 @@ TEST_CASE("AddRow counts by level slot", "[histogram_bucket_index]")
     CHECK(index.TotalRowCount() == 4);
 }
 
-TEST_CASE("AddRow extends the vector for later buckets", "[histogram_bucket_index]")
+TEST_CASE("AddRow extends the vector for later buckets", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     index.AddRow(Base(), LogLevel::Info);
     index.AddRow(Base() + std::chrono::minutes{3}, LogLevel::Warn);
 
@@ -144,9 +144,9 @@ TEST_CASE("AddRow extends the vector for later buckets", "[histogram_bucket_inde
     CHECK(index.TotalRowCount() == 2);
 }
 
-TEST_CASE("AddRow shifts and rebases origin on out-of-order backfill", "[histogram_bucket_index]")
+TEST_CASE("AddRow shifts and rebases origin on out-of-order backfill", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     index.AddRow(Base() + std::chrono::minutes{2}, LogLevel::Info);
     // Earlier row — must not lose its contribution.
     index.AddRow(Base(), LogLevel::Error);
@@ -159,9 +159,9 @@ TEST_CASE("AddRow shifts and rebases origin on out-of-order backfill", "[histogr
     CHECK(index.TotalRowCount() == 2);
 }
 
-TEST_CASE("BucketOf returns nullopt outside range", "[histogram_bucket_index]")
+TEST_CASE("BucketOf returns nullopt outside range", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     CHECK(index.BucketOf(Base()) == std::nullopt);
 
     index.AddRow(Base() + std::chrono::minutes{1}, LogLevel::Info);
@@ -172,9 +172,9 @@ TEST_CASE("BucketOf returns nullopt outside range", "[histogram_bucket_index]")
     CHECK(index.BucketOf(Base() + std::chrono::minutes{2}) == std::nullopt);
 }
 
-TEST_CASE("Reset drops buckets but keeps bucket size", "[histogram_bucket_index]")
+TEST_CASE("Reset drops buckets but keeps bucket size", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::TenSeconds};
+    TimeHistogram index{HistogramBucketSize::TenSeconds};
     index.AddRow(Base(), LogLevel::Info);
     index.Reset();
     CHECK(index.Empty());
@@ -182,9 +182,9 @@ TEST_CASE("Reset drops buckets but keeps bucket size", "[histogram_bucket_index]
     CHECK(index.BucketSize() == HistogramBucketSize::TenSeconds);
 }
 
-TEST_CASE("SetBucketSize resets on change and is a no-op on same rung", "[histogram_bucket_index]")
+TEST_CASE("SetBucketSize resets on change and is a no-op on same rung", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    TimeHistogram index{HistogramBucketSize::OneMinute};
     index.AddRow(Base(), LogLevel::Info);
 
     // No-op on same size.
@@ -198,63 +198,56 @@ TEST_CASE("SetBucketSize resets on change and is a no-op on same rung", "[histog
     CHECK(index.BucketSize() == HistogramBucketSize::TenSeconds);
 }
 
-TEST_CASE("AutoBucketSize picks the coarsest rung under budget", "[histogram_bucket_index]")
+TEST_CASE("AutoBucketSize picks the coarsest rung under budget", "[time_histogram]")
 {
     SECTION("Under 500 seconds -> OneSecond")
     {
-        CHECK(HistogramBucketIndex::AutoBucketSize(Base(), Base() + 60s) == HistogramBucketSize::OneSecond);
+        CHECK(TimeHistogram::AutoBucketSize(Base(), Base() + 60s) == HistogramBucketSize::OneSecond);
     }
     SECTION("~1 hour of data -> TenSeconds or OneMinute depending on budget")
     {
         // 3600 s / 10 s = 360 buckets < 500 -> TenSeconds wins over OneMinute
         // because we walk the ladder from finest to coarsest.
-        CHECK(
-            HistogramBucketIndex::AutoBucketSize(Base(), Base() + std::chrono::hours{1}) ==
-            HistogramBucketSize::TenSeconds
-        );
+        CHECK(TimeHistogram::AutoBucketSize(Base(), Base() + std::chrono::hours{1}) == HistogramBucketSize::TenSeconds);
     }
     SECTION("A full day -> TenMinutes is the coarsest that fits 500")
     {
         // 86400 s / 60 s = 1440 buckets; too many.
         // 86400 s / 600 s = 144 buckets; fits.
         CHECK(
-            HistogramBucketIndex::AutoBucketSize(Base(), Base() + std::chrono::hours{24}) ==
-            HistogramBucketSize::TenMinutes
+            TimeHistogram::AutoBucketSize(Base(), Base() + std::chrono::hours{24}) == HistogramBucketSize::TenMinutes
         );
     }
     SECTION("A month -> OneDay")
     {
         const auto month = std::chrono::hours{24 * 31};
-        CHECK(HistogramBucketIndex::AutoBucketSize(Base(), Base() + month) == HistogramBucketSize::OneDay);
+        CHECK(TimeHistogram::AutoBucketSize(Base(), Base() + month) == HistogramBucketSize::OneDay);
     }
     SECTION("Degenerate zero-width range -> OneSecond")
     {
-        CHECK(HistogramBucketIndex::AutoBucketSize(Base(), Base()) == HistogramBucketSize::OneSecond);
+        CHECK(TimeHistogram::AutoBucketSize(Base(), Base()) == HistogramBucketSize::OneSecond);
     }
     SECTION("Swapped inputs are normalised")
     {
-        CHECK(
-            HistogramBucketIndex::AutoBucketSize(Base() + std::chrono::hours{1}, Base()) ==
-            HistogramBucketSize::TenSeconds
-        );
+        CHECK(TimeHistogram::AutoBucketSize(Base() + std::chrono::hours{1}, Base()) == HistogramBucketSize::TenSeconds);
     }
 }
 
-TEST_CASE("TruncateToBucket floors correctly at day boundaries", "[histogram_bucket_index]")
+TEST_CASE("TruncateToBucket floors correctly at day boundaries", "[time_histogram]")
 {
     // A moment 2 h 34 min into the day truncates back to midnight for OneDay.
     const auto midnight = Base();
     const auto offset = std::chrono::hours{2} + std::chrono::minutes{34};
-    CHECK(HistogramBucketIndex::TruncateToBucket(midnight + offset, HistogramBucketSize::OneDay) == midnight);
+    CHECK(TimeHistogram::TruncateToBucket(midnight + offset, HistogramBucketSize::OneDay) == midnight);
     CHECK(
-        HistogramBucketIndex::TruncateToBucket(midnight + offset, HistogramBucketSize::OneHour) ==
+        TimeHistogram::TruncateToBucket(midnight + offset, HistogramBucketSize::OneHour) ==
         midnight + std::chrono::hours{2}
     );
 }
 
-TEST_CASE("HistogramBucketIndex handles 100k dense rows quickly", "[histogram_bucket_index]")
+TEST_CASE("TimeHistogram handles 100k dense rows quickly", "[time_histogram]")
 {
-    HistogramBucketIndex index{HistogramBucketSize::OneSecond};
+    TimeHistogram index{HistogramBucketSize::OneSecond};
 
     // 100,000 rows across 60 seconds. Deterministic level cycle.
     constexpr int ROWS = 100000;

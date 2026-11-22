@@ -225,7 +225,7 @@ TEST_CASE("A Columns save writes the columns and nothing else", "[log_configurat
 
     const LogConfiguration loaded = LoadConfiguration(file.GetFilePath());
     CHECK(loaded.columns.size() == 4);
-    CHECK(IsMatchAll(loaded.view.expression));
+    CHECK(AcceptsEverything(loaded.view.expression));
     CHECK(loaded.view.sort.columnKeys.empty());
     CHECK(loaded.view.anchors.empty());
     CHECK_FALSE(loaded.source.has_value());
@@ -349,7 +349,7 @@ TEST_CASE("Missing optional fields take the defaults of their members", "[log_co
     CHECK(loaded.columns[0].levelMapping == defaults.levelMapping);
     CHECK(loaded.columns[0].type == ColumnType::Any);
     CHECK(loaded.columns[0].autoDetect);
-    CHECK(IsMatchAll(loaded.view.expression));
+    CHECK(AcceptsEverything(loaded.view.expression));
     CHECK(loaded.view.sort.columnKeys.empty());
     CHECK(loaded.view.sort.direction == loglib::SortDirection::Ascending);
     CHECK(loaded.view.highlightRules.empty());
@@ -364,7 +364,7 @@ TEST_CASE("A view may leave out any of its parts", "[log_configuration][defaults
     );
     CHECK(loaded.view.sort.columnKeys == std::vector<std::string>{"a"});
     CHECK(loaded.view.sort.direction == loglib::SortDirection::Descending);
-    CHECK(IsMatchAll(loaded.view.expression));
+    CHECK(AcceptsEverything(loaded.view.expression));
     CHECK(loaded.view.anchors.empty());
 }
 

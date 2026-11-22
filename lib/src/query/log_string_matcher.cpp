@@ -308,7 +308,7 @@ bool RunMatch(const CompiledRegex &compiled, std::string_view subject)
     return rc >= 0;
 }
 
-CallbackStringRowPredicate::MatchFn MakeRegexMatcher(std::string_view pattern)
+TextRowPredicate::MatchFn MakeRegexMatcher(std::string_view pattern)
 {
     const std::string decoded = DecodeUtf8(pattern);
     const CompiledRegex compiled = CompilePattern(decoded);
@@ -401,9 +401,9 @@ std::string WildcardToPcre(std::string_view pattern)
     return out;
 }
 
-CallbackStringRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle);
+TextRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle);
 
-CallbackStringRowPredicate::MatchFn MakeWildcardMatcher(std::string_view pattern)
+TextRowPredicate::MatchFn MakeWildcardMatcher(std::string_view pattern)
 {
     const std::string simplified = Simplify(pattern);
     // A pattern of the form *text*, with nothing special inside, matches the cells that contain text. The cell is
@@ -432,7 +432,7 @@ CallbackStringRowPredicate::MatchFn MakeWildcardMatcher(std::string_view pattern
     };
 }
 
-CallbackStringRowPredicate::MatchFn MakeExactly(std::string_view pattern)
+TextRowPredicate::MatchFn MakeExactly(std::string_view pattern)
 {
     if (IsSingleLineAsciiTrim(pattern))
     {
@@ -471,7 +471,7 @@ bool IsPlainWord(std::string_view bytes) noexcept
  * Matches the cells whose simplified text contains @p needle, which is already simplified. An edge space of the needle
  * stays.
  */
-CallbackStringRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle)
+TextRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle)
 {
     if (IsPlainWord(needle))
     {
@@ -494,7 +494,7 @@ CallbackStringRowPredicate::MatchFn MakeContainsOfSimplified(std::string needle)
         [needle = std::move(needle)](std::string_view haystack) { return SimplifiedView(haystack).contains(needle); };
 }
 
-CallbackStringRowPredicate::MatchFn MakeContains(std::string_view pattern)
+TextRowPredicate::MatchFn MakeContains(std::string_view pattern)
 {
     if (IsSingleLineAsciiTrim(pattern))
     {
@@ -535,7 +535,7 @@ std::optional<std::string> StringPatternProblem(std::string_view pattern, Filter
     return std::nullopt;
 }
 
-CallbackStringRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, FilterCondition::Match match)
+TextRowPredicate::MatchFn MakeStringMatcher(std::string_view pattern, FilterCondition::Match match)
 {
     using Match = FilterCondition::Match;
     switch (match)

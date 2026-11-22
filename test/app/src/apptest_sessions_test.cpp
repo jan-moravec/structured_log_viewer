@@ -342,7 +342,7 @@ private slots:
         QMetaObject::invokeMethod(mWindow, "ClearAllFilters", Qt::DirectConnection);
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
-        QVERIFY(loglib::IsMatchAll(mWindow->activeSession()->View().expression));
+        QVERIFY(loglib::AcceptsEverything(mWindow->activeSession()->View().expression));
 
         // Suppress the modal so the test thread does not block.
         // No drops are expected here, but the load path always
@@ -657,7 +657,7 @@ private slots:
         // but going through the manager keeps the intent explicit.
         mWindow->activeSession()->MutableView().expression = loglib::FilterExpression{};
         QCoreApplication::processEvents();
-        QVERIFY(loglib::IsMatchAll(mWindow->activeSession()->View().expression));
+        QVERIFY(loglib::AcceptsEverything(mWindow->activeSession()->View().expression));
 
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(savedPath);
@@ -720,7 +720,7 @@ private slots:
         // fields back at their inert defaults.
         const loglib::LogConfiguration probe = loglib::LoadConfiguration(columnsOnlyPath.toStdString());
         QVERIFY(!probe.columns.empty());
-        QVERIFY2(loglib::IsMatchAll(probe.view.expression), "SaveScope::Columns must omit filter expression");
+        QVERIFY2(loglib::AcceptsEverything(probe.view.expression), "SaveScope::Columns must omit filter expression");
         QVERIFY(probe.view.sort.columnKeys.empty());
         QVERIFY2(!probe.source.has_value(), "SaveScope::Columns must omit source");
     }

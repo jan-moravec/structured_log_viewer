@@ -194,7 +194,7 @@ LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
 /**
  * Build a Type::String LogTable with @p rowCount rows over a
  * pool of short message templates. Used by the
- * CallbackStringRowPredicate benchmark below.
+ * TextRowPredicate benchmark below.
  */
 LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
 {
@@ -542,7 +542,7 @@ void RegisterRowFilterBenchmarks()
     // Naive substring matcher; mirrors the cheapest callback the GUI ever installs (the Contains match type
     // without case-folding). Captured by value so the predicate owns its own state.
     RegisterLarge<TableScratch>(
-        "CallbackStringRowPredicate over 1000000 rows",
+        "TextRowPredicate over 1000000 rows",
         [stringTable] {
             auto scratch = std::make_unique<TableScratch>();
             scratch->table = stringTable;
@@ -554,7 +554,7 @@ void RegisterRowFilterBenchmarks()
             // clang-tidy mistakes the lambda's implicit copy constructor (which allocates when duplicating the
             // captured std::string) for an exception escaping the call operator; the operator only does a
             // string_view::contains.
-            const CallbackStringRowPredicate predicate(
+            const TextRowPredicate predicate(
                 0,
                 // NOLINTNEXTLINE(bugprone-exception-escape)
                 [needle](std::string_view slot) { return slot.contains(needle); }

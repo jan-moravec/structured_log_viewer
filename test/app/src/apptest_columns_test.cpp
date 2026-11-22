@@ -2768,7 +2768,7 @@ private slots:
     // Regression: the query grammar types `category:info` as a
     // `String` / `Contains` leaf whatever the column's type is, and
     // that matches correctly at runtime because
-    // `CallbackStringRowPredicate` compares the *formatted* value.
+    // `TextRowPredicate` compares the *formatted* value.
     // But `ApplyAdvancedFilterResult` used to extract every top-level
     // Leaf into `mSimpleLeaves`, and `ValidateFilterAgainstColumns`
     // rejects a String leaf on an Enumeration column (the simple

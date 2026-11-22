@@ -3,7 +3,7 @@
 #include "histogram_model.hpp"
 
 #include <loglib/core/log_value.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <QPointer>
 #include <QString>

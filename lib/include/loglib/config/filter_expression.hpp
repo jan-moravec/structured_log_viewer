@@ -183,7 +183,7 @@ struct FilterExpression
 // NOLINTEND(misc-non-private-member-variables-in-classes,misc-no-recursion)
 
 /** @brief True if the expression is an empty And, which accepts every row. */
-[[nodiscard]] inline bool IsMatchAll(const FilterExpression &expr) noexcept
+[[nodiscard]] inline bool AcceptsEverything(const FilterExpression &expr) noexcept
 {
     const auto *asAnd = std::get_if<FilterExpression::And>(&expr.node);
     return asAnd != nullptr && asAnd->children.empty();

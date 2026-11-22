@@ -503,7 +503,7 @@ TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[row_filter][time]"
     CHECK_FALSE(predicate.MatchesRow(table, 1));
 }
 
-TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[row_filter][callback]")
+TEST_CASE("TextRowPredicate forwards string slots to the callback", "[row_filter][callback]")
 {
     const MemoryLogFile fixture("log_filter_callback_string.json");
     fixture.Write("");
@@ -511,7 +511,7 @@ TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[
     const LogTable table = BuildStringTable(fixture, "path", values);
 
     int callCount = 0;
-    const CallbackStringRowPredicate predicate(0, [&callCount](std::string_view bytes) {
+    const TextRowPredicate predicate(0, [&callCount](std::string_view bytes) {
         ++callCount;
         return bytes.starts_with("GET ");
     });
@@ -521,7 +521,7 @@ TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[
     CHECK(callCount == 3);
 }
 
-TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column printFormat", "[row_filter][callback]")
+TEST_CASE("TextRowPredicate formats non-string slots via the column printFormat", "[row_filter][callback]")
 {
     InitializeTimezoneData();
     const MemoryLogFile fixture("log_filter_callback_time.json");
@@ -529,7 +529,7 @@ TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column pr
     const LogTable table = BuildTimeTable(fixture, "ts", {1'700'000'000'000'000});
 
     std::string captured;
-    const CallbackStringRowPredicate predicate(0, [&captured](std::string_view bytes) {
+    const TextRowPredicate predicate(0, [&captured](std::string_view bytes) {
         captured.assign(bytes);
         return !bytes.empty();
     });
@@ -921,7 +921,7 @@ TEST_CASE("EvaluateExpression: default expression matches every row", "[row_filt
     const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
 
     const CompiledFilterExpression matchAll;
-    REQUIRE(IsMatchAllCompiled(matchAll));
+    REQUIRE(AcceptsEverything(matchAll));
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         CHECK(EvaluateExpression(matchAll, table, row));
@@ -1183,7 +1183,7 @@ TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", 
 {
     // Ordering is monotonic (relative to observed benchmark cost);
     // exact numbers don't matter but the ranks matter because
-    // `CompileExpression` uses them to reorder children.
+    // `CompileFilter` uses them to reorder children.
     const RowPredicate boolPred{
         std::in_place_type<BoolRowPredicate>,
         size_t{0},
@@ -1195,9 +1195,9 @@ TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", 
         std::in_place_type<NumericRangeRowPredicate>, size_t{0}, std::optional<double>{0.0}, std::optional<double>{1.0}
     };
     const RowPredicate stringPred{
-        std::in_place_type<CallbackStringRowPredicate>,
+        std::in_place_type<TextRowPredicate>,
         size_t{0},
-        CallbackStringRowPredicate::MatchFn{[](std::string_view) { return true; }},
+        TextRowPredicate::MatchFn{[](std::string_view) { return true; }},
     };
 
     const int boolCost = EstimatedLeafCost(boolPred);
@@ -1364,7 +1364,7 @@ TEST_CASE(
     orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
     orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
     const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
-    REQUIRE_FALSE(IsMatchAllCompiled(expr));
+    REQUIRE_FALSE(AcceptsEverything(expr));
 
     const std::vector<size_t> accepted = FilterAcceptedRows(table, expr);
     CHECK(accepted.empty());

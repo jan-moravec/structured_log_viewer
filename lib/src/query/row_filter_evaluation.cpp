@@ -404,7 +404,7 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
     const size_t rowCount = table.RowCount();
     std::vector<size_t> accepted;
 
-    if (IsMatchAllCompiled(expression))
+    if (AcceptsEverything(expression))
     {
         // Return every row, so callers handle a filter that matches all rows like any other.
         accepted.resize(rowCount);

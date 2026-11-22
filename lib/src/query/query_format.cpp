@@ -514,7 +514,7 @@ void AppendExpression(const FilterExpression &expr, Precedence parent, std::stri
 std::string FormatExpression(const FilterExpression &expression)
 {
     // Match-all -> empty string (round-trip contract in the header).
-    if (IsMatchAll(expression))
+    if (AcceptsEverything(expression))
     {
         return {};
     }
@@ -525,7 +525,7 @@ std::string FormatExpression(const FilterExpression &expression)
     while (true)
     {
         const auto *andNode = std::get_if<FilterExpression::And>(&effective->node);
-        if (andNode == nullptr || andNode->children.size() != 1 || IsMatchAll(andNode->children.front()))
+        if (andNode == nullptr || andNode->children.size() != 1 || AcceptsEverything(andNode->children.front()))
         {
             break;
         }

@@ -6,7 +6,7 @@
 #include <loglib/config/anchor_entry.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 #include <loglib/support/theme.hpp>
 #include <loglib/time/time_zone_context.hpp>
 
@@ -48,7 +48,7 @@ public:
      * @brief Returns the current bucket index.
      * @return The maintained index, which may be empty.
      */
-    [[nodiscard]] const loglib::HistogramBucketIndex &Index() const noexcept
+    [[nodiscard]] const loglib::TimeHistogram &Index() const noexcept
     {
         return mIndex;
     }
@@ -268,7 +268,7 @@ private:
 
     QPointer<LogModel> mLogModel;
     QPointer<AnchorManager> mAnchors;
-    loglib::HistogramBucketIndex mIndex;
+    loglib::TimeHistogram mIndex;
     int mTimeColumnIndex = -1;
     int mLevelColumnIndex = -1;
     QTimer *mEmitTimer = nullptr;

@@ -202,18 +202,18 @@ private:
  * MakeStringMatcher builds the functions for regular expressions and wildcards. Filtering calls the function from
  * several threads, so it must be safe to copy and to call concurrently.
  */
-class CallbackStringRowPredicate
+class TextRowPredicate
 {
 public:
     using MatchFn = std::function<bool(std::string_view)>;
 
-    CallbackStringRowPredicate(size_t columnIndex, MatchFn match);
+    TextRowPredicate(size_t columnIndex, MatchFn match);
 
-    CallbackStringRowPredicate(const CallbackStringRowPredicate &) = default;
-    CallbackStringRowPredicate &operator=(const CallbackStringRowPredicate &) = default;
-    CallbackStringRowPredicate(CallbackStringRowPredicate &&) noexcept = default;
-    CallbackStringRowPredicate &operator=(CallbackStringRowPredicate &&) noexcept = default;
-    ~CallbackStringRowPredicate() = default;
+    TextRowPredicate(const TextRowPredicate &) = default;
+    TextRowPredicate &operator=(const TextRowPredicate &) = default;
+    TextRowPredicate(TextRowPredicate &&) noexcept = default;
+    TextRowPredicate &operator=(TextRowPredicate &&) noexcept = default;
+    ~TextRowPredicate() = default;
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
@@ -232,12 +232,8 @@ private:
  * @brief Any one of the row predicates. It is stored by value, so testing a row needs no allocation and no virtual
  * call.
  */
-using RowPredicate = std::variant<
-    EnumRowPredicate,
-    TimeRangeRowPredicate,
-    NumericRangeRowPredicate,
-    BoolRowPredicate,
-    CallbackStringRowPredicate>;
+using RowPredicate =
+    std::variant<EnumRowPredicate, TimeRangeRowPredicate, NumericRangeRowPredicate, BoolRowPredicate, TextRowPredicate>;
 
 /** @brief Tests a row with whichever predicate the variant holds. */
 [[nodiscard]] inline bool MatchesRow(const RowPredicate &predicate, const LogTable &table, size_t row)
@@ -262,8 +258,12 @@ using RowPredicate = std::variant<
  * @brief A filter expression with its predicates already built, ready to test rows.
  *
  * It mirrors FilterExpression. Leaves hold a row predicate, and And, Or and Not nodes own their children. Each node
- * stores its estimated cost, and CompileExpression orders the children of And and Or cheapest first. It can be moved
- * but not copied. Evaluating it changes nothing, so FilterAcceptedRows may use it from many threads.
+ * stores its estimated cost, and CompileFilter orders the children of And and Or cheapest first. It can be moved but
+ * not copied. Evaluating it changes nothing, so FilterAcceptedRows may use it from many threads.
+ *
+ * The predicates hold column indices and the dictionaries of the table they were compiled against, which is what makes
+ * them fast. Compile again after the table's columns move or change type. referencedColumns lists the columns the
+ * expression uses, so a view can tell whether a change to one column affects the filter.
  */
 // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
 struct CompiledFilterExpression
@@ -334,7 +334,7 @@ struct CompiledFilterExpression
 [[nodiscard]] bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row);
 
 /** @brief True if the expression is an empty And, which accepts every row. */
-[[nodiscard]] bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept;
+[[nodiscard]] bool AcceptsEverything(const CompiledFilterExpression &expression) noexcept;
 
 /**
  * @brief Tests every row of the table in parallel and returns the accepted rows in ascending order.

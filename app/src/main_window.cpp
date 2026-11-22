@@ -7361,7 +7361,7 @@ void MainWindow::UpdateFilterProblemStatus()
     if (mModel != nullptr && mModel->rowCount() > 0)
     {
         const std::vector<std::string> problems =
-            loglib::FindFilterProblems(mSession->View().expression, mModel->Layout().Columns());
+            loglib::FindFilterProblems(mSession->View().expression, mModel->Layout());
         if (!problems.empty())
         {
             text = tr("Filter: %1").arg(QString::fromStdString(problems.front()));
@@ -7432,7 +7432,7 @@ void MainWindow::UpdateRowsShownStatus()
     // Mirrors the enabled-state check on `actionClearAllFilters` --
     // the button triggers that action, so the two must agree or a
     // visible button becomes a no-op on click.
-    const bool isMatchAll = (mModel != nullptr) && loglib::IsMatchAll(mSession->View().expression);
+    const bool isMatchAll = (mModel != nullptr) && loglib::AcceptsEverything(mSession->View().expression);
     mClearFiltersStatusButton->setVisible(!isMatchAll);
 }
 
@@ -10790,7 +10790,7 @@ void MainWindow::SyncClearAllFiltersEnabled()
     {
         return;
     }
-    ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mSession->View().expression));
+    ui->actionClearAllFilters->setDisabled(loglib::AcceptsEverything(mSession->View().expression));
     // Status-bar button gates on the same condition via
     // `UpdateRowsShownStatus`; route through it so the two stay in
     // lockstep on filter changes that don't shift row counts.
@@ -11624,8 +11624,7 @@ void MainWindow::UpdateFilters(LogSession *session)
     // `CompiledFilterExpression` via the shared factory (handles
     // predicate construction, level-column expansion, and
     // cost-based ordering).
-    loglib::CompiledFilterExpression compiled =
-        loglib::CompileExpression(session->View().expression, model->Layout().Columns(), &model->Table());
+    loglib::CompiledFilterExpression compiled = loglib::CompileFilter(session->View().expression, model->Table());
     filter->SetFilterExpression(std::move(compiled));
     UpdateFilterProblemStatus();
 }

@@ -2807,7 +2807,7 @@ private slots:
                            "simpleLeaves=[%1] matchAll=%2 dropped=%3 rows=%4"
             )
                            .arg(originLeafStrings.join(QLatin1Char(',')))
-                           .arg(loglib::IsMatchAll(sessionA->View().expression))
+                           .arg(loglib::AcceptsEverything(sessionA->View().expression))
                            .arg(window.LastDroppedFilterCountForTest())
                            .arg(originModel->rowCount()))
         );

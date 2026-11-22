@@ -174,7 +174,7 @@ ExitCode RunQuery(
     }
 
     const auto filterStarted = std::chrono::steady_clock::now();
-    const auto compiled = loglib::CompileExpression(session->expression, table.Layout().Columns(), &table);
+    const auto compiled = loglib::CompileFilter(session->expression, table);
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(table, compiled);
     console.Stage("filter", rows.size(), filterStarted);
 

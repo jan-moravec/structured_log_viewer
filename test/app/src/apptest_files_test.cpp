@@ -2530,7 +2530,9 @@ private slots:
         const loglib::LogConfiguration probe = loglib::LoadConfiguration(sessionPath.toStdString());
         QVERIFY2(!probe.source.has_value(), "New Session must clear the source descriptor");
         QVERIFY2(probe.columns.empty(), "New Session saved JSON must have no columns");
-        QVERIFY2(loglib::IsMatchAll(probe.view.expression), "New Session saved JSON must have no filter expression");
+        QVERIFY2(
+            loglib::AcceptsEverything(probe.view.expression), "New Session saved JSON must have no filter expression"
+        );
         QVERIFY(probe.view.sort.columnKeys.empty());
     }
 

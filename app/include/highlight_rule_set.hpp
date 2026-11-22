@@ -124,10 +124,7 @@ private:
     /// dict, ...); the rule stays listed but doesn't participate
     /// in matching.
     static std::optional<CompiledRule> CompileRule(
-        const loglib::HighlightRule &rule,
-        int resolvedColumn,
-        const std::vector<loglib::Column> &columns,
-        const loglib::LogTable *table
+        const loglib::HighlightRule &rule, int resolvedColumn, const loglib::LogTable *table
     );
 
     /// Resolve @p keys against @p columns using subset-match

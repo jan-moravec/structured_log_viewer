@@ -130,8 +130,8 @@ void LogFilterModel::RewireSourceConnections()
 
 void LogFilterModel::SetFilterExpression(loglib::CompiledFilterExpression expression)
 {
-    const bool wasMatchAll = loglib::IsMatchAllCompiled(mCompiledExpression);
-    const bool nowMatchAll = loglib::IsMatchAllCompiled(expression);
+    const bool wasMatchAll = loglib::AcceptsEverything(mCompiledExpression);
+    const bool nowMatchAll = loglib::AcceptsEverything(expression);
     if (wasMatchAll && nowMatchAll)
     {
         // Both trees match every row; skip the rebuild churn.
@@ -456,7 +456,7 @@ void LogFilterModel::RebuildProxyChainCache()
 
 bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
 {
-    if (loglib::IsMatchAllCompiled(mCompiledExpression))
+    if (loglib::AcceptsEverything(mCompiledExpression))
     {
         return true;
     }
@@ -496,7 +496,7 @@ void LogFilterModel::RecomputeAcceptedRows()
 
     const int n = src->rowCount();
     mAcceptedSourceRows.reserve(static_cast<size_t>(n));
-    if (loglib::IsMatchAllCompiled(mCompiledExpression))
+    if (loglib::AcceptsEverything(mCompiledExpression))
     {
         // Match-all: every row passes, even without a `LogModel`.
         for (int i = 0; i < n; ++i)

@@ -13,7 +13,7 @@ namespace bench
 void RegisterCsvBenchmarks();
 void RegisterDecompressionBenchmarks();
 void RegisterExportBenchmarks();
-void RegisterHistogramBucketIndexBenchmarks();
+void RegisterTimeHistogramBenchmarks();
 void RegisterJsonBenchmarks();
 void RegisterRowFilterBenchmarks();
 void RegisterLogfmtBenchmarks();

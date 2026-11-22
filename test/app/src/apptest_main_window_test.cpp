@@ -3903,7 +3903,7 @@ private slots:
     // `msg:a OR msg:b`), `mSimpleLeaves` is empty but the expression
     // is non-match-all -- rows are actively being filtered.
     // `actionClearAllFilters` correctly stays enabled (its gate is
-    // `IsMatchAll(expression)`), but the status-bar button used to
+    // `AcceptsEverything(expression)`), but the status-bar button used to
     // gate on `!mSimpleLeaves.empty()` and hide itself, leaving the
     // user with no visible affordance to clear the filter. Both must
     // now agree: button visible + action enabled whenever the
@@ -3956,7 +3956,7 @@ private slots:
         // action does.
         QVERIFY2(mWindow->Filters().empty(), "Advanced-only commit must not populate mSimpleLeaves");
         QVERIFY2(
-            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            !loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "Advanced NOT tree must produce a non-match-all expression"
         );
         QVERIFY2(clearAction->isEnabled(), "clear-all action must be enabled with an active Advanced tree");

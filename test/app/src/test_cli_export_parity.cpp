@@ -121,7 +121,7 @@ namespace
         }
         expression = std::move(*parsed);
     }
-    const auto compiled = loglib::CompileExpression(expression, model.Layout().Columns(), &model.Table());
+    const auto compiled = loglib::CompileFilter(expression, model.Table());
     std::vector<std::size_t> rows = loglib::FilterAcceptedRows(model.Table(), compiled);
 
     if (sort.has_value())

@@ -1,4 +1,4 @@
-#include "loglib/query/histogram_bucket_index.hpp"
+#include "loglib/query/time_histogram.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -23,7 +23,7 @@ constexpr size_t LEVEL_SLOT_COUNT = CANONICAL_LEVEL_COUNT + 1;
 constexpr size_t LevelToSlot(LogLevel level) noexcept
 {
     const auto raw = static_cast<size_t>(level);
-    assert(raw < LEVEL_SLOT_COUNT && "LogLevel grew; extend HistogramBucketIndex::LEVEL_SLOT_COUNT");
+    assert(raw < LEVEL_SLOT_COUNT && "LogLevel grew; extend TimeHistogram::LEVEL_SLOT_COUNT");
     return raw < LEVEL_SLOT_COUNT ? raw : 0;
 }
 
@@ -80,12 +80,12 @@ std::string_view HistogramBucketSizeLabel(HistogramBucketSize size) noexcept
     return "?"sv;
 }
 
-HistogramBucketIndex::HistogramBucketIndex(HistogramBucketSize size) noexcept
+TimeHistogram::TimeHistogram(HistogramBucketSize size) noexcept
     : mBucketSize(size)
 {
 }
 
-TimeStamp HistogramBucketIndex::TruncateToBucket(TimeStamp ts, HistogramBucketSize size) noexcept
+TimeStamp TimeHistogram::TruncateToBucket(TimeStamp ts, HistogramBucketSize size) noexcept
 {
     const auto widthUs = HistogramBucketWidth(size).count();
     const int64_t rawUs = ts.time_since_epoch().count();
@@ -93,7 +93,7 @@ TimeStamp HistogramBucketIndex::TruncateToBucket(TimeStamp ts, HistogramBucketSi
     return TimeStamp{std::chrono::microseconds{bucketIdx * widthUs}};
 }
 
-HistogramBucketSize HistogramBucketIndex::AutoBucketSize(TimeStamp min, TimeStamp max, int visibleBucketBudget) noexcept
+HistogramBucketSize TimeHistogram::AutoBucketSize(TimeStamp min, TimeStamp max, int visibleBucketBudget) noexcept
 {
     if (max < min)
     {
@@ -124,7 +124,7 @@ HistogramBucketSize HistogramBucketIndex::AutoBucketSize(TimeStamp min, TimeStam
     return HistogramBucketSize::OneDay;
 }
 
-void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
+void TimeHistogram::AddRow(TimeStamp ts, LogLevel level)
 {
     const int64_t tsUs = ts.time_since_epoch().count();
 
@@ -184,7 +184,7 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
     }
 }
 
-void HistogramBucketIndex::WidenBuckets()
+void TimeHistogram::WidenBuckets()
 {
     const int64_t oldWidthUs = BucketWidth().count();
     const int64_t oldOriginUs = mOrigin.time_since_epoch().count();
@@ -211,7 +211,7 @@ void HistogramBucketIndex::WidenBuckets()
     mOrigin = newOrigin;
 }
 
-void HistogramBucketIndex::Reset() noexcept
+void TimeHistogram::Reset() noexcept
 {
     mBuckets.clear();
     mOrigin = TimeStamp{};
@@ -220,7 +220,7 @@ void HistogramBucketIndex::Reset() noexcept
     mMaxTimestamp = TimeStamp{};
 }
 
-void HistogramBucketIndex::SetBucketSize(HistogramBucketSize size) noexcept
+void TimeHistogram::SetBucketSize(HistogramBucketSize size) noexcept
 {
     if (size != mBucketSize)
     {
@@ -229,7 +229,7 @@ void HistogramBucketIndex::SetBucketSize(HistogramBucketSize size) noexcept
     }
 }
 
-std::optional<size_t> HistogramBucketIndex::BucketOf(TimeStamp ts) const noexcept
+std::optional<size_t> TimeHistogram::BucketOf(TimeStamp ts) const noexcept
 {
     if (mBuckets.empty())
     {
@@ -245,7 +245,7 @@ std::optional<size_t> HistogramBucketIndex::BucketOf(TimeStamp ts) const noexcep
     return static_cast<size_t>(bucketIdx);
 }
 
-TimeStamp HistogramBucketIndex::BucketStart(size_t index) const noexcept
+TimeStamp TimeHistogram::BucketStart(size_t index) const noexcept
 {
     const auto widthUs = BucketWidth().count();
     return TimeStamp{
@@ -253,7 +253,7 @@ TimeStamp HistogramBucketIndex::BucketStart(size_t index) const noexcept
     };
 }
 
-TimeStamp HistogramBucketIndex::BucketEnd(size_t index) const noexcept
+TimeStamp TimeHistogram::BucketEnd(size_t index) const noexcept
 {
     return BucketStart(index) + BucketWidth();
 }

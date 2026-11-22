@@ -32,7 +32,7 @@ add_library(
     src/ingest/file_identity.cpp
     src/core/file_line_source.cpp
     src/parse/format_detection.cpp
-    src/query/histogram_bucket_index.cpp
+    src/query/time_histogram.cpp
     src/core/key_index.cpp
     src/core/row_batch.cpp
     src/parse/static_parser_pipeline.cpp
@@ -121,7 +121,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/config/format_spec.hpp
     include/loglib/parse/format_detection.hpp
     include/loglib/config/highlight_rule.hpp
-    include/loglib/query/histogram_bucket_index.hpp
+    include/loglib/query/time_histogram.hpp
     include/loglib/core/key_index.hpp
     include/loglib/query/filter_compile.hpp
     include/loglib/core/line_source.hpp

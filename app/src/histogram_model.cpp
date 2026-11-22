@@ -5,7 +5,7 @@
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_value.hpp>
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 #include <loglib/table/log_table.hpp>
 
 #include <QAbstractItemModel>
@@ -162,7 +162,7 @@ void HistogramModel::ApplyAutoBucketSize()
     {
         return;
     }
-    const auto picked = loglib::HistogramBucketIndex::AutoBucketSize(range->min, range->max);
+    const auto picked = loglib::TimeHistogram::AutoBucketSize(range->min, range->max);
     if (picked == mIndex.BucketSize())
     {
         return;

@@ -400,8 +400,7 @@ void RegisterRegexFilter(const Tier &tier, const SharedMixed &table, const char 
             rule.matchType = FilterCondition::Match::RegularExpression;
             rule.filterString = pattern;
             expression.node = FilterExpression::Leaf{rule};
-            const CompiledFilterExpression compiled =
-                CompileExpression(expression, logTable.Layout().Columns(), &logTable);
+            const CompiledFilterExpression compiled = CompileFilter(expression, logTable);
             std::size_t accepted = 0;
             for (const auto _ : state)
             {
@@ -444,8 +443,7 @@ void RegisterLeafFilter(
             const LogTable &logTable = *fixture.table;
             FilterExpression expression;
             expression.node = FilterExpression::Leaf{rule};
-            const CompiledFilterExpression compiled =
-                CompileExpression(expression, logTable.Layout().Columns(), &logTable);
+            const CompiledFilterExpression compiled = CompileFilter(expression, logTable);
             std::size_t accepted = 0;
             for (const auto _ : state)
             {

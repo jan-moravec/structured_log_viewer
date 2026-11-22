@@ -186,7 +186,7 @@ std::optional<Failure> CheckLoadedFilter(
     {
         return std::nullopt;
     }
-    const std::vector<std::string> problems = loglib::FindFilterProblems(session.expression, table.Layout().Columns());
+    const std::vector<std::string> problems = loglib::FindFilterProblems(session.expression, table.Layout());
     if (problems.empty())
     {
         return std::nullopt;

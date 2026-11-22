@@ -708,7 +708,7 @@ private slots:
 
         // Keep only "third" (source row 2). Lines 1 and 2 become
         // filter-hidden targets; line 3 stays reachable.
-        loglib::CallbackStringRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
+        loglib::TextRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
             return value == std::string_view{"third"};
         });
         std::vector<loglib::RowPredicate> rules;
@@ -956,9 +956,9 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist");
 
         // Keep only the row whose `msg` equals "third" (source
-        // row 2). `CallbackStringRowPredicate` is the same variant
+        // row 2). `TextRowPredicate` is the same variant
         // arm the Filters dock uses.
-        loglib::CallbackStringRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
+        loglib::TextRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
             return value == std::string_view{"third"};
         });
 
@@ -1382,7 +1382,7 @@ private slots:
         QCOMPARE(editor.QueryText(), QString());
         const auto matchAllResult = editor.Result();
         QVERIFY(matchAllResult.has_value());
-        QVERIFY(loglib::IsMatchAll(*matchAllResult));
+        QVERIFY(loglib::AcceptsEverything(*matchAllResult));
 
         // Non-trivial expression built via the loglib parser (which is
         // the wire the editor uses internally). `LoadFromExpression`
@@ -2027,7 +2027,7 @@ private slots:
 
         QVERIFY2(mWindow->Filters().empty(), "an Advanced-only expression must not populate mSimpleLeaves");
         QVERIFY2(
-            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            !loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "precondition: the loaded Advanced tree must still be filtering rows"
         );
         QVERIFY2(clearAction->isEnabled(), "Clear All Filters must be enabled after loading an Advanced-only session");
@@ -2041,7 +2041,7 @@ private slots:
         clearAction->trigger();
         QCoreApplication::processEvents();
         QVERIFY2(
-            loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "triggering the re-enabled action must clear the loaded Advanced tree"
         );
     }
@@ -2253,7 +2253,7 @@ private slots:
     // `LogConfiguration::expression`. That left the action disabled
     // (and, via the shared trigger, the status-bar button wired to a
     // no-op) even though rows stayed filtered by the Advanced Or/Not
-    // remainder. The fix gates on `IsMatchAll(expression)` post-Mirror.
+    // remainder. The fix gates on `AcceptsEverything(expression)` post-Mirror.
     void TestClearFilterKeepsActionEnabledWithAdvancedRemainder()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -2324,7 +2324,7 @@ private slots:
 
         QVERIFY2(mWindow->Filters().empty(), "simple leaf must be gone after ClearFilter");
         QVERIFY2(
-            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            !loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "the Advanced Or subtree must survive ClearFilter of the sibling simple leaf"
         );
         QVERIFY2(
@@ -2371,7 +2371,7 @@ private slots:
         mWindow->activeSession()->MutableView().expression = advancedTree;
         QCoreApplication::processEvents();
         QVERIFY2(
-            !loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            !loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "precondition: Advanced tree must be live before ClearAllFilters"
         );
 
@@ -2379,7 +2379,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            loglib::IsMatchAll(mWindow->activeSession()->View().expression),
+            loglib::AcceptsEverything(mWindow->activeSession()->View().expression),
             "ClearAllFilters must reset the expression to match-all even when the "
             "root is an Advanced Or/Not/And-with-non-Leaf subtree"
         );

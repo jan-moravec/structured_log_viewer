@@ -257,7 +257,7 @@ void AdvancedFilterEditor::ReparseAndUpdate()
             return;
         }
         mCachedResult = std::move(*parsed);
-        if (loglib::IsMatchAll(*mCachedResult))
+        if (loglib::AcceptsEverything(*mCachedResult))
         {
             mStatusLabel->setText(tr("Empty query \u2014 matches every row."));
         }

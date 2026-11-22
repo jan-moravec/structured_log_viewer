@@ -8,7 +8,7 @@
 #include "log_session_presentation.hpp"
 #include "session_bind_context.hpp"
 
-#include <loglib/query/histogram_bucket_index.hpp>
+#include <loglib/query/time_histogram.hpp>
 
 #include <QCloseEvent>
 #include <QShowEvent>
