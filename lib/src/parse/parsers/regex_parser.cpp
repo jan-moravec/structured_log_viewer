@@ -209,7 +209,7 @@ class RegexLineDecoder
 {
 public:
     /** A UTF-8 byte order mark can start the first line, and the pattern should still match from its start. */
-    static constexpr bool kStripBom = true;
+    static constexpr bool K_STRIP_BOM = true;
 
     RegexLineDecoder(
         const CompiledPattern &compiled,

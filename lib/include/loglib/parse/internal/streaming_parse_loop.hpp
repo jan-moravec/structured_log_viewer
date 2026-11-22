@@ -121,7 +121,13 @@ void RunStreamingParseLoopBody(
     std::vector<CompactLogValue> compactValues;
     std::string ownedArena;
     std::string lineError;
-    LineContext context{keys, promoteScratch.keyCache, ownedArena, std::span<const char>{}, 0};
+    LineContext context{
+        .keys = keys,
+        .keyCache = promoteScratch.keyCache,
+        .ownedBytes = ownedArena,
+        .stableBytes = std::span<const char>{},
+        .bytesAfterLine = 0,
+    };
 
     // The record that is held back until the next header, the end of the stream or its age limit. The assembler holds
     // its values and continuation text. The raw text and the owned strings are stored in the source when the record is

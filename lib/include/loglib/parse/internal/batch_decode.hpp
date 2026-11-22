@@ -71,7 +71,13 @@ void DecodeBatch(
     parsed.lines.reserve(estimatedLines);
     parsed.localLineOffsets.reserve(estimatedLines);
 
-    LineContext context{keys, worker.keyCache, parsed.ownedStringsArena, stableBytes, 0};
+    LineContext context{
+        .keys = keys,
+        .keyCache = worker.keyCache,
+        .ownedBytes = parsed.ownedStringsArena,
+        .stableBytes = stableBytes,
+        .bytesAfterLine = 0,
+    };
     const std::string_view mappedFile(fileBegin, stableBytes.size());
 
     size_t relativeLineNumber = 1;

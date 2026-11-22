@@ -239,7 +239,7 @@ class CsvLineDecoder
 {
 public:
     /** A UTF-8 byte order mark can start the header line. */
-    static constexpr bool kStripBom = true;
+    static constexpr bool K_STRIP_BOM = true;
 
     /** A decoder that reads the header from the first line it gets. */
     CsvLineDecoder() = default;
@@ -318,6 +318,8 @@ public:
         }
     }
 
+    // The result is a variable for the drivers, which compare it with INVALID_KEY_ID at run time.
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
     [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
         return INVALID_KEY_ID;

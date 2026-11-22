@@ -379,7 +379,7 @@ class LogfmtLineDecoder
 {
 public:
     /** A UTF-8 byte order mark can start the first line of the input. */
-    static constexpr bool kStripBom = true;
+    static constexpr bool K_STRIP_BOM = true;
 
     LogfmtLineDecoder() = delete;
 

@@ -109,7 +109,7 @@ public:
             // them.
             const uint64_t offset = ctx.ownedBytes.size();
             ctx.ownedBytes.append(valueView.data(), valueView.size());
-            auto val = loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
+            const auto val = loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
             auto it = out.begin();
             while (it != out.end() && it->Key() < keyId)
             {

@@ -24,6 +24,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace loglib;
@@ -33,6 +34,19 @@ namespace
 
 struct GoldenCase
 {
+    GoldenCase(
+        std::string caseName,
+        std::shared_ptr<const LogParser> caseParser,
+        std::string caseInput,
+        std::vector<std::string> caseTimeKeys = {}
+    )
+        : name(std::move(caseName)),
+          parser(std::move(caseParser)),
+          input(std::move(caseInput)),
+          timeKeys(std::move(caseTimeKeys))
+    {
+    }
+
     std::string name;
     std::shared_ptr<const LogParser> parser;
     std::string input;
@@ -62,9 +76,8 @@ std::string Repeat(int count, const std::function<std::string(int)> &block)
 
 std::string ReadFile(const std::filesystem::path &path)
 {
-    std::ifstream in(path, std::ios::binary);
     std::ostringstream text;
-    text << in.rdbuf();
+    text << std::ifstream(path, std::ios::binary).rdbuf();
     return text.str();
 }
 
@@ -75,7 +88,7 @@ std::string WithoutCarriageReturns(std::string text)
     return text;
 }
 
-std::string CrLf(std::string text)
+std::string CrLf(const std::string &text)
 {
     std::string out;
     for (const char c : text)
@@ -105,8 +118,11 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
             samples += line + "\n";
         }
         // Samples, a blank line, a line that does not match, and the samples again so several batches hold rows.
-        const std::string input = samples + "\n" + "this line matches no template\n" + samples + samples;
-        cases.push_back({"regex_template_" + name, parser, input, {}});
+        std::string input = samples;
+        input += "\nthis line matches no template\n";
+        input += samples;
+        input += samples;
+        cases.emplace_back("regex_template_" + name, parser, input);
     }
 
     const RegexTemplate *java = nullptr;
@@ -137,10 +153,10 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
         }
         return record;
     });
-    cases.push_back({"regex_java_multiline", javaParser, javaTrace, {}});
-    cases.push_back({"regex_java_orphan_start", javaParser, "\tat orphan 1\n\n\tat orphan 2\n" + javaTrace, {}});
-    cases.push_back({"regex_java_no_final_newline", javaParser, javaTrace.substr(0, javaTrace.size() - 1), {}});
-    cases.push_back({"regex_java_crlf", javaParser, CrLf(javaTrace), {}});
+    cases.emplace_back("regex_java_multiline", javaParser, javaTrace);
+    cases.emplace_back("regex_java_orphan_start", javaParser, "\tat orphan 1\n\n\tat orphan 2\n" + javaTrace);
+    cases.emplace_back("regex_java_no_final_newline", javaParser, javaTrace.substr(0, javaTrace.size() - 1));
+    cases.emplace_back("regex_java_crlf", javaParser, CrLf(javaTrace));
 
     const std::string pythonPattern =
         R"(^(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): (?<message>.*)$)";
@@ -164,10 +180,10 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
     const auto untilHeaderAnchored = std::make_shared<RegexParser>(RegexSettings{
         .pattern = pythonPattern, .continuation = ContinuationMode::UntilNextHeader, .headerAnchor = pythonAnchor
     });
-    cases.push_back({"regex_python_traceback", untilHeader, traceback, {}});
-    cases.push_back({"regex_python_traceback_anchored", untilHeaderAnchored, traceback, {}});
-    cases.push_back({"regex_python_orphan_start", untilHeader, "stray 1\nstray 2\n\nstray 3\n" + traceback, {}});
-    cases.push_back({"regex_bom_and_crlf", untilHeader, "\xEF\xBB\xBF" + CrLf(traceback), {}});
+    cases.emplace_back("regex_python_traceback", untilHeader, traceback);
+    cases.emplace_back("regex_python_traceback_anchored", untilHeaderAnchored, traceback);
+    cases.emplace_back("regex_python_orphan_start", untilHeader, "stray 1\nstray 2\n\nstray 3\n" + traceback);
+    cases.emplace_back("regex_bom_and_crlf", untilHeader, "\xEF\xBB\xBF" + CrLf(traceback));
 
     const auto optionalGroup = std::make_shared<RegexParser>(RegexSettings{
         .pattern = R"(^(?<level>\w+) (?<code>\d+)(?: (?<note>.*))?$)", .continuation = ContinuationMode::Indented
@@ -186,7 +202,7 @@ void AddRegexCases(std::vector<GoldenCase> &cases)
          Repeat(6, [](int i) { return std::format("INFO text {}\n  more {}\n", i, i); }),
          {}}
     );
-    cases.push_back({"regex_empty_pattern", std::make_shared<RegexParser>(RegexSettings{}), "a\nb\n", {}});
+    cases.emplace_back("regex_empty_pattern", std::make_shared<RegexParser>(RegexSettings{}), "a\nb\n");
 }
 
 void AddJsonCases(std::vector<GoldenCase> &cases)
@@ -243,12 +259,12 @@ void AddJsonCases(std::vector<GoldenCase> &cases)
          {}}
     );
     const std::string rows = Repeat(25, [](int i) { return std::format("{{\"n\":{},\"s\":\"v{}\"}}\n", i, i); });
-    cases.push_back({"json_blank_lines", json, "\n\n" + rows + "\n\n" + rows + "\n", {}});
-    cases.push_back({"json_no_final_newline", json, rows.substr(0, rows.size() - 1), {}});
-    cases.push_back({"json_crlf", json, CrLf(rows), {}});
-    cases.push_back({"json_bom", json, "\xEF\xBB\xBF" + rows, {}});
-    cases.push_back({"json_empty", json, "", {}});
-    cases.push_back({"json_only_blank", json, "\n\n\n", {}});
+    cases.emplace_back("json_blank_lines", json, "\n\n" + rows + "\n\n" + rows + "\n");
+    cases.emplace_back("json_no_final_newline", json, rows.substr(0, rows.size() - 1));
+    cases.emplace_back("json_crlf", json, CrLf(rows));
+    cases.emplace_back("json_bom", json, "\xEF\xBB\xBF" + rows);
+    cases.emplace_back("json_empty", json, "");
+    cases.emplace_back("json_only_blank", json, "\n\n\n");
 }
 
 void AddLogfmtCases(std::vector<GoldenCase> &cases)
@@ -258,9 +274,9 @@ void AddLogfmtCases(std::vector<GoldenCase> &cases)
     const std::string rows = Repeat(30, [](int i) {
         return std::format("ts=2026-01-01T00:00:{:02}Z level=info n={} msg=\"row {}\"\n", i % 60, i, i);
     });
-    cases.push_back({"logfmt_basic", multiline, rows, {}});
-    cases.push_back({"logfmt_single_line_mode", single, rows + "  indented is a record start\n", {}});
-    cases.push_back({"logfmt_time_columns", multiline, rows, {"ts"}});
+    cases.emplace_back("logfmt_basic", multiline, rows);
+    cases.emplace_back("logfmt_single_line_mode", single, rows + "  indented is a record start\n");
+    cases.emplace_back("logfmt_time_columns", multiline, rows, std::vector<std::string>{"ts"});
     const std::string continued = Repeat(24, [](int i) {
         std::string record = std::format("level=info n={} msg=\"row {}\"\n", i, i);
         if (i % 3 == 0)
@@ -273,14 +289,14 @@ void AddLogfmtCases(std::vector<GoldenCase> &cases)
         }
         return record;
     });
-    cases.push_back({"logfmt_multiline", multiline, continued, {}});
-    cases.push_back({"logfmt_orphan_start", multiline, "  orphan one\n\n  orphan two\n" + continued, {}});
+    cases.emplace_back("logfmt_multiline", multiline, continued);
+    cases.emplace_back("logfmt_orphan_start", multiline, "  orphan one\n\n  orphan two\n" + continued);
     cases.push_back(
         {"logfmt_orphan_after_error", multiline, "bad=\"unterminated\n  orphan\nok=1 last=text\n  fine\n", {}}
     );
-    cases.push_back({"logfmt_no_final_newline", multiline, continued.substr(0, continued.size() - 1), {}});
-    cases.push_back({"logfmt_crlf", multiline, CrLf(continued), {}});
-    cases.push_back({"logfmt_bom", multiline, "\xEF\xBB\xBF" + continued, {}});
+    cases.emplace_back("logfmt_no_final_newline", multiline, continued.substr(0, continued.size() - 1));
+    cases.emplace_back("logfmt_crlf", multiline, CrLf(continued));
+    cases.emplace_back("logfmt_bom", multiline, "\xEF\xBB\xBF" + continued);
     cases.push_back(
         {"logfmt_continuation_targets",
          multiline,
@@ -307,23 +323,23 @@ void AddCsvCases(std::vector<GoldenCase> &cases)
         return std::format("2026-01-01T00:00:{:02}Z,{},\"quoted, {}\",{}.5,true\n", i % 60, i, i, i);
     });
     const std::string basic = "timestamp,n,text,ratio,flag\n" + rows;
-    cases.push_back({"csv_basic", csv, basic, {}});
-    cases.push_back({"csv_time_columns", csv, basic, {"timestamp"}});
-    cases.push_back({"csv_bom", csv, "\xEF\xBB\xBF" + basic, {}});
-    cases.push_back({"csv_crlf", csv, CrLf(basic), {}});
-    cases.push_back({"csv_no_final_newline", csv, basic.substr(0, basic.size() - 1), {}});
-    cases.push_back({"csv_leading_blank_lines", csv, "\n\n" + basic, {}});
-    cases.push_back({"csv_duplicate_headers", csv, "a,b,a,a_2,b\n1,2,3,4,5\n6,7,8,9,10\n", {}});
-    cases.push_back({"csv_header_only", csv, "a,b,c\n", {}});
-    cases.push_back({"csv_empty_cells", csv, "a,b,c\n,,\n1,,3\n\"\",x,\n", {}});
+    cases.emplace_back("csv_basic", csv, basic);
+    cases.emplace_back("csv_time_columns", csv, basic, std::vector<std::string>{"timestamp"});
+    cases.emplace_back("csv_bom", csv, "\xEF\xBB\xBF" + basic);
+    cases.emplace_back("csv_crlf", csv, CrLf(basic));
+    cases.emplace_back("csv_no_final_newline", csv, basic.substr(0, basic.size() - 1));
+    cases.emplace_back("csv_leading_blank_lines", csv, "\n\n" + basic);
+    cases.emplace_back("csv_duplicate_headers", csv, "a,b,a,a_2,b\n1,2,3,4,5\n6,7,8,9,10\n");
+    cases.emplace_back("csv_header_only", csv, "a,b,c\n");
+    cases.emplace_back("csv_empty_cells", csv, "a,b,c\n,,\n1,,3\n\"\",x,\n");
     cases.push_back(
         {"csv_errors",
          csv,
          "a,b,c\n1,2,3\n1,2\n1,2,3,4,5\n\"unterminated,2,3\n\"quoted \"\"inner\"\" \",2,3\n7,8,9\n",
          {}}
     );
-    cases.push_back({"csv_no_header_cells", csv, "\"\n1,2\n", {}});
-    cases.push_back({"csv_empty", csv, "", {}});
+    cases.emplace_back("csv_no_header_cells", csv, "\"\n1,2\n");
+    cases.emplace_back("csv_empty", csv, "");
 }
 
 void AddFuzzCorpusCases(std::vector<GoldenCase> &cases)
@@ -356,7 +372,7 @@ void AddFuzzCorpusCases(std::vector<GoldenCase> &cases)
         int index = 0;
         for (const auto &path : files)
         {
-            cases.push_back({std::format("fuzz_{}_{}", format.folder, index++), format.parser, ReadFile(path), {}});
+            cases.emplace_back(std::format("fuzz_{}_{}", format.folder, index++), format.parser, ReadFile(path));
         }
     }
 }
@@ -382,6 +398,7 @@ bool UpdateRequested()
     std::free(value);
     return set;
 #else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe)
     return std::getenv("LOGLIB_UPDATE_GOLDEN") != nullptr;
 #endif
 }

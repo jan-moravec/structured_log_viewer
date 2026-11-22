@@ -26,6 +26,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -50,7 +51,7 @@ enum class Shape
     LogfmtOffset,
 };
 
-[[nodiscard]] std::string ShapeName(Shape shape)
+[[nodiscard]] std::string_view ShapeName(Shape shape)
 {
     switch (shape)
     {
@@ -90,12 +91,14 @@ class GeneratedFile
 {
 public:
     GeneratedFile(Shape shape, std::size_t rows)
-        : mRows(rows), mPath("bench_time_" + ShapeName(shape) + "_" + std::to_string(rows) + ".log")
+        : mRows(rows), mPath("bench_time_" + std::string(ShapeName(shape)) + "_" + std::to_string(rows) + ".log")
     {
         const test_common::LogFormat format =
             shape == Shape::LogfmtOffset ? test_common::Logfmt() : test_common::JsonLines();
         {
             std::ofstream file(mPath, std::ios::binary);
+            // The fixture is pinned, so every run measures the same bytes.
+            // NOLINTNEXTLINE(bugprone-random-generator-seed)
             std::mt19937 rng(LARGE_FIXTURE_SEED);
             for (std::size_t i = 0; i < rows; ++i)
             {
@@ -333,21 +336,68 @@ void RegisterTimeConversionBenchmarks()
     );
 
     // The three paths over the same JSON file, then the same at one and eight threads.
-    RegisterVariant({Title("JSON", "", TABLE_SINK), Shape::JsonOffset, TimePath::TableSink});
-    RegisterVariant({Title("JSON", "", NO_FEEDBACK), Shape::JsonOffset, TimePath::NoFeedback});
-    RegisterVariant({Title("JSON", "", UP_FRONT), Shape::JsonOffset, TimePath::UpFront});
+    RegisterVariant(
+        Variant{.name = Title("JSON", "", TABLE_SINK), .shape = Shape::JsonOffset, .path = TimePath::TableSink}
+    );
+    RegisterVariant(
+        Variant{.name = Title("JSON", "", NO_FEEDBACK), .shape = Shape::JsonOffset, .path = TimePath::NoFeedback}
+    );
+    RegisterVariant(
+        Variant{.name = Title("JSON", "", UP_FRONT), .shape = Shape::JsonOffset, .path = TimePath::UpFront}
+    );
     for (const unsigned threads : {1U, 8U})
     {
         const std::string suffix = ", " + std::to_string(threads) + (threads == 1 ? " thread" : " threads");
-        RegisterVariant({Title("JSON", "", TABLE_SINK) + suffix, Shape::JsonOffset, TimePath::TableSink, threads});
-        RegisterVariant({Title("JSON", "", NO_FEEDBACK) + suffix, Shape::JsonOffset, TimePath::NoFeedback, threads});
-        RegisterVariant({Title("JSON", "", UP_FRONT) + suffix, Shape::JsonOffset, TimePath::UpFront, threads});
+        RegisterVariant(
+            Variant{
+                .name = Title("JSON", "", TABLE_SINK) + suffix,
+                .shape = Shape::JsonOffset,
+                .path = TimePath::TableSink,
+                .threads = threads
+            }
+        );
+        RegisterVariant(
+            Variant{
+                .name = Title("JSON", "", NO_FEEDBACK) + suffix,
+                .shape = Shape::JsonOffset,
+                .path = TimePath::NoFeedback,
+                .threads = threads
+            }
+        );
+        RegisterVariant(
+            Variant{
+                .name = Title("JSON", "", UP_FRONT) + suffix,
+                .shape = Shape::JsonOffset,
+                .path = TimePath::UpFront,
+                .threads = threads
+            }
+        );
     }
 
-    RegisterVariant({Title("logfmt", "", TABLE_SINK), Shape::LogfmtOffset, TimePath::TableSink});
-    RegisterVariant({Title("JSON", "naive time text, ", TABLE_SINK), Shape::JsonNaive, TimePath::TableSink});
-    RegisterVariant({Title("JSON", "integer time values, ", TABLE_SINK), Shape::JsonInteger, TimePath::TableSink});
-    RegisterVariant({Title("JSON", "two time keys, ", TABLE_SINK), Shape::JsonTwoKeys, TimePath::TableSink});
+    RegisterVariant(
+        Variant{.name = Title("logfmt", "", TABLE_SINK), .shape = Shape::LogfmtOffset, .path = TimePath::TableSink}
+    );
+    RegisterVariant(
+        Variant{
+            .name = Title("JSON", "naive time text, ", TABLE_SINK),
+            .shape = Shape::JsonNaive,
+            .path = TimePath::TableSink
+        }
+    );
+    RegisterVariant(
+        Variant{
+            .name = Title("JSON", "integer time values, ", TABLE_SINK),
+            .shape = Shape::JsonInteger,
+            .path = TimePath::TableSink
+        }
+    );
+    RegisterVariant(
+        Variant{
+            .name = Title("JSON", "two time keys, ", TABLE_SINK),
+            .shape = Shape::JsonTwoKeys,
+            .path = TimePath::TableSink
+        }
+    );
 }
 
 } // namespace bench

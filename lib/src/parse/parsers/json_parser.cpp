@@ -586,6 +586,8 @@ public:
         }
     }
 
+    // The result is a variable for the drivers, which compare it with INVALID_KEY_ID at run time.
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
     [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
         return INVALID_KEY_ID;

@@ -67,11 +67,13 @@ enum class ContinuationSpliceOutcome : uint8_t
  */
 struct LineContext
 {
+    // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
     KeyIndex &keys;
     WorkerKeyCache &keyCache;
     std::string &ownedBytes;
     std::span<const char> stableBytes;
     size_t bytesAfterLine = 0;
+    // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
 };
 
 /**
@@ -83,8 +85,8 @@ struct LineContext
  * record that the last Emit started, or INVALID_KEY_ID when the format never continues a record.
  *
  * A decoder may keep scratch state for a run, such as a simdjson parser, padded buffers, match data or whether the CSV
- * header was read, so the drivers give each worker its own. A decoder may define a static member kStripBom that is true
- * when the first line of the input can start with a UTF-8 byte order mark, which the drivers then remove before
+ * header was read, so the drivers give each worker its own. A decoder may define a static member K_STRIP_BOM that is
+ * true when the first line of the input can start with a UTF-8 byte order mark, which the drivers then remove before
  * decoding.
  */
 template <class T>
@@ -100,9 +102,9 @@ concept LineDecoder =
 /** @brief True when the decoder wants the byte order mark of the first line removed before it decodes. */
 template <class T> constexpr bool StripsBom()
 {
-    if constexpr (requires { T::kStripBom; })
+    if constexpr (requires { T::K_STRIP_BOM; })
     {
-        return T::kStripBom;
+        return T::K_STRIP_BOM;
     }
     else
     {

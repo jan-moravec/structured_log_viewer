@@ -120,7 +120,7 @@ enum class TimeText
         else
         {
             time = std::format(
-                "{} {:2} 10:{:02}:{:02}", MONTHS[static_cast<size_t>(i) % 3], 1 + i % 28, (i / 60) % 60, i % 60
+                "{} {:2} 10:{:02}:{:02}", MONTHS[static_cast<size_t>(i) % 3], 1 + (i % 28), (i / 60) % 60, i % 60
             );
         }
         bytes += std::format("{} host program[{}]: message {}\n", time, i % 90, i);
