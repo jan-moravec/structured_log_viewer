@@ -2,8 +2,8 @@
  * @brief A log format and its settings, as one value.
  *
  * A FormatSpec says which parser reads a log and how it is set up: the pattern and continuation rules of the regex
- * format, or the line joining of logfmt. Format detection returns one, the parser factory builds a parser from one, and a
- * saved source stores one, so the same information is never kept in three shapes.
+ * format, or the line joining of logfmt. Format detection returns one, the parser factory builds a parser from one, and
+ * a saved source stores one, so the same information is never kept in three shapes.
  *
  * This is part of the config module, because the configuration file saves it.
  */
@@ -58,7 +58,8 @@ enum class ContinuationMode : uint8_t
 /** @brief The settings of the regex format. */
 struct RegexSettings
 {
-    /** @brief The PCRE2 pattern, with named groups written as (?<Name>...). An empty pattern makes the parser report one error. */
+    /** @brief The PCRE2 pattern, with named groups written as (?<Name>...). An empty pattern makes the parser report
+     * one error. */
     std::string pattern;
 
     /** @brief How lines after the first line of a record are joined to it. */
