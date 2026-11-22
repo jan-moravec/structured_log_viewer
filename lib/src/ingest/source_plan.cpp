@@ -1,5 +1,6 @@
 #include "loglib/ingest/source_plan.hpp"
 
+#include "loglib/core/path_key.hpp"
 #include "loglib/ingest/rotation_siblings.hpp"
 
 #include <unordered_set>
@@ -33,7 +34,7 @@ std::vector<ResolvedSource> ResolveSourcePlan(
         return resolved;
     }
 
-    const std::unordered_set<std::string> suppressed(options.suppressKeys.begin(), options.suppressKeys.end());
+    const std::unordered_set<std::string> suppressed(options.skipPathKeys.begin(), options.skipPathKeys.end());
 
     if (!options.rotationHistory)
     {
@@ -41,8 +42,8 @@ std::vector<ResolvedSource> ResolveSourcePlan(
         for (const std::filesystem::path &path : paths)
         {
             ResolvedSource entry;
-            entry.canonicalKey = CanonicalKeyForPath(path);
-            if (IsSuppressed(suppressed, entry.canonicalKey))
+            entry.pathKey = MakePathKey(path);
+            if (IsSuppressed(suppressed, entry.pathKey))
             {
                 continue;
             }
@@ -56,7 +57,7 @@ std::vector<ResolvedSource> ResolveSourcePlan(
     callerKeys.reserve(paths.size());
     for (const std::filesystem::path &path : paths)
     {
-        callerKeys.insert(CanonicalKeyForPath(path));
+        callerKeys.insert(MakePathKey(path));
     }
 
     const PartitionedSelection partitioned = PartitionAsRotationSeries(paths);
@@ -67,29 +68,29 @@ std::vector<ResolvedSource> ResolveSourcePlan(
     {
         for (const RotatedFile &file : series.files)
         {
-            if (IsSuppressed(suppressed, file.canonicalKey) || !emitted.insert(file.canonicalKey).second)
+            if (IsSuppressed(suppressed, file.pathKey) || !emitted.insert(file.pathKey).second)
             {
                 continue;
             }
             ResolvedSource entry;
             entry.path = file.path;
-            entry.canonicalKey = file.canonicalKey;
+            entry.pathKey = file.pathKey;
             entry.familyPrimary = series.primary;
-            entry.autoAdded = IsAutoDiscoveredSibling(file.origin) && !callerKeys.contains(file.canonicalKey);
+            entry.autoAdded = IsAutoDiscoveredSibling(file.origin) && !callerKeys.contains(file.pathKey);
             resolved.push_back(std::move(entry));
         }
     }
 
     for (const std::filesystem::path &residual : partitioned.residual)
     {
-        std::string key = CanonicalKeyForPath(residual);
+        std::string key = MakePathKey(residual);
         if (IsSuppressed(suppressed, key) || !emitted.insert(key).second)
         {
             continue;
         }
         ResolvedSource entry;
         entry.path = residual;
-        entry.canonicalKey = std::move(key);
+        entry.pathKey = std::move(key);
         resolved.push_back(std::move(entry));
     }
 

@@ -1,3 +1,4 @@
+#include <loglib/core/path_key.hpp>
 #include <loglib/ingest/rotation_siblings.hpp>
 #include <loglib/ingest/source_plan.hpp>
 
@@ -10,7 +11,7 @@
 #include <string>
 #include <vector>
 
-using loglib::CanonicalKeyForPath;
+using loglib::MakePathKey;
 using loglib::ResolvedSource;
 using loglib::ResolveSourcePlan;
 using loglib::SourcePlanOptions;
@@ -185,20 +186,20 @@ TEST_CASE("ResolveSourcePlan keeps a nonexistent path as one residual", "[source
     CHECK(plan.front().path == missing);
     CHECK_FALSE(plan.front().autoAdded);
     CHECK(plan.front().familyPrimary.empty());
-    CHECK(plan.front().canonicalKey == CanonicalKeyForPath(missing));
+    CHECK(plan.front().pathKey == MakePathKey(missing));
 }
 
-TEST_CASE("ResolveSourcePlan suppressKeys drops already loaded paths", "[source_plan]")
+TEST_CASE("ResolveSourcePlan skipPathKeys drops already loaded paths", "[source_plan]")
 {
     const TempDir dir("source_plan_suppress");
     (void)dir.Write("app.log", "primary");
     (void)dir.Write("app.log.1", "sibling");
     const std::filesystem::path primary = dir.Path() / "app.log";
-    const std::string loaded[] = {CanonicalKeyForPath(primary)};
+    const std::string loaded[] = {MakePathKey(primary)};
     const std::filesystem::path input[] = {primary};
 
     SourcePlanOptions options;
-    options.suppressKeys = loaded;
+    options.skipPathKeys = loaded;
     const std::vector<ResolvedSource> plan = ResolveSourcePlan(input, options);
 
     REQUIRE(plan.size() == 1);

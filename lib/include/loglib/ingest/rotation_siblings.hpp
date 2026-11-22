@@ -37,8 +37,8 @@ struct RotatedFile
     /** @brief The path as it should be opened. */
     std::filesystem::path path;
 
-    /** @brief The key that identifies the file when removing duplicates. See CanonicalKeyForPath. */
-    std::string canonicalKey;
+    /** @brief The key that identifies the file when removing duplicates. See MakePathKey. */
+    std::string pathKey;
 
     Origin origin = Origin::Primary;
 };
@@ -82,13 +82,5 @@ struct PartitionedSelection
  * path. Looking at the file system is best effort.
  */
 [[nodiscard]] PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::path> paths);
-
-/**
- * @brief Builds a key that is the same for different spellings of one path.
- *
- * The key is an absolute path in UTF-8 with forward slashes, normalized without touching the file system. Letters are
- * lower-cased on Windows only. Failures are tolerated, so the key is best effort.
- */
-[[nodiscard]] std::string CanonicalKeyForPath(const std::filesystem::path &path);
 
 } // namespace loglib

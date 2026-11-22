@@ -41,6 +41,7 @@
 #include <loglib/core/log_level.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
+#include <loglib/core/path_key.hpp>
 #include <loglib/core/stop_token.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
@@ -1310,11 +1311,11 @@ private slots:
         {
             const QString p = root + QLatin1Char('/') + rel;
             const std::string appKey = logapp::CanonicalLocator(p).toStdString();
-            const std::string libKey = loglib::CanonicalKeyForPath(logapp::QStringToFsPath(p));
+            const std::string libKey = loglib::MakePathKey(logapp::QStringToFsPath(p));
             QVERIFY2(
                 appKey == libKey,
                 qPrintable(QStringLiteral(
-                               "CanonicalLocator vs CanonicalKeyForPath mismatch for %1:\n"
+                               "CanonicalLocator vs MakePathKey mismatch for %1:\n"
                                "  app: %2\n  lib: %3"
                 )
                                .arg(p)

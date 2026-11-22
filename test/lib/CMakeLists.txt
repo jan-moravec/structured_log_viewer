@@ -64,6 +64,7 @@ add_executable(
     "src/test_logfmt_parser.cpp"
     "src/test_parse_file.cpp"
     "src/test_parser_pipeline.cpp"
+    "src/test_path_key.cpp"
     "src/test_query_parser.cpp"
     "src/test_regex_parser.cpp"
     "src/test_regex_template_generators.cpp"

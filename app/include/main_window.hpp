@@ -2498,7 +2498,7 @@ private:
      *
      * Session opt-out and loaded-locator dedup stay here: @p gating
      * decides whether the current source turns rotation off or supplies
-     * `SourcePlanOptions::suppressKeys`. Empty paths and session bundles
+     * `SourcePlanOptions::skipPathKeys`. Empty paths and session bundles
      * are not planned; they are appended after the plan. @p addedOut
      * counts `ResolvedSource::autoAdded`. @p primaryOut receives the
      * first auto-added entry's family primary, or stays empty.

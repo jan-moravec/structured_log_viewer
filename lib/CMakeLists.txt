@@ -72,6 +72,7 @@ add_library(
     src/core/stable_byte_arena.cpp
     src/support/tzdata_search.cpp
     src/support/user_paths.cpp
+    src/core/path_key.cpp
     src/core/worker_threads.cpp
     src/core/version.cpp
     src/query/row_ordering.cpp
@@ -164,6 +165,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/ingest/udp_server_producer.hpp
     include/loglib/support/tzdata_search.hpp
     include/loglib/support/user_paths.hpp
+    include/loglib/core/path_key.hpp
     include/loglib/core/worker_threads.hpp
     include/loglib/time/time_input.hpp
     include/loglib/core/version.hpp

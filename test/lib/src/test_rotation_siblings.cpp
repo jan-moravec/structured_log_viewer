@@ -385,27 +385,6 @@ TEST_CASE("EnumerateRotatedSiblings returns primary-only when the primary is com
     CHECK(series.files.front().origin == RotatedFile::Origin::Primary);
 }
 
-#ifndef _WIN32
-TEST_CASE("CanonicalKeyForPath preserves case on non-Windows platforms", "[RotationSiblings]")
-{
-    // Non-Windows canonical keys preserve case to match app-layer keys.
-    const std::string upperKey = loglib::CanonicalKeyForPath("/logs/App.log");
-    const std::string lowerKey = loglib::CanonicalKeyForPath("/logs/app.log");
-    CHECK(upperKey != lowerKey);
-}
-#endif
-
-TEST_CASE("CanonicalKeyForPath produces UTF-8 bytes for non-ASCII paths", "[RotationSiblings]")
-{
-    // Canonical keys use UTF-8 without Windows code-page narrowing.
-    const std::filesystem::path p(u8"/logs/\u65e5\u5fd7/app.log"); // /logs/日志/app.log
-    std::string key;
-    REQUIRE_NOTHROW(key = loglib::CanonicalKeyForPath(p));
-    // Match the six UTF-8 bytes for the two CJK characters.
-    const std::string_view utf8Marker(reinterpret_cast<const char *>(u8"\u65e5\u5fd7"), 6);
-    CHECK(key.contains(utf8Marker));
-}
-
 TEST_CASE("EnumerateRotatedSiblings does not throw when the primary basename is non-ASCII", "[RotationSiblings]")
 {
     // Non-ASCII primary names remain best-effort and non-throwing.

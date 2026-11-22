@@ -4121,7 +4121,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
 
     loglib::SourcePlanOptions options;
     options.rotationHistory = true;
-    options.suppressKeys = suppressKeys;
+    options.skipPathKeys = suppressKeys;
     const std::vector<loglib::ResolvedSource> plan =
         loglib::ResolveSourcePlan(std::span<const std::filesystem::path>(fsPaths), options);
 
