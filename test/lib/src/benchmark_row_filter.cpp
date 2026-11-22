@@ -379,6 +379,13 @@ struct TableScratch
     std::vector<std::size_t> indices;
 };
 
+// The formatting buffers that CompareRows wants. The comparators of the sorts below hold one, so timing a comparison
+// does not include looking up a buffer, as in a parallel sort whose workers each own one.
+struct ScratchHolder
+{
+    mutable loglib::internal::CompareScratch value;
+};
+
 // Sorts a fresh identity permutation with CompareRows each iteration; the reset is not timed. The sorted order is
 // checked after the timed part with inOrder(input, table, lhsRow, rhsRow).
 template <typename Compare, typename InOrder>
@@ -567,8 +574,8 @@ void RegisterRowFilterBenchmarks()
     RegisterCompareRowsSort(
         "CompareRows enum sort over 1000000 rows",
         enumTable,
-        [](const TableInput &input, const LogTable &table, std::size_t a, std::size_t b) {
-            return CompareRows(table, a, b, 0, input.rank.get());
+        [scratch = ScratchHolder{}](const TableInput &input, const LogTable &table, std::size_t a, std::size_t b) {
+            return loglib::internal::CompareRows(table, a, b, 0, input.rank.get(), scratch.value);
         },
         [](const TableInput &input, const LogTable &table, std::size_t lhsRow, std::size_t rhsRow) {
             const auto lhs = table.GetEnumValueId(lhsRow, 0);
@@ -607,10 +614,10 @@ void RegisterRowFilterBenchmarks()
     RegisterCompareRowsSort(
         "CompareRows level sort over 1000000 rows",
         levelTable,
-        [](const TableInput &, const LogTable &table, std::size_t a, std::size_t b) {
-            // Level columns ignore the EnumSortRank argument; null matches a non-Qt consumer that has not
-            // materialised any rank table.
-            return CompareRows(table, a, b, 0, nullptr);
+        [scratch = ScratchHolder{}](const TableInput &, const LogTable &table, std::size_t a, std::size_t b) {
+            // Level columns ignore the EnumSortRank argument; null matches a consumer that has not materialised any
+            // rank table.
+            return loglib::internal::CompareRows(table, a, b, 0, nullptr, scratch.value);
         },
         [](const TableInput &, const LogTable &table, std::size_t lhsRow, std::size_t rhsRow) {
             const auto lhs = table.GetLevelForRow(lhsRow, 0);
