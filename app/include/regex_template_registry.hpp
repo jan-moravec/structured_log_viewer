@@ -10,21 +10,23 @@
 #include <map>
 #include <optional>
 
-/// Owns the merged regex-template catalog: the built-ins from
-/// `loglib::BuiltinRegexTemplates()` plus user files under
+/// Owns the merged regex-template list: the built-ins from
+/// `loglib::RegexTemplateCatalog::Builtin()` plus user files under
 /// `<AppDataLocation>/regex_templates/*.json`. Mirrors
 /// `ThemeControl`'s import / export / reveal affordances.
 ///
 /// One instance per process, constructed by `main()` after
 /// `QApplication` is up (so `QStandardPaths::AppDataLocation`
-/// resolves). Construction scans disk and pushes the user slice
-/// into the library through `loglib::SetExtraRegexTemplates`, so
-/// `RegexParser::IsValid` / `DetectRegexTemplate` see user
-/// templates without any per-call plumbing.
+/// resolves). Construction scans disk and builds a
+/// `loglib::RegexTemplateCatalog` from the built-ins and the user
+/// files. The catalog is rebuilt whenever the templates are
+/// rescanned or saved. Callers pass `Catalog()` to format detection
+/// and to `loglib::AutoDetectParser`, so detection sees user
+/// templates.
 ///
 /// User files shadow built-ins by `name` (same convention as
 /// `ThemeControl`): a user JSON whose `name` matches a shipped
-/// template replaces the picker entry. The library still probes
+/// template replaces the picker entry. The catalog still probes
 /// built-ins before extras tier-wise, so a shadow only changes
 /// the picker — it never reorders auto-detection.
 class RegexTemplateRegistry : public QObject
@@ -53,6 +55,14 @@ public:
     /// Look up by name. User shadow wins over built-in.
     [[nodiscard]] std::optional<loglib::RegexTemplate> Load(const QString &name) const;
 
+    /// The built-in templates followed by the user's, as detection
+    /// wants them. A copy is cheap, and a copy keeps working after
+    /// the registry rescans.
+    [[nodiscard]] const loglib::RegexTemplateCatalog &Catalog() const noexcept
+    {
+        return mCatalog;
+    }
+
     /// `<AppDataLocation>/regex_templates`, created on demand.
     /// Falls back to `<temp>/StructuredLogViewer/regex_templates`
     /// if AppData is empty (test envs, server installs).
@@ -65,12 +75,12 @@ public:
 
     /// Atomically write @p tmpl to `<UserTemplatesDir>/<name>.json`
     /// (with the on-disk `name` field pinned to @p name), then
-    /// refresh the index and re-inject library extras. Throws
+    /// refresh the index and rebuild the catalog. Throws
     /// `std::runtime_error` on invalid @p name
     /// (see `SanitiseTemplateName`) or on write failure.
     void SaveUserTemplate(const QString &name, loglib::RegexTemplate tmpl);
 
-    /// Re-scan disk and re-inject user templates into the library.
+    /// Re-scan disk and rebuild the catalog.
     /// Exposed as the "Reload templates from disk" UX action and
     /// called internally by `SaveUserTemplate`.
     void Reload();
@@ -102,10 +112,9 @@ signals:
 
 private:
     void Discover();
-    /// Push the user slice through `loglib::SetExtraRegexTemplates`
-    /// so the parser's auto-detect probe sees user patterns in
-    /// priority order. Called by `Discover`.
-    void InjectExtrasIntoLoglib();
+    /// Build `mCatalog` from the built-ins and the user slice of
+    /// `mIndex`. Called by `Discover`.
+    void RebuildCatalog();
 
     struct IndexEntry
     {
@@ -114,4 +123,5 @@ private:
     };
     /// Per-name index. User-dir entries shadow built-ins.
     std::map<QString, IndexEntry> mIndex;
+    loglib::RegexTemplateCatalog mCatalog = loglib::RegexTemplateCatalog::Builtin();
 };

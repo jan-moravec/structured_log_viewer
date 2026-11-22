@@ -55,8 +55,10 @@ private:
 [[nodiscard]] loglib::LogConfiguration MakeConfiguration()
 {
     loglib::LogConfiguration configuration;
-    configuration.source =
-        loglib::Source{.kind = loglib::Source::Kind::File, .locators = {std::string("C:/logs/lock-test.json")}};
+    configuration.source = loglib::SourceDescriptor{
+        .kind = loglib::SourceDescriptor::Kind::File,
+        .locators = {std::string("C:/logs/lock-test.json")},
+    };
     return configuration;
 }
 

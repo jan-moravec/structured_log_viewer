@@ -42,7 +42,11 @@ constexpr std::size_t PEEK_CHUNK_BYTES = 4096;
 constexpr auto PEEK_WAIT_INTERVAL = std::chrono::milliseconds(100);
 
 std::string DrainPeek(
-    BytesProducer &producer, std::size_t peekBudget, std::chrono::milliseconds peekTimeout, const StopToken &stopToken
+    BytesProducer &producer,
+    std::size_t peekBudget,
+    std::chrono::milliseconds peekTimeout,
+    const StopToken &stopToken,
+    const RegexTemplateCatalog &catalog
 )
 {
     std::string peek;
@@ -65,7 +69,7 @@ std::string DrainPeek(
                 deadline = std::chrono::steady_clock::now() + peekTimeout;
             }
             peek.append(chunk.data(), got);
-            // Early exit: TryDetectFormatFromBytes only returns a
+            // Early exit: DetectFormat only returns a
             // value when a probe actually claimed the buffer. Once
             // it commits, reading further bytes cannot reverse the
             // verdict, so hand off to the resolved parser without
@@ -73,7 +77,7 @@ std::string DrainPeek(
             // elapse. Gate on "there is at least one newline" so
             // we don't run detection on partial first lines that
             // JSON/logfmt would rightly reject.
-            if (peek.contains('\n') && TryDetectFormatFromBytes(peek).has_value())
+            if (peek.contains('\n') && DetectFormat(peek, catalog).has_value())
             {
                 break;
             }
@@ -112,23 +116,18 @@ std::string DrainPeek(
 } // namespace
 
 AutoDetectParser::AutoDetectParser(
-    std::size_t peekBytes, std::chrono::milliseconds peekTimeout, FormatOptions formatOptions
-) noexcept
-    : mPeekBytes(peekBytes), mPeekTimeout(peekTimeout), mFormatOptions(std::move(formatOptions))
+    std::size_t peekBytes, std::chrono::milliseconds peekTimeout, bool logfmtMultiline, RegexTemplateCatalog catalog
+)
+    : mPeekBytes(peekBytes), mPeekTimeout(peekTimeout), mLogfmtMultiline(logfmtMultiline), mCatalog(std::move(catalog))
 {
-}
-
-bool AutoDetectParser::IsValidBytes(std::string_view /*sniffBuffer*/) const
-{
-    return true;
 }
 
 void AutoDetectParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     // Static files are detected from their head bytes, which are read once.
-    const DetectedFormat detected = DetectFormatForPath(source.Path());
-    const std::unique_ptr<LogParser> resolved =
-        MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
+    FormatSpec detected = DetectFormat(ReadProbeHead(source.Path()), mCatalog).value_or(FormatSpec{});
+    detected.logfmtMultiline = mLogfmtMultiline;
+    const std::unique_ptr<LogParser> resolved = MakeParser(detected);
     resolved->Parse(source, sink, std::move(options));
 }
 
@@ -147,7 +146,7 @@ void AutoDetectParser::Parse(StreamLineSource &source, LogParseSink &sink, Parse
     // Bytes the caller gave back to the source come first, then the peek, so the detector sees the head bytes that the
     // parser will see.
     std::string combined = source.TakeUnreadBytes();
-    combined.append(DrainPeek(*producer, mPeekBytes, mPeekTimeout, options.stopToken));
+    combined.append(DrainPeek(*producer, mPeekBytes, mPeekTimeout, options.stopToken, mCatalog));
 
     if (combined.empty())
     {
@@ -157,9 +156,9 @@ void AutoDetectParser::Parse(StreamLineSource &source, LogParseSink &sink, Parse
         return;
     }
 
-    const DetectedFormat detected = DetectFormatFromBytes(combined);
-    const std::unique_ptr<LogParser> resolved =
-        MakeParserForFormat(detected.format, detected.Options(mFormatOptions.multilineLogfmt));
+    FormatSpec detected = DetectFormat(combined, mCatalog).value_or(FormatSpec{});
+    detected.logfmtMultiline = mLogfmtMultiline;
+    const std::unique_ptr<LogParser> resolved = MakeParser(detected);
     source.UnreadBytes(std::move(combined));
     resolved->Parse(source, sink, std::move(options));
 }

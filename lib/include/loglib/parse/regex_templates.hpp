@@ -1,23 +1,23 @@
 /**
- * @brief Built-in and user regex templates for common log formats.
+ * @brief Built-in and user regex templates for common log formats, and the catalog that holds them.
  *
  * A RegexTemplate pairs a PCRE2 pattern with a name, sample lines and rules for multi-line records. The built-in
- * templates ship inside the library. Users can add their own, which the library keeps in a registry that format
- * detection reads. The header also loads templates from a folder of JSON files and looks them up by name or by pattern.
+ * templates ship inside the library. A RegexTemplateCatalog is an immutable list of templates in probe order: the
+ * built-in ones, then the user's. Format detection takes a catalog as an argument, so two parts of a program can detect
+ * with different template sets at the same time. The header also loads templates from a folder of JSON files.
  *
- * The registry is process-wide. The application sets the extra templates once from the user's files with
- * SetExtraRegexTemplates, which replaces the whole set. Every reader works from a snapshot taken under a shared lock,
- * so all functions here are safe to call from any thread, also while another thread replaces the extras. A reader sees
- * either the old set or the new one, never a mix.
+ * A catalog is a value. Copies are cheap and share their compiled patterns, and every function on it is safe to call
+ * from any thread.
  *
  * This is part of the parse module.
  */
 #pragma once
 
-#include "loglib/config/source_descriptor.hpp"
+#include "loglib/config/format_spec.hpp"
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -34,12 +34,6 @@ namespace loglib
  * both sides for users who want to order their own. The template file schema and the editor both use this value.
  */
 inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
-
-/** @brief The name used for a mode in template JSON files. */
-[[nodiscard]] std::string_view ContinuationModeName(ContinuationMode mode) noexcept;
-
-/** @brief Reads a mode from its JSON name. Returns nullopt for an unknown name. */
-[[nodiscard]] std::optional<ContinuationMode> ParseContinuationMode(std::string_view name) noexcept;
 
 /**
  * @brief A named PCRE2 pattern that splits one log line into columns.
@@ -62,10 +56,11 @@ struct RegexTemplate
     std::string name;
 
     /**
-     * @brief The PCRE2 pattern. It is compiled once and shared by all parser threads, and each thread keeps its own
-     * match data.
+     * @brief The pattern and continuation settings of the template. The PCRE2 pattern is compiled once and shared by
+     * all parser threads, and each thread keeps its own match data. A template file that does not set the continuation
+     * mode gets None.
      */
-    std::string pattern;
+    RegexSettings regex;
 
     /**
      * @brief Lines the pattern is known to match. Detection uses them when autoDetect is true, and tests use them as
@@ -96,15 +91,6 @@ struct RegexTemplate
      * file is checked against these credits. It may be empty.
      */
     std::string description;
-
-    /** @brief How continuation lines are recognized. A template file that does not set it gets None. */
-    ContinuationMode continuationMode = ContinuationMode::None;
-
-    /**
-     * @brief The pattern that recognizes a record's first line when continuationMode is UntilNextHeader. If empty,
-     * pattern is used. Other modes ignore it.
-     */
-    std::string headerAnchor;
 };
 
 /**
@@ -122,51 +108,65 @@ struct RegexTemplate
 [[nodiscard]] std::string SerializeRegexTemplate(const RegexTemplate &tmpl);
 
 /**
- * @brief The templates that ship with the library, in the order detection tries them.
+ * @brief An immutable list of regex templates in the order detection tries them.
  *
- * They are read from the embedded JSON files on the first call and never change afterwards, so the returned span stays
- * valid for the whole process. The description of a ported template names its source.
- */
-[[nodiscard]] std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept;
-
-/**
- * @brief A built-in template together with its slug.
+ * Built-in templates come first, sorted by priority, and the extra templates follow, also sorted by priority. The two
+ * groups are never mixed, so a careless user priority cannot take a match from a shipped template. The compiled
+ * patterns that detection needs are built on the first call to Detect and shared by every copy of the catalog.
  *
- * The slug is the name of the template's data file without the extension, for example apache_combined. It stays the
- * same when the display name changes, and slp formats prints it.
+ * Pointers returned by a catalog stay valid as long as the catalog or any copy of it lives.
  */
-struct BuiltinRegexTemplateInfo
+class RegexTemplateCatalog
 {
-    std::string slug;
-    RegexTemplate tmpl;
+public:
+    /** @brief The templates that ship with the library. It is built once and never changes. */
+    [[nodiscard]] static const RegexTemplateCatalog &Builtin();
+
+    /**
+     * @brief Returns a catalog with the built-in templates followed by extras.
+     *
+     * The extras are sorted by priority, and templates with equal priority keep their order. This catalog is not
+     * changed. A catalog made from a catalog that already has extras replaces them.
+     */
+    [[nodiscard]] RegexTemplateCatalog WithExtras(std::vector<RegexTemplate> extras) const;
+
+    /** @brief Every template in probe order: the built-in ones by priority, then the extras by priority. */
+    [[nodiscard]] std::span<const RegexTemplate> Templates() const noexcept;
+
+    /** @brief The built-in templates in probe order. Templates whose embedded JSON cannot be parsed are left out. */
+    [[nodiscard]] std::span<const RegexTemplate> Builtins() const noexcept;
+
+    /** @brief The extra templates in probe order. */
+    [[nodiscard]] std::span<const RegexTemplate> Extras() const noexcept;
+
+    /**
+     * @brief The slug of each built-in template, in the same order as Builtins.
+     *
+     * The slug is the name of the template's data file without the extension, for example apache_combined. It stays the
+     * same when the display name changes, and slp formats prints it.
+     */
+    [[nodiscard]] std::span<const std::string> BuiltinSlugs() const noexcept;
+
+    /** @brief Finds the template whose pattern is exactly pattern, or null. Use it to name a saved pattern. */
+    [[nodiscard]] const RegexTemplate *FindByPattern(std::string_view pattern) const noexcept;
+
+    /** @brief Finds a built-in template by its slug, or null. */
+    [[nodiscard]] const RegexTemplate *FindBuiltinBySlug(std::string_view slug) const noexcept;
+
+    /**
+     * @brief Returns the first template with auto-detection turned on that matches enough of the sample, or null.
+     *
+     * The first non-blank lines of the sample must match the whole pattern. At least two lines are needed, so a single
+     * line cannot claim a file. At most PROBE_BYTES_BUDGET bytes of the sample are read.
+     */
+    [[nodiscard]] const RegexTemplate *Detect(std::string_view sample) const;
+
+private:
+    struct Data;
+    explicit RegexTemplateCatalog(std::shared_ptr<const Data> data) noexcept;
+
+    std::shared_ptr<const Data> mData;
 };
-
-/**
- * @brief Returns a copy of every built-in template with its slug.
- *
- * Templates whose embedded JSON cannot be parsed are left out. The order is the same as BuiltinRegexTemplates.
- */
-[[nodiscard]] std::vector<BuiltinRegexTemplateInfo> BuiltinRegexTemplateCatalog();
-
-/**
- * @brief Registers the user's templates so format detection tries them as well as the built-in ones.
- *
- * Each call replaces the earlier set, and an empty span clears it. The templates are copied, so the caller's storage
- * may go away. It is safe to call repeatedly, for example when templates are reloaded from disk; the change applies
- * from the next probe.
- *
- * Built-in templates are always tried before user templates, whatever their priority, so a user template cannot take
- * over a match from a shipped one. Within each group the templates are ordered by priority.
- */
-void SetExtraRegexTemplates(std::span<const RegexTemplate> extras);
-
-/**
- * @brief Finds the built-in or registered template whose pattern is exactly pattern.
- *
- * Use it to show the template name for a saved pattern. Returns nullopt if the pattern is custom and unsaved. The
- * template is returned by value, so a later SetExtraRegexTemplates call cannot invalidate it.
- */
-[[nodiscard]] std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern);
 
 /**
  * @brief The result of loading a folder of templates.

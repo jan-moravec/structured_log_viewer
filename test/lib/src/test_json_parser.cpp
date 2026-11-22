@@ -10,6 +10,7 @@
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stream_line_source.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/internal/parse_runtime.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
@@ -73,63 +74,56 @@ TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[jso
 
 TEST_CASE("Validate non-existent file", "[json_parser]")
 {
-    const loglib::JsonParser parser;
-    CHECK_FALSE(parser.IsValid("non_existent_file.json"));
+    CHECK_FALSE(loglib::LooksLikeJson(loglib::ReadProbeHead("non_existent_file.json")));
 }
 
 TEST_CASE("Validate empty file", "[json_parser]")
 {
-    const loglib::JsonParser parser;
     const TestLogFile testFile;
-    CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeJson(loglib::ReadProbeHead(testFile.GetFilePath())));
 }
 
 TEST_CASE("Validate file with empty lines", "[json_parser]")
 {
-    const loglib::JsonParser parser;
     const TestLogFile testFile;
     testFile.Write("\n\n\n");
-    CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeJson(loglib::ReadProbeHead(testFile.GetFilePath())));
 }
 
 TEST_CASE("Validate file with leading blank line", "[json_parser]")
 {
     // Leading blank lines are tolerated: the first non-empty line is what determines validity.
-    const loglib::JsonParser parser;
     const TestLogFile testFile;
     testFile.Write(
         "\n"
         R"({"key": "value"})"
         "\n"
     );
-    CHECK(parser.IsValid(testFile.GetFilePath()));
+    CHECK(loglib::LooksLikeJson(loglib::ReadProbeHead(testFile.GetFilePath())));
 }
 
 TEST_CASE("Validate file with invalid line", "[json_parser]")
 {
-    const loglib::JsonParser parser;
     const TestLogFile testFile;
     testFile.Write("invalid json\n");
-    CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeJson(loglib::ReadProbeHead(testFile.GetFilePath())));
 }
 
 TEST_CASE("Validate file with empty JSON object", "[json_parser]")
 {
-    const loglib::JsonParser parser;
     const TestLogFile testFile;
     testFile.Write("{}\n");
-    CHECK(parser.IsValid(testFile.GetFilePath()));
+    CHECK(loglib::LooksLikeJson(loglib::ReadProbeHead(testFile.GetFilePath())));
 }
 
 TEST_CASE("Validate file with JSON line", "[json_parser]")
 {
-    const loglib::JsonParser parser;
     const TestLogFile testFile;
     testFile.Write(
         R"({"key": "value"})"
         "\n"
     );
-    CHECK(parser.IsValid(testFile.GetFilePath()));
+    CHECK(loglib::LooksLikeJson(loglib::ReadProbeHead(testFile.GetFilePath())));
 }
 
 TEST_CASE("Parse non-existent file", "[json_parser]")
@@ -198,8 +192,6 @@ TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
 // running absolute line cursor and composes "Error on line N: <body>" itself.
 TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[json_parser][error_line_numbers]")
 {
-    const loglib::JsonParser parser;
-
     constexpr size_t VALID_LINES = 1000;
     constexpr size_t INVALID_LINE_NUMBER_A = 1500;
     constexpr size_t INVALID_LINE_NUMBER_B = 2500;
@@ -654,8 +646,6 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     // `string` / `string_view` distinctions into one bytes comparison).
     using namespace loglib;
 
-    const JsonParser parser;
-
     // Generate a fixture sized to span multiple Stage A batches (1 MiB default) so the
     // multi-threaded run actually exercises more than one worker. ~5'000 lines × ~200 bytes
     // each ≈ 1 MB, large enough to split.
@@ -987,7 +977,6 @@ TEST_CASE(
     ParserOptions opts;
     opts.timeColumns = TimeColumnsOf(configuration->columns);
 
-    const JsonParser parser;
     const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);
 
     // Promotion failures are silent; only genuine JSON-parse errors land in `errors`.
@@ -1352,10 +1341,9 @@ TEST_CASE(
     CHECK(loglib::FormatParseError(errors.front()).contains("Error on line 2:"));
 }
 
-TEST_CASE("JsonParser::IsValidBytes reads a line that ends in a lot of whitespace", "[json_parser][fuzz]")
+TEST_CASE("LooksLikeJson reads a line that ends in a lot of whitespace", "[json_parser][fuzz]")
 {
-    const loglib::JsonParser parser;
     // Under AddressSanitizer this fails if the probe lets simdjson read past the end of its copy of the line.
-    CHECK(parser.IsValidBytes("{\"a\":1}" + std::string(100, ' ')));
-    CHECK_FALSE(parser.IsValidBytes("[1,2]" + std::string(100, '\t')));
+    CHECK(loglib::LooksLikeJson("{\"a\":1}" + std::string(100, ' ')));
+    CHECK_FALSE(loglib::LooksLikeJson("[1,2]" + std::string(100, '\t')));
 }

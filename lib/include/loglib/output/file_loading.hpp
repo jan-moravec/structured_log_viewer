@@ -21,6 +21,7 @@
 #include "loglib/core/stop_token.hpp"
 #include "loglib/ingest/decompressing_byte_source.hpp"
 #include "loglib/output/session_bundle.hpp"
+#include "loglib/parse/regex_templates.hpp"
 #include "loglib/table/log_table.hpp"
 #include "loglib/time/time_zone_context.hpp"
 
@@ -99,6 +100,9 @@ struct LoadOptions
 
     /** @brief Cancels the load. LoadFile then throws OperationCancelled. */
     StopToken stopToken;
+
+    /** @brief The regex templates format detection tries. The built-in templates by default. */
+    RegexTemplateCatalog regexTemplates = RegexTemplateCatalog::Builtin();
 };
 
 /** @brief A loaded table with what the load found. */

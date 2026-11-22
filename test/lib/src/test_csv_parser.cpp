@@ -6,6 +6,7 @@
 #include <loglib/core/file_line_source.hpp>
 #include <loglib/core/line_source.hpp>
 #include <loglib/core/log_data.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/log_parser.hpp>
 #include <loglib/parse/parser_options.hpp>
@@ -30,30 +31,26 @@
 
 TEST_CASE("Validate non-existent file [csv]", "[csv_parser]")
 {
-    const loglib::CsvParser parser;
-    CHECK_FALSE(parser.IsValid("non_existent_file.csv"));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead("non_existent_file.csv")));
 }
 
 TEST_CASE("Validate empty file [csv]", "[csv_parser]")
 {
-    const loglib::CsvParser parser;
     const TestLogFile file;
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate header-only file [csv]", "[csv_parser]")
 {
     // False-positive guard: requires a second non-blank line.
-    const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("a,b,c\n");
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate JSON-shaped first line [csv]", "[csv_parser]")
 {
     // No commas -> rejected, so JSON wins the auto-detect race.
-    const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write(
         R"({"key": "value"})"
@@ -61,32 +58,29 @@ TEST_CASE("Validate JSON-shaped first line [csv]", "[csv_parser]")
         R"({"key": "value2"})"
         "\n"
     );
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate logfmt-shaped first line [csv]", "[csv_parser]")
 {
     // No commas -> rejected, so logfmt wins the auto-detect race.
-    const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("level=info msg=hello\nlevel=warn msg=world\n");
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate well-formed CSV [csv]", "[csv_parser]")
 {
-    const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("level,message\ninfo,hello\n");
-    CHECK(parser.IsValid(file.GetFilePath()));
+    CHECK(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 TEST_CASE("Validate file with mismatched cell count [csv]", "[csv_parser]")
 {
-    const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("level,message,extra\ninfo,hello\n");
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 }
 
 namespace
@@ -292,7 +286,7 @@ TEST_CASE("UTF-8 BOM on the header is stripped [csv]", "[csv_parser]")
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("\xEF\xBB\xBFlevel,message\ninfo,hello\n");
-    REQUIRE(parser.IsValid(file.GetFilePath()));
+    REQUIRE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -387,7 +381,7 @@ TEST_CASE(
     file.Write(headerLine + "\n" + dataLine + "\n");
 
     const CsvParser parser;
-    REQUIRE(parser.IsValid(file.GetFilePath()));
+    REQUIRE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
     const ParseResult result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
@@ -503,12 +497,12 @@ TEST_CASE("Malformed CSV header surfaces a single error and zero data rows [csv]
     using namespace loglib;
 
     const TestLogFile file("malformed_header.csv");
-    // Unterminated quote (`"name` never closes); `IsValid` rejects it,
+    // Unterminated quote (`"name` never closes); the CSV check rejects it,
     // so we drive the parser directly.
     file.Write("\"name,value\ninfo,hello\nerror,boom\n");
 
     const CsvParser parser;
-    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+    CHECK_FALSE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 
     const ParseResult result = ParseFile(parser, file.GetFilePath());
     CHECK(result.data.Lines().empty());
@@ -542,7 +536,7 @@ TEST_CASE("Duplicate CSV column names are silently renamed [csv]", "[csv_parser]
     file.Write("id,name,id\n1,foo,2\n3,bar,4\n");
 
     const CsvParser parser;
-    REQUIRE(parser.IsValid(file.GetFilePath()));
+    REQUIRE(loglib::LooksLikeCsv(loglib::ReadProbeHead(file.GetFilePath())));
 
     const ParseResult result = ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());

@@ -325,7 +325,7 @@ void InitializeTimezoneData();
 /// source-of-truth pattern.
 inline const loglib::RegexTemplate *FindTemplateByName(std::string_view name) noexcept
 {
-    for (const auto &tmpl : loglib::BuiltinRegexTemplates())
+    for (const auto &tmpl : loglib::RegexTemplateCatalog::Builtin().Builtins())
     {
         if (tmpl.name == name)
         {

@@ -61,7 +61,7 @@ ParseResult RoundTripThroughTemplate(
     const RegexTemplate *tmpl = FindTemplateByName(templateName);
     REQUIRE(tmpl != nullptr);
 
-    const RegexParser parser{tmpl->pattern};
+    const RegexParser parser{tmpl->regex};
     ParseResult result = ParseFile(parser, fixture.GetFilePath());
 
     // A single parse error surfaces the offending line number, so

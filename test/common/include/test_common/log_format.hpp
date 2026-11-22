@@ -60,7 +60,7 @@ LogFormat Csv(RecordSchema schema = {});
 // Per-template synthesizers for the most common shipped
 // `RegexTemplate`s. Each factory returns a `LogFormat` whose
 // `writeLine` emits a line that the corresponding template pattern
-// in `loglib::BuiltinRegexTemplates()` parses without error. They
+// in `loglib::RegexTemplateCatalog::Builtin()` parses without error. They
 // reuse the canonical fields `GenerateRandomLogRecord` populates
 // (`timestamp` / `level` / `message`) and synthesize any format
 // extras (client IP, HTTP verb, logger, pid, ...) from small static

@@ -1222,14 +1222,14 @@ public:
      * without running a real open path.
      * @param source The `source` value.
      */
-    void SetCurrentSourceForTest(std::optional<loglib::Source> source);
+    void SetCurrentSourceForTest(std::optional<loglib::SourceDescriptor> source);
 
     /**
      * @brief Test-only read accessor for `mCurrentSource`; lets tests
      * inspect the descriptor after an open or load.
      * @return The result described above.
      */
-    [[nodiscard]] const std::optional<loglib::Source> &CurrentSourceForTest() const noexcept;
+    [[nodiscard]] const std::optional<loglib::SourceDescriptor> &CurrentSourceForTest() const noexcept;
 
     /**
      * @brief Test-only accessor for the source label used by

@@ -1,5 +1,7 @@
 #include "loglib/parse/parsers/json_parser.hpp"
 
+#include "loglib/parse/format_detection.hpp"
+
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/log_line.hpp"
@@ -643,7 +645,7 @@ void DecodeJsonBatch(
 
 } // namespace
 
-bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
+bool LooksLikeJson(std::string_view sniffBuffer)
 {
     std::size_t cursor = 0;
     while (cursor < sniffBuffer.size())

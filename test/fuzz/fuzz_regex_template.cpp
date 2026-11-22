@@ -18,11 +18,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
         const loglib::RegexTemplate tmpl = loglib::ParseRegexTemplate(loglib::fuzz::AsText(data, size));
 
         std::string error;
-        (void)loglib::ValidateRegexPattern(tmpl.pattern, error);
-        (void)loglib::ValidateHeaderAnchor(tmpl.headerAnchor, error);
+        (void)loglib::ValidateRegexPattern(tmpl.regex.pattern, error);
+        (void)loglib::ValidateHeaderAnchor(tmpl.regex.headerAnchor, error);
         for (const std::string &line : tmpl.sampleLines)
         {
-            (void)loglib::PatternMatchesLine(tmpl.pattern, line);
+            (void)loglib::PatternMatchesLine(tmpl.regex.pattern, line);
         }
 
         // The writer must accept everything the reader produced.

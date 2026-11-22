@@ -46,13 +46,6 @@ public:
     explicit LogfmtParser(bool multiline = true) noexcept;
 
     /**
-     * @brief Says whether the first non-blank line of the sample looks like key=value pairs (LineLooksLikeLogfmt).
-     *
-     * Called through the file overload, it only sees the first PROBE_BYTES_BUDGET bytes.
-     */
-    bool IsValidBytes(std::string_view sniffBuffer) const override;
-
-    /**
      * @brief Parses a static file. Every row refers to source and has the zero-based line number of the file as its
      * id.
      */

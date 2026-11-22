@@ -388,11 +388,9 @@ TEST_CASE("The logfmt continuation switch belongs to the parser", "[explicit_tim
     CHECK(rowCount(LogfmtParser{}) == 1);
     CHECK(rowCount(LogfmtParser{true}) == 1);
     CHECK(rowCount(LogfmtParser{false}) == 2);
-    CHECK(rowCount(*MakeParserForFormat(Source::Format::Logfmt, {})) == 1);
-    CHECK(rowCount(*MakeParserForFormat(Source::Format::Logfmt, {.multilineLogfmt = false})) == 2);
-    CHECK(
-        rowCount(AutoDetectParser(PROBE_BYTES_BUDGET, std::chrono::milliseconds{0}, {.multilineLogfmt = false})) == 2
-    );
+    CHECK(rowCount(*MakeParser(FormatSpec{.format = loglib::LogFormat::Logfmt})) == 1);
+    CHECK(rowCount(*MakeParser(FormatSpec{.format = loglib::LogFormat::Logfmt, .logfmtMultiline = false})) == 2);
+    CHECK(rowCount(AutoDetectParser(PROBE_BYTES_BUDGET, std::chrono::milliseconds{0}, false)) == 2);
 }
 
 TEST_CASE("A saved regex source restores its multi-line parse without the template", "[explicit_time_inputs]")
@@ -404,12 +402,12 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
                                 "\tat Baz.qux\n"
                                 "info recovered\n";
 
-    Source saved;
-    saved.kind = Source::Kind::NetworkStream;
-    saved.format = Source::Format::Regex;
+    SourceDescriptor saved;
+    saved.kind = SourceDescriptor::Kind::NetworkStream;
+    saved.format.format = loglib::LogFormat::Regex;
     saved.locators = {{"tcp://example", "tcp://example"}};
-    saved.regexPattern = pattern;
-    saved.regexContinuationMode = ContinuationMode::Indented;
+    saved.format.regex.pattern = pattern;
+    saved.format.regex.continuation = ContinuationMode::Indented;
 
     LogConfiguration configuration;
     configuration.source = saved;
@@ -418,12 +416,12 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
 
     const LogConfiguration loaded = LoadConfiguration(configFile.GetFilePath());
     REQUIRE(loaded.source.has_value());
-    const Source &restored = *loaded.source;
-    CHECK(restored.regexContinuationMode == ContinuationMode::Indented);
-    CHECK(restored.regexHeaderAnchor.empty());
-    CHECK_FALSE(FindTemplateByPattern(restored.regexPattern).has_value());
+    const SourceDescriptor &restored = *loaded.source;
+    CHECK(restored.format.regex.continuation == ContinuationMode::Indented);
+    CHECK(restored.format.regex.headerAnchor.empty());
+    CHECK(RegexTemplateCatalog::Builtin().FindByPattern(restored.format.regex.pattern) == nullptr);
 
-    const RegexParser parser{restored.regexPattern, restored.regexContinuationMode, restored.regexHeaderAnchor};
+    const RegexParser parser{restored.format.regex};
     StreamLineSource source(std::filesystem::path("regex.log"), std::make_unique<InMemoryBytesProducer>(payload));
     CollectingSink sink;
     parser.Parse(source, sink, ParserOptions{});
@@ -439,20 +437,15 @@ TEST_CASE("Detection of a multi-line template reports its continuation settings"
                                "  File \"a.py\", line 7\n"
                                "2024-04-28 04:02:04,001 INFO [main] recovered\n"
                                "2024-04-28 04:02:05,001 INFO [main] again\n";
-    const auto detected = TryDetectFormatFromBytes(sample);
-    if (!detected.has_value() || detected->format != Source::Format::Regex)
+    const auto detected = DetectFormat(sample);
+    if (!detected.has_value() || detected->format != loglib::LogFormat::Regex)
     {
         SKIP("No shipped template matches this sample.");
     }
-    const auto tmpl = FindTemplateByPattern(detected->regexPattern);
-    REQUIRE(tmpl.has_value());
-    CHECK(detected->regexContinuationMode == tmpl->continuationMode);
-    CHECK(detected->regexHeaderAnchor == tmpl->headerAnchor);
-
-    const FormatOptions options = detected->Options(false);
-    CHECK(options.regexPattern == detected->regexPattern);
-    CHECK(options.regexContinuationMode == detected->regexContinuationMode);
-    CHECK_FALSE(options.multilineLogfmt);
+    const RegexTemplate *tmpl = RegexTemplateCatalog::Builtin().FindByPattern(detected->regex.pattern);
+    REQUIRE(tmpl != nullptr);
+    CHECK(detected->regex.continuation == tmpl->regex.continuation);
+    CHECK(detected->regex.headerAnchor == tmpl->regex.headerAnchor);
 }
 
 TEST_CASE("A print format that no value accepts is replaced on load and never throws", "[explicit_time_inputs]")

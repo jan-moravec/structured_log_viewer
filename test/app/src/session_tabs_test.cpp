@@ -533,8 +533,8 @@ private slots:
         LogSession *session = window.activeSession();
         QVERIFY(session != nullptr);
 
-        loglib::Source source;
-        source.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor source;
+        source.kind = loglib::SourceDescriptor::Kind::File;
         source.locators = {"/tmp/example.log"};
         source.followRotationSiblings = false;
         session->SetCurrentSource(source);
@@ -1524,8 +1524,8 @@ private slots:
         // Simulate a bound source on the active tab (no rows, but
         // `CurrentSource().has_value()` is the gate that switches
         // `EnsureFreshActiveTab` from reuse to add).
-        loglib::Source src;
-        src.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor src;
+        src.kind = loglib::SourceDescriptor::Kind::File;
         src.locators = {{std::string{"/tmp/pretend.log"}, std::string{"/tmp/pretend.log"}}};
         originalSession->MutableCurrentSource() = src;
 
@@ -1561,16 +1561,16 @@ private slots:
 
         // Distinct locator sets: no dedup key should collide across
         // sessions and no locator should leak.
-        loglib::Source srcA;
-        srcA.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor srcA;
+        srcA.kind = loglib::SourceDescriptor::Kind::File;
         srcA.locators = {
             {std::string{"/tmp/a.log"}, std::string{"/tmp/a.log"}},
             {std::string{"/tmp/a.log.1"}, std::string{"/tmp/a.log.1"}}
         };
         sessionA->MutableCurrentSource() = srcA;
 
-        loglib::Source srcB;
-        srcB.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor srcB;
+        srcB.kind = loglib::SourceDescriptor::Kind::File;
         srcB.locators = {{std::string{"/tmp/b.log"}, std::string{"/tmp/b.log"}}};
         sessionB->MutableCurrentSource() = srcB;
 
@@ -1867,14 +1867,14 @@ private slots:
         tailB->SetStreamingFileName(QStringLiteral("/var/log/b.log"));
 
         // Distinct rotation-history preferences per session.
-        loglib::Source srcA;
-        srcA.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor srcA;
+        srcA.kind = loglib::SourceDescriptor::Kind::File;
         srcA.locators = {std::string{"/var/log/a.log"}};
         srcA.followRotationSiblings = true;
         tailA->MutableCurrentSource() = srcA;
 
-        loglib::Source srcB;
-        srcB.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor srcB;
+        srcB.kind = loglib::SourceDescriptor::Kind::File;
         srcB.locators = {std::string{"/var/log/b.log"}};
         srcB.followRotationSiblings = false;
         tailB->MutableCurrentSource() = srcB;
@@ -2151,8 +2151,8 @@ private slots:
             return;
         }
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}, std::string{"C:/logs/app.log.1"}};
         session->MutableCurrentSource() = fileSource;
         session->NotifyPresentationChanged();
@@ -2172,8 +2172,8 @@ private slots:
             return;
         }
 
-        loglib::Source fileSource;
-        fileSource.kind = loglib::Source::Kind::File;
+        loglib::SourceDescriptor fileSource;
+        fileSource.kind = loglib::SourceDescriptor::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session->MutableCurrentSource() = fileSource;
         session->NotifyPresentationChanged();
@@ -3273,14 +3273,14 @@ private slots:
         source.activeSession()->DetachAutoSaveUuid();
 
         source.AddNewTabForTest(/*makeActive=*/true);
-        loglib::Source network;
-        network.kind = loglib::Source::Kind::NetworkStream;
+        loglib::SourceDescriptor network;
+        network.kind = loglib::SourceDescriptor::Kind::NetworkStream;
         network.locators = {std::string{"tcp://127.0.0.1:5514"}};
         source.activeSession()->MutableCurrentSource() = network;
 
         source.AddNewTabForTest(/*makeActive=*/true);
-        loglib::Source stdinSource;
-        stdinSource.kind = loglib::Source::Kind::Stdin;
+        loglib::SourceDescriptor stdinSource;
+        stdinSource.kind = loglib::SourceDescriptor::Kind::Stdin;
         stdinSource.locators = {std::string{"<stdin>"}};
         source.activeSession()->MutableCurrentSource() = stdinSource;
 
@@ -3348,7 +3348,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(restoredTail->Model() != nullptr && restoredTail->Model()->rowCount() > 0, 60000);
         QVERIFY(!restoredTail->IsLiveTailSession());
         QVERIFY(restoredTail->CurrentSource().has_value());
-        QCOMPARE(restoredTail->CurrentSource()->kind, loglib::Source::Kind::File);
+        QCOMPARE(restoredTail->CurrentSource()->kind, loglib::SourceDescriptor::Kind::File);
 
         LogSession *restoredNetwork = restored.SessionAtTab(3);
         QVERIFY(restoredNetwork != nullptr);
@@ -3449,7 +3449,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(
             rotated->CurrentSource().has_value() && rotated->CurrentSource()->locators.size() >= 2, 8000
         );
-        QCOMPARE(rotated->CurrentSource()->kind, loglib::Source::Kind::File);
+        QCOMPARE(rotated->CurrentSource()->kind, loglib::SourceDescriptor::Kind::File);
 
         source.AddNewTabForTest(/*makeActive=*/true);
         LoadFileIntoActiveTab(source, sibling);

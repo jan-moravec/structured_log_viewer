@@ -5,12 +5,14 @@
 #include "loglib/parse/format_detection.hpp"
 #include "loglib/parse/log_parser.hpp"
 #include "loglib/parse/parsers/json_parser.hpp"
+#include "loglib/parse/regex_templates.hpp"
 #include "loglib/table/table_loader.hpp"
 
 #include <fmt/format.h>
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -47,25 +49,17 @@ OpenedFile OpenFileSource(const std::filesystem::path &path, const OpenFileOptio
 namespace
 {
 
-// The format detection returns JSON both for JSON and when nothing matched, so JSON is checked once more here. Unknown
-// content is then reported instead of being pushed through the JSON parser.
-std::unique_ptr<LogParser> ParserForHead(const std::string &head, const std::filesystem::path &file)
+// Content that detection does not recognize is reported instead of being pushed through the JSON parser.
+std::unique_ptr<LogParser> ParserForHead(
+    const std::string &head, const std::filesystem::path &file, const RegexTemplateCatalog &catalog
+)
 {
-    if (head.empty())
+    const std::optional<FormatSpec> detected = DetectFormat(head, catalog);
+    if (!detected)
     {
         throw FormatError(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
     }
-
-    const DetectedFormat detected = DetectFormatFromBytes(head);
-    if (detected.format == Source::Format::Json)
-    {
-        const JsonParser probe;
-        if (!probe.IsValidBytes(head))
-        {
-            throw FormatError(fmt::format("Input file '{}' could not be parsed.", internal::PathToUtf8(file)));
-        }
-    }
-    return MakeParserForFormat(detected.format, detected.Options());
+    return MakeParser(*detected);
 }
 
 } // namespace
@@ -108,7 +102,7 @@ LoadResult LoadFile(const std::filesystem::path &file, LoadOptions options)
     }
     else
     {
-        parser = ParserForHead(ReadProbeHead(opened.effectivePath), file);
+        parser = ParserForHead(ReadProbeHead(opened.effectivePath), file, options.regexTemplates);
     }
 
     ParseOutcome outcome = ParseIntoTable(

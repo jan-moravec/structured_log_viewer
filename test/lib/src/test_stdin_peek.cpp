@@ -168,32 +168,36 @@ TEST_CASE("StdinPeek stops at the timeout when the producer is silent", "[StdinP
     pipe.CloseWrite();
 }
 
-TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPath on the same content", "[StdinPeek]")
+TEST_CASE("StdinPeek bytes and a file head give the same detection for the same content", "[StdinPeek]")
 {
-    // The stdin path drives its format decision through the
-    // peek -> DetectFormatFromBytes -> UnreadBytes handshake.
-    // File-backed opens go through `DetectFormatForPath`. Assert
-    // both entry points reach the same verdict for identical bytes.
+    // The stdin path drives its format decision through the peek -> DetectFormat -> UnreadBytes handshake. File-backed
+    // opens run DetectFormat on the head of the file. Assert both reach the same verdict for identical bytes.
     struct Sample
     {
         std::string_view label;
         std::string_view bytes;
-        loglib::Source::Format expected;
+        loglib::LogFormat expected;
     };
     const Sample samples[] = {
-        {.label = "json",
-         .bytes = R"({"level":"info","message":"first"}
+        {
+            .label = "json",
+            .bytes = R"({"level":"info","message":"first"}
 {"level":"warn","message":"second"}
 )",
-         .expected = loglib::Source::Format::Json},
-        {.label = "logfmt",
-         .bytes = "level=info msg=first\nlevel=warn msg=second\n",
-         .expected = loglib::Source::Format::Logfmt},
-        {.label = "csv", .bytes = "level,message\ninfo,first\nwarn,second\n", .expected = loglib::Source::Format::Csv},
-        {.label = "regex-syslog",
-         .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
-                  "Jun 27 01:47:20 host-b configd[17]: network changed\n",
-         .expected = loglib::Source::Format::Regex},
+            .expected = loglib::LogFormat::Json,
+        },
+        {
+            .label = "logfmt",
+            .bytes = "level=info msg=first\nlevel=warn msg=second\n",
+            .expected = loglib::LogFormat::Logfmt,
+        },
+        {.label = "csv", .bytes = "level,message\ninfo,first\nwarn,second\n", .expected = loglib::LogFormat::Csv},
+        {
+            .label = "regex-syslog",
+            .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
+                     "Jun 27 01:47:20 host-b configd[17]: network changed\n",
+            .expected = loglib::LogFormat::Regex,
+        },
     };
 
     for (const Sample &s : samples)
@@ -207,7 +211,7 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
         pipe.CloseWrite();
         const std::string peek = StdinPeek(loglib::PROBE_BYTES_BUDGET, 2000ms);
         REQUIRE_FALSE(peek.empty());
-        const loglib::DetectedFormat viaStdin = loglib::DetectFormatFromBytes(peek);
+        const loglib::FormatSpec viaStdin = loglib::DetectFormat(peek).value_or(loglib::FormatSpec{});
 
         // File path.
         const auto tempPath = std::filesystem::temp_directory_path() /
@@ -217,13 +221,14 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
             REQUIRE(out.is_open());
             out.write(s.bytes.data(), static_cast<std::streamsize>(s.bytes.size()));
         }
-        const loglib::DetectedFormat viaFile = loglib::DetectFormatForPath(tempPath);
+        const loglib::FormatSpec viaFile =
+            loglib::DetectFormat(loglib::ReadProbeHead(tempPath)).value_or(loglib::FormatSpec{});
         std::error_code ec;
         std::filesystem::remove(tempPath, ec);
 
         CHECK(viaStdin.format == s.expected);
         CHECK(viaFile.format == s.expected);
         CHECK(viaStdin.format == viaFile.format);
-        CHECK(viaStdin.regexPattern == viaFile.regexPattern);
+        CHECK(viaStdin.regex.pattern == viaFile.regex.pattern);
     }
 }

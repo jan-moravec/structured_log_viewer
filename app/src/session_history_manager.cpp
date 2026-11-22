@@ -686,8 +686,8 @@ QString SessionHistoryManager::BuildLabel(const loglib::LogConfiguration &config
     // Non-file locators are synthetic (URIs, `<stdin>`);
     // `QFileInfo::fileName()` would mangle them.
     QString primaryLabel;
-    if (configuration.source->kind == loglib::Source::Kind::NetworkStream ||
-        configuration.source->kind == loglib::Source::Kind::Stdin)
+    if (configuration.source->kind == loglib::SourceDescriptor::Kind::NetworkStream ||
+        configuration.source->kind == loglib::SourceDescriptor::Kind::Stdin)
     {
         primaryLabel = primary;
     }

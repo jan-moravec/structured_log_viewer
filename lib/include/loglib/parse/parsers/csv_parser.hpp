@@ -48,14 +48,6 @@ class CsvParser : public LogParser
 {
 public:
     /**
-     * @brief Says whether the sample starts with a line that looks like a CSV header (HeaderLineLooksLikeCsv) and has a
-     * second non-blank line with the same number of cells.
-     *
-     * Called through the file overload, it only sees the first PROBE_BYTES_BUDGET bytes.
-     */
-    bool IsValidBytes(std::string_view sniffBuffer) const override;
-
-    /**
      * @brief Parses a static file. The header is read first to map the columns to key ids, then the pipeline runs.
      * Stage B records the offset of the header line and emits no row for it.
      */

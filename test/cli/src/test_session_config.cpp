@@ -231,7 +231,7 @@ TEST_CASE("session precedence: column flags replace configuration visibility", "
 TEST_CASE("session precedence: --config discards the embedded source", "[cli][session]")
 {
     loglib::LogConfiguration configuration = DetectedConfiguration();
-    loglib::Source source;
+    loglib::SourceDescriptor source;
     loglib::AppendLocator(source, "C:/elsewhere/other.jsonl", "c:/elsewhere/other.jsonl");
     configuration.source = std::move(source);
     const auto path = WriteConfig("source.json", configuration, loglib::SaveScope::Full);
@@ -354,7 +354,7 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
     const std::filesystem::path locator = written.source->locators[0].displayPath;
     CHECK(locator.is_absolute());
     CHECK(locator.filename() == log.filename());
-    CHECK(written.source->format == loglib::Source::Format::Json);
+    CHECK(written.source->format.format == loglib::LogFormat::Json);
 
     // The saved session reproduces the filtered row set.
     const auto replay = RunSlp(

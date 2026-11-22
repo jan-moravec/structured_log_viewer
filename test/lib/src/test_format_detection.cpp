@@ -1,66 +1,84 @@
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parser.hpp>
+#include <loglib/parse/regex_templates.hpp>
 
 #include <test_common/temp_dir.hpp>
 
 #include <catch2/catch_all.hpp>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
-using loglib::DetectedFormat;
-using loglib::DetectFormatForPath;
-using loglib::DetectFormatFromBytes;
-using loglib::MakeParserForFormat;
-using loglib::Source;
+using loglib::DetectFormat;
+using loglib::FormatSpec;
+using loglib::MakeParser;
+using loglib::ReadProbeHead;
+using loglib::RegexTemplate;
+using loglib::RegexTemplateCatalog;
+using loglib::SampleFitsFormat;
 using test_common::TempDir;
 
-TEST_CASE("DetectFormatFromBytes parity with DetectFormatForPath", "[FormatDetection]")
+namespace
 {
-    // Same bytes must produce the same detection result whether
-    // the input is a path (file open + head read) or a raw byte
-    // slice (network, stdin). The parity test is the whole point
-    // of hoisting the detector into loglib.
+
+FormatSpec DetectFile(const std::filesystem::path &file)
+{
+    return DetectFormat(ReadProbeHead(file)).value_or(FormatSpec{});
+}
+
+} // namespace
+
+TEST_CASE("DetectFormat gives the same answer for a file head and for raw bytes", "[FormatDetection]")
+{
+    // Same bytes must produce the same detection result whether the input is a path (file open + head read) or a raw
+    // byte slice (network, stdin).
     const TempDir dir("format_detection");
 
     struct Case
     {
         const char *name;
         std::string_view bytes;
-        Source::Format expected;
+        loglib::LogFormat expected;
     };
     const Case cases[] = {
-        {.name = "json.log",
-         .bytes = R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
+        {
+            .name = "json.log",
+            .bytes = R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
 {"timestamp":"2026-01-01T00:00:01Z","level":"warn","message":"there"}
 )",
-         .expected = Source::Format::Json},
-        {.name = "logfmt.log",
-         .bytes = R"(time=2026-01-01T00:00:00Z level=info message=hi
+            .expected = loglib::LogFormat::Json,
+        },
+        {
+            .name = "logfmt.log",
+            .bytes = R"(time=2026-01-01T00:00:00Z level=info message=hi
 time=2026-01-01T00:00:01Z level=warn message=there
 )",
-         .expected = Source::Format::Logfmt},
-        {.name = "csv.log",
-         .bytes = "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
-         .expected = Source::Format::Csv},
+            .expected = loglib::LogFormat::Logfmt,
+        },
+        {
+            .name = "csv.log",
+            .bytes = "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
+            .expected = loglib::LogFormat::Csv,
+        },
     };
 
     for (const Case &c : cases)
     {
         CAPTURE(c.name);
-        const DetectedFormat byPath = DetectFormatForPath(dir.Write(c.name, c.bytes));
-        const DetectedFormat byBytes = DetectFormatFromBytes(c.bytes);
+        const FormatSpec byPath = DetectFile(dir.Write(c.name, c.bytes));
+        const std::optional<FormatSpec> byBytes = DetectFormat(c.bytes);
+        REQUIRE(byBytes.has_value());
         CHECK(byPath.format == c.expected);
-        CHECK(byBytes.format == c.expected);
-        CHECK(byPath.regexPattern == byBytes.regexPattern);
+        CHECK(byBytes->format == c.expected);
+        CHECK(byPath.regex.pattern == byBytes->regex.pattern);
     }
 }
 
-TEST_CASE("DetectFormatFromBytes and DetectFormatForPath agree on regex-format bytes and pattern", "[FormatDetection]")
+TEST_CASE("DetectFormat agrees on regex-format bytes and pattern", "[FormatDetection]")
 {
-    // Both entry points must return the same regex format and pattern.
     const TempDir dir("format_detection_regex");
 
     struct Case
@@ -82,91 +100,139 @@ TEST_CASE("DetectFormatFromBytes and DetectFormatForPath agree on regex-format b
     for (const Case &c : cases)
     {
         CAPTURE(c.name);
-        const DetectedFormat byPath = DetectFormatForPath(dir.Write(c.name, c.bytes));
-        const DetectedFormat byBytes = DetectFormatFromBytes(c.bytes);
-        CHECK(byPath.format == Source::Format::Regex);
-        CHECK(byBytes.format == Source::Format::Regex);
-        CHECK_FALSE(byBytes.regexPattern.empty());
-        CHECK(byPath.regexPattern == byBytes.regexPattern);
+        const FormatSpec byPath = DetectFile(dir.Write(c.name, c.bytes));
+        const std::optional<FormatSpec> byBytes = DetectFormat(c.bytes);
+        REQUIRE(byBytes.has_value());
+        CHECK(byPath.format == loglib::LogFormat::Regex);
+        CHECK(byBytes->format == loglib::LogFormat::Regex);
+        CHECK_FALSE(byBytes->regex.pattern.empty());
+        CHECK(byPath.regex.pattern == byBytes->regex.pattern);
     }
 }
 
 TEST_CASE(
-    "DetectFormatFromBytes prefers a matching regex template over CSV when a comma-decimal timestamp would "
-    "false-positive as CSV",
+    "DetectFormat prefers a matching regex template over CSV when a comma-decimal timestamp would false-positive as "
+    "CSV",
     "[FormatDetection]"
 )
 {
-    // Java Logback / log4j2 / SLF4J default PatternLayout emits
-    // `2026-01-01 12:00:00,123 LEVEL ...` where the sole comma is
-    // the millisecond decimal. `CsvParser::IsValidBytes` accepts
-    // any input with a consistent 2-cell-per-line comma count, so
-    // without the regex-templates-before-CSV probe order this
-    // Java stream was silently misparsed as a 2-column CSV --
-    // splitting each row at the `,SSS` boundary and lumping level,
-    // thread, logger, and message into the second cell.
-    //
-    // Regression guard for the fix: the shipped
-    // "Java / log4j / SLF4J Logback" template matches these
-    // lines, so the detector must land on `Format::Regex` with a
-    // non-empty pattern, not on `Format::Csv`.
+    // Java Logback / log4j2 / SLF4J default PatternLayout emits `2026-01-01 12:00:00,123 LEVEL ...` where the sole
+    // comma is the millisecond decimal. The CSV check accepts any input with a consistent 2-cell-per-line comma count,
+    // so without the regex-templates-before-CSV order this stream would be misparsed as a 2-column CSV. The shipped
+    // "Java / log4j / SLF4J Logback" template matches these lines, so detection must land on Regex.
     constexpr std::string_view JAVA_STREAM =
         "2026-01-01 12:00:00,123 INFO  [main] com.example.App - Application starting\n"
         "2026-01-01 12:00:00,456 WARN  [http-nio-8080-exec-1] o.s.web.servlet.PageNotFound - No mapping\n"
         "2026-01-01 12:00:00,789 ERROR [pool-1-thread-3] com.example.Worker$Inner - Task failed\n";
 
-    const DetectedFormat detected = DetectFormatFromBytes(JAVA_STREAM);
-    CHECK(detected.format == Source::Format::Regex);
-    CHECK_FALSE(detected.regexPattern.empty());
+    const std::optional<FormatSpec> detected = DetectFormat(JAVA_STREAM);
+    REQUIRE(detected.has_value());
+    CHECK(detected->format == loglib::LogFormat::Regex);
+    CHECK_FALSE(detected->regex.pattern.empty());
 }
 
-TEST_CASE("DetectFormatForPath on a missing file falls back to default Json", "[FormatDetection]")
+TEST_CASE("ReadProbeHead on a missing file is empty", "[FormatDetection]")
 {
-    // Missing file -> empty probe -> the same JSON fallback as an
-    // empty byte buffer.
     const std::filesystem::path missing = "definitely_not_a_real_file_1741d61e.log";
     REQUIRE_FALSE(std::filesystem::exists(missing));
 
-    const DetectedFormat detected = DetectFormatForPath(missing);
-    CHECK(detected.format == Source::Format::Json);
-    CHECK(detected.regexPattern.empty());
+    CHECK(ReadProbeHead(missing).empty());
+    CHECK_FALSE(DetectFormat(ReadProbeHead(missing)).has_value());
 }
 
-TEST_CASE("DetectFormatFromBytes on empty buffer yields default Json", "[FormatDetection]")
+TEST_CASE("DetectFormat returns nothing for an empty sample and for unrecognized content", "[FormatDetection]")
 {
-    // Empty buffer -> nothing to sniff. The default-constructed
-    // `DetectedFormat` deliberately defaults to `Json` so that the
-    // rest of the streaming pipeline (which cannot early-out on
-    // "unknown format") still spins up a usable parser.
-    const DetectedFormat detected = DetectFormatFromBytes({});
-    CHECK(detected.format == Source::Format::Json);
-    CHECK(detected.regexPattern.empty());
+    CHECK_FALSE(DetectFormat({}).has_value());
+    CHECK_FALSE(DetectFormat("just some words\nthat nothing recognizes\n").has_value());
+    // The default-constructed FormatSpec is JSON, which is what callers that always need a parser fall back to.
+    CHECK(FormatSpec{}.format == loglib::LogFormat::Json);
 }
 
-TEST_CASE("MakeParserForFormat returns a usable parser for every format", "[FormatDetection]")
+TEST_CASE("Two catalogs with different extras detect differently in the same process", "[FormatDetection]")
 {
-    // Regression: renaming `IsValid(path)` to `IsValidBytes(view)`
-    // must not break the plain factory dispatch. Passing a
-    // buffer that matches each format proves the returned parser
-    // isn't a stub.
-    struct Case
-    {
-        Source::Format format;
-        std::string_view probe;
-    };
-    const Case cases[] = {
-        {.format = Source::Format::Json, .probe = R"({"a":1}
-{"b":2}
-)"},
-        {.format = Source::Format::Logfmt, .probe = "a=1 b=2\nc=3 d=4\n"},
-        {.format = Source::Format::Csv, .probe = "a,b\n1,2\n3,4\n"},
-    };
+    RegexTemplate custom;
+    custom.name = "Custom";
+    custom.regex.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)";
+    const std::string_view sample = "2026 | first line\n2027 | second line\n";
 
-    for (const Case &c : cases)
+    const RegexTemplateCatalog withExtra = RegexTemplateCatalog::Builtin().WithExtras({custom});
+    const std::optional<FormatSpec> viaExtra = DetectFormat(sample, withExtra);
+    REQUIRE(viaExtra.has_value());
+    CHECK(viaExtra->format == loglib::LogFormat::Regex);
+    CHECK(viaExtra->regex.pattern == custom.regex.pattern);
+
+    // The built-in catalog does not know the template, so it does not claim the sample as that pattern.
+    const std::optional<FormatSpec> viaBuiltin = DetectFormat(sample);
+    if (viaBuiltin.has_value())
     {
-        CAPTURE(static_cast<int>(c.format));
-        const auto parser = MakeParserForFormat(c.format);
-        REQUIRE(parser != nullptr);
-        CHECK(parser->IsValidBytes(c.probe));
+        CHECK(viaBuiltin->regex.pattern != custom.regex.pattern);
     }
+}
+
+TEST_CASE("SampleFitsFormat checks the pinned pattern and not the catalog", "[FormatDetection]")
+{
+    SECTION("A matching pattern is accepted even when no template matches")
+    {
+        const std::string_view sample = "2026 | first line\n2027 | second line\n";
+        REQUIRE_FALSE(DetectFormat(sample).has_value());
+        const FormatSpec spec{
+            .format = loglib::LogFormat::Regex,
+            .regex = {.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)"},
+        };
+        CHECK(SampleFitsFormat(sample, spec));
+    }
+
+    SECTION("A pattern that does not match is rejected even when a template matches")
+    {
+        const std::string_view sample = "Apr 28 04:02:03 host-a systemd: System starting\n"
+                                        "Jun 27 01:47:20 host-b configd[17]: network changed\n";
+        REQUIRE(DetectFormat(sample).has_value());
+        const FormatSpec spec{
+            .format = loglib::LogFormat::Regex,
+            .regex = {.pattern = R"(^(?<Stamp>\d{4}) \| (?<Text>.+)$)"},
+        };
+        CHECK_FALSE(SampleFitsFormat(sample, spec));
+    }
+
+    SECTION("An empty pattern and a broken pattern do not fit")
+    {
+        const std::string_view sample = "a\nb\n";
+        CHECK_FALSE(SampleFitsFormat(sample, FormatSpec{.format = loglib::LogFormat::Regex}));
+        CHECK_FALSE(
+            SampleFitsFormat(sample, FormatSpec{.format = loglib::LogFormat::Regex, .regex = {.pattern = "(?<A>("}})
+        );
+    }
+
+    SECTION("The other formats use their own check")
+    {
+        CHECK(SampleFitsFormat(R"({"a":1})", FormatSpec{.format = loglib::LogFormat::Json}));
+        CHECK_FALSE(SampleFitsFormat("a=1 b=2\n", FormatSpec{.format = loglib::LogFormat::Json}));
+        CHECK(SampleFitsFormat("a=1 b=2\nc=3 d=4\n", FormatSpec{.format = loglib::LogFormat::Logfmt}));
+        CHECK(SampleFitsFormat("a,b\n1,2\n3,4\n", FormatSpec{.format = loglib::LogFormat::Csv}));
+    }
+}
+
+TEST_CASE("MakeParser returns a usable parser for every format", "[FormatDetection]")
+{
+    for (const loglib::LogFormat format :
+         {loglib::LogFormat::Json, loglib::LogFormat::Logfmt, loglib::LogFormat::Csv, loglib::LogFormat::Regex})
+    {
+        CAPTURE(static_cast<int>(format));
+        CHECK(MakeParser(FormatSpec{.format = format}) != nullptr);
+    }
+}
+
+TEST_CASE("FormatSpec compares by format and settings", "[FormatDetection]")
+{
+    const FormatSpec json;
+    CHECK(json.format == loglib::LogFormat::Json);
+    CHECK(json.logfmtMultiline);
+    CHECK(json == FormatSpec{});
+
+    FormatSpec regex{.format = loglib::LogFormat::Regex, .regex = {.pattern = "^(?<a>.*)$"}};
+    CHECK(regex != json);
+    FormatSpec other = regex;
+    CHECK(other == regex);
+    other.regex.continuation = loglib::ContinuationMode::Indented;
+    CHECK(other != regex);
 }

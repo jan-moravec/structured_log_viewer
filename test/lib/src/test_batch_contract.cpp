@@ -682,7 +682,10 @@ TEST_CASE("The same bytes as a file and as a stream give the same batches", "[ba
     }
     SECTION("multi-line regex")
     {
-        const RegexParser parser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+        const RegexParser parser({
+            .pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)",
+            .continuation = ContinuationMode::UntilNextHeader,
+        });
         CheckStaticAndStreamAgree(parser, RegexInput(), "batch_contract_eq_regex.log");
     }
 }
@@ -703,12 +706,17 @@ TEST_CASE(
         }
         SECTION("indented regex")
         {
-            const RegexParser parser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::Indented);
+            const RegexParser parser(
+                {.pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", .continuation = ContinuationMode::Indented}
+            );
             CheckStaticAndStreamAgree(parser, lead + RegexInput(), "batch_contract_orphan_indented.log");
         }
         SECTION("multi-line regex")
         {
-            const RegexParser parser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+            const RegexParser parser({
+                .pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)",
+                .continuation = ContinuationMode::UntilNextHeader,
+            });
             CheckStaticAndStreamAgree(parser, lead + RegexInput(), "batch_contract_orphan_regex.log");
         }
     }
@@ -721,7 +729,7 @@ TEST_CASE(
     const std::string bytes = "1000 404\n    trace a\n    trace b\n1001 500\n1002 200\n    trace c\n";
     for (const ContinuationMode mode : {ContinuationMode::Indented, ContinuationMode::UntilNextHeader})
     {
-        const RegexParser parser(R"(^(?<ts>\d+) (?<msg>\d+)$)", mode);
+        const RegexParser parser({.pattern = R"(^(?<ts>\d+) (?<msg>\d+)$)", .continuation = mode});
         for (const bool asFile : {true, false})
         {
             CAPTURE(mode, asFile);
@@ -749,9 +757,11 @@ TEST_CASE(
     "[batch_contract][equivalence][templates]"
 )
 {
-    for (const BuiltinRegexTemplateInfo &info : BuiltinRegexTemplateCatalog())
+    const RegexTemplateCatalog &catalog = RegexTemplateCatalog::Builtin();
+    for (std::size_t i = 0; i < catalog.Builtins().size(); ++i)
     {
-        const RegexTemplate &tmpl = info.tmpl;
+        const RegexTemplate &tmpl = catalog.Builtins()[i];
+        const std::string &slug = catalog.BuiltinSlugs()[i];
         REQUIRE_FALSE(tmpl.sampleLines.empty());
         // The samples are repeated so that the parse spans several batches at the smallest batch size.
         std::string bytes;
@@ -762,11 +772,11 @@ TEST_CASE(
                 bytes += sample + "\n";
             }
         }
-        const RegexParser parser(tmpl.pattern, tmpl.continuationMode, tmpl.headerAnchor);
+        const RegexParser parser(tmpl.regex);
 
-        INFO("template " << info.slug);
+        INFO("template " << slug);
         RecordingSink reference;
-        ParseAsFile(parser, info.slug + ".log", bytes, 4096, reference);
+        ParseAsFile(parser, slug + ".log", bytes, 4096, reference);
         const Observed expected = Observe(reference);
         CHECK(reference.finished == 1);
         CHECK(expected.errors.empty());
@@ -775,7 +785,7 @@ TEST_CASE(
         for (const std::size_t batchSize : {std::size_t{64}, std::size_t{257}})
         {
             RecordingSink sink;
-            ParseAsFile(parser, info.slug + ".log", bytes, batchSize, sink);
+            ParseAsFile(parser, slug + ".log", bytes, batchSize, sink);
             INFO("file, batch size " << batchSize);
             CheckSame(Observe(sink), expected);
         }
@@ -913,7 +923,7 @@ TEST_CASE("Declared keys are announced before the keys of rows", "[batch_contrac
     }
     SECTION("a regex group that never matches still appears")
     {
-        const RegexParser parser(R"(^(?<a>\d+)(?: (?<b>x))?$)");
+        const RegexParser parser({.pattern = R"(^(?<a>\d+)(?: (?<b>x))?$)"});
         const std::string bytes = "1\n2\n";
         RecordingSink fileSink;
         ParseAsFile(parser, "batch_contract_declared.log", bytes, 0, fileSink);
@@ -1205,9 +1215,10 @@ TEST_CASE(
     }
     SECTION("regex")
     {
-        const RegexParser parser(
-            R"(^(?<id>\d+) (?<num>\S+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader
-        );
+        const RegexParser parser({
+            .pattern = R"(^(?<id>\d+) (?<num>\S+) (?<level>[A-Z]+) (?<msg>.*)$)",
+            .continuation = ContinuationMode::UntilNextHeader,
+        });
         CheckDeterministic(parser, DeterminismRegexInput(), "batch_contract_determinism_regex.log");
     }
 }
@@ -1707,7 +1718,9 @@ TEST_CASE(
     const std::string logfmtBytes = LogfmtInput();
     const std::string csvBytes = CsvInput();
     const std::string regexBytes = RegexInput();
-    const RegexParser regexParser(R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", ContinuationMode::UntilNextHeader);
+    const RegexParser regexParser(
+        {.pattern = R"(^(?<ts>\d+) (?<level>[A-Z]+) (?<msg>.*)$)", .continuation = ContinuationMode::UntilNextHeader}
+    );
 
     const auto check = [](const LogParser &parser, const std::string &bytes, const std::string &fileName) {
         RecordingSink reference;

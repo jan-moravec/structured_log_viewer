@@ -342,7 +342,7 @@ public:
      * Call MirrorSortToConfiguration, MirrorAnchorsToConfiguration and RebuildFilterExpressionFromSimpleLeaves first,
      * so the view matches what the user sees.
      */
-    [[nodiscard]] loglib::LogConfiguration BuildConfiguration(std::optional<loglib::Source> source) const;
+    [[nodiscard]] loglib::LogConfiguration BuildConfiguration(std::optional<loglib::SourceDescriptor> source) const;
 
     /**
      * @brief Rebuilds the view expression from simple filter leaves.
@@ -657,7 +657,7 @@ public:
      *
      * @return The optional source descriptor.
      */
-    [[nodiscard]] const std::optional<loglib::Source> &CurrentSource() const noexcept
+    [[nodiscard]] const std::optional<loglib::SourceDescriptor> &CurrentSource() const noexcept
     {
         return mCurrentSource;
     }
@@ -669,7 +669,7 @@ public:
      *
      * @return The mutable optional source descriptor.
      */
-    [[nodiscard]] std::optional<loglib::Source> &MutableCurrentSource() noexcept
+    [[nodiscard]] std::optional<loglib::SourceDescriptor> &MutableCurrentSource() noexcept
     {
         return mCurrentSource;
     }
@@ -682,7 +682,7 @@ public:
      *
      * @param source New source descriptor.
      */
-    void SetCurrentSource(std::optional<loglib::Source> source);
+    void SetCurrentSource(std::optional<loglib::SourceDescriptor> source);
 
     /**
      * @brief Clears the current source descriptor.
@@ -1743,7 +1743,7 @@ private:
     QString mCustomTabLabel;
 
     // Source represented by the current model contents.
-    std::optional<loglib::Source> mCurrentSource;
+    std::optional<loglib::SourceDescriptor> mCurrentSource;
 
     // Filter, sort, highlight rules and anchors of the session.
     loglib::SessionView mView;

@@ -90,7 +90,7 @@ Each of the ten items below either closes a competitor-gap reviewers and first-t
 
 **Non-goals (v1).** `.zip` / `.tar.gz` multi-member archives (extract first), encrypted archives, live-tail of a compressed file (the producer would need to re-decompress on every truncate; defer to a v1.x ticket if there's demand).
 
-**Approach.** `DecompressingByteSource` sniffs codec magic before `loglib::DetectFormatForPath` runs. It streams decoded bytes to a temp file so the static mmap + TBB pipeline sees a normal file. Dependencies prefer system `zlib` / `libbz2` / `liblzma` / `libzstd`, with FetchContent fallbacks.
+**Approach.** `DecompressingByteSource` sniffs codec magic before `loglib::DetectFormat` runs. It streams decoded bytes to a temp file so the static mmap + TBB pipeline sees a normal file. Dependencies prefer system `zlib` / `libbz2` / `liblzma` / `libzstd`, with FetchContent fallbacks.
 
 **Acceptance bar.** Open one ~500 MiB JSONL file compressed with each of the four codecs in `< 2 ×` the time of the uncompressed equivalent. Existing parser benchmarks unchanged (the decompression path is upstream of them). Unit tests for each codec with truncated / corrupt input must surface a parse error rather than crash.
 

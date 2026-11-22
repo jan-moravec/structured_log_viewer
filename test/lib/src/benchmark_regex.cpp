@@ -10,6 +10,7 @@
 #include "common.hpp"
 
 #include <loglib/core/file_line_source.hpp>
+#include <loglib/parse/format_detection.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
 #include <loglib/parse/parser_options.hpp>
 #include <loglib/parse/parsers/regex_parser.hpp>
@@ -52,9 +53,7 @@ StreamingFixture MakeTemplateFixture(
     {
         throw std::runtime_error("regex template not found: " + std::string(templateName));
     }
-    const std::string pattern{tmpl->pattern};
-    const ContinuationMode continuation = tmpl->continuationMode;
-    const std::string headerAnchor{tmpl->headerAnchor};
+    const RegexSettings settings = tmpl->regex;
     return StreamingFixture{
         .logFile = std::make_unique<TestStructuredLogFile>(
             StreamedRecords{
@@ -66,9 +65,9 @@ StreamingFixture MakeTemplateFixture(
             test_common::RecordSchema{},
             fileName
         ),
-        .parser = [pattern, continuation, headerAnchor](
-                      FileLineSource &source, LogParseSink &sink, const ParserOptions &options
-                  ) { RegexParser{pattern, continuation, headerAnchor}.Parse(source, sink, options); },
+        .parser = [settings](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
+            RegexParser{settings}.Parse(source, sink, options);
+        },
     };
 }
 
@@ -170,32 +169,25 @@ constexpr const char PYTHON_TRACEBACK_PATTERN[] =
     R"(^(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): (?<message>.*)$)";
 constexpr const char PYTHON_TRACEBACK_ANCHOR[] = R"(^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): )";
 
-// Registers one extra Python-traceback template for as long as it lives, and removes it afterwards.
-class ExtraTemplateGuard
+// Holds the Python-traceback template that one fixture parses with.
+class TracebackTemplateHolder
 {
 public:
-    ExtraTemplateGuard(std::string name, std::string headerAnchor)
+    TracebackTemplateHolder(std::string name, std::string headerAnchor)
         : mTemplate{
               .name = std::move(name),
-              .pattern = PYTHON_TRACEBACK_PATTERN,
+              .regex =
+                  {
+                      .pattern = PYTHON_TRACEBACK_PATTERN,
+                      .continuation = ContinuationMode::UntilNextHeader,
+                      .headerAnchor = std::move(headerAnchor),
+                  },
               .sampleLines = {"INFO: hello"},
               .autoDetect = false,
               .priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY,
               .description = "",
-              .continuationMode = ContinuationMode::UntilNextHeader,
-              .headerAnchor = std::move(headerAnchor),
           }
     {
-        mExtras.push_back(mTemplate);
-        loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(mExtras));
-    }
-    ExtraTemplateGuard(const ExtraTemplateGuard &) = delete;
-    ExtraTemplateGuard(ExtraTemplateGuard &&) = delete;
-    ExtraTemplateGuard &operator=(const ExtraTemplateGuard &) = delete;
-    ExtraTemplateGuard &operator=(ExtraTemplateGuard &&) = delete;
-    ~ExtraTemplateGuard()
-    {
-        loglib::SetExtraRegexTemplates({});
     }
 
     const RegexTemplate &Template() const noexcept
@@ -205,14 +197,13 @@ public:
 
 private:
     RegexTemplate mTemplate;
-    std::vector<RegexTemplate> mExtras;
 };
 
 StreamingFixture MakePythonTracebackFixture(
     const std::string &name, const std::string &headerAnchor, const std::string &fileName
 )
 {
-    const auto guard = std::make_shared<ExtraTemplateGuard>(name, headerAnchor);
+    const auto guard = std::make_shared<TracebackTemplateHolder>(name, headerAnchor);
     const RegexTemplate &extra = guard->Template();
     return StreamingFixture{
         .logFile = std::make_unique<TestStructuredLogFile>(
@@ -225,18 +216,44 @@ StreamingFixture MakePythonTracebackFixture(
             test_common::RecordSchema{},
             fileName
         ),
-        .parser =
-            [guard, &extra](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{extra.pattern, extra.continuationMode, extra.headerAnchor}.Parse(source, sink, options);
-            },
+        .parser = [guard, &extra](
+                      FileLineSource &source, LogParseSink &sink, const ParserOptions &options
+                  ) { RegexParser{extra.regex}.Parse(source, sink, options); },
         .keepAlive = guard,
     };
+}
+
+// A 16 KiB sample of Apache combined lines, as detection reads it from a file head.
+std::string DetectionSample()
+{
+    constexpr std::string_view LINE =
+        "127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326 "
+        "\"http://www.example.com/start.html\" \"Mozilla/4.08 [en] (Win98; I ;Nav)\"\n";
+    std::string sample;
+    while (sample.size() < loglib::PROBE_BYTES_BUDGET)
+    {
+        sample.append(LINE);
+    }
+    sample.resize(loglib::PROBE_BYTES_BUDGET);
+    return sample;
 }
 
 } // namespace
 
 void RegisterRegexBenchmarks()
 {
+    RegisterSmall(
+        "Detect format of a 16 KiB sample, built-in catalog",
+        [sample = DetectionSample()](benchmark::State &state) {
+            // The first call builds the compiled patterns, so it stays out of the timed part.
+            benchmark::DoNotOptimize(loglib::DetectFormat(sample));
+            for (const auto _ : state)
+            {
+                benchmark::DoNotOptimize(loglib::DetectFormat(sample));
+            }
+        },
+        benchmark::kMicrosecond
+    );
     RegisterTemplateBenchmark(
         "Stream 1'000'000 Syslog (RFC3164) entries to LogTable",
         "Syslog (RFC3164)",
@@ -299,12 +316,12 @@ void RegisterRegexBenchmarks()
 
     RegisterStreaming("Stream 1'000'000 Java multi-line (indented) records to LogTable", [] {
         const RegexTemplate *tmpl = FindTemplateByName("Java / log4j / SLF4J Logback");
-        if (tmpl == nullptr || tmpl->continuationMode != ContinuationMode::Indented)
+        if (tmpl == nullptr || tmpl->regex.continuation != ContinuationMode::Indented)
         {
             throw std::runtime_error("the Java template is missing or not indented");
         }
-        const std::string pattern{tmpl->pattern};
-        const std::string headerAnchor{tmpl->headerAnchor};
+        const std::string pattern{tmpl->regex.pattern};
+        const std::string headerAnchor{tmpl->regex.headerAnchor};
         return StreamingFixture{
             .logFile = std::make_unique<TestStructuredLogFile>(
                 StreamedRecords{
@@ -318,7 +335,9 @@ void RegisterRegexBenchmarks()
             ),
             .parser = [pattern,
                        headerAnchor](FileLineSource &source, LogParseSink &sink, const ParserOptions &options) {
-                RegexParser{pattern, ContinuationMode::Indented, headerAnchor}.Parse(source, sink, options);
+                RegexParser{
+                    {.pattern = pattern, .continuation = ContinuationMode::Indented, .headerAnchor = headerAnchor}
+                }.Parse(source, sink, options);
             },
         };
     });

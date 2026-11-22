@@ -20,7 +20,7 @@
 namespace loglib
 {
 
-void Source::ReplaceDisplayPaths(std::vector<std::string> paths)
+void SourceDescriptor::ReplaceDisplayPaths(std::vector<std::string> paths)
 {
     std::vector<std::string> stagedKeys = std::move(pendingDedupKeys);
     pendingDedupKeys.clear();
@@ -40,7 +40,7 @@ void Source::ReplaceDisplayPaths(std::vector<std::string> paths)
     locators = std::move(next);
 }
 
-void Source::ReplaceDedupKeys(std::vector<std::string> keys)
+void SourceDescriptor::ReplaceDedupKeys(std::vector<std::string> keys)
 {
     if (locators.empty())
     {
@@ -55,7 +55,7 @@ void Source::ReplaceDedupKeys(std::vector<std::string> keys)
     }
 }
 
-std::vector<std::string> Source::DisplayPaths() const
+std::vector<std::string> SourceDescriptor::DisplayPaths() const
 {
     std::vector<std::string> paths;
     paths.reserve(locators.size());
@@ -66,7 +66,7 @@ std::vector<std::string> Source::DisplayPaths() const
     return paths;
 }
 
-std::vector<std::string> Source::DedupKeys() const
+std::vector<std::string> SourceDescriptor::DedupKeys() const
 {
     std::vector<std::string> keys;
     keys.reserve(locators.size());

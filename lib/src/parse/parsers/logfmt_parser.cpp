@@ -1,5 +1,7 @@
 #include "loglib/parse/parsers/logfmt_parser.hpp"
 
+#include "loglib/parse/format_detection.hpp"
+
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/file_line_source.hpp"
 #include "loglib/core/log_line.hpp"
@@ -690,7 +692,7 @@ static_assert(
 
 } // namespace
 
-bool LogfmtParser::IsValidBytes(std::string_view sniffBuffer) const
+bool LooksLikeLogfmt(std::string_view sniffBuffer)
 {
     // Callers cap sniffBuffer at PROBE_BYTES_BUDGET, so the
     // cursor bound is sufficient.

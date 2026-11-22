@@ -519,9 +519,9 @@ private slots:
     void TestNetworkDialogReturnsItsTemplateAsOneValue()
     {
         const loglib::RegexTemplate *withContinuation = nullptr;
-        for (const loglib::RegexTemplate &tmpl : loglib::BuiltinRegexTemplates())
+        for (const loglib::RegexTemplate &tmpl : loglib::RegexTemplateCatalog::Builtin().Builtins())
         {
-            if (tmpl.continuationMode != loglib::ContinuationMode::None)
+            if (tmpl.regex.continuation != loglib::ContinuationMode::None)
             {
                 withContinuation = &tmpl;
                 break;
@@ -540,17 +540,17 @@ private slots:
         QVERIFY(templateIdx >= 0);
         templates->setCurrentIndex(templateIdx);
         NetworkStreamDialog::Config picked = dialog.Configuration();
-        QCOMPARE(picked.regex.pattern.toStdString(), withContinuation->pattern);
-        QCOMPARE(picked.regex.continuationMode, withContinuation->continuationMode);
-        QCOMPARE(picked.regex.headerAnchor.toStdString(), withContinuation->headerAnchor);
+        QCOMPARE(picked.regex.pattern.toStdString(), withContinuation->regex.pattern);
+        QCOMPARE(picked.regex.continuationMode, withContinuation->regex.continuation);
+        QCOMPARE(picked.regex.headerAnchor.toStdString(), withContinuation->regex.headerAnchor);
 
         // Custom pattern with the template's own pattern text and other settings.
         templates->setCurrentIndex(templates->findData(QString{}));
-        pattern->setText(QString::fromStdString(withContinuation->pattern));
+        pattern->setText(QString::fromStdString(withContinuation->regex.pattern));
         continuation->setCurrentIndex(continuation->findData(static_cast<int>(loglib::ContinuationMode::None)));
         anchor->setText(QString{});
         const NetworkStreamDialog::Config custom = dialog.Configuration();
-        QCOMPARE(custom.regex.pattern.toStdString(), withContinuation->pattern);
+        QCOMPARE(custom.regex.pattern.toStdString(), withContinuation->regex.pattern);
         QCOMPARE(custom.regex.continuationMode, loglib::ContinuationMode::None);
         QVERIFY(custom.regex.headerAnchor.isEmpty());
     }
@@ -559,15 +559,15 @@ private slots:
     // template's pattern is not given that template's settings.
     void TestNetworkSessionKeepsUserContinuationSettings()
     {
-        const loglib::RegexTemplate &tmpl = loglib::BuiltinRegexTemplates().front();
-        const loglib::ContinuationMode userMode = tmpl.continuationMode == loglib::ContinuationMode::Indented
+        const loglib::RegexTemplate &tmpl = loglib::RegexTemplateCatalog::Builtin().Builtins().front();
+        const loglib::ContinuationMode userMode = tmpl.regex.continuation == loglib::ContinuationMode::Indented
                                                       ? loglib::ContinuationMode::None
                                                       : loglib::ContinuationMode::Indented;
 
         NetworkStreamDialog::Config cfg;
         cfg.protocol = NetworkStreamDialog::Protocol::Udp;
         cfg.format = NetworkStreamDialog::Format::Regex;
-        cfg.regex.pattern = QString::fromStdString(tmpl.pattern);
+        cfg.regex.pattern = QString::fromStdString(tmpl.regex.pattern);
         cfg.regex.continuationMode = userMode;
         cfg.bindAddress = QStringLiteral("127.0.0.1");
         cfg.port = 0;
@@ -575,9 +575,9 @@ private slots:
         mWindow->StartNetworkStreamForTest(cfg, 1024 * 1024);
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
-        QCOMPARE(source->regexPattern, tmpl.pattern);
-        QCOMPARE(source->regexContinuationMode, userMode);
-        QVERIFY(source->regexHeaderAnchor.empty());
+        QCOMPARE(source->format.regex.pattern, tmpl.regex.pattern);
+        QCOMPARE(source->format.regex.continuation, userMode);
+        QVERIFY(source->format.regex.headerAnchor.empty());
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
     }
@@ -5021,8 +5021,10 @@ private slots:
                 builderLayout.AppendKeys({"msg"});
                 builder.columns = builderLayout.Columns();
             }
-            builder.source =
-                (loglib::Source{.kind = loglib::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}});
+            builder.source = (loglib::SourceDescriptor{
+                .kind = loglib::SourceDescriptor::Kind::NetworkStream,
+                .locators = {"tcp://127.0.0.1:5170"},
+            });
             loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
 
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
