@@ -457,13 +457,16 @@ bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *mat
 }
 
 /**
- * Live-tail decoder that classifies continuations according to
- * @p mode. UntilNextHeader uses @p headerAnchor when supplied,
- * otherwise it probes the main compiled pattern.
+ * The regex decoder. It classifies continuation lines according to its mode. UntilNextHeader uses the header anchor
+ * when one is supplied, otherwise it probes the main compiled pattern. It owns the match data, which is mutable PCRE2
+ * state, so each worker needs its own decoder over the shared compiled patterns.
  */
 class RegexLineDecoder
 {
 public:
+    /** A UTF-8 byte order mark can start the first line, and the pattern should still match from its start. */
+    static constexpr bool kStripBom = true;
+
     RegexLineDecoder(
         const CompiledPattern &compiled,
         const std::vector<KeyId> &columnKeys,
@@ -473,7 +476,9 @@ public:
         : mCompiled(&compiled),
           mColumnKeys(&columnKeys),
           mMode(mode),
-          mLastContinuationTarget(columnKeys.empty() ? INVALID_KEY_ID : columnKeys.back())
+          mContinuationTarget(
+              (mode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID
+          )
     {
         mMatchData = compiled.NewMatchData();
         if (mMode == ContinuationMode::UntilNextHeader)
@@ -483,34 +488,15 @@ public:
         }
     }
 
-    internal::LineDecodeResult DecodeCompact(
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache &keyCache,
+        internal::LineContext &ctx,
         std::vector<loglib::CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string &errorOut
     )
     {
-        (void)keys;     // Schema pre-interned.
-        (void)keyCache; // ditto.
+        // The schema keys are interned before the parse starts, so the key cache is not needed.
         out.clear();
-        outOwnedArena.clear();
-        // Strip a leading UTF-8 BOM only on the first line of the
-        // stream. The flag latches so a literal \xEF\xBB\xBF
-        // inside a later line stays intact.
-        if (!mSawFirstLine)
-        {
-            line = StripBom(line);
-            mSawFirstLine = true;
-        }
-        if (line.empty())
-        {
-            // The streaming loop already filters blank lines;
-            // this branch is defensive. Skip (no row, no error)
-            // is the right result if it's ever reached.
-            return internal::LineDecodeResult::Skip;
-        }
 
         // Classify continuations before record matching to avoid false errors.
         if (mMode == ContinuationMode::Indented)
@@ -533,30 +519,32 @@ public:
                 mMatchData.get(),
                 *mColumnKeys,
                 line,
-                /*fileBegin=*/nullptr,
-                /*fileSize=*/0,
-                outOwnedArena,
+                ctx.stableBytes.data(),
+                ctx.stableBytes.size(),
+                ctx.ownedBytes,
                 out,
                 errorOut,
-                mMode != ContinuationMode::None ? mLastContinuationTarget : INVALID_KEY_ID
+                mContinuationTarget
             ))
         {
             return internal::LineDecodeResult::Error;
         }
+        // A row stores its fields by ascending key id, and the captures come in pattern order.
+        std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
         return internal::LineDecodeResult::Emit;
     }
 
-    /** KeyId of the pattern's final source-order named group. */
-    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    /** The key of the pattern's final source-order named group, or none when continuation is off. */
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
-        return mLastContinuationTarget;
+        return mContinuationTarget;
     }
 
 private:
     const CompiledPattern *mCompiled;
     const std::vector<KeyId> *mColumnKeys;
     ContinuationMode mMode;
-    KeyId mLastContinuationTarget;
+    KeyId mContinuationTarget;
     /** Non-owning header probe; null outside UntilNextHeader mode. */
     const CompiledPattern *mHeaderProbe = nullptr;
     Pcre2MatchDataPtr mMatchData;
@@ -565,12 +553,9 @@ private:
      * the main pattern's match state.
      */
     Pcre2MatchDataPtr mHeaderMatchData;
-    bool mSawFirstLine = false;
 };
 
-static_assert(
-    internal::CompactLineDecoder<RegexLineDecoder>, "RegexLineDecoder must satisfy the CompactLineDecoder concept"
-);
+static_assert(internal::LineDecoder<RegexLineDecoder>, "RegexLineDecoder must satisfy the LineDecoder concept");
 
 /**
  * Single-error terminal pass: honour the sink contract (one

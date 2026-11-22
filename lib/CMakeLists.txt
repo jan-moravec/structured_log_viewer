@@ -20,6 +20,7 @@ add_library(
     STATIC
     src/parse/auto_detect_parser.cpp
     src/parse/batch_coalescer.cpp
+    src/parse/record_assembler.cpp
     src/core/bytes_producer.cpp
     src/core/compact_log_value.cpp
     src/ingest/decompressing_byte_source.cpp

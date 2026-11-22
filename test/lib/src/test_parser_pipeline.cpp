@@ -7,6 +7,7 @@
 #include <loglib/core/key_index.hpp>
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/stop_token.hpp>
+#include <loglib/parse/internal/record_assembler.hpp>
 #include <loglib/parse/internal/static_parser_pipeline.hpp>
 #include <loglib/parse/internal/streaming_parse_loop.hpp>
 #include <loglib/parse/log_parse_sink.hpp>

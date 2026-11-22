@@ -1368,23 +1368,25 @@ public:
     {
     }
 
-    internal::LineDecodeResult DecodeCompact(
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex & /*keys*/,
-        internal::PerWorkerKeyCache & /*keyCache*/,
+        internal::LineContext & /*ctx*/,
         std::vector<CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string & /*errorOut*/
     )
     {
         out.clear();
-        outOwnedArena.clear();
         if (line == "boom")
         {
             // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws,cert-err60-cpp)
             throw mException;
         }
         return internal::LineDecodeResult::Emit;
+    }
+
+    [[nodiscard]] static constexpr KeyId ContinuationTarget() noexcept
+    {
+        return INVALID_KEY_ID;
     }
 
 private:
@@ -1454,17 +1456,11 @@ namespace
 class OpenRecordDecoder
 {
 public:
-    internal::LineDecodeResult DecodeCompact(
-        std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache & /*keyCache*/,
-        std::vector<CompactLogValue> &out,
-        std::string &outOwnedArena,
-        std::string & /*errorOut*/
+    internal::LineDecodeResult Decode(
+        std::string_view line, internal::LineContext &ctx, std::vector<CompactLogValue> &out, std::string & /*errorOut*/
     )
     {
         out.clear();
-        outOwnedArena.clear();
         if (line == "boom")
         {
             throw std::runtime_error("producer failed");
@@ -1473,13 +1469,13 @@ public:
         {
             return internal::LineDecodeResult::Continue;
         }
-        mTarget = keys.GetOrInsert("msg");
-        outOwnedArena.append(line);
+        mTarget = ctx.keys.GetOrInsert("msg");
+        ctx.ownedBytes.append(line);
         out.push_back(CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())).WithKey(mTarget));
         return internal::LineDecodeResult::Emit;
     }
 
-    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
         return mTarget;
     }

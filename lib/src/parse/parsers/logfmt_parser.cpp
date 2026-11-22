@@ -586,14 +586,15 @@ void DecodeLogfmtBatch(
 }
 
 /**
- * Logfmt record decoder for RunStreamingParseLoop. Owns the
- * per-line scratch. Satisfies CompactLineDecoder.
- * In multi-line mode, indented lines continue the preceding record's
- * last source-order field. Other lines retain normal logfmt parsing.
+ * The logfmt decoder. It owns the scratch for unescaping quoted values. In multi-line mode, indented lines continue the
+ * preceding record's last source-order field. Other lines retain normal logfmt parsing.
  */
 class LogfmtLineDecoder
 {
 public:
+    /** A UTF-8 byte order mark can start the first line of the input. */
+    static constexpr bool kStripBom = true;
+
     LogfmtLineDecoder() = delete;
 
     explicit LogfmtLineDecoder(bool multiline) noexcept
@@ -601,31 +602,14 @@ public:
     {
     }
 
-    internal::LineDecodeResult DecodeCompact(
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache &keyCache,
+        internal::LineContext &ctx,
         std::vector<loglib::CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string &errorOut
     )
     {
         out.clear();
-        outOwnedArena.clear();
-        if (!mSawFirstLine)
-        {
-            mSawFirstLine = true;
-            if (line.starts_with(UTF8_BOM))
-            {
-                line.remove_prefix(UTF8_BOM.size());
-            }
-        }
-        if (line.empty())
-        {
-            mLastContinuationTarget = INVALID_KEY_ID;
-            return internal::LineDecodeResult::Emit;
-        }
-
         if (mMultiline && (line.front() == ' ' || line.front() == '\t'))
         {
             return internal::LineDecodeResult::Continue;
@@ -635,16 +619,14 @@ public:
         {
             bool unterminated = false;
             KeyId lastSourceOrderKey = INVALID_KEY_ID;
-            // Streaming bytes aren't in any mmap, so passing
-            // fileBegin/fileSize=0 forces the OwnedString arena
-            // copy in MakeStringCompact.
+            // A stream has no mapped file, so no string can refer to it and every string is copied.
             ParseLogfmtLine(
                 line,
-                keys,
-                keyCache,
-                /* fileBegin = */ nullptr,
-                /* fileSize = */ 0,
-                outOwnedArena,
+                ctx.keys,
+                ctx.keyCache,
+                ctx.stableBytes.data(),
+                ctx.stableBytes.size(),
+                ctx.ownedBytes,
                 mQuotedScratch,
                 out,
                 unterminated,
@@ -652,43 +634,41 @@ public:
             );
             if (unterminated)
             {
-                mLastContinuationTarget = INVALID_KEY_ID;
+                mContinuationTarget = INVALID_KEY_ID;
                 errorOut = "Unterminated quoted value.";
                 return internal::LineDecodeResult::Error;
             }
             if (out.empty())
             {
-                mLastContinuationTarget = INVALID_KEY_ID;
+                // No key=value pairs: not a logfmt record. Surface it so the caller sees why the row is empty.
+                mContinuationTarget = INVALID_KEY_ID;
                 errorOut = "Not a logfmt record.";
                 return internal::LineDecodeResult::Error;
             }
-            mLastContinuationTarget = lastSourceOrderKey;
+            mContinuationTarget = lastSourceOrderKey;
             return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
         {
-            mLastContinuationTarget = INVALID_KEY_ID;
+            mContinuationTarget = INVALID_KEY_ID;
             errorOut = std::string(e.what());
             return internal::LineDecodeResult::Error;
         }
     }
 
-    /** Last source-order field from the most recent emitted record. */
-    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    /** The last source-order field of the most recent record. */
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
-        return mLastContinuationTarget;
+        return mMultiline ? mContinuationTarget : INVALID_KEY_ID;
     }
 
 private:
     std::string mQuotedScratch;
     bool mMultiline = true;
-    bool mSawFirstLine = false;
-    KeyId mLastContinuationTarget = INVALID_KEY_ID;
+    KeyId mContinuationTarget = INVALID_KEY_ID;
 };
 
-static_assert(
-    internal::CompactLineDecoder<LogfmtLineDecoder>, "LogfmtLineDecoder must satisfy the CompactLineDecoder concept"
-);
+static_assert(internal::LineDecoder<LogfmtLineDecoder>, "LogfmtLineDecoder must satisfy the LineDecoder concept");
 
 } // namespace
 

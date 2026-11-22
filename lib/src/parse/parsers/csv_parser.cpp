@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -356,35 +357,40 @@ void DecodeCsvBatch(
 }
 
 /**
- * The CSV decoder of the streaming parse loop. The first line that is not blank is the header, and the later lines use
- * its key ids.
+ * The CSV decoder. A stream decoder reads the header from the first line that is not blank and returns Skip for it. A
+ * file decoder is given the key ids of the header, which the parser read up front, and the position of the header in
+ * the file, where it returns Skip. The later lines use the key ids of the header.
  */
 class CsvLineDecoder
 {
 public:
+    /** A UTF-8 byte order mark can start the header line. */
+    static constexpr bool kStripBom = true;
+
+    /** A decoder that reads the header from the first line it gets. */
     CsvLineDecoder() = default;
 
-    internal::LineDecodeResult DecodeCompact(
+    /** A decoder for a file whose header was read already. headerOffset is where the header text starts in the file. */
+    CsvLineDecoder(std::shared_ptr<const std::vector<KeyId>> header, uint64_t headerOffset)
+        : mHeaderConsumed(true), mSharedColumnKeys(std::move(header)), mHeaderOffset(headerOffset)
+    {
+    }
+
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache &keyCache,
+        internal::LineContext &ctx,
         std::vector<loglib::CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string &errorOut
     )
     {
         out.clear();
-        outOwnedArena.clear();
-        if (line.empty())
-        {
-            return internal::LineDecodeResult::Emit;
-        }
 
         if (!mHeaderConsumed)
         {
-            const std::string_view headerLine = StripBom(line);
-            const auto internKey = [&](std::string_view name) { return internal::InternKeyVia(name, keys, keyCache); };
-            if (!ParseHeaderLine(headerLine, internKey, mQuotedScratch, mColumnKeys))
+            const auto internKey = [&](std::string_view name) {
+                return internal::InternKeyVia(name, ctx.keys, ctx.keyCache);
+            };
+            if (!ParseHeaderLine(line, internKey, mQuotedScratch, mOwnColumnKeys))
             {
                 errorOut = "Invalid CSV header.";
                 return internal::LineDecodeResult::Error;
@@ -392,17 +398,23 @@ public:
             mHeaderConsumed = true;
             return internal::LineDecodeResult::Skip;
         }
+        if (mHeaderOffset.has_value() && !ctx.stableBytes.empty() &&
+            std::cmp_equal(line.data() - ctx.stableBytes.data(), *mHeaderOffset))
+        {
+            return internal::LineDecodeResult::Skip;
+        }
 
+        const std::vector<KeyId> &columnKeys = mSharedColumnKeys ? *mSharedColumnKeys : mOwnColumnKeys;
         try
         {
             bool unterminated = false;
             size_t raggedExtra = 0;
             ParseCsvLine(
                 line,
-                mColumnKeys,
-                /* fileBegin = */ nullptr,
-                /* fileSize = */ 0,
-                outOwnedArena,
+                columnKeys,
+                ctx.stableBytes.data(),
+                ctx.stableBytes.size(),
+                ctx.ownedBytes,
                 mQuotedScratch,
                 out,
                 unterminated,
@@ -416,10 +428,12 @@ public:
             if (raggedExtra != 0)
             {
                 errorOut = fmt::format(
-                    "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, mColumnKeys.size()
+                    "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, columnKeys.size()
                 );
                 return internal::LineDecodeResult::Error;
             }
+            // A row stores its fields by ascending key id, and the header order may differ.
+            std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
             return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
@@ -429,15 +443,20 @@ public:
         }
     }
 
+    [[nodiscard]] static constexpr KeyId ContinuationTarget() noexcept
+    {
+        return INVALID_KEY_ID;
+    }
+
 private:
     bool mHeaderConsumed = false;
-    std::vector<KeyId> mColumnKeys;
+    std::shared_ptr<const std::vector<KeyId>> mSharedColumnKeys;
+    std::optional<uint64_t> mHeaderOffset;
+    std::vector<KeyId> mOwnColumnKeys;
     std::string mQuotedScratch;
 };
 
-static_assert(
-    internal::CompactLineDecoder<CsvLineDecoder>, "CsvLineDecoder must satisfy the CompactLineDecoder concept"
-);
+static_assert(internal::LineDecoder<CsvLineDecoder>, "CsvLineDecoder must satisfy the LineDecoder concept");
 
 } // namespace
 

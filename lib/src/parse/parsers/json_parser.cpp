@@ -670,9 +670,10 @@ namespace
 {
 
 /**
- * The JSON decoder of the streaming parse loop. It owns the simdjson parser, a padded copy of the line, and the per-key
- * type cache, so successive lines reuse them. A stream line is always copied, because a producer's buffer has no
- * padding after the line.
+ * The JSON decoder. It owns the simdjson parser, a padded copy of the line for the lines that cannot be read in place,
+ * and the per-key type cache, so successive lines reuse them. A line of a mapped file is read in place when enough
+ * bytes follow it, and then its strings can point into the mapping. A stream line is always copied, because a
+ * producer's buffer has no padding after the line.
  */
 class JsonLineDecoder
 {
@@ -680,38 +681,25 @@ public:
     JsonLineDecoder() = default;
 
     /**
-     * Decodes one line into compact values whose OwnedString payloads point into outOwnedArena. It returns Emit for a
+     * Decodes one line into compact values whose OwnedString payloads point into ctx.ownedBytes. It returns Emit for a
      * row, and an empty object still gives a row with no fields. On a parse failure it returns Error with the message
      * in errorOut. It never returns Skip, because JSON has no header line.
      */
-    internal::LineDecodeResult DecodeCompact(
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache &keyCache,
+        internal::LineContext &ctx,
         std::vector<loglib::CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string &errorOut
     )
     {
         out.clear();
-        outOwnedArena.clear();
-        if (line.empty())
-        {
-            return internal::LineDecodeResult::Emit;
-        }
-
         try
         {
-            const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
-            if (line.size() > mMaxLineSize || mLinePadded.size() < needed)
-            {
-                mMaxLineSize = std::max(mMaxLineSize, line.size());
-                mLinePadded.resize(mMaxLineSize + simdjson::SIMDJSON_PADDING + LINE_PADDED_EXTRA_SLACK_BYTES);
-            }
-            std::memcpy(mLinePadded.data(), line.data(), line.size());
-            std::memset(mLinePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);
-
-            auto result = mParser.iterate(mLinePadded.data(), line.size(), mLinePadded.size());
+            // The mapped file is read in place when SIMDJSON_PADDING bytes follow the line. Otherwise the line is
+            // copied into a padded scratch buffer and its strings are copied out.
+            const bool sourceIsStable = !ctx.stableBytes.empty() && ctx.bytesAfterLine >= simdjson::SIMDJSON_PADDING;
+            auto result = sourceIsStable ? mParser.iterate(line.data(), line.size(), line.size() + ctx.bytesAfterLine)
+                                         : IteratePadded(line);
             if (result.error())
             {
                 errorOut = std::string(simdjson::error_message(result.error()));
@@ -726,21 +714,17 @@ public:
             }
 
             auto objectValue = object.value();
-            // sourceIsStable=false: every string is copied into the
-            // owned arena. fileBegin/fileSize=0 prevents
-            // MakeStringCompact from mistaking a padded-buffer view
-            // for an mmap slice.
             simdjson::error_code parseError = simdjson::SUCCESS;
             ParseJsonLine(
                 out,
                 objectValue,
-                keys,
+                ctx.keys,
                 mCache,
-                /* sourceIsStable = */ false,
-                keyCache,
-                /* fileBegin = */ nullptr,
-                /* fileSize = */ 0,
-                outOwnedArena,
+                sourceIsStable,
+                ctx.keyCache,
+                ctx.stableBytes.data(),
+                ctx.stableBytes.size(),
+                ctx.ownedBytes,
                 parseError
             );
             if (parseError)
@@ -757,16 +741,32 @@ public:
         }
     }
 
+    [[nodiscard]] static constexpr KeyId ContinuationTarget() noexcept
+    {
+        return INVALID_KEY_ID;
+    }
+
 private:
+    simdjson::simdjson_result<simdjson::ondemand::document> IteratePadded(std::string_view line)
+    {
+        const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
+        if (line.size() > mMaxLineSize || mLinePadded.size() < needed)
+        {
+            mMaxLineSize = std::max(mMaxLineSize, line.size());
+            mLinePadded.resize(mMaxLineSize + simdjson::SIMDJSON_PADDING + LINE_PADDED_EXTRA_SLACK_BYTES);
+        }
+        std::memcpy(mLinePadded.data(), line.data(), line.size());
+        std::memset(mLinePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);
+        return mParser.iterate(mLinePadded.data(), line.size(), mLinePadded.size());
+    }
+
     simdjson::ondemand::parser mParser;
     std::string mLinePadded;
     size_t mMaxLineSize = 0;
     ParseCache mCache;
 };
 
-static_assert(
-    internal::CompactLineDecoder<JsonLineDecoder>, "JsonLineDecoder must satisfy the CompactLineDecoder concept"
-);
+static_assert(internal::LineDecoder<JsonLineDecoder>, "JsonLineDecoder must satisfy the LineDecoder concept");
 
 } // namespace
 
