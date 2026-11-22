@@ -17,7 +17,6 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
-#include <functional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -48,12 +47,6 @@ struct SessionBundleWriteOptions
 
     /** @brief Reports progress in rows of the table. It is called by one thread at a time, in order. */
     RowProgressCallback progress;
-
-    /**
-     * @brief Turns a source path into the same form that AnchorEntry::locator uses, so that anchors can be matched to
-     * their sources. The default is the path as UTF-8 text.
-     */
-    std::function<std::string(const std::filesystem::path &)> canonicalizeSourceLocator;
 };
 
 /** @brief What the first line of a bundle holds: the format version, the number of rows and the configuration. */
@@ -68,7 +61,9 @@ struct SessionBundleMetadata
  * @brief Writes the metadata and every row of the table as lines of JSON, in one zstd frame with a checksum.
  *
  * The destination is replaced only after the data has been flushed to disk, so a failed write leaves an existing bundle
- * untouched. Failures throw IoError, or LimitError when the row count or a row exceeds the bundle limits.
+ * untouched. Failures throw IoError, or LimitError when the row count or a row exceeds the bundle limits. An anchor
+ * finds its row by the MakePathKey of the file the row came from and by its line id, and the bundle then holds it by
+ * the position of that row and by the path key of the bundle itself.
  */
 void WriteSessionBundle(
     const LogTable &table,

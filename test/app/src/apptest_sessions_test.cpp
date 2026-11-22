@@ -787,7 +787,10 @@ private slots:
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
         mWindow->SetCurrentSourceForTest(
-            loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {syntheticSource}}
+            loglib::SourceDescriptor{
+                .kind = loglib::SourceDescriptor::Kind::File,
+                .locators = {{.path = syntheticSource, .key = syntheticSource}}
+            }
         );
 
         const QTemporaryDir savedDir;
@@ -804,9 +807,7 @@ private slots:
         );
         QCOMPARE(static_cast<int>(probe.source->kind), static_cast<int>(loglib::SourceDescriptor::Kind::File));
         QCOMPARE(probe.source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(
-            QString::fromStdString(probe.source->locators.front().displayPath), QString::fromStdString(syntheticSource)
-        );
+        QCOMPARE(QString::fromStdString(probe.source->locators.front().path), QString::fromStdString(syntheticSource));
 
         // Now load the freshly-saved session back into the running
         // window and re-save: the descriptor must survive that round
@@ -823,7 +824,7 @@ private slots:
         const loglib::LogConfiguration resaveProbe = loglib::LoadConfiguration(resavePath.toStdString());
         QVERIFY2(resaveProbe.source.has_value(), "Load -> Save round trip must preserve a loaded source descriptor");
         QCOMPARE(resaveProbe.source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(resaveProbe.source->locators.front().displayPath, syntheticSource);
+        QCOMPARE(resaveProbe.source->locators.front().path, syntheticSource);
     }
 
     // Configuration-only refresh clears stale rotation Undo state.
@@ -2356,7 +2357,7 @@ private slots:
             [](loglib::LogConfiguration &configuration) {
                 configuration.columns.at(0).header = "Embedded value";
                 configuration.view.sort = {.columnKeys = {"value"}, .descending = true};
-                configuration.view.anchors = {{.locator = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
+                configuration.view.anchors = {{.pathKey = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
             }
         );
         const QString moved = bundleDir.filePath(QStringLiteral("renamed.slvbundle"));
@@ -2379,14 +2380,15 @@ private slots:
         const auto &source = wired->CurrentSourceForTest();
         QVERIFY(source.has_value());
         QCOMPARE(source->kind, loglib::SourceDescriptor::Kind::File);
-        QCOMPARE(source->DisplayPaths(), std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
-        QCOMPARE(source->DedupKeys(), std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
+        QCOMPARE(source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(source->locators.front().path, logapp::CanonicalDisplayPath(moved).toStdString());
+        QCOMPARE(source->locators.front().key, logapp::PathKeyOf(moved));
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
         QCOMPARE(wired->activeSession()->View().anchors.size(), static_cast<size_t>(1));
-        // Anchor locators must match `Source::locatorDedupKeys`
-        // (canonical form) so `AnchorManager::Key` compares hit; the
-        // display path silently mismatched on Windows.
-        QCOMPARE(wired->activeSession()->View().anchors.front().locator, logapp::CanonicalLocator(moved).toStdString());
+        // Anchors must carry the path key of the source so
+        // `AnchorManager::Key` compares hit; the display path
+        // silently mismatched on Windows.
+        QCOMPARE(wired->activeSession()->View().anchors.front().pathKey, logapp::PathKeyOf(moved));
         // Fixture anchored line-id 1 -> source row 1 must actually be
         // reachable through `LogModel`. Guards a load-side
         // canonicalization regression where `AnchorSlotForRow` would
@@ -2965,7 +2967,10 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(
-                loglib::SourceDescriptor{.kind = loglib::SourceDescriptor::Kind::File, .locators = {"/tmp/live.log"}}
+                loglib::SourceDescriptor{
+                    .kind = loglib::SourceDescriptor::Kind::File,
+                    .locators = {{.path = "/tmp/live.log", .key = "/tmp/live.log"}}
+                }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -2983,7 +2988,7 @@ private slots:
             wired->SetCurrentSourceForTest(
                 loglib::SourceDescriptor{
                     .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-                    .locators = {"tcp://127.0.0.1:5170"},
+                    .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
                 }
             );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
@@ -3021,7 +3026,7 @@ private slots:
         }
         builder.source = (loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5170"},
+            .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
         });
         loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
@@ -3066,7 +3071,7 @@ private slots:
         }
         builder.source = (loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {fixture.Path().toStdString()},
+            .locators = {{.path = fixture.Path().toStdString(), .key = fixture.Path().toStdString()}},
         });
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         loglib::SaveConfiguration(builder, adhocPath.toStdString(), loglib::SaveScope::Full);
@@ -3224,7 +3229,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5170"},
+            .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -3261,7 +3266,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5171"},
+            .locators = {{.path = "tcp://127.0.0.1:5171", .key = "tcp://127.0.0.1:5171"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -3298,7 +3303,7 @@ private slots:
         loglib::LogConfiguration cfg;
         cfg.source = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
-            .locators = {"C:/logs/will-be-corrupted.json"},
+            .locators = {{.path = "C:/logs/will-be-corrupted.json", .key = "C:/logs/will-be-corrupted.json"}},
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());

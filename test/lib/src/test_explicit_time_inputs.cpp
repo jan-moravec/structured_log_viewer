@@ -405,7 +405,7 @@ TEST_CASE("A saved regex source restores its multi-line parse without the templa
     SourceDescriptor saved;
     saved.kind = SourceDescriptor::Kind::NetworkStream;
     saved.format.format = loglib::LogFormat::Regex;
-    saved.locators = {{"tcp://example", "tcp://example"}};
+    saved.locators = {{.path = "tcp://example", .key = "tcp://example"}};
     saved.format.regex.pattern = pattern;
     saved.format.regex.continuation = ContinuationMode::Indented;
 

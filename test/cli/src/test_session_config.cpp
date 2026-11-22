@@ -232,7 +232,7 @@ TEST_CASE("session precedence: --config discards the embedded source", "[cli][se
 {
     loglib::LogConfiguration configuration = DetectedConfiguration();
     loglib::SourceDescriptor source;
-    loglib::AppendLocator(source, "C:/elsewhere/other.jsonl", "c:/elsewhere/other.jsonl");
+    loglib::AppendLocator(source, "C:/elsewhere/other.jsonl");
     configuration.source = std::move(source);
     const auto path = WriteConfig("source.json", configuration, loglib::SaveScope::Full);
 
@@ -351,7 +351,7 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
 
     REQUIRE(written.source.has_value());
     REQUIRE(written.source->locators.size() == 1);
-    const std::filesystem::path locator = written.source->locators[0].displayPath;
+    const std::filesystem::path locator = written.source->locators[0].path;
     CHECK(locator.is_absolute());
     CHECK(locator.filename() == log.filename());
     CHECK(written.source->format.format == loglib::LogFormat::Json);
@@ -473,7 +473,7 @@ TEST_CASE("slp query --save-session records the compressed primary path only", "
     REQUIRE(manager.source.has_value());
     const auto &locators = manager.source->locators;
     REQUIRE(locators.size() == 1);
-    CHECK(std::filesystem::path(locators[0].displayPath).filename() == "app.log");
+    CHECK(std::filesystem::path(locators[0].path).filename() == "app.log");
     CHECK(manager.source->followRotationSiblings);
 }
 

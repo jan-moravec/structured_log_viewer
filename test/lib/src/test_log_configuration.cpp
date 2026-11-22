@@ -4,6 +4,7 @@
 #include <loglib/config/filter_expression.hpp>
 #include <loglib/config/log_configuration.hpp>
 #include <loglib/core/error.hpp>
+#include <loglib/core/path_key.hpp>
 #include <loglib/query/filter_compile.hpp>
 
 #include <test_common/temp_dir.hpp>
@@ -103,13 +104,13 @@ namespace
         HighlightRule{.name = "errors", .condition = {.columnKeys = {"level"}, .filterString = std::string{"error"}}}
     );
     configuration.view.anchors.push_back(
-        AnchorEntry{.locator = "c:/logs/app.json", .lineId = 7, .colorIndex = 2, .note = "start"}
+        AnchorEntry{.pathKey = "c:/logs/app.json", .lineId = 7, .colorIndex = 2, .note = "start"}
     );
 
     SourceDescriptor source;
     source.kind = SourceDescriptor::Kind::File;
     source.format.format = loglib::LogFormat::Json;
-    source.locators = {{"C:/Logs/App.json", "c:/logs/app.json"}};
+    source.locators = {{.path = "C:/Logs/App.json", .key = "c:/logs/app.json"}};
     configuration.source = source;
     return configuration;
 }
@@ -165,8 +166,7 @@ TEST_CASE("A full configuration round-trips through a file", "[log_configuration
     CHECK(loaded.view.anchors == original.view.anchors);
     REQUIRE(loaded.source.has_value());
     CHECK(loaded.source->kind == SourceDescriptor::Kind::File);
-    CHECK(loaded.source->DisplayPaths() == original.source->DisplayPaths());
-    CHECK(loaded.source->DedupKeys() == original.source->DedupKeys());
+    CHECK(loaded.source->locators == original.source->locators);
 }
 
 TEST_CASE("Saving a loaded configuration again gives the same bytes", "[log_configuration]")
@@ -252,7 +252,8 @@ TEST_CASE("A Full save writes the documented keys", "[log_configuration][wire_fo
           "\"highlightRules\"",
           "\"anchors\"",
           "\"locators\"",
-          "\"locatorDedupKeys\""})
+          "\"path\"",
+          "\"key\""})
     {
         INFO(key);
         CHECK(raw.contains(key));
@@ -503,7 +504,7 @@ TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configura
         SourceDescriptor source;
         source.kind = kind;
         source.format.format = loglib::LogFormat::Logfmt;
-        source.locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}};
+        source.locators = {{.path = "tcp://127.0.0.1:9000", .key = "tcp://127.0.0.1:9000"}};
         source.followRotationSiblings = false;
         configuration.source = source;
 
@@ -512,7 +513,7 @@ TEST_CASE("Source round-trips every kind and the logfmt format", "[log_configura
         CHECK(loaded.source->kind == kind);
         CHECK(loaded.source->format.format == loglib::LogFormat::Logfmt);
         CHECK_FALSE(loaded.source->followRotationSiblings);
-        CHECK(loaded.source->DisplayPaths() == source.DisplayPaths());
+        CHECK(loaded.source->locators == source.locators);
     }
 }
 
@@ -522,30 +523,76 @@ TEST_CASE("Source round-trips a multi-file descriptor and a regex pattern", "[lo
     SourceDescriptor source;
     source.kind = SourceDescriptor::Kind::File;
     source.format.format = loglib::LogFormat::Regex;
-    source.locators = {{"C:/Logs/a.log", "c:/logs/a.log"}, {"C:/Logs/b.log", "c:/logs/b.log"}};
+    source.locators = {
+        {.path = "C:/Logs/a.log", .key = "c:/logs/a.log"}, {.path = "C:/Logs/b.log", .key = "c:/logs/b.log"}
+    };
     source.format.regex.pattern = "(?<msg>.*)";
     source.format.regex.continuation = ContinuationMode::Indented;
     configuration.source = source;
 
     const LogConfiguration loaded = ParseConfiguration(SerializeConfiguration(configuration));
     REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->DisplayPaths() == source.DisplayPaths());
-    CHECK(loaded.source->DedupKeys() == source.DedupKeys());
+    CHECK(loaded.source->locators == source.locators);
     CHECK(loaded.source->format.regex.pattern == "(?<msg>.*)");
     CHECK(loaded.source->format.regex.continuation == ContinuationMode::Indented);
 }
 
-TEST_CASE("Source zips locators with locatorDedupKeys regardless of key order", "[log_configuration][source]")
+TEST_CASE("Locators are saved as objects with a path and a key", "[log_configuration][source]")
 {
     const LogConfiguration loaded = ParseConfiguration(
-        R"({"version":1,"columns":[],"source":{"kind":"file","locatorDedupKeys":["k1","k2"],"locators":["p1","p2"]}})"
+        R"({"version":1,"columns":[],"source":{"kind":"file","locators":[{"path":"C:/p1","key":"c:/p1"},{"path":"p2","key":"k2"}]}})"
     );
     REQUIRE(loaded.source.has_value());
     REQUIRE(loaded.source->locators.size() == 2);
-    CHECK(loaded.source->locators[0].displayPath == "p1");
-    CHECK(loaded.source->locators[0].dedupKey == "k1");
-    CHECK(loaded.source->locators[1].displayPath == "p2");
-    CHECK(loaded.source->locators[1].dedupKey == "k2");
+    CHECK(loaded.source->locators[0].path == "C:/p1");
+    CHECK(loaded.source->locators[0].key == "c:/p1");
+    CHECK(loaded.source->locators[1].path == "p2");
+    CHECK(loaded.source->locators[1].key == "k2");
+
+    LogConfiguration configuration;
+    configuration.source = SourceDescriptor{.locators = {{.path = "C:/p1", .key = "c:/p1"}}};
+    CHECK(SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact)
+              .contains(R"("locators":[{"path":"C:/p1","key":"c:/p1"}])"));
+}
+
+TEST_CASE("A locator without a key does not load and the message names the key", "[log_configuration][source]")
+{
+    SECTION("the key is missing")
+    {
+        const std::string message =
+            ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"path":"a.log"}]}})", "nokey.json");
+        CHECK(message.contains("key"));
+        CHECK(message.contains("nokey.json"));
+    }
+    SECTION("the key is empty")
+    {
+        const std::string message =
+            ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"path":"a.log","key":""}]}})", "emptykey.json");
+        CHECK(message.contains("key"));
+        CHECK(message.contains("a.log"));
+    }
+    SECTION("the path is missing")
+    {
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"key":"k"}]}})").contains("path"));
+    }
+    SECTION("an unknown key in a locator")
+    {
+        CHECK(ErrorOf(R"({"version":1,"columns":[],"source":{"locators":[{"path":"a","key":"a","extra":1}]}})")
+                  .contains("extra"));
+    }
+}
+
+TEST_CASE("AppendLocator computes the key and ContainsPathKey finds it", "[log_configuration][source]")
+{
+    SourceDescriptor source;
+    AppendLocator(source, "logs/app.log");
+    REQUIRE(source.locators.size() == 1);
+    CHECK(source.locators[0].path == "logs/app.log");
+    CHECK(source.locators[0].key == loglib::MakePathKey("logs/app.log"));
+    CHECK(ContainsPathKey(source, loglib::MakePathKey("./logs/../logs/app.log")));
+    CHECK_FALSE(ContainsPathKey(source, "other"));
+    ClearLocators(source);
+    CHECK_FALSE(HasLocators(source));
 }
 
 TEST_CASE("An empty list of locators round-trips as an empty array", "[log_configuration][source]")
@@ -559,23 +606,12 @@ TEST_CASE("An empty list of locators round-trips as an empty array", "[log_confi
     CHECK(loaded.source->locators.empty());
 }
 
-TEST_CASE("ReplaceDedupKeys stages keys until display paths arrive", "[log_configuration][source]")
-{
-    SourceDescriptor source;
-    source.ReplaceDedupKeys({"k1", "k2"});
-    CHECK(source.locators.empty());
-    source.ReplaceDisplayPaths({"p1", "p2"});
-    REQUIRE(source.locators.size() == 2);
-    CHECK(source.locators[0].dedupKey == "k1");
-    CHECK(source.locators[1].dedupKey == "k2");
-}
-
 TEST_CASE("Anchors and highlight rules round-trip in the view", "[log_configuration][view]")
 {
     LogConfiguration configuration;
     configuration.view.anchors = {
-        AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 1, .note = ""},
-        AnchorEntry{.locator = "c:/logs/a.json", .lineId = 7, .colorIndex = 2, .note = "n"},
+        AnchorEntry{.pathKey = "c:/logs/b.json", .lineId = 9, .colorIndex = 1, .note = ""},
+        AnchorEntry{.pathKey = "c:/logs/a.json", .lineId = 7, .colorIndex = 2, .note = "n"},
     };
     configuration.view.highlightRules = {
         HighlightRule{.name = "first", .condition = {.columnKeys = {"a"}}},
@@ -618,16 +654,16 @@ TEST_CASE(
 
     const std::string json = SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact);
     CHECK(ParseConfiguration(json).view.highlightRules == configuration.view.highlightRules);
-    CHECK(json.contains(
-        R"("condition":{"type":"string","columnKeys":["msg"],"matchType":"wildcard","filterString":"a*")"
-    ));
+    CHECK(
+        json.contains(R"("condition":{"type":"string","columnKeys":["msg"],"matchType":"wildcard","filterString":"a*")")
+    );
     CHECK(json.contains(R"("style":{"foregroundIndex":1,"backgroundIndex":2,"bold":true,"italic":true})"));
 }
 
 TEST_CASE("An anchor without a note loads with an empty note", "[log_configuration][view]")
 {
     const LogConfiguration loaded = ParseConfiguration(
-        R"({"version":1,"columns":[],"view":{"anchors":[{"locator":"c:/l.json","lineId":7,"colorIndex":2}]}})"
+        R"({"version":1,"columns":[],"view":{"anchors":[{"pathKey":"c:/l.json","lineId":7,"colorIndex":2}]}})"
     );
     REQUIRE(loaded.view.anchors.size() == 1);
     CHECK(loaded.view.anchors[0].note.empty());
@@ -745,7 +781,7 @@ TEST_CASE("A format spec round-trips for every format and continuation mode", "[
         LogConfiguration configuration;
         SourceDescriptor source;
         source.format = spec;
-        source.locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}};
+        source.locators = {{.path = "tcp://127.0.0.1:9000", .key = "tcp://127.0.0.1:9000"}};
         configuration.source = source;
 
         const std::string json = SerializeConfiguration(configuration);

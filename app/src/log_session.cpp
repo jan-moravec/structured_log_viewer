@@ -333,7 +333,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         loglib::LogConfiguration named;
         named.source = mCurrentSource;
         snapshot.shortLabel = SessionHistoryManager::BuildLabel(named);
-        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front().displayPath);
+        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front().path);
         snapshot.sourceLabel = snapshot.tooltip;
         if (snapshot.tooltip.isEmpty() && !mStreamingFileName.isEmpty())
         {

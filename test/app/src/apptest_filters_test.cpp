@@ -5026,7 +5026,7 @@ private slots:
             }
             builder.source = (loglib::SourceDescriptor{
                 .kind = loglib::SourceDescriptor::Kind::NetworkStream,
-                .locators = {"tcp://127.0.0.1:5170"},
+                .locators = {{.path = "tcp://127.0.0.1:5170", .key = "tcp://127.0.0.1:5170"}},
             });
             loglib::SaveConfiguration(builder, jsonPath.toStdString(), loglib::SaveScope::Full);
 

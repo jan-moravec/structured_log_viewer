@@ -52,7 +52,7 @@ struct SessionView
     std::vector<HighlightRule> highlightRules;
 
     /**
-     * @brief The anchors. They are written sorted by locator and line id so saved files differ little, and may be in
+     * @brief The anchors. They are written sorted by path key and line id so saved files differ little, and may be in
      * any order when read.
      */
     std::vector<AnchorEntry> anchors;

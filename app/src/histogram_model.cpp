@@ -221,7 +221,7 @@ int HistogramModel::FirstAnchoredRowInBucketRange(std::size_t bucketBegin, std::
     int bestRow = -1;
     for (const auto &entry : mAnchors->EntriesIncludingRuntimeOnly())
     {
-        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        const AnchorManager::Key key{.locator = entry.pathKey, .lineId = entry.lineId};
         const int row = mLogModel->SourceRowForAnchorKey(key);
         if (row < 0)
         {
@@ -660,7 +660,7 @@ void HistogramModel::RebuildAnchorBuckets()
 
     for (const auto &entry : mAnchors->EntriesIncludingRuntimeOnly())
     {
-        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        const AnchorManager::Key key{.locator = entry.pathKey, .lineId = entry.lineId};
         (void)UpdateAnchorSlotForKey(key);
     }
 
@@ -762,7 +762,7 @@ void HistogramModel::OnAnchorChanged(const AnchorManager::Key &key)
 
     for (const auto &entry : mAnchors->EntriesIncludingRuntimeOnly())
     {
-        const AnchorManager::Key entryKey{.locator = entry.locator, .lineId = entry.lineId};
+        const AnchorManager::Key entryKey{.locator = entry.pathKey, .lineId = entry.lineId};
         const int row = mLogModel->SourceRowForAnchorKey(entryKey);
         if (row < 0)
         {

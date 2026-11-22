@@ -22,7 +22,7 @@
 /// (note text edits), and `anchorsReset` (bulk mutation).
 ///
 /// Key layout:
-/// - `locator`: canonical file path (matches `SourceLocator::dedupKey`);
+/// - `locator`: canonical file path (matches `SourceLocator::key`);
 ///   empty for in-memory streams.
 /// - `lineId`: monotonic parser id, unique within a `LineSource`.
 ///

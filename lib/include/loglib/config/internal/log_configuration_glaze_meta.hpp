@@ -107,6 +107,25 @@ struct ConfigurationDocument
 }
 
 /**
+ * @brief Describes what is wrong with a document that was read without error, or gives nothing if it is sound. A
+ * locator must have a key, because the key is how anchors and duplicate files find their source.
+ */
+[[nodiscard]] inline std::optional<std::string> FindDocumentProblem(const ConfigurationDocument &document)
+{
+    if (document.source.has_value())
+    {
+        for (const SourceLocator &locator : document.source->locators)
+        {
+            if (locator.key.empty())
+            {
+                return fmt::format("the locator '{}' has an empty key.", locator.path);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+/**
  * @brief Describes a read error of a configuration document. For an unknown or missing key the first line names the
  * key, because callers often show only that line. The lines after it point at the place in the content.
  */
@@ -221,30 +240,29 @@ template <> struct glz::meta<loglib::FormatSpec> : loglib::internal::AllKeysOpti
         object("type", &T::format, "regex", glz::custom<readRegex, writeRegex>, "logfmtMultiline", &T::logfmtMultiline);
 };
 
+// A locator needs both of its keys. An empty key is rejected after reading, see FindDocumentProblem.
+template <> struct glz::meta<loglib::SourceLocator>
+{
+    using T = loglib::SourceLocator;
+    static constexpr bool requires_key(std::string_view key, bool /*nullable*/)
+    {
+        return key == "path" || key == "key";
+    }
+    static constexpr auto value = object("path", &T::path, "key", &T::key);
+};
+
 // The saved field names of the nested types are listed explicitly. Renaming a member then fails to compile and cannot
 // silently change the saved format.
 template <> struct glz::meta<loglib::SourceDescriptor> : loglib::internal::AllKeysOptional
 {
     using T = loglib::SourceDescriptor;
-
-    static constexpr auto readDisplayPaths = [](T &self, std::vector<std::string> paths) {
-        self.ReplaceDisplayPaths(std::move(paths));
-    };
-    static constexpr auto writeDisplayPaths = [](const T &self) { return self.DisplayPaths(); };
-    static constexpr auto readDedupKeys = [](T &self, std::vector<std::string> keys) {
-        self.ReplaceDedupKeys(std::move(keys));
-    };
-    static constexpr auto writeDedupKeys = [](const T &self) { return self.DedupKeys(); };
-
     static constexpr auto value = object(
         "kind",
         &T::kind,
         "format",
         &T::format,
         "locators",
-        glz::custom<readDisplayPaths, writeDisplayPaths>,
-        "locatorDedupKeys",
-        glz::custom<readDedupKeys, writeDedupKeys>,
+        &T::locators,
         "followRotationSiblings",
         &T::followRotationSiblings
     );
@@ -380,7 +398,7 @@ template <> struct glz::meta<loglib::Sort> : loglib::internal::AllKeysOptional
 };
 
 // The saved form of one anchor:
-//   { "locator": "...",    // identifies the source
+//   { "pathKey": "...",    // identifies the source file
 //     "lineId":  1234,     // the line id from the parser
 //     "colorIndex": 0,     // the palette color
 //     "note":    "..." }   // optional, loads as an empty string when missing
@@ -389,7 +407,7 @@ template <> struct glz::meta<loglib::AnchorEntry> : loglib::internal::AllKeysOpt
 {
     using T = loglib::AnchorEntry;
     static constexpr auto value =
-        object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
+        object("pathKey", &T::pathKey, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
 };
 
 template <> struct glz::meta<loglib::HighlightStyle> : loglib::internal::AllKeysOptional

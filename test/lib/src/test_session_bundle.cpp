@@ -5,6 +5,7 @@
 #include <loglib/core/error.hpp>
 #include <loglib/core/internal/path_encoding.hpp>
 #include <loglib/core/log_value.hpp>
+#include <loglib/core/path_key.hpp>
 #include <loglib/ingest/decompressing_byte_source.hpp>
 #include <loglib/output/file_loading.hpp>
 #include <loglib/output/session_bundle.hpp>
@@ -305,7 +306,7 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     configuration.source = loglib::SourceDescriptor{
         .kind = loglib::SourceDescriptor::Kind::NetworkStream,
         .format = {.format = loglib::LogFormat::Regex, .regex = {.pattern = "(?<service>.*)"}},
-        .locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}},
+        .locators = {{.path = "tcp://127.0.0.1:9000", .key = "tcp://127.0.0.1:9000"}},
     };
     configuration.view.highlightRules = {
         {.name = "Auth",
@@ -340,12 +341,11 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     REQUIRE(restored.source.has_value());
     CHECK(restored.source->kind == loglib::SourceDescriptor::Kind::File);
     CHECK(restored.source->format.format == loglib::LogFormat::Json);
-    // With no canonicalizer set, both `locators` and
-    // `locatorDedupKeys` use `internal::PathToUtf8()`, so this
-    // default-options test expects them to match. The canonicalizer
-    // contract is exercised in the dedicated test below.
-    CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
-    CHECK(restored.source->DedupKeys() == std::vector<std::string>{bundle.Path().string()});
+    // The embedded source is the bundle itself: its path is the destination as written and its key is the path key
+    // that anchors refer to.
+    REQUIRE(restored.source->locators.size() == 1);
+    CHECK(restored.source->locators[0].path == bundle.Path().string());
+    CHECK(restored.source->locators[0].key == loglib::MakePathKey(bundle.Path()));
     CHECK(restored.source->format.regex.pattern.empty());
 }
 
@@ -370,7 +370,7 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
     configuration.source = loglib::SourceDescriptor{
         .kind = loglib::SourceDescriptor::Kind::Stdin,
         .format = {.format = loglib::LogFormat::Logfmt},
-        .locators = {{"<stdin>", "<stdin>"}},
+        .locators = {{.path = "<stdin>", .key = "<stdin>"}},
     };
 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
@@ -380,45 +380,9 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
 
     REQUIRE(restored.source.has_value());
     CHECK(restored.source->kind == loglib::SourceDescriptor::Kind::File);
-    CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
-    CHECK(restored.source->DedupKeys() == std::vector<std::string>{bundle.Path().string()});
-}
-
-TEST_CASE("session bundle uses canonicalizeSourceLocator for embedded source dedup key", "[SessionBundle]")
-{
-    // The GUI wires `canonicalizeSourceLocator` to `CanonicalLocator`
-    // so anchors round-trip. The same callback must also shape
-    // `Source::locatorDedupKeys`; otherwise a mixed-case bundle
-    // would import with two different keys depending on the
-    // consumer (GUI vs. non-GUI).
-    const TempPath source(".jsonl");
-    const TempPath bundle(".slvbundle");
-    Write(
-        source.Path(),
-        R"({"msg":"x"})"
-        "\n"
-    );
-    loglib::LogTable table = ParseTable(source.Path());
-
-    loglib::SessionBundleWriteOptions options;
-    options.canonicalizeSourceLocator = [](const std::filesystem::path &p) {
-        std::string out = "canonical://" + p.string();
-        return out;
-    };
-    loglib::WriteSessionBundle(
-        table, loglib::LogConfiguration{.columns = table.Layout().Columns()}, bundle.Path(), options
-    );
-
-    auto decoded = DecodeBundle(bundle.Path());
-    const loglib::LogConfiguration restored =
-        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration;
-
-    REQUIRE(restored.source.has_value());
-    // Display locator is unchanged (raw UTF-8 of the destination).
-    CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
-    // Dedup key runs through the callback, matching the shape
-    // anchors are compared against.
-    CHECK(restored.source->DedupKeys() == std::vector<std::string>{"canonical://" + bundle.Path().string()});
+    REQUIRE(restored.source->locators.size() == 1);
+    CHECK(restored.source->locators[0].path == bundle.Path().string());
+    CHECK(restored.source->locators[0].key == loglib::MakePathKey(bundle.Path()));
 }
 
 TEST_CASE("session bundle anchors are densely remapped and detached anchors are dropped", "[SessionBundle]")
@@ -443,30 +407,25 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
 
     loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
     configuration.view.anchors = {
-        {.locator = sourceA.Path().string(), .lineId = 1, .colorIndex = 1, .note = "second A"},
-        {.locator = sourceB.Path().string(), .lineId = 0, .colorIndex = 2, .note = "first B"},
-        {.locator = "detached.json", .lineId = 99, .colorIndex = 3, .note = "drop me"},
+        {.pathKey = loglib::MakePathKey(sourceA.Path()), .lineId = 1, .colorIndex = 1, .note = "second A"},
+        {.pathKey = loglib::MakePathKey(sourceB.Path()), .lineId = 0, .colorIndex = 2, .note = "first B"},
+        {.pathKey = loglib::MakePathKey("detached.json"), .lineId = 99, .colorIndex = 3, .note = "drop me"},
     };
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
     const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     REQUIRE(anchors.size() == 2);
-    CHECK(anchors[0].locator == bundle.Path().string());
+    CHECK(anchors[0].pathKey == loglib::MakePathKey(bundle.Path()));
     CHECK(anchors[0].lineId == 1);
     CHECK(anchors[0].note == "second A");
-    CHECK(anchors[1].locator == bundle.Path().string());
+    CHECK(anchors[1].pathKey == loglib::MakePathKey(bundle.Path()));
     CHECK(anchors[1].lineId == 2);
     CHECK(anchors[1].note == "first B");
 }
 
-TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source paths", "[SessionBundle]")
+TEST_CASE("session bundle matches anchors to sources by path key whatever the spelling", "[SessionBundle]")
 {
-    // Mirrors production: `AnchorManager` stores canonicalized
-    // locators while `line.Source()->Path()` is the raw filesystem
-    // path. Without the callback the writer silently drops every
-    // anchor because `PathToUtf8()` doesn't match the canonical
-    // form.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
     Write(
@@ -478,82 +437,57 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
     );
     loglib::LogTable table = ParseTable(source.Path());
 
-    // Force a canonical form that does not equal `PathToUtf8()`.
-    const std::string canonicalLocator = "canonical://" + source.Path().string();
+    // The key of a roundabout spelling of the same file, as a saved session may hold it.
+    const std::string roundabout = loglib::MakePathKey(source.Path().parent_path() / "." / source.Path().filename());
 
     loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
     configuration.view.anchors = {
-        {.locator = canonicalLocator, .lineId = 0, .colorIndex = 1, .note = "kept"},
-        {.locator = canonicalLocator, .lineId = 1, .colorIndex = 2, .note = "also kept"},
+        {.pathKey = roundabout, .lineId = 0, .colorIndex = 1, .note = "kept"},
+        {.pathKey = roundabout, .lineId = 1, .colorIndex = 2, .note = "also kept"},
+        {.pathKey = "not/a/key", .lineId = 0, .colorIndex = 3, .note = "other file - drop"},
     };
-
-    // Sanity: without the callback the writer drops both anchors --
-    // the canonical form does not match `PathToUtf8(source->Path())`.
-    {
-        const TempPath unbridged(".slvbundle");
-        loglib::WriteSessionBundle(table, configuration, unbridged.Path());
-        auto decoded = DecodeBundle(unbridged.Path());
-        const auto anchors =
-            loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
-        CHECK(anchors.empty());
-    }
-
-    loglib::SessionBundleWriteOptions options;
-    options.canonicalizeSourceLocator = [](const std::filesystem::path &p) { return "canonical://" + p.string(); };
-    loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
+    loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
     const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     REQUIRE(anchors.size() == 2);
-    // Anchors flatten to the canonical destination form so they
-    // match `Source::locatorDedupKeys` on the receiving side (the
-    // canonicalizer runs against the destination path too).
-    const std::string canonicalBundle = "canonical://" + bundle.Path().string();
-    CHECK(anchors[0].locator == canonicalBundle);
+    // Anchors flatten to the path key of the bundle, which is the key of its embedded source.
+    const std::string bundleKey = loglib::MakePathKey(bundle.Path());
+    CHECK(anchors[0].pathKey == bundleKey);
     CHECK(anchors[0].lineId == 0);
     CHECK(anchors[0].note == "kept");
-    CHECK(anchors[1].locator == canonicalBundle);
+    CHECK(anchors[1].pathKey == bundleKey);
     CHECK(anchors[1].lineId == 1);
     CHECK(anchors[1].note == "also kept");
 }
 
-TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multiple flattened rows", "[SessionBundle]")
+TEST_CASE("session bundle drops anchors whose `(path key, lineId)` matches multiple flattened rows", "[SessionBundle]")
 {
-    // Both sources map `(locator, lineId)` to the same anchor key.
-    const TempPath sourceA(".a.jsonl");
-    const TempPath sourceB(".b.jsonl");
+    // The same file loaded twice gives two rows with the same `(path key, lineId)`.
+    const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
     Write(
-        sourceA.Path(),
+        source.Path(),
         R"({"msg":"a0"})"
         "\n"
     );
-    Write(
-        sourceB.Path(),
-        R"({"msg":"b0"})"
-        "\n"
-    );
 
-    loglib::LogTable table = ParseTables({sourceA.Path(), sourceB.Path()});
+    loglib::LogTable table = ParseTables({source.Path(), source.Path()});
 
     loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
     configuration.view.anchors = {
-        {.locator = "collapsed", .lineId = 0, .colorIndex = 1, .note = "ambiguous - drop me"},
+        {.pathKey = loglib::MakePathKey(source.Path()), .lineId = 0, .colorIndex = 1, .note = "ambiguous - drop me"},
     };
-
-    // Force the ambiguous canonical locator.
-    loglib::SessionBundleWriteOptions options;
-    options.canonicalizeSourceLocator = [](const std::filesystem::path &) { return std::string("collapsed"); };
-    loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
+    loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
     const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.view.anchors;
     CHECK(anchors.empty());
 }
 
-TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundle]")
+TEST_CASE("session bundle drops anchors with an empty path key", "[SessionBundle]")
 {
-    // Empty locators cannot identify a source row.
+    // An empty path key cannot identify a source row.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
     Write(
@@ -567,8 +501,8 @@ TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundl
 
     loglib::LogConfiguration configuration{.columns = table.Layout().Columns()};
     configuration.view.anchors = {
-        {.locator = "", .lineId = 0, .colorIndex = 1, .note = "empty locator - drop"},
-        {.locator = "", .lineId = 1, .colorIndex = 2, .note = "empty locator - drop"},
+        {.pathKey = "", .lineId = 0, .colorIndex = 1, .note = "empty key - drop"},
+        {.pathKey = "", .lineId = 1, .colorIndex = 2, .note = "empty key - drop"},
     };
 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());

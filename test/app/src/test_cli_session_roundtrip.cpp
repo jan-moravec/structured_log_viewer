@@ -321,9 +321,7 @@ private slots:
         QVERIFY(!seedPath.isEmpty());
         loglib::LogConfiguration seed = loglib::LoadConfiguration(seedPath.toStdString());
         // Anchor the second source row by its canonical source locator.
-        seed.view.anchors = {
-            {.locator = logapp::CanonicalLocator(mLogPath).toStdString(), .lineId = 1, .colorIndex = 0, .note = "kept"}
-        };
+        seed.view.anchors = {{.pathKey = logapp::PathKeyOf(mLogPath), .lineId = 1, .colorIndex = 0, .note = "kept"}};
         const QString anchoredSeed = mDir.filePath(QStringLiteral("anchored_seed.json"));
         loglib::SaveConfiguration(seed, anchoredSeed.toStdString(), loglib::SaveScope::Full);
 

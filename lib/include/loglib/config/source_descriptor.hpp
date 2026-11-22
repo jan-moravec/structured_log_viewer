@@ -2,51 +2,38 @@
  * @brief Description of where a log came from.
  *
  * A SourceDescriptor records the kind of source, such as a file or a network stream, its format and settings, and the
- * locations to reopen it from. Each location keeps the path shown to the user and a normalized key used to tell whether
- * two paths are the same file.
+ * locations to reopen it from. Each location keeps the path to open and a normalized key used to tell whether two paths
+ * are the same file.
  *
  * This is part of the config module.
  */
 #pragma once
 
 #include "loglib/config/format_spec.hpp"
+#include "loglib/core/path_key.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace loglib
 {
 
 /**
- * @brief One saved source path, with the form to show and a normalized form to compare.
+ * @brief One saved source path, with the form to open and a normalized form to compare.
  *
- * displayPath keeps the original spelling and is the path to open. dedupKey is the form used to tell whether two paths
- * are the same file; on Windows it is lower-cased. An empty dedupKey after loading means the saved file did not have
- * one, and the application fills it in with BackfillLocatorDedupKeys.
+ * path keeps the original spelling and is the path to open. key is the form that tells whether two paths are the same
+ * file, made by MakePathKey for a file, and anchors refer to a source by it. A network source has no file, so its path
+ * and its key are both the address. The saved file must hold a key for every locator.
  */
 struct SourceLocator
 {
-    std::string displayPath;
-    std::string dedupKey;
-
-    SourceLocator() = default;
-
-    /** @brief Builds a locator from a string literal, so that braces such as .locators = {"path"} compile. */
-    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions,misc-explicit-constructor)
-    SourceLocator(const char *display)
-        : displayPath(display != nullptr ? display : "")
-    {
-    }
-
-    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,google-explicit-constructor,hicpp-explicit-conversions,misc-explicit-constructor)
-    SourceLocator(std::string display, std::string dedup = {})
-        : displayPath(std::move(display)), dedupKey(std::move(dedup))
-    {
-    }
+    std::string path;
+    std::string key;
 
     friend bool operator==(const SourceLocator &, const SourceLocator &) = default;
 };
@@ -59,7 +46,7 @@ struct SourceLocator
  * a configuration.
  *
  * Locators hold each path together with its comparison key, so the two cannot get out of step. The saved file keeps
- * them as two parallel lists, locators and locatorDedupKeys, which ReplaceDisplayPaths and ReplaceDedupKeys fill.
+ * them as a list of objects with the keys path and key.
  */
 struct SourceDescriptor
 {
@@ -91,34 +78,6 @@ struct SourceDescriptor
      * they are and does not search again. Configurations saved without this value get true.
      */
     bool followRotationSiblings = true;
-
-    /**
-     * @brief Holds locatorDedupKeys that arrive before the paths while a file is loaded. It is not saved.
-     * ReplaceDisplayPaths uses and clears it. Keys that never get a list of paths do not become locators.
-     */
-    std::vector<std::string> pendingDedupKeys;
-
-    /**
-     * @brief Replaces the paths and keeps the comparison keys that still fit.
-     *
-     * The number of paths decides the number of locators. Loading calls this and ReplaceDedupKeys in either order. Keys
-     * held in pendingDedupKeys are applied by position and then discarded.
-     */
-    void ReplaceDisplayPaths(std::vector<std::string> paths);
-
-    /**
-     * @brief Sets the comparison keys by position.
-     *
-     * While there are no locators yet, the keys wait in pendingDedupKeys until ReplaceDisplayPaths sets how many there
-     * are. Once paths exist, keys beyond their number are ignored.
-     */
-    void ReplaceDedupKeys(std::vector<std::string> keys);
-
-    /** @brief The paths in locator order, for writing the saved file. */
-    [[nodiscard]] std::vector<std::string> DisplayPaths() const;
-
-    /** @brief The comparison keys in locator order, for writing the saved file. */
-    [[nodiscard]] std::vector<std::string> DedupKeys() const;
 };
 
 /** @brief True if there is a source with at least one locator, so that it can be opened. */
@@ -127,28 +86,23 @@ struct SourceDescriptor
     return source.has_value() && !source->locators.empty();
 }
 
-/**
- * @brief Adds a locator to a source. Callers pass the comparison key, because the library does not know how to
- * normalize paths in the way the application does.
- */
-inline void AppendLocator(SourceDescriptor &target, std::string displayPath, std::string dedupKey)
+/** @brief Adds a file to a source, with the key that MakePathKey gives for it. */
+inline void AppendLocator(SourceDescriptor &target, std::string path)
 {
-    target.locators.emplace_back(std::move(displayPath), std::move(dedupKey));
+    std::string key = MakePathKey(path);
+    target.locators.push_back({.path = std::move(path), .key = std::move(key)});
 }
 
 /** @brief Removes all locators. */
 inline void ClearLocators(SourceDescriptor &target)
 {
     target.locators.clear();
-    target.pendingDedupKeys.clear();
 }
 
-/** @brief True if the key is the comparison key of any locator. */
-[[nodiscard]] inline bool ContainsDedupKey(const SourceDescriptor &source, std::string_view key) noexcept
+/** @brief True if the key is the key of any locator. */
+[[nodiscard]] inline bool ContainsPathKey(const SourceDescriptor &source, std::string_view key) noexcept
 {
-    return std::ranges::any_of(source.locators, [key](const SourceLocator &locator) {
-        return locator.dedupKey == key;
-    });
+    return std::ranges::any_of(source.locators, [key](const SourceLocator &locator) { return locator.key == key; });
 }
 
 } // namespace loglib

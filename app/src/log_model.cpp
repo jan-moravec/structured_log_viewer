@@ -1350,7 +1350,7 @@ void LogModel::PrewarmCanonicalLocatorCache()
             continue;
         }
         // Preserve non-ASCII paths in Windows anchor keys.
-        std::string canonical = logapp::CanonicalLocator(logapp::FsPathToQString(source->Path())).toStdString();
+        std::string canonical = loglib::MakePathKey(source->Path());
         mCanonicalLocatorCache.emplace(source, std::move(canonical));
     }
 }

@@ -706,7 +706,7 @@ void LogSessionView::JumpToAnchor(bool forward)
     anchoredProxyRows.reserve(anchorEntries.size());
     for (const auto &entry : anchorEntries)
     {
-        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        const AnchorManager::Key key{.locator = entry.pathKey, .lineId = entry.lineId};
         const int sourceRow = model->SourceRowForAnchorKey(key);
         if (sourceRow < 0)
         {

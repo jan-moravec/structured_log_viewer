@@ -94,15 +94,6 @@ namespace
     return indices;
 }
 
-[[nodiscard]] std::string LowerIfCaseInsensitiveFs(const std::string &text)
-{
-#ifdef _WIN32
-    return AsciiLower(text);
-#else
-    return text;
-#endif
-}
-
 [[nodiscard]] std::string AbsoluteGenericPath(const std::filesystem::path &path)
 {
     std::error_code ec;
@@ -117,8 +108,8 @@ namespace
 /**
  * @brief Builds the persisted source from the sources the user typed.
  *
- * Paths are made absolute with forward slashes, matching the GUI's
- * locator form. Stdin is skipped.
+ * Paths are made absolute with forward slashes, which is the form the GUI saves. Each locator gets its key from
+ * AppendLocator. Stdin is skipped.
  */
 [[nodiscard]] std::optional<loglib::SourceDescriptor> BuildSavedSource(
     const InputOptions &input, const GlobalOptions &global, const LoadedTable &loaded
@@ -131,9 +122,7 @@ namespace
         {
             continue;
         }
-        std::string display = AbsoluteGenericPath(spec.path);
-        std::string dedup = LowerIfCaseInsensitiveFs(display);
-        loglib::AppendLocator(source, std::move(display), std::move(dedup));
+        loglib::AppendLocator(source, AbsoluteGenericPath(spec.path));
     }
     if (source.locators.empty())
     {
@@ -168,11 +157,6 @@ namespace
 }
 
 } // namespace
-
-std::string CanonicalSourceLocator(const std::filesystem::path &path)
-{
-    return LowerIfCaseInsensitiveFs(AbsoluteGenericPath(path));
-}
 
 std::expected<loglib::LogConfiguration, std::string> LoadConfigFile(const std::filesystem::path &path)
 {

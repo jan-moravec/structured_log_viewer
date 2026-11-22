@@ -3720,7 +3720,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     files.reserve(static_cast<qsizetype>(source.locators.size()));
     for (const auto &locator : source.locators)
     {
-        files.append(QString::fromStdString(locator.displayPath));
+        files.append(QString::fromStdString(locator.path));
     }
 
     // Append mode so loaded filters survive into the streamed rows.
@@ -3914,7 +3914,6 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // Mirror the loaded source so the next save round-trips it.
         // No auto-bind.
         mSession->MutableCurrentSource() = std::move(loaded.source);
-        logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
         mSession->NotifyPresentationChanged();
         // Loaded source preferences replace the prior session's Undo state.
         ClearRotationExpansionUndoState();
@@ -4090,7 +4089,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
         suppressKeys.reserve(currentSource->locators.size());
         for (const auto &locator : currentSource->locators)
         {
-            suppressKeys.push_back(locator.dedupKey);
+            suppressKeys.push_back(locator.key);
         }
     }
 
@@ -4667,13 +4666,13 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     origin->SetStreamingFileName(QFileInfo(originalPath).fileName());
     // Record every appended file in load order so SaveSession +
     // Recent Sessions can reopen the full set. Two forms per locator:
-    //   - `displayPath`: original case, slash-normalised (user-visible).
-    //   - `dedupKey`: lower-cased on Windows for byte-equality dedup.
+    //   - `path`: original case, slash-normalised (user-visible).
+    //   - `key`: the loglib path key, for byte-equality dedup.
     // Both derived from the ORIGINAL (compressed) path so a saved
     // session reopens the `.gz` and re-runs decompression fresh --
     // temp paths never enter the locator vectors.
     const std::string displayPath = logapp::CanonicalDisplayPath(originalPath).toStdString();
-    const std::string dedupKey = logapp::CanonicalLocator(originalPath).toStdString();
+    const std::string pathKey = logapp::PathKeyOf(originalPath);
     auto &currentSource = origin->MutableCurrentSource();
     if (isFirstFileInSession)
     {
@@ -4681,7 +4680,7 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
         currentSource = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
             .format = std::move(detected),
-            .locators = {{displayPath, dedupKey}},
+            .locators = {{.path = displayPath, .key = pathKey}},
         };
         // Seed the source from the global preference and CLI override.
         currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
@@ -4692,10 +4691,10 @@ bool MainWindow::ContinueOpenAfterPrepared(LogSession *origin, const QString &or
     }
     else if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File)
     {
-        const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
+        const bool alreadyPresent = loglib::ContainsPathKey(*currentSource, pathKey);
         if (!alreadyPresent)
         {
-            loglib::AppendLocator(*currentSource, displayPath, dedupKey);
+            loglib::AppendLocator(*currentSource, displayPath);
         }
     }
     if (isFirstFileInSession)
@@ -5183,11 +5182,11 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     if (opened && opened->bundle.has_value() && armedForThisFile && sessionStillFresh && model != nullptr)
     {
         loglib::LogConfiguration embedded = std::move(opened->bundle->configuration);
-        const std::string dedupKey = logapp::CanonicalLocator(origin->DecompressionOriginalPath()).toStdString();
-        // Anchors use the same canonical locator as source deduplication.
+        const std::string pathKey = logapp::PathKeyOf(origin->DecompressionOriginalPath());
+        // Anchors use the same path key as source deduplication.
         for (auto &anchor : embedded.view.anchors)
         {
-            anchor.locator = dedupKey;
+            anchor.pathKey = pathKey;
         }
 
         model->MutableLayout().SetColumns(std::move(embedded.columns));
@@ -5394,7 +5393,7 @@ void MainWindow::ExportFilteredRows()
     if (const auto &currentSource = mSession->CurrentSource();
         currentSource.has_value() && !currentSource->locators.empty())
     {
-        const QFileInfo info(QString::fromStdString(currentSource->locators.front().displayPath));
+        const QFileInfo info(QString::fromStdString(currentSource->locators.front().path));
         const QString base = info.completeBaseName();
         if (!base.isEmpty())
         {
@@ -5621,7 +5620,7 @@ void MainWindow::ExportSessionBundle()
     if (const auto &currentSource = mSession->CurrentSource();
         currentSource.has_value() && !currentSource->locators.empty())
     {
-        const QString primary = QString::fromStdString(currentSource->locators.front().displayPath);
+        const QString primary = QString::fromStdString(currentSource->locators.front().path);
         const QFileInfo info(primary);
         defaultStem = info.completeBaseName();
         // Avoid repeating the extension for names such as
@@ -5750,10 +5749,6 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
         options.stopToken = stopToken;
         options.progress = [rowsWrittenAtomic](std::uint64_t rowsWritten, std::uint64_t /*rowsTotal*/) {
             rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(rowsWritten));
-        };
-        // Match `AnchorManager::Key` canonicalization on Windows.
-        options.canonicalizeSourceLocator = [](const std::filesystem::path &path) {
-            return logapp::CanonicalLocator(logapp::FsPathToQString(path)).toStdString();
         };
         loglib::WriteSessionBundle(*tablePtr, configSnapshot, destination, options);
     });
@@ -6338,15 +6333,15 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
     mSession->SetStreamingFileName(QFileInfo(tailPath).fileName());
     auto &currentSource = mSession->MutableCurrentSource();
-    // Live-tail single-file open: pair display path and dedup key.
+    // Live-tail single-file open: pair display path and path key.
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
-        const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
+        const std::string pathKey = logapp::PathKeyOf(tailPath);
         FormatSpec detected = DetectFileFormat(filePath, CatalogOf(mRegexTemplateRegistry));
         currentSource = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
             .format = std::move(detected),
-            .locators = {{displayPath, dedupKey}},
+            .locators = {{.path = displayPath, .key = pathKey}},
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6435,17 +6430,17 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     }
 
     const std::string displayPath = logapp::CanonicalDisplayPath(primary).toStdString();
-    const std::string dedupKey = logapp::CanonicalLocator(primary).toStdString();
+    const std::string pathKey = logapp::PathKeyOf(primary);
 
     auto &currentSource = origin->MutableCurrentSource();
     // Append the primary onto the session's locator list so the
     // full [siblings..., primary] set persists.
     if (currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File)
     {
-        const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
+        const bool alreadyPresent = loglib::ContainsPathKey(*currentSource, pathKey);
         if (!alreadyPresent)
         {
-            loglib::AppendLocator(*currentSource, displayPath, dedupKey);
+            loglib::AppendLocator(*currentSource, displayPath);
         }
     }
     else
@@ -6455,7 +6450,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
         currentSource = loglib::SourceDescriptor{
             .kind = loglib::SourceDescriptor::Kind::File,
             .format = std::move(detected),
-            .locators = {{displayPath, dedupKey}},
+            .locators = {{.path = displayPath, .key = pathKey}},
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
@@ -6637,7 +6632,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     mSession->MutableCurrentSource() = loglib::SourceDescriptor{
         .kind = loglib::SourceDescriptor::Kind::Stdin,
         .format = detected,
-        .locators = {{displayName, displayName}},
+        .locators = {{.path = displayName, .key = displayName}},
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6809,7 +6804,7 @@ void MainWindow::StartNetworkStream(const NetworkStreamDialog::Config &cfg, std:
                         .headerAnchor = cfg.regex.headerAnchor.toStdString(),
                     },
             },
-        .locators = {{displayName, displayName}},
+        .locators = {{.path = displayName, .key = displayName}},
     };
     mSession->SetMode(SessionMode::LiveTail);
     mSession->ResetStreamingProgress();
@@ -6953,7 +6948,7 @@ QString CurrentSourceLabel(const std::optional<loglib::SourceDescriptor> &source
     }
     // Non-const so the trailing `return first` can move; see
     // clang-tidy `performance-no-automatic-move`.
-    QString first = QString::fromStdString(source->locators.front().displayPath);
+    QString first = QString::fromStdString(source->locators.front().path);
     // Bundles surface as `Kind::File` (the receiver rewrites the
     // embedded locator to the current path in
     // `OnDecompressionFinished`), so this branch covers them too.
@@ -7098,7 +7093,7 @@ void MainWindow::UpdateWindowTitle()
         currentSource.has_value() && currentSource->kind == loglib::SourceDescriptor::Kind::File &&
         !currentSource->locators.empty())
     {
-        setWindowFilePath(QString::fromStdString(currentSource->locators.front().displayPath));
+        setWindowFilePath(QString::fromStdString(currentSource->locators.front().path));
     }
     else
     {
@@ -8326,9 +8321,6 @@ int MainWindow::LastDroppedFilterCountForTest() const
 void MainWindow::SetCurrentSourceForTest(std::optional<loglib::SourceDescriptor> source)
 {
     mSession->MutableCurrentSource() = std::move(source);
-    // Test fixtures often omit dedup keys; backfill so downstream
-    // dedup loops behave correctly.
-    logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
 }
 
 const std::optional<loglib::SourceDescriptor> &MainWindow::CurrentSourceForTest() const noexcept
@@ -8507,22 +8499,21 @@ loglib::LogConfiguration MainWindow::SnapshotConfiguration(LogSession *session)
         !session->MutablePendingOpenFiles().isEmpty())
     {
         loglib::SourceDescriptor mirrored = *currentSource;
-        // Seed `seen` with existing dedup keys (case-insensitive on
-        // Windows) so pending duplicates of already-streamed paths
-        // are skipped.
+        // Seed `seen` with the existing path keys so pending
+        // duplicates of already-streamed paths are skipped.
         std::unordered_set<std::string> seen;
         seen.reserve(mirrored.locators.size() + static_cast<size_t>(session->MutablePendingOpenFiles().size()));
         for (const auto &locator : mirrored.locators)
         {
-            seen.insert(locator.dedupKey);
+            seen.insert(locator.key);
         }
         for (const QString &pending : session->MutablePendingOpenFiles())
         {
             const std::string displayPath = logapp::CanonicalDisplayPath(pending).toStdString();
-            const std::string dedupKey = logapp::CanonicalLocator(pending).toStdString();
-            if (seen.insert(dedupKey).second)
+            const std::string pathKey = logapp::PathKeyOf(pending);
+            if (seen.insert(pathKey).second)
             {
-                loglib::AppendLocator(mirrored, displayPath, dedupKey);
+                loglib::AppendLocator(mirrored, displayPath);
             }
         }
         return session->BuildConfiguration(std::move(mirrored));
@@ -10102,7 +10093,6 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const
         // Mirror the loaded source so the next save round-trips
         // it; no auto-bind (foreign sessions would be hostile).
         mSession->MutableCurrentSource() = std::move(parsed.source);
-        logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
         mSession->NotifyPresentationChanged();
         // Session loading updates the menu but does not clear this
         // window's CLI opt-out; an explicit menu change does.

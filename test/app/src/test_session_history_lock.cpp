@@ -57,7 +57,7 @@ private:
     loglib::LogConfiguration configuration;
     configuration.source = loglib::SourceDescriptor{
         .kind = loglib::SourceDescriptor::Kind::File,
-        .locators = {std::string("C:/logs/lock-test.json")},
+        .locators = {{.path = std::string("C:/logs/lock-test.json"), .key = std::string("C:/logs/lock-test.json")}},
     };
     return configuration;
 }

@@ -6,6 +6,7 @@
 #include "loglib/core/line_source.hpp"
 #include "loglib/core/log_data.hpp"
 #include "loglib/core/log_line.hpp"
+#include "loglib/core/path_key.hpp"
 #include "loglib/output/internal/normalized_json_row.hpp"
 #include "loglib/output/internal/ordered_chunks.hpp"
 #include "loglib/table/log_table.hpp"
@@ -394,21 +395,11 @@ private:
     std::vector<char> mOutput;
 };
 
-std::string CanonicalizeSourceLocator(const std::filesystem::path &path, const SessionBundleWriteOptions &options)
-{
-    if (options.canonicalizeSourceLocator)
-    {
-        return options.canonicalizeSourceLocator(path);
-    }
-    return internal::PathToUtf8(path);
-}
-
-// Composite key for the anchor index below. Stores by std::string
-// because the canonicalizer returns by value; the bytes must outlive
-// the insertion loop.
+// Composite key for the anchor index below. It stores the path key by value so that the bytes outlive the insertion
+// loop.
 struct AnchorLookupKey
 {
-    std::string locator;
+    std::string pathKey;
     std::uint64_t lineId = 0;
 
     friend bool operator==(const AnchorLookupKey &, const AnchorLookupKey &) = default;
@@ -421,16 +412,16 @@ struct AnchorLookupKeyHash
         constexpr std::size_t GOLDEN_RATIO_HASH = 0x9E3779B9U;
         constexpr std::size_t LEFT_SHIFT = 6U;
         constexpr std::size_t RIGHT_SHIFT = 2U;
-        const std::size_t locatorHash = std::hash<std::string>{}(key.locator);
+        const std::size_t pathKeyHash = std::hash<std::string>{}(key.pathKey);
         const std::size_t lineIdHash = std::hash<std::uint64_t>{}(key.lineId);
-        return locatorHash ^
-               (lineIdHash + GOLDEN_RATIO_HASH + (locatorHash << LEFT_SHIFT) + (locatorHash >> RIGHT_SHIFT));
+        return pathKeyHash ^
+               (lineIdHash + GOLDEN_RATIO_HASH + (pathKeyHash << LEFT_SHIFT) + (pathKeyHash >> RIGHT_SHIFT));
     }
 };
 
 // One slot per anchor in the wanted-set. found=false means the
 // scan has not yet matched a row; ambiguous=true means the same
-// (canonical locator, lineId) matched more than once, so the
+// (path key, lineId) matched more than once, so the
 // anchor cannot resolve to a single dense row and is dropped.
 struct AnchorMatchSlot
 {
@@ -449,7 +440,7 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
     for (const auto &anchor : anchors)
     {
         // Duplicate anchor keys share one lookup slot.
-        wanted.try_emplace(AnchorLookupKey{.locator = anchor.locator, .lineId = anchor.lineId});
+        wanted.try_emplace(AnchorLookupKey{.pathKey = anchor.pathKey, .lineId = anchor.lineId});
     }
     return wanted;
 }
@@ -492,34 +483,34 @@ private:
     bool mAll;
 };
 
-void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines, const SessionBundleWriteOptions &options)
+void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines)
 {
     if (wanted.empty())
     {
         return;
     }
-    // Canonicalize each source once.
-    std::unordered_map<const LineSource *, std::string> canonicalCache;
+    // Make the key of each source once.
+    std::unordered_map<const LineSource *, std::string> pathKeyCache;
 
     for (std::size_t row = 0; row < lines.Size(); ++row)
     {
         const LogLine &line = lines[row];
         const auto *source = line.Source();
-        // Rows without a source cannot resolve an anchor locator.
+        // Rows without a source cannot resolve an anchor.
         if (source == nullptr)
         {
             continue;
         }
-        auto cacheIt = canonicalCache.find(source);
-        if (cacheIt == canonicalCache.end())
+        auto cacheIt = pathKeyCache.find(source);
+        if (cacheIt == pathKeyCache.end())
         {
-            cacheIt = canonicalCache.emplace(source, CanonicalizeSourceLocator(source->Path(), options)).first;
+            cacheIt = pathKeyCache.emplace(source, MakePathKey(source->Path())).first;
         }
         AnchorLookupKey key;
         key.lineId = static_cast<std::uint64_t>(line.LineId());
-        key.locator = cacheIt->second;
-        // Empty canonical locators cannot identify an anchor source.
-        if (key.locator.empty())
+        key.pathKey = cacheIt->second;
+        // An empty key cannot identify an anchor source.
+        if (key.pathKey.empty())
         {
             continue;
         }
@@ -535,39 +526,34 @@ void PopulateAnchorMatches(AnchorWantedSet &wanted, const BundleRows &lines, con
         }
         else
         {
-            // Duplicate (locator, lineId): drop rather than pick
+            // Duplicate (path key, lineId): drop rather than pick
             // an arbitrary row.
             it->second.ambiguous = true;
         }
     }
 }
 
-void RemapAnchors(
-    LogConfiguration &configuration,
-    const BundleRows &lines,
-    std::string_view flattenedLocator,
-    const SessionBundleWriteOptions &options
-)
+void RemapAnchors(LogConfiguration &configuration, const BundleRows &lines, std::string_view bundlePathKey)
 {
     if (configuration.view.anchors.empty())
     {
         return;
     }
     AnchorWantedSet wanted = BuildAnchorWantedSet(configuration.view.anchors);
-    PopulateAnchorMatches(wanted, lines, options);
+    PopulateAnchorMatches(wanted, lines);
 
     std::vector<AnchorEntry> remapped;
     remapped.reserve(configuration.view.anchors.size());
     for (const auto &anchor : configuration.view.anchors)
     {
-        const AnchorLookupKey lookup{.locator = anchor.locator, .lineId = anchor.lineId};
+        const AnchorLookupKey lookup{.pathKey = anchor.pathKey, .lineId = anchor.lineId};
         const auto it = wanted.find(lookup);
         if (it == wanted.end() || !it->second.found || it->second.ambiguous)
         {
             continue;
         }
         auto copy = anchor;
-        copy.locator.assign(flattenedLocator);
+        copy.pathKey.assign(bundlePathKey);
         copy.lineId = it->second.row;
         remapped.push_back(std::move(copy));
     }
@@ -670,14 +656,14 @@ void WriteBundle(
     LogConfiguration embedded = configuration;
     NormalizeTimeColumnParseFormats(embedded);
 
-    // Keep a display path and a canonical locator for source/anchor keys.
-    const std::string displayLocator = internal::PathToUtf8(destination);
-    const std::string dedupLocator = CanonicalizeSourceLocator(destination, options);
-    RemapAnchors(embedded, lines, dedupLocator, options);
+    // The bundle is the only file of the embedded source, so its anchors point at it by path key.
+    const std::string bundlePath = internal::PathToUtf8(destination);
+    const std::string bundlePathKey = MakePathKey(destination);
+    RemapAnchors(embedded, lines, bundlePathKey);
     embedded.source = SourceDescriptor{
         .kind = SourceDescriptor::Kind::File,
         .format = {.format = LogFormat::Json},
-        .locators = {{displayLocator, dedupLocator}},
+        .locators = {{.path = bundlePath, .key = bundlePathKey}},
     };
 
     const std::string configJson = SerializeConfiguration(embedded, SaveScope::Full, ConfigurationLayout::Compact);

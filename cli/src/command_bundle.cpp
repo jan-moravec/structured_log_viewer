@@ -137,7 +137,6 @@ ExitCode RunBundle(
     writeOptions.compressionLevel = options.compressionLevel;
     writeOptions.totalWorkers = static_cast<int>(options.bundleThreads);
     writeOptions.stopToken = runtime.stop;
-    writeOptions.canonicalizeSourceLocator = CanonicalSourceLocator;
     writeOptions.progress = [&progress](std::uint64_t written, std::uint64_t total) {
         progress.Update(written, total);
     };
