@@ -3,7 +3,6 @@
 #include "log_model.hpp"
 
 #include <loglib/core/key_index.hpp>
-#include <loglib/query/log_compare.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/query/row_ordering.hpp>
 
@@ -16,6 +15,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -24,9 +24,8 @@
 /// Replaces `QSortFilterProxyModel` to skip the per-row `QModelIndex`
 /// / `QVariant` round-trip: `RebuildAcceptedRows` evaluates
 /// `loglib::RowPredicate`s straight against `loglib::LogTable`, and
-/// `sort()` permutes the map via `loglib::RowOrdering` (which
-/// composes `loglib::CompareRows` and `SortPermutationByColumn`)
-/// with an `EnumDictRank` cache.
+/// `sort()` permutes the map via a `loglib::RowOrdering`, which
+/// builds its own enumeration ranks.
 class LogFilterModel : public QAbstractProxyModel
 {
     Q_OBJECT
@@ -113,9 +112,9 @@ public:
         return mCompiledExpression;
     }
 
-    /// Drop cached `EnumDictRank` entries; lazily rebuilt on next sort.
+    /// Drop the cached `loglib::RowOrdering`; lazily rebuilt on next sort.
     /// `MainWindow` calls this on `enumColumnsChanged(Demoted)`.
-    void InvalidateEnumRanks();
+    void InvalidateOrdering();
 
     /// Active sort column (source coords); `-1` if no user sort is
     /// installed. Pairs with `SortOrder()` for the session-save
@@ -130,17 +129,17 @@ public:
     }
 
     /// Deprecated no-op. The proxy reads slot types directly via
-    /// `loglib::CompareRows`, so the sort role is ignored. Kept so
+    /// `loglib::RowOrdering`, so the sort role is ignored. Kept so
     /// existing tests / benchmarks compile.
-    [[deprecated("LogFilterModel sorts via loglib::CompareRows; sort role is ignored")]] void setSortRole(int /*role*/)
+    [[deprecated("LogFilterModel sorts via loglib::RowOrdering; sort role is ignored")]] void setSortRole(int /*role*/)
     {
     }
 
 #ifdef LOGAPP_BUILD_TESTING
-    /// Cached `EnumDictRank` entry count. Used by cache-lifecycle tests.
-    [[nodiscard]] std::size_t EnumRankCacheSizeForTest() const
+    /// True while a `loglib::RowOrdering` is cached. Used by cache-lifecycle tests.
+    [[nodiscard]] bool HasOrderingForTest() const
     {
-        return mEnumRanks.size();
+        return mOrdering.has_value();
     }
 #endif
 
@@ -212,13 +211,10 @@ private:
     /// post-rebuild equivalents. Pairs with `SnapshotPersistentIndices`.
     void RemapPersistentIndicesForRebuild();
 
-    /// Canonical `KeyId` for an enum column, or `INVALID_KEY_ID`.
-    [[nodiscard]] loglib::KeyId EnumKeyForColumn(int columnIndex) const;
-
-    /// Get-or-build the `EnumDictRank` for @p columnIndex. Rebuilds
-    /// when the cached rank is smaller than the live dictionary or
-    /// its `EnumDictionary*` differs (covers demote -> re-promote).
-    [[nodiscard]] const loglib::EnumDictRank *EnumRankFor(int columnIndex) const;
+    /// The ordering for the current sort column and direction, or null when no sort is installed or the column does
+    /// not exist. Builds a new one when there is none, the column or direction changed, or the enumeration dictionary
+    /// of the column grew, so a sort never sees stale ranks.
+    [[nodiscard]] const loglib::RowOrdering *CurrentOrdering() const;
 
     LogModel *mLogModel = nullptr;
     loglib::CompiledFilterExpression mCompiledExpression;
@@ -254,21 +250,10 @@ private:
     QList<QPersistentModelIndex> mPersistentIndexSnapshot;
     QList<QPersistentModelIndex> mPersistentSourceIndexSnapshot;
 
-    /// Cached rank + the dictionary pointer it was built from.
-    /// `EnumRankFor` rebuilds when the pointer changes, which covers
-    /// demote -> re-promote re-creating the registry entry.
-    struct EnumRankEntry
-    {
-        loglib::EnumDictRank rank;
-        const loglib::EnumDictionary *source = nullptr;
-    };
-
-    /// Per-column rank cache, keyed on canonical `KeyId` so it survives
-    /// column reorders. Cleared by `SetLogModel`, `setSourceModel`, and
-    /// `InvalidateEnumRanks`; self-heals inside `EnumRankFor` when the
-    /// cached `EnumDictionary*` differs from the live one. Mutable so
-    /// const sort-time helpers can populate it lazily.
-    mutable std::unordered_map<loglib::KeyId, EnumRankEntry> mEnumRanks;
+    /// The ordering of the current sort. Cleared by `SetLogModel`, `setSourceModel`, `OnSourceModelReset` and
+    /// `InvalidateOrdering`; `CurrentOrdering` rebuilds it when it is outdated. Mutable so const sort-time helpers can
+    /// fill it lazily.
+    mutable std::optional<loglib::RowOrdering> mOrdering;
 
     /// Signal connections to the current source. Refreshed by `setSourceModel`.
     std::vector<QMetaObject::Connection> mSourceConnections;

@@ -1438,11 +1438,11 @@ private slots:
     }
 
     // Regression: a `Grew` `enumColumnsChanged` must NOT flush the
-    // `EnumDictRank` cache through `MainWindow`'s slot. `EnumRankFor`
-    // self-heals on the next sort via its `DictSize()` check, so
+    // ordering through `MainWindow`'s slot. `CurrentOrdering`
+    // self-heals on the next sort via `RowOrdering::IsOutdated`, so
     // flushing on every batch would re-rebuild ranks per batch and
     // dominate the wall-clock of a busy stream.
-    void TestEnumRankCacheSurvivesGrowthSignalThroughMainWindow()
+    void TestOrderingSurvivesGrowthSignalThroughMainWindow()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
@@ -1476,7 +1476,7 @@ private slots:
         // Warm the rank cache by sorting on the enum column.
         filterModel->sort(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         // Batch 2 grows the dictionary. `Grew` is a no-op for the
         // rank cache so the entry stays.
@@ -1488,7 +1488,7 @@ private slots:
             model->AppendBatch(std::move(batch));
         }
         QCoreApplication::processEvents();
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         model->EndStreaming(false);
     }
@@ -1746,11 +1746,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the `EnumDictRank` cache is keyed by canonical
-    // `KeyId`, not column index, so a column reorder no longer
-    // requires a `columnsMoved` invalidation hook -- the cached rank
-    // stays attached to the same logical column.
-    void TestEnumRankCacheSurvivesColumnsMoved()
+    // Regression: a column reorder needs no invalidation hook. The
+    // proxy keeps the ordering until the next sort, and a sort on the
+    // moved column builds the ordering for its new index.
+    void TestOrderingSurvivesColumnsMoved()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
@@ -1792,11 +1791,9 @@ private slots:
         // Warm the rank cache: sort by the enum column.
         filterModel->sort(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        const std::size_t cacheSizeBefore = filterModel->EnumRankCacheSizeForTest();
-        QVERIFY2(cacheSizeBefore >= std::size_t{1}, "sorting by an enum column must populate the rank cache");
+        QVERIFY2(filterModel->HasOrderingForTest(), "sorting by an enum column must build the ordering");
 
-        // Reorder columns; the rank cache is KeyId-keyed and
-        // survives.
+        // Reorder columns; the ordering stays until the next sort.
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
         // Pin the proxy-level forwarding contract too: `LogFilterModel`
@@ -1820,18 +1817,18 @@ private slots:
         );
         QVERIFY2(filterColumnsMovedSpy.count() >= 1, "LogFilterModel must forward columnsMoved from its source");
 
-        // Cache entry survives the reorder (KeyId-keyed).
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
+        // The ordering survives the reorder.
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         // Re-sort against the column's new position. The proxy
         // tracks the sort column in source-coords, so a reorder
         // shifts what that index points at -- we re-issue `sort()`.
-        // The lookup hits the cache (KeyId match), no rebuild.
+        // The re-sort builds an ordering for the new column index.
         const int levelColAfter = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelColAfter >= 0, "level column must still exist after the move");
         filterModel->sort(levelColAfter, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
+        QCOMPARE(filterModel->HasOrderingForTest(), true);
 
         QStringList sortedLevelsAfter;
         sortedLevelsAfter.reserve(filterModel->rowCount());
@@ -3677,7 +3674,7 @@ private slots:
     // `LogModel::ApplyColumnTypeEdit` was introduced the editor path
     // silently skipped it, leaving any active enum filter on the
     // column wired to a now-stale bitset and the proxy's
-    // `EnumDictRank` cache uninvalidated.
+    // ordering uninvalidated.
     //
     // We drive both directions on the `category` column (4 unique
     // values, well within `DEFAULT_ENUM_VALUE_CAP`) returned by
@@ -4284,12 +4281,12 @@ private slots:
         QVERIFY2(withDisambiguator == 2, "both duplicate-headered columns must be disambiguated in View menu");
     }
 
-    // Regression: `EnumRankFor` self-heals when the live dictionary
+    // Regression: `CurrentOrdering` self-heals when the live dictionary
     // has grown or its address changed since the cached rank was
     // built. Production also has a `MainWindow` invalidation tick;
     // this test wires the proxy directly (no `MainWindow`) so the
     // self-heal is the only defence.
-    void TestEnumRankCacheSelfHealsOnDictionaryGrowth()
+    void TestOrderingSelfHealsOnDictionaryGrowth()
     {
         LogModel model;
         LogFilterModel filterModel;
@@ -4326,7 +4323,7 @@ private slots:
 
         // Warm the cache.
         filterModel.sort(levelCol, Qt::AscendingOrder);
-        QVERIFY2(filterModel.EnumRankCacheSizeForTest() == std::size_t{1}, "first sort must populate the rank cache");
+        QVERIFY2(filterModel.HasOrderingForTest(), "first sort must build the ordering");
 
         // Snapshot pre-growth order. Without the self-heal, ids past
         // the cached bitset all collide at the past-the-end rank.
@@ -4354,10 +4351,10 @@ private slots:
         QCOMPARE(static_cast<int>(dict->Size()), 4);
 
         // Re-sort. `rank.DictSize() < live.Size()` trips and
-        // `EnumRankFor` rebuilds; the cache stays at one row (same
+        // `CurrentOrdering` rebuilds; the cache stays at one row (same
         // `KeyId`) but its `mIdToRank` now covers all 4 ids.
         filterModel.sort(levelCol, Qt::AscendingOrder);
-        QCOMPARE(filterModel.EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(filterModel.HasOrderingForTest(), true);
 
         QStringList orderedAfterGrowth;
         orderedAfterGrowth.reserve(filterModel.rowCount());

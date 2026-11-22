@@ -56,16 +56,16 @@ enum class StreamingResult : int
 /// Shape change reported by `LogModel::enumColumnsChanged`, so receivers
 /// can scope their reaction:
 ///   - `Promoted` -- a column flipped into `Type::Enumeration`. The
-///     proxy's `EnumDictRank` cache has no entry yet, so no
+///     proxy's `RowOrdering` has no ranks for it yet, so no
 ///     invalidation is needed; filter rules built before the promotion
 ///     want a rebuild onto the bitset fast path.
 ///   - `Grew` -- an existing enum column's dictionary gained at least
-///     one id. `EnumRankFor` self-heals via its `DictSize()` check,
-///     so the rank cache stays valid; filter rules only need a rebuild
+///     one id. `LogFilterModel::CurrentOrdering` self-heals via
+///     `RowOrdering::IsOutdated`, so the ordering stays valid; filter rules only need a rebuild
 ///     if a previously-unresolved selected value just got interned.
 ///   - `Demoted` -- an enum column lost its dictionary (registry
 ///     erase). The cached `EnumDictionary*` is now dangling, so the
-///     rank cache entry must be dropped and rules rebuilt onto the
+///     ordering must be dropped and rules rebuilt onto the
 ///     string-set fallback.
 enum class EnumColumnsChangeReason : int
 {

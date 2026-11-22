@@ -2761,13 +2761,13 @@ private slots:
         QCOMPARE(proxy.rowCount(), 2);
         // Warm the cache so we can assert it's cleared on swap.
         proxy.sort(levelColA, Qt::AscendingOrder);
-        QCOMPARE(proxy.EnumRankCacheSizeForTest(), std::size_t{1});
+        QCOMPARE(proxy.HasOrderingForTest(), true);
 
         // Swap to `modelB` without re-issuing `SetLogModel`. Filter
         // state must be wiped; the empty rule list defaults to
         // accepting every `B` row (safe "not yet rewired" default).
         proxy.setSourceModel(&modelB);
-        QCOMPARE(proxy.EnumRankCacheSizeForTest(), std::size_t{0});
+        QCOMPARE(proxy.HasOrderingForTest(), false);
         QCOMPARE(proxy.rowCount(), modelB.rowCount());
 
         // Re-wire for `B`. Survivors come from `B`'s rows (2 "info").

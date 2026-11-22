@@ -1220,7 +1220,7 @@ private slots:
         {
             const loglib::LogConfiguration probe = loglib::LoadConfiguration(lastPath->toStdString());
             QCOMPARE(probe.view.sort.columnKeys, std::vector<std::string>{"category"});
-            QVERIFY(probe.view.sort.descending);
+            QVERIFY(probe.view.sort.direction == loglib::SortDirection::Descending);
         }
 
         // Fresh window restores the snapshot.
@@ -2149,7 +2149,7 @@ private slots:
 
         loglib::Sort sort;
         sort.columnKeys = {"category"};
-        sort.descending = true;
+        sort.direction = loglib::SortDirection::Descending;
         builder.view.sort = sort;
 
         loglib::SaveConfiguration(builder, cfgPath.toStdString(), loglib::SaveScope::Full);
@@ -2356,7 +2356,7 @@ private slots:
             {QStringLiteral(R"({"value":1,"msg":"first"})"), QStringLiteral(R"({"value":2,"msg":"second"})")},
             [](loglib::LogConfiguration &configuration) {
                 configuration.columns.at(0).header = "Embedded value";
-                configuration.view.sort = {.columnKeys = {"value"}, .descending = true};
+                configuration.view.sort = {.columnKeys = {"value"}, .direction = loglib::SortDirection::Descending};
                 configuration.view.anchors = {{.pathKey = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
             }
         );

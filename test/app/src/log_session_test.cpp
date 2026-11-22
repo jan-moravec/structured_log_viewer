@@ -362,7 +362,7 @@ private slots:
 
         const auto &sort = session.View().sort;
         QCOMPARE(sort.columnKeys, session.Model()->Layout().Columns().at(2).keys);
-        QCOMPARE(sort.descending, true);
+        QCOMPARE(sort.direction, loglib::SortDirection::Descending);
     }
 
     static void TestMirrorSortHonoursDeferredSortLatch()
@@ -376,7 +376,7 @@ private slots:
 
         loglib::Sort persisted;
         persisted.columnKeys = {"stale"};
-        persisted.descending = true;
+        persisted.direction = loglib::SortDirection::Descending;
         session.MutableView().sort = persisted;
         session.SetPendingApplySortFromConfig(true);
 
@@ -385,7 +385,7 @@ private slots:
 
         const auto &sort = session.View().sort;
         QCOMPARE(sort.columnKeys, std::vector<std::string>{"stale"});
-        QCOMPARE(sort.descending, true);
+        QCOMPARE(sort.direction, loglib::SortDirection::Descending);
     }
 
     static void TestMirrorSortWritesLiveValueOnceLatchIsCleared()
@@ -397,7 +397,7 @@ private slots:
 
         loglib::Sort persisted;
         persisted.columnKeys = {"stale"};
-        persisted.descending = true;
+        persisted.direction = loglib::SortDirection::Descending;
         session.MutableView().sort = persisted;
 
         session.SetPendingApplySortFromConfig(false);

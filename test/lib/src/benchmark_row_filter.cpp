@@ -10,6 +10,7 @@
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"
 #include "common.hpp"
+#include "row_compare_helpers.hpp"
 #include "table_fixture.hpp"
 
 #include <loglib/config/column_layout.hpp>
@@ -21,7 +22,7 @@
 #include <loglib/core/log_line.hpp>
 #include <loglib/core/log_value.hpp>
 #include <loglib/parse/log_parse_sink.hpp>
-#include <loglib/query/log_compare.hpp>
+#include <loglib/query/internal/row_compare.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/table/log_table.hpp>
 
@@ -41,6 +42,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace row_compare_helpers;
 
 namespace bench
 {
@@ -74,7 +76,7 @@ struct LargeTable
  * auto-promotion logic on LogTable::AppendBatch would flip the
  * column to Type::Level once the dictionary fills with
  * canonical-level aliases, silently changing both the storage path
- * (CompareEnum -> CompareLevel) and the EnumDictRank semantics
+ * (CompareEnum -> CompareLevel) and the EnumSortRank semantics
  * the benchmarks below rely on. Used by the filter and enum-sort
  * benchmarks below.
  */
@@ -259,7 +261,7 @@ struct TableInput
     std::unique_ptr<TestLogFile> fixture;
     std::unique_ptr<LargeTable> owned;
     const EnumDictionary *dict = nullptr;
-    std::unique_ptr<EnumDictRank> rank;
+    std::unique_ptr<EnumSortRank> rank;
 
     LogTable &Table() const
     {
@@ -285,7 +287,7 @@ std::unique_ptr<TableInput> MakeEnumInput(const char *fileName)
     {
         throw std::runtime_error("the enum table has no dictionary");
     }
-    input->rank = std::make_unique<EnumDictRank>(*input->dict);
+    input->rank = std::make_unique<EnumSortRank>(*input->dict);
     return input;
 }
 
@@ -606,7 +608,7 @@ void RegisterRowFilterBenchmarks()
         "CompareRows level sort over 1000000 rows",
         levelTable,
         [](const TableInput &, const LogTable &table, std::size_t a, std::size_t b) {
-            // Level columns ignore the EnumDictRank argument; null matches a non-Qt consumer that has not
+            // Level columns ignore the EnumSortRank argument; null matches a non-Qt consumer that has not
             // materialised any rank table.
             return CompareRows(table, a, b, 0, nullptr);
         },

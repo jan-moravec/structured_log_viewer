@@ -589,7 +589,8 @@ void LogSession::MirrorSortToConfiguration()
         {
             sort.columnKeys = columns[static_cast<std::size_t>(proxySortColumn)].keys;
         }
-        sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
+        sort.direction = mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder ? loglib::SortDirection::Descending
+                                                                                   : loglib::SortDirection::Ascending;
         mView.sort = std::move(sort);
     }
 }

@@ -177,7 +177,7 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
     loglib::LogConfiguration configuration = DetectedConfiguration();
     const int msg = ColumnIndex(configuration.columns, "msg");
     configuration.view.sort.columnKeys = configuration.columns[static_cast<std::size_t>(msg)].keys;
-    configuration.view.sort.descending = true;
+    configuration.view.sort.direction = loglib::SortDirection::Descending;
     const auto path = WriteConfig("sort.json", configuration, loglib::SaveScope::Full);
 
     const Resolved fromConfig = Resolve({"--config", path.string()});
@@ -193,7 +193,7 @@ TEST_CASE("session precedence: --sort replaces the configuration sort", "[cli][s
         )
     );
     CHECK(overridden.session.sort->direction == loglib::SortDirection::Ascending);
-    CHECK_FALSE(overridden.session.configuration.view.sort.descending);
+    CHECK(overridden.session.configuration.view.sort.direction == loglib::SortDirection::Ascending);
 }
 
 TEST_CASE("session precedence: column flags replace configuration visibility", "[cli][session]")
@@ -342,7 +342,7 @@ TEST_CASE("slp query --save-session writes the effective configuration", "[cli][
     const loglib::LogConfiguration written = loglib::LoadConfiguration(sessionPath);
     REQUIRE_FALSE(written.view.sort.columnKeys.empty());
     CHECK(written.view.sort.columnKeys == std::vector<std::string>{"msg"});
-    CHECK(written.view.sort.descending);
+    CHECK(written.view.sort.direction == loglib::SortDirection::Descending);
     REQUIRE(written.columns.size() >= 2);
     CHECK(written.columns[0].header == "msg");
     CHECK(written.columns[1].header == "level");

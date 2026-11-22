@@ -784,7 +784,7 @@ MainWindow::MainWindow(
     // Session and view construction guarantees a complete proxy and selection-model chain.
     //
     // `LogFilterModel::setSortRole` is intentionally never called:
-    // it sorts via `loglib::CompareRows` straight against `LogTable`
+    // it sorts via `loglib::RowOrdering` straight against `LogTable`
     // (no `data(role)` round-trip), so the sort role no longer
     // drives behaviour. The deprecated no-op stays on the class for
     // one release for test and benchmark compatibility.
@@ -3907,7 +3907,8 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         if (loadedSortColumn.has_value())
         {
             mTableView->sortByColumn(
-                static_cast<int>(*loadedSortColumn), loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                static_cast<int>(*loadedSortColumn),
+                loadedSort.direction == loglib::SortDirection::Descending ? Qt::DescendingOrder : Qt::AscendingOrder
             );
         }
 
@@ -9830,7 +9831,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
     //     on the slow string-set fallback forever; rebuild so it
     //     picks up the bitset hot path. The signal doesn't say which
     //     column promoted, so any active enum filter triggers a
-    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
+    //     rebuild. `LogFilterModel::CurrentOrdering` self-heals on the next sort, so no
     //     cache flush is needed.
     //   - `Grew`: existing predicates still work (bitset for resolved
     //     ids, string-set fallback for unresolved). Rebuild only when
@@ -9842,9 +9843,9 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
     }
     if (reason == EnumColumnsChangeReason::Demoted)
     {
-        // Broad flush: rank cache keys alias across columns via
-        // `EnumRankFor`, so invalidate everything to be safe.
-        mSortFilterProxyModel->InvalidateEnumRanks();
+        // The ordering holds ranks of a dictionary that is gone, so
+        // drop it.
+        mSortFilterProxyModel->InvalidateOrdering();
 
         // A `Type::Level -> Type::String` demote orphans any saved
         // canonical-name filter (`"Info"`, ...) because those
@@ -10085,7 +10086,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed, const
             {
                 mTableView->sortByColumn(
                     static_cast<int>(*loadedSortColumn),
-                    loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                    loadedSort.direction == loglib::SortDirection::Descending ? Qt::DescendingOrder : Qt::AscendingOrder
                 );
             }
         }
@@ -11563,7 +11564,8 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
         return;
     }
     table->sortByColumn(
-        static_cast<int>(*cfgSortColumn), cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+        static_cast<int>(*cfgSortColumn),
+        cfgSort.direction == loglib::SortDirection::Descending ? Qt::DescendingOrder : Qt::AscendingOrder
     );
 }
 

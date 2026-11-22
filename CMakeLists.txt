@@ -5,7 +5,7 @@ project(structured_log_viewer VERSION 0.18.0 LANGUAGES CXX)
 # IPO/LTO on for Release / RelWithDebInfo, off for Debug. `NOT DEFINED` gates
 # let sanitizer presets override via the cache; a plain `set(... ON)` would
 # shadow that and re-enable thin-LTO, which breaks ASan+UBSan+PIE links
-# (PC-relative relocs into libstdc++ from `log_compare.cpp` thread_local dtors).
+# (PC-relative relocs into libstdc++ from `row_ordering.cpp` thread_local dtors).
 include(CheckIPOSupported)
 check_ipo_supported(RESULT loglib_ipo_supported OUTPUT loglib_ipo_error LANGUAGES CXX)
 if(loglib_ipo_supported)

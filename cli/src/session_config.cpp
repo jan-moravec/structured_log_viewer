@@ -242,10 +242,7 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     else if (const auto persistedColumn = loglib::FindColumnByKeys(session.configuration.view.sort.columnKeys, columns))
     {
         const auto &persisted = session.configuration.view.sort;
-        session.sort = SortChoice{
-            .columnIndex = *persistedColumn,
-            .direction = persisted.descending ? loglib::SortDirection::Descending : loglib::SortDirection::Ascending
-        };
+        session.sort = SortChoice{.columnIndex = *persistedColumn, .direction = persisted.direction};
     }
 
     // Columns: `--all-columns` beats `--columns` beats the configuration.
@@ -309,7 +306,7 @@ std::expected<EffectiveSession, Failure> ApplySessionConfiguration(
     if (session.sort)
     {
         session.configuration.view.sort.columnKeys = table.Layout().Columns()[session.sort->columnIndex].keys;
-        session.configuration.view.sort.descending = session.sort->direction == loglib::SortDirection::Descending;
+        session.configuration.view.sort.direction = session.sort->direction;
     }
     return session;
 }

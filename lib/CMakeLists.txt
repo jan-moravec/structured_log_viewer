@@ -49,7 +49,7 @@ add_library(
     src/table/column_type_health.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/clang_tidy_stubs/glaze_options.cpp
-    src/query/log_compare.cpp
+    src/query/row_compare.cpp
     src/core/log_data.cpp
     src/query/row_filter.cpp
     src/query/row_filter_evaluation.cpp
@@ -125,7 +125,6 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/core/key_index.hpp
     include/loglib/query/filter_compile.hpp
     include/loglib/core/line_source.hpp
-    include/loglib/query/log_compare.hpp
     include/loglib/config/log_configuration.hpp
     include/loglib/core/log_data.hpp
     include/loglib/query/row_filter.hpp

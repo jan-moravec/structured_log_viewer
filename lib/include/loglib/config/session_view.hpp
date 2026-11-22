@@ -19,8 +19,17 @@
 namespace loglib
 {
 
+/** @brief The direction of a sort. */
+enum class SortDirection
+{
+    /** @brief From the smallest value to the largest. */
+    Ascending,
+    /** @brief From the largest value to the smallest. */
+    Descending,
+};
+
 /**
- * @brief The saved sort. The column is named by its keys, found the way filter leaves find theirs, so a column move
+ * @brief The saved sort. The column is named by its keys, found the way filter conditions find theirs, so a column move
  * needs no update. Empty keys mean no sort. Use FindColumnByKeys to get the column index.
  */
 struct Sort
@@ -28,8 +37,8 @@ struct Sort
     /** @brief The keys of the sorted column. Empty means no sort. */
     std::vector<std::string> columnKeys;
 
-    /** @brief True to sort from the largest value to the smallest. */
-    bool descending = false;
+    /** @brief The direction of the sort. */
+    SortDirection direction = SortDirection::Ascending;
 };
 
 /** @brief The filter, sort, highlight rules and anchors of a session. */

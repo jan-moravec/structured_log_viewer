@@ -391,10 +391,17 @@ template <> struct glz::meta<loglib::FilterExpression>
     static constexpr auto value = &T::node;
 };
 
+template <> struct glz::meta<loglib::SortDirection>
+{
+    using enum loglib::SortDirection;
+    static constexpr std::array keys{"ascending", "descending"};
+    static constexpr std::array value{Ascending, Descending};
+};
+
 template <> struct glz::meta<loglib::Sort> : loglib::internal::AllKeysOptional
 {
     using T = loglib::Sort;
-    static constexpr auto value = object("columnKeys", &T::columnKeys, "descending", &T::descending);
+    static constexpr auto value = object("columnKeys", &T::columnKeys, "direction", &T::direction);
 };
 
 // The saved form of one anchor:

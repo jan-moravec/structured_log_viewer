@@ -1,20 +1,23 @@
 /**
- * @brief Compares two rows of a column for sorting.
+ * @brief Compares and sorts the rows of a table by one column.
  *
- * CompareRows orders two rows by the value in one column, using the rules of the column's type. EnumDictRank
- * precomputes the alphabetical rank of every value in an enumeration dictionary, so sorting an enumeration column
- * compares small integers instead of strings.
+ * CompareRows orders two rows by the value in one column, using the rules of the column's type. The sort functions
+ * order many rows at once. EnumSortRank precomputes the alphabetical rank of every value of an enumeration dictionary,
+ * so an enumeration column sorts by small integers and not by strings. RowOrdering is the public way to use all of
+ * this, and it builds the ranks itself, so nothing outside the query module needs to know the rules written here.
  *
- * This is part of the query module.
+ * This is part of the query module and is internal to it.
  */
 #pragma once
 
+#include "loglib/config/session_view.hpp"
 #include "loglib/core/enum_dictionary.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace loglib
@@ -22,9 +25,13 @@ namespace loglib
 
 class LogTable;
 
-// EnumDictRank stores per-id ranks as uint16_t. Pin the
-// representation against future bumps of MAX_ENUM_VALUES.
-static_assert(MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumDictRank stores per-id ranks in uint16_t");
+} // namespace loglib
+
+namespace loglib::internal
+{
+
+// EnumSortRank stores per-id ranks as uint16_t. Pin the representation against future bumps of MAX_ENUM_VALUES.
+static_assert(MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumSortRank stores per-id ranks in uint16_t");
 
 /**
  * @brief The alphabetical rank of every value in an enumeration dictionary.
@@ -32,18 +39,16 @@ static_assert(MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumDict
  * CompareRows looks up a rank with RankOf, which saves comparing strings for each comparison. Ranks are built from
  * bytes, so the sort order is the same in every locale. Pickers that list the values for display may sort differently.
  *
- * An id created after the table was built gets the rank DictSize, so it sorts after all known values.
+ * An id created after the ranks were built gets the rank DictSize, so it sorts after all known values. Build the ranks
+ * again when the dictionary grows.
  */
-class EnumDictRank
+class EnumSortRank
 {
 public:
-    EnumDictRank() = default;
+    EnumSortRank() = default;
 
-    /**
-     * @brief Builds the ranks from the current values of the dictionary. Building again after the dictionary changed
-     * is fine.
-     */
-    explicit EnumDictRank(const EnumDictionary &dictionary);
+    /** @brief Builds the ranks from the current values of the dictionary. */
+    explicit EnumSortRank(const EnumDictionary &dictionary);
 
     /** @brief The rank of a value id. An id that the ranks do not know gets DictSize, so it sorts last. */
     [[nodiscard]] uint16_t RankOf(EnumValueId id) const noexcept;
@@ -60,6 +65,17 @@ public:
 private:
     /** @brief The alphabetical rank of each enumeration id, indexed by id. */
     std::vector<uint16_t> mIdToRank;
+};
+
+/**
+ * @brief Two strings that comparing rows formats cell values into, so a steady state allocates nothing.
+ *
+ * A scratch belongs to one thread at a time. A parallel sort gives each worker its own.
+ */
+struct CompareScratch
+{
+    std::string lhs;
+    std::string rhs;
 };
 
 /**
@@ -89,7 +105,8 @@ private:
     size_t lhsRow,
     size_t rhsRow,
     size_t columnIndex,
-    const EnumDictRank *rankForEnumColumn = nullptr
+    const EnumSortRank *rankForEnumColumn,
+    CompareScratch &scratch
 );
 
 /**
@@ -109,8 +126,8 @@ private:
     const LogTable &table,
     std::span<const size_t> logRows,
     size_t columnIndex,
-    bool ascending,
-    const EnumDictRank *rankForEnumColumn = nullptr
+    SortDirection direction,
+    const EnumSortRank *rankForEnumColumn
 );
 
 /**
@@ -126,10 +143,10 @@ private:
     const LogTable &table,
     std::span<const size_t> logRows,
     size_t columnIndex,
-    bool ascending,
+    SortDirection direction,
     size_t begin,
     size_t end,
-    const EnumDictRank *rankForEnumColumn = nullptr
+    const EnumSortRank *rankForEnumColumn
 );
 
-} // namespace loglib
+} // namespace loglib::internal

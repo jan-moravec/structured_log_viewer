@@ -5,6 +5,7 @@
 #include "benchmark_common.hpp"
 #include "benchmark_registry.hpp"
 #include "common.hpp"
+#include "row_compare_helpers.hpp"
 #include "table_fixture.hpp"
 
 #include <loglib/config/column.hpp>
@@ -19,7 +20,7 @@
 #include <loglib/core/row_batch.hpp>
 #include <loglib/core/stream_line_source.hpp>
 #include <loglib/query/filter_compile.hpp>
-#include <loglib/query/log_compare.hpp>
+#include <loglib/query/internal/row_compare.hpp>
 #include <loglib/query/row_filter.hpp>
 #include <loglib/table/log_table.hpp>
 #include <loglib/time/time_zone_context.hpp>
@@ -43,6 +44,7 @@
 #include <vector>
 
 using namespace loglib;
+using namespace row_compare_helpers;
 
 namespace bench
 {

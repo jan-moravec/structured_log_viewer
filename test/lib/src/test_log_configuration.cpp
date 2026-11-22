@@ -99,7 +99,7 @@ namespace
     leaf.matchType = FilterCondition::Match::Contains;
     leaf.filterString = "boot";
     configuration.view.expression = LeavesAsExpression({leaf});
-    configuration.view.sort = Sort{.columnKeys = {"ts"}, .descending = true};
+    configuration.view.sort = Sort{.columnKeys = {"ts"}, .direction = loglib::SortDirection::Descending};
     configuration.view.highlightRules.push_back(
         HighlightRule{.name = "errors", .condition = {.columnKeys = {"level"}, .filterString = std::string{"error"}}}
     );
@@ -161,7 +161,7 @@ TEST_CASE("A full configuration round-trips through a file", "[log_configuration
     CheckSameColumns(loaded.columns, original.columns);
     CHECK(loaded.view.expression == original.view.expression);
     CHECK(loaded.view.sort.columnKeys == original.view.sort.columnKeys);
-    CHECK(loaded.view.sort.descending);
+    CHECK(loaded.view.sort.direction == loglib::SortDirection::Descending);
     CHECK(loaded.view.highlightRules == original.view.highlightRules);
     CHECK(loaded.view.anchors == original.view.anchors);
     REQUIRE(loaded.source.has_value());
@@ -248,7 +248,7 @@ TEST_CASE("A Full save writes the documented keys", "[log_configuration][wire_fo
           "\"expression\"",
           "\"sort\"",
           "\"columnKeys\"",
-          "\"descending\"",
+          "\"direction\"",
           "\"highlightRules\"",
           "\"anchors\"",
           "\"locators\"",
@@ -351,7 +351,7 @@ TEST_CASE("Missing optional fields take the defaults of their members", "[log_co
     CHECK(loaded.columns[0].autoDetect);
     CHECK(IsMatchAll(loaded.view.expression));
     CHECK(loaded.view.sort.columnKeys.empty());
-    CHECK_FALSE(loaded.view.sort.descending);
+    CHECK(loaded.view.sort.direction == loglib::SortDirection::Ascending);
     CHECK(loaded.view.highlightRules.empty());
     CHECK(loaded.view.anchors.empty());
     CHECK_FALSE(loaded.source.has_value());
@@ -360,12 +360,27 @@ TEST_CASE("Missing optional fields take the defaults of their members", "[log_co
 TEST_CASE("A view may leave out any of its parts", "[log_configuration][defaults]")
 {
     const LogConfiguration loaded = ParseConfiguration(
-        R"({"version":1,"columns":[],"view":{"sort":{"columnKeys":["a"],"descending":true}}})", "view.json"
+        R"({"version":1,"columns":[],"view":{"sort":{"columnKeys":["a"],"direction":"descending"}}})", "view.json"
     );
     CHECK(loaded.view.sort.columnKeys == std::vector<std::string>{"a"});
-    CHECK(loaded.view.sort.descending);
+    CHECK(loaded.view.sort.direction == loglib::SortDirection::Descending);
     CHECK(IsMatchAll(loaded.view.expression));
     CHECK(loaded.view.anchors.empty());
+}
+
+TEST_CASE("A sort direction is saved by name", "[log_configuration][view]")
+{
+    for (const auto &[direction, name] :
+         {std::pair{SortDirection::Ascending, std::string_view{"ascending"}},
+          std::pair{SortDirection::Descending, std::string_view{"descending"}}})
+    {
+        LogConfiguration configuration;
+        configuration.view.sort = Sort{.columnKeys = {"ts"}, .direction = direction};
+        const std::string json = SerializeConfiguration(configuration, SaveScope::Full, ConfigurationLayout::Compact);
+        CHECK(json.contains(R"("sort":{"columnKeys":["ts"],"direction":")" + std::string(name) + R"("})"));
+        CHECK(ParseConfiguration(json).view.sort.direction == direction);
+    }
+    CHECK(ErrorOf(R"({"version":1,"columns":[],"view":{"sort":{"direction":"sideways"}}})").size() > 0);
 }
 
 TEST_CASE("A missing version is a FormatError that names the file", "[log_configuration][version]")

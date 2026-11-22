@@ -52,7 +52,7 @@ add_executable(
     "src/test_line_bytes_queue.cpp"
     "src/test_column_layout.cpp"
     "src/test_log_configuration.cpp"
-    "src/test_log_compare.cpp"
+    "src/test_row_compare.cpp"
     "src/test_log_data.cpp"
     "src/test_arrival_clock.cpp"
     "src/test_log_generator_tool.cpp"
