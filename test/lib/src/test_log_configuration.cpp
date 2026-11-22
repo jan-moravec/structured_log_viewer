@@ -653,9 +653,11 @@ TEST_CASE(
         {
             .name = "level",
             .condition =
-                {.type = FilterCondition::Type::Enumeration,
-                 .columnKeys = {"level"},
-                 .filterValues = {"Error", "Warn"}},
+                {
+                    .type = FilterCondition::Type::Enumeration,
+                    .columnKeys = {"level"},
+                    .filterValues = {"Error", "Warn"},
+                },
         },
         {
             .name = "latency",
