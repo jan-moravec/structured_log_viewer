@@ -35,8 +35,7 @@ ParseOutcome RunParse(LogTable &table, const LogParser &parser, std::unique_ptr<
     if constexpr (std::is_same_v<Source, FileLineSource>)
     {
         // A file parse converts with one reference time. Taking the table's, which attaching the source fixed, makes
-        // the rows the parser converts agree with the rows the table converts itself, such as those of a time column
-        // it detects while the parse runs.
+        // the rows the parser converts agree with the rows the table converts itself.
         if (!options.referenceTime.has_value())
         {
             options.referenceTime = table.ReferenceTime();
@@ -92,22 +91,6 @@ void TableSink::OnFinished(bool cancelled)
     mCancelled = cancelled;
 }
 
-std::vector<Column> TableSink::TimeColumnsAdded()
-{
-    std::vector<Column> added;
-    for (const Column &column : mTable->Layout().Columns())
-    {
-        if (column.type != ColumnType::Time || column.keys.empty() ||
-            std::ranges::contains(mReportedTimeColumns, column.keys.front()))
-        {
-            continue;
-        }
-        mReportedTimeColumns.push_back(column.keys.front());
-        added.push_back(column);
-    }
-    return added;
-}
-
 std::vector<ParseError> TableSink::TakeErrors()
 {
     if (mDroppedErrors != 0)
@@ -142,7 +125,7 @@ ParserOptions ParserOptionsFor(const LogTable &table, StopToken stop)
 {
     ParserOptions options;
     options.stopToken = std::move(stop);
-    options.timeColumns = TimeColumnsOf(table.Layout());
+    options.columns = table.Layout().Columns();
     options.defaultSourceTimeZone = table.DefaultSourceTimeZone();
     return options;
 }

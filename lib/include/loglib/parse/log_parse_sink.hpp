@@ -9,11 +9,8 @@
  */
 #pragma once
 
-#include "loglib/config/column.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/row_batch.hpp"
-
-#include <vector>
 
 namespace loglib
 {
@@ -49,18 +46,6 @@ public:
 
     /** @brief Called once after the last batch. cancelled is true when a stop was requested. */
     virtual void OnFinished(bool cancelled) = 0;
-
-    /**
-     * @brief Time columns the sink gained since the last call, such as columns a table detects from the first rows.
-     *
-     * A parallel file parse calls it from its serial stage after each batch it sent, and converts the columns it did
-     * not know in the batches it parses from then on. A column that an earlier call or the parser options already gave
-     * is harmless to return again. The default knows no such columns.
-     */
-    virtual std::vector<Column> TimeColumnsAdded()
-    {
-        return {};
-    }
 };
 
 } // namespace loglib

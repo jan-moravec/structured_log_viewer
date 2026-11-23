@@ -149,14 +149,4 @@ private:
  */
 [[nodiscard]] std::optional<size_t> FirstTimeColumnIndex(const ColumnLayout &layout);
 
-/**
- * @brief The columns of type Time, in column order. A parser gets these as ParserOptions::timeColumns and converts them
- * on its worker threads, which is faster than the table converting them. A caller that passes none still gets correct
- * rows, because the table converts the columns the batch does not list as converted.
- */
-[[nodiscard]] std::vector<Column> TimeColumnsOf(std::span<const Column> columns);
-
-/** @brief The columns of type Time of a layout, in column order. */
-[[nodiscard]] std::vector<Column> TimeColumnsOf(const ColumnLayout &layout);
-
 } // namespace loglib

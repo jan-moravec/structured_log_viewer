@@ -1,6 +1,6 @@
 # rows
-row 0: ts=slice:2024-01-01T00:00:00Z level=slice:info msg=slice:hello service=slice:auth
-row 1: ts=owned:2024-01-01T00:00:01Z level=owned:error msg=owned:boom service=owned:auth
+row 0: ts=time:1704067200000000 level=slice:info msg=slice:hello service=slice:auth
+row 1: ts=time:1704067201000000 level=owned:error msg=owned:boom service=owned:auth
 # errors
 # offsets
  76 152

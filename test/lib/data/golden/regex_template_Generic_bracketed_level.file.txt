@@ -1,13 +1,13 @@
 # rows
-row 0: Level=slice:INFO Timestamp=slice:2022-02-18T15:37:10.354 Thread=slice:0xBF32 Message=slice:System starting
-row 1: Level=slice:WARNING Timestamp=slice:2022-02-19T15:37:13.427 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
-row 2: Level=slice:ERROR Timestamp=slice:2024-01-01T00:00:00.000 Thread=slice:main Message=slice:Connection refused
-row 5: Level=slice:INFO Timestamp=slice:2022-02-18T15:37:10.354 Thread=slice:0xBF32 Message=slice:System starting
-row 6: Level=slice:WARNING Timestamp=slice:2022-02-19T15:37:13.427 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
-row 7: Level=slice:ERROR Timestamp=slice:2024-01-01T00:00:00.000 Thread=slice:main Message=slice:Connection refused
-row 8: Level=slice:INFO Timestamp=slice:2022-02-18T15:37:10.354 Thread=slice:0xBF32 Message=slice:System starting
-row 9: Level=slice:WARNING Timestamp=slice:2022-02-19T15:37:13.427 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
-row 10: Level=slice:ERROR Timestamp=slice:2024-01-01T00:00:00.000 Thread=slice:main Message=slice:Connection refused
+row 0: Level=slice:INFO Timestamp=time:1645198630354000 Thread=slice:0xBF32 Message=slice:System starting
+row 1: Level=slice:WARNING Timestamp=time:1645285033427000 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
+row 2: Level=slice:ERROR Timestamp=time:1704067200000000 Thread=slice:main Message=slice:Connection refused
+row 5: Level=slice:INFO Timestamp=time:1645198630354000 Thread=slice:0xBF32 Message=slice:System starting
+row 6: Level=slice:WARNING Timestamp=time:1645285033427000 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
+row 7: Level=slice:ERROR Timestamp=time:1704067200000000 Thread=slice:main Message=slice:Connection refused
+row 8: Level=slice:INFO Timestamp=time:1645198630354000 Thread=slice:0xBF32 Message=slice:System starting
+row 9: Level=slice:WARNING Timestamp=time:1645285033427000 Thread=slice:0xBF32 Message=slice:Not in UTC timezone
+row 10: Level=slice:ERROR Timestamp=time:1704067200000000 Thread=slice:main Message=slice:Connection refused
 # errors
 error 5-5: Line did not match the regex pattern.
 # offsets

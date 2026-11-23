@@ -127,14 +127,14 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
     return ParseSource(parser, std::make_unique<FileLineSource>(file));
 }
 
-ParseResult ParseSource(const LogParser &parser, std::unique_ptr<FileLineSource> fileSource)
+ParseResult ParseSource(const LogParser &parser, std::unique_ptr<FileLineSource> fileSource, ParserOptions options)
 {
     // The sink owns the FileLineSource for the duration of the parse. TakeData moves it into the LogData, so the
     // back-pointers of the rows stay valid.
     FileLineSource *sourceRaw = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
 
-    parser.Parse(*sourceRaw, sink, ParserOptions{});
+    parser.Parse(*sourceRaw, sink, std::move(options));
 
     LogData data = sink.TakeData();
     std::vector<ParseError> errors = sink.TakeErrors();

@@ -136,29 +136,6 @@ std::int64_t ParsedTimestampMicros(const std::string &content, const ParserOptio
 
 } // namespace
 
-TEST_CASE("TimeColumnsOf keeps only Time columns, in order", "[explicit_time_inputs]")
-{
-    LogConfiguration configuration;
-    Column text;
-    text.header = "message";
-    text.keys = {"message"};
-    configuration.columns.push_back(text);
-    configuration.columns.push_back(TimeColumn("first", "%F %T"));
-    Column number;
-    number.header = "latency";
-    number.keys = {"latency"};
-    number.type = ColumnType::Any;
-    configuration.columns.push_back(number);
-    configuration.columns.push_back(TimeColumn("second", "%FT%T"));
-
-    const std::vector<Column> columns = TimeColumnsOf(configuration.columns);
-    REQUIRE(columns.size() == 2);
-    CHECK(columns[0].header == "first");
-    CHECK(columns[1].header == "second");
-    CHECK(columns[1].parseFormats == std::vector<std::string>{"%FT%T"});
-    CHECK(TimeColumnsOf(ColumnLayout{}).empty());
-}
-
 TEST_CASE("Two tables in one process format the same timestamp in their own display zones", "[explicit_time_inputs]")
 {
     const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
@@ -243,11 +220,11 @@ TEST_CASE("A parse reads timestamps without an offset in the zone it is given", 
     const TimeZoneContext berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
 
     ParserOptions berlinOptions;
-    berlinOptions.timeColumns = {TimeColumn("ts", "%F %T")};
+    berlinOptions.columns = {TimeColumn("ts", "%F %T")};
     berlinOptions.defaultSourceTimeZone = berlin;
 
     ParserOptions defaultOptions;
-    defaultOptions.timeColumns = {TimeColumn("ts", "%F %T")};
+    defaultOptions.columns = {TimeColumn("ts", "%F %T")};
 
     // The documented result of the zone's own conversion.
     CHECK(ParsedTimestampMicros(content, berlinOptions) == berlin.LocalToUtc(wallClock));
@@ -269,7 +246,7 @@ TEST_CASE("A reference time fixes the year of a syslog timestamp for the whole p
         FileLineSource *sourcePtr = source.get();
         internal::BufferingSink sink(std::move(source));
         ParserOptions options;
-        options.timeColumns = {TimeColumn("ts", "%b %e %H:%M:%S")};
+        options.columns = {TimeColumn("ts", "%b %e %H:%M:%S")};
         options.referenceTime = reference;
         JsonParser{}.Parse(*sourcePtr, sink, options);
         const LogData data = sink.TakeData();
@@ -652,7 +629,7 @@ TEST_CASE(
     } sink(stream);
 
     ParserOptions options;
-    options.timeColumns = {TimeColumn("ts", "%b %e %H:%M:%S")};
+    options.columns = {TimeColumn("ts", "%b %e %H:%M:%S")};
     options.clock = [&stream] { return stream.now; };
     JsonParser{}.Parse(*source, sink, options);
 

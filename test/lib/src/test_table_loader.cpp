@@ -375,11 +375,6 @@ public:
         mInner.OnFinished(cancelled);
     }
 
-    std::vector<Column> TimeColumnsAdded() override
-    {
-        return mInner.TimeColumnsAdded();
-    }
-
     std::vector<std::vector<KeyId>> converted;
 
 private:
@@ -388,7 +383,7 @@ private:
 
 } // namespace
 
-TEST_CASE("A time column the table detects is converted by the parser in the later batches", "[table_loader][time]")
+TEST_CASE("A time key is converted by the parser in every batch", "[table_loader][time]")
 {
     const TestLogFile file("table_loader_detected_time.jsonl");
     LogTable table;
@@ -397,18 +392,18 @@ TEST_CASE("A time column the table detects is converted by the parser in the lat
     table.BeginStreaming(std::move(source));
     ConvertedKeysSink sink(table);
     ParserOptions options = ParserOptionsFor(table);
-    REQUIRE(options.timeColumns.empty());
+    REQUIRE(options.columns.empty());
     options.batchSizeBytes = 16 * 1024;
     JsonParser{}.Parse(sourceRef, sink, options);
     FinishLoading(table);
 
     REQUIRE(table.RowCount() == 20'000);
     REQUIRE(sink.converted.size() > 2);
-    // The first batch is parsed before the table knows the column. Once the table has it, the parser converts it.
-    CHECK(sink.converted.front().empty());
-    const auto convertedBatches =
-        std::ranges::count_if(sink.converted, [](const auto &keys) { return keys.size() == 1; });
-    CHECK(static_cast<size_t>(convertedBatches) > sink.converted.size() / 2);
+    // The parser knows the key from the name alone, so every batch lists it, the first one included.
+    for (const auto &keys : sink.converted)
+    {
+        CHECK(keys.size() == 1);
+    }
     CHECK(table.Layout().Columns()[0].type == ColumnType::Time);
     for (const size_t row : {size_t{0}, size_t{1}, size_t{9'999}, size_t{19'999}})
     {
@@ -416,12 +411,9 @@ TEST_CASE("A time column the table detects is converted by the parser in the lat
     }
 }
 
-TEST_CASE(
-    "A detected time column without a year uses the table's reference time in every batch", "[table_loader][time]"
-)
+TEST_CASE("A time column without a year uses the table's reference time in every batch", "[table_loader][time]")
 {
-    // The table converts the first batch itself and the parser the later ones. Both must read the year from the same
-    // reference time.
+    // The parser converts every batch, with the reference time that the table was given.
     std::string bytes;
     for (int i = 0; i < 20'000; ++i)
     {
@@ -518,7 +510,7 @@ TEST_CASE("A sink keeps the first parse errors and counts the rest", "[table_loa
     CHECK(outcome.linesConsumed == 2520);
 }
 
-TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_loader][options]")
+TEST_CASE("ParserOptionsFor carries the table's columns and zone", "[table_loader][options]")
 {
     LogTable table;
     LogConfiguration configuration;
@@ -527,8 +519,8 @@ TEST_CASE("ParserOptionsFor carries the table's time columns and zone", "[table_
 
     const StopSource stopSource;
     const ParserOptions options = ParserOptionsFor(table, stopSource.GetToken());
-    REQUIRE(options.timeColumns.size() == 1);
-    CHECK(options.timeColumns[0].keys == std::vector<std::string>{"ts"});
+    REQUIRE(options.columns.size() == 1);
+    CHECK(options.columns[0].keys == std::vector<std::string>{"ts"});
 }
 
 TEST_CASE("LiveProducer is the producer of the last stream and null for files", "[table_loader][live_producer]")

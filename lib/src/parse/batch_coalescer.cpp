@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <exception>
-#include <iterator>
 #include <string>
 #include <utility>
 
@@ -85,7 +84,7 @@ bool BatchCoalescer::TryFlush(bool force, size_t lastLineNumber)
     }
 
     mPending.lastLineNumber = lastLineNumber;
-    mPending.convertedTimeKeys = TakeConvertedTimeKeys();
+    mPending.convertedTimeKeys = mConvertedTimeKeys;
     SendBatch(std::move(mPending));
     mPending = RowBatch{};
     mPrimed = false;
@@ -104,7 +103,7 @@ void BatchCoalescer::Finish(size_t lastLineNumber, bool wasCancelled)
             Prime(lastLineNumber + 1);
         }
         mPending.lastLineNumber = lastLineNumber;
-        mPending.convertedTimeKeys = TakeConvertedTimeKeys();
+        mPending.convertedTimeKeys = mConvertedTimeKeys;
         SendBatch(std::move(mPending));
         mPending = RowBatch{};
         mPrimed = false;
@@ -155,27 +154,16 @@ void BatchCoalescer::FinishAfterException(size_t lastLineNumber, std::exception_
     }
 }
 
-void BatchCoalescer::RestrictConvertedTimeKeys(const std::vector<KeyId> &keys)
+void BatchCoalescer::AddConvertedTimeKeys(std::span<const KeyId> ids)
 {
-    if (!mRestrictedTimeKeys.has_value())
+    for (const KeyId id : ids)
     {
-        mRestrictedTimeKeys = keys;
-        return;
+        const auto position = std::ranges::lower_bound(mConvertedTimeKeys, id);
+        if (position == mConvertedTimeKeys.end() || *position != id)
+        {
+            mConvertedTimeKeys.insert(position, id);
+        }
     }
-    std::vector<KeyId> common;
-    std::ranges::set_intersection(*mRestrictedTimeKeys, keys, std::back_inserter(common));
-    mRestrictedTimeKeys = std::move(common);
-}
-
-std::vector<KeyId> BatchCoalescer::TakeConvertedTimeKeys()
-{
-    if (!mRestrictedTimeKeys.has_value())
-    {
-        return mConvertedTimeKeys;
-    }
-    std::vector<KeyId> restricted = std::move(*mRestrictedTimeKeys);
-    mRestrictedTimeKeys.reset();
-    return restricted;
 }
 
 void BatchCoalescer::SendBatch(RowBatch batch)

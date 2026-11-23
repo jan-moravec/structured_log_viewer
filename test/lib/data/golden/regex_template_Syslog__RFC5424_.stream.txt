@@ -1,13 +1,13 @@
 # rows
-row 1: priority=uint:46 version=uint:1 timestamp=slice:2017-04-27T07:50:47.381967+02:00 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
-row 2: priority=uint:30 version=uint:1 timestamp=slice:2017-04-27T07:59:12+02:00 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
-row 3: priority=uint:78 version=uint:1 timestamp=slice:2017-04-27T08:09:01+02:00 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
-row 4: priority=uint:46 version=uint:1 timestamp=slice:2017-04-27T07:50:47.381967+02:00 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
-row 5: priority=uint:30 version=uint:1 timestamp=slice:2017-04-27T07:59:12+02:00 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
-row 6: priority=uint:78 version=uint:1 timestamp=slice:2017-04-27T08:09:01+02:00 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
-row 7: priority=uint:46 version=uint:1 timestamp=slice:2017-04-27T07:50:47.381967+02:00 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
-row 8: priority=uint:30 version=uint:1 timestamp=slice:2017-04-27T07:59:12+02:00 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
-row 9: priority=uint:78 version=uint:1 timestamp=slice:2017-04-27T08:09:01+02:00 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
+row 1: priority=uint:46 version=uint:1 timestamp=time:1493272247381967 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
+row 2: priority=uint:30 version=uint:1 timestamp=time:1493272752000000 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
+row 3: priority=uint:78 version=uint:1 timestamp=time:1493273341000000 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
+row 4: priority=uint:46 version=uint:1 timestamp=time:1493272247381967 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
+row 5: priority=uint:30 version=uint:1 timestamp=time:1493272752000000 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
+row 6: priority=uint:78 version=uint:1 timestamp=time:1493273341000000 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
+row 7: priority=uint:46 version=uint:1 timestamp=time:1493272247381967 hostname=slice:logserver appname=slice:rsyslogd procid=slice:- msgid=slice:- structured=slice:[origin software="rsyslogd"] message=slice:start
+row 8: priority=uint:30 version=uint:1 timestamp=time:1493272752000000 hostname=slice:host appname=slice:dhclient procid=slice:- msgid=slice:- structured=slice:- message=slice:DHCPREQUEST on eth0
+row 9: priority=uint:78 version=uint:1 timestamp=time:1493273341000000 hostname=slice:host appname=slice:CRON procid=uint:1472 msgid=slice:- structured=slice:- message=slice:(root) CMD (test)
 # errors
 error 5-5: Line did not match the regex pattern.
 # offsets

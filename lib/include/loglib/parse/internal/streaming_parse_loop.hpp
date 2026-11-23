@@ -70,7 +70,8 @@ void SliceValuesOfRawLine(std::vector<CompactLogValue> &values, std::string &own
 /**
  * @brief The body of RunStreamingParseLoop, after the sink was started. It may throw.
  *
- * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
+ * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got. declaredKeys are
+ * the keys interned before the run, which the decoder never looks up.
  */
 template <LineDecoder Decoder>
 void RunStreamingParseLoopBody(
@@ -79,7 +80,8 @@ void RunStreamingParseLoopBody(
     LogParseSink &sink,
     const ParserOptions &options,
     BatchCoalescer &coalescer,
-    size_t &nextLineNumber
+    size_t &nextLineNumber,
+    std::span<const KeyId> declaredKeys
 )
 {
     KeyIndex &keys = sink.Keys();
@@ -87,9 +89,10 @@ void RunStreamingParseLoopBody(
     // Without a fixed reference time, every batch reads the clock again, so a stream that runs across New Year gives
     // the rows after it the new year. The first row of a batch refreshes the reference time of the time columns.
     const auto readClock = [&options] { return options.clock ? options.clock() : std::chrono::system_clock::now(); };
-    std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(
-        keys, options.timeColumns, options.defaultSourceTimeZone, options.referenceTime.value_or(readClock())
+    TimeConversion timeConversion = BuildTimeConversion(
+        keys, options.columns, declaredKeys, options.defaultSourceTimeZone, options.referenceTime.value_or(readClock())
     );
+    std::vector<TimeColumnSpec> &timeColumns = timeConversion.specs;
     const std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
     coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeColumnsSpan));
 
@@ -106,6 +109,9 @@ void RunStreamingParseLoopBody(
 
     WorkerScratch promoteScratch;
     promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
+    promoteScratch.keyCache.autoTime.plan = &timeConversion.automatic;
+    // How many automatic time keys the coalescer was told about.
+    size_t announcedTimeKeys = 0;
 
     // Bytes that an earlier stage, such as format detection, read from the producer and gave back to the source. They
     // come before anything the producer delivers now.
@@ -143,6 +149,12 @@ void RunStreamingParseLoopBody(
     auto announceSeenKeys = [&] {
         coalescer.AddSeenKeys(promoteScratch.keyCache.firstSeen);
         promoteScratch.keyCache.firstSeen.clear();
+        const std::vector<KeyId> &timeKeys = promoteScratch.keyCache.autoTime.keyIds;
+        if (timeKeys.size() != announcedTimeKeys)
+        {
+            coalescer.AddConvertedTimeKeys(timeKeys);
+            announcedTimeKeys = timeKeys.size();
+        }
     };
 
     // Summarize each consecutive orphan run as one error.
@@ -217,6 +229,11 @@ void RunStreamingParseLoopBody(
         {
             const auto now = readClock();
             for (TimeColumnSpec &spec : timeColumns)
+            {
+                spec.referenceTime = now;
+            }
+            timeConversion.automatic.prototype.referenceTime = now;
+            for (TimeColumnSpec &spec : promoteScratch.keyCache.autoTime.specs)
             {
                 spec.referenceTime = now;
             }
@@ -484,7 +501,7 @@ void RunStreamingParseLoop(
 
     try
     {
-        RunStreamingParseLoopBody(source, decoder, sink, options, coalescer, nextLineNumber);
+        RunStreamingParseLoopBody(source, decoder, sink, options, coalescer, nextLineNumber, declaredKeys);
     }
     catch (...)
     {

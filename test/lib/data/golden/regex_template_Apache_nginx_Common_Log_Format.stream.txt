@@ -1,13 +1,13 @@
 # rows
-row 1: clientip=slice:127.0.0.1 ident=slice:- auth=slice:frank timestamp=slice:10/Oct/2000:13:55:36 -0700 verb=slice:GET request=slice:/apache_pb.gif httpversion=double:1 response=uint:200 bytes=uint:2326
-row 2: clientip=slice:10.1.10.51 ident=slice:- auth=slice:- timestamp=slice:23/Dec/2014:21:20:35 +0000 verb=slice:POST request=slice:/api/1/rest/foo httpversion=double:1.1000000000000001 response=uint:200
-row 3: clientip=slice:::1 ident=slice:- auth=slice:- timestamp=slice:01/Jan/2024:00:00:00 +0000 verb=slice:HEAD request=slice:/ httpversion=double:2 response=uint:304 bytes=uint:0
-row 4: clientip=slice:127.0.0.1 ident=slice:- auth=slice:frank timestamp=slice:10/Oct/2000:13:55:36 -0700 verb=slice:GET request=slice:/apache_pb.gif httpversion=double:1 response=uint:200 bytes=uint:2326
-row 5: clientip=slice:10.1.10.51 ident=slice:- auth=slice:- timestamp=slice:23/Dec/2014:21:20:35 +0000 verb=slice:POST request=slice:/api/1/rest/foo httpversion=double:1.1000000000000001 response=uint:200
-row 6: clientip=slice:::1 ident=slice:- auth=slice:- timestamp=slice:01/Jan/2024:00:00:00 +0000 verb=slice:HEAD request=slice:/ httpversion=double:2 response=uint:304 bytes=uint:0
-row 7: clientip=slice:127.0.0.1 ident=slice:- auth=slice:frank timestamp=slice:10/Oct/2000:13:55:36 -0700 verb=slice:GET request=slice:/apache_pb.gif httpversion=double:1 response=uint:200 bytes=uint:2326
-row 8: clientip=slice:10.1.10.51 ident=slice:- auth=slice:- timestamp=slice:23/Dec/2014:21:20:35 +0000 verb=slice:POST request=slice:/api/1/rest/foo httpversion=double:1.1000000000000001 response=uint:200
-row 9: clientip=slice:::1 ident=slice:- auth=slice:- timestamp=slice:01/Jan/2024:00:00:00 +0000 verb=slice:HEAD request=slice:/ httpversion=double:2 response=uint:304 bytes=uint:0
+row 1: clientip=slice:127.0.0.1 ident=slice:- auth=slice:frank timestamp=time:971211336000000 verb=slice:GET request=slice:/apache_pb.gif httpversion=double:1 response=uint:200 bytes=uint:2326
+row 2: clientip=slice:10.1.10.51 ident=slice:- auth=slice:- timestamp=time:1419369635000000 verb=slice:POST request=slice:/api/1/rest/foo httpversion=double:1.1000000000000001 response=uint:200
+row 3: clientip=slice:::1 ident=slice:- auth=slice:- timestamp=time:1704067200000000 verb=slice:HEAD request=slice:/ httpversion=double:2 response=uint:304 bytes=uint:0
+row 4: clientip=slice:127.0.0.1 ident=slice:- auth=slice:frank timestamp=time:971211336000000 verb=slice:GET request=slice:/apache_pb.gif httpversion=double:1 response=uint:200 bytes=uint:2326
+row 5: clientip=slice:10.1.10.51 ident=slice:- auth=slice:- timestamp=time:1419369635000000 verb=slice:POST request=slice:/api/1/rest/foo httpversion=double:1.1000000000000001 response=uint:200
+row 6: clientip=slice:::1 ident=slice:- auth=slice:- timestamp=time:1704067200000000 verb=slice:HEAD request=slice:/ httpversion=double:2 response=uint:304 bytes=uint:0
+row 7: clientip=slice:127.0.0.1 ident=slice:- auth=slice:frank timestamp=time:971211336000000 verb=slice:GET request=slice:/apache_pb.gif httpversion=double:1 response=uint:200 bytes=uint:2326
+row 8: clientip=slice:10.1.10.51 ident=slice:- auth=slice:- timestamp=time:1419369635000000 verb=slice:POST request=slice:/api/1/rest/foo httpversion=double:1.1000000000000001 response=uint:200
+row 9: clientip=slice:::1 ident=slice:- auth=slice:- timestamp=time:1704067200000000 verb=slice:HEAD request=slice:/ httpversion=double:2 response=uint:304 bytes=uint:0
 # errors
 error 5-5: Line did not match the regex pattern.
 # offsets

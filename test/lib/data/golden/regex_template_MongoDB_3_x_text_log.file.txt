@@ -1,16 +1,16 @@
 # rows
-row 0: timestamp=slice:2024-04-28T04:02:03.123+0000 severity=slice:I component=slice:NETWORK context=slice:listener message=slice:connection accepted from 127.0.0.1:54321 #42 (1 connection now open)
-row 1: timestamp=slice:2024-04-28T04:02:04.456Z severity=slice:W component=slice:STORAGE context=slice:WTCheckpointThread message=slice:Checkpointer took 5000ms
-row 2: timestamp=slice:2024-04-28T04:02:05.789-04:00 severity=slice:E component=slice:QUERY context=slice:conn42 message=slice:Error executing query: bad cursor
-row 3: timestamp=slice:2024-04-28T04:02:06.000Z severity=slice:D2 component=slice:COMMAND context=slice:conn7 message=slice:run command admin.$cmd { isMaster: 1 }
-row 6: timestamp=slice:2024-04-28T04:02:03.123+0000 severity=slice:I component=slice:NETWORK context=slice:listener message=slice:connection accepted from 127.0.0.1:54321 #42 (1 connection now open)
-row 7: timestamp=slice:2024-04-28T04:02:04.456Z severity=slice:W component=slice:STORAGE context=slice:WTCheckpointThread message=slice:Checkpointer took 5000ms
-row 8: timestamp=slice:2024-04-28T04:02:05.789-04:00 severity=slice:E component=slice:QUERY context=slice:conn42 message=slice:Error executing query: bad cursor
-row 9: timestamp=slice:2024-04-28T04:02:06.000Z severity=slice:D2 component=slice:COMMAND context=slice:conn7 message=slice:run command admin.$cmd { isMaster: 1 }
-row 10: timestamp=slice:2024-04-28T04:02:03.123+0000 severity=slice:I component=slice:NETWORK context=slice:listener message=slice:connection accepted from 127.0.0.1:54321 #42 (1 connection now open)
-row 11: timestamp=slice:2024-04-28T04:02:04.456Z severity=slice:W component=slice:STORAGE context=slice:WTCheckpointThread message=slice:Checkpointer took 5000ms
-row 12: timestamp=slice:2024-04-28T04:02:05.789-04:00 severity=slice:E component=slice:QUERY context=slice:conn42 message=slice:Error executing query: bad cursor
-row 13: timestamp=slice:2024-04-28T04:02:06.000Z severity=slice:D2 component=slice:COMMAND context=slice:conn7 message=slice:run command admin.$cmd { isMaster: 1 }
+row 0: timestamp=time:1714276923123000 severity=slice:I component=slice:NETWORK context=slice:listener message=slice:connection accepted from 127.0.0.1:54321 #42 (1 connection now open)
+row 1: timestamp=time:1714276924456000 severity=slice:W component=slice:STORAGE context=slice:WTCheckpointThread message=slice:Checkpointer took 5000ms
+row 2: timestamp=time:1714291325789000 severity=slice:E component=slice:QUERY context=slice:conn42 message=slice:Error executing query: bad cursor
+row 3: timestamp=time:1714276926000000 severity=slice:D2 component=slice:COMMAND context=slice:conn7 message=slice:run command admin.$cmd { isMaster: 1 }
+row 6: timestamp=time:1714276923123000 severity=slice:I component=slice:NETWORK context=slice:listener message=slice:connection accepted from 127.0.0.1:54321 #42 (1 connection now open)
+row 7: timestamp=time:1714276924456000 severity=slice:W component=slice:STORAGE context=slice:WTCheckpointThread message=slice:Checkpointer took 5000ms
+row 8: timestamp=time:1714291325789000 severity=slice:E component=slice:QUERY context=slice:conn42 message=slice:Error executing query: bad cursor
+row 9: timestamp=time:1714276926000000 severity=slice:D2 component=slice:COMMAND context=slice:conn7 message=slice:run command admin.$cmd { isMaster: 1 }
+row 10: timestamp=time:1714276923123000 severity=slice:I component=slice:NETWORK context=slice:listener message=slice:connection accepted from 127.0.0.1:54321 #42 (1 connection now open)
+row 11: timestamp=time:1714276924456000 severity=slice:W component=slice:STORAGE context=slice:WTCheckpointThread message=slice:Checkpointer took 5000ms
+row 12: timestamp=time:1714291325789000 severity=slice:E component=slice:QUERY context=slice:conn42 message=slice:Error executing query: bad cursor
+row 13: timestamp=time:1714276926000000 severity=slice:D2 component=slice:COMMAND context=slice:conn7 message=slice:run command admin.$cmd { isMaster: 1 }
 # errors
 error 6-6: Line did not match the regex pattern.
 # offsets

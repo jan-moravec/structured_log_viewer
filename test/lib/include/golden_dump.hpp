@@ -230,7 +230,7 @@ private:
     options.referenceTime = std::chrono::sys_days{std::chrono::year{2026} / 6 / 15};
     for (const std::string &key : timeKeys)
     {
-        options.timeColumns.push_back(
+        options.columns.push_back(
             loglib::Column{
                 .header = key,
                 .keys = {key},

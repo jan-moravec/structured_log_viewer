@@ -1,11 +1,10 @@
 /**
  * @brief The three ways a file can reach a table with its time columns converted, for tests and benchmarks.
  *
- * A time column is converted either by the parser's worker threads or by the table. Who does it depends on how the
- * caller loads the file. TimePath names the three loads that exist: the table sink that hands the table's detected
- * time columns back to the parser, a sink that does not, as the desktop application's sink behaves, and a table that
- * already has its time columns when the parse starts. LoadFileViaPath runs one of them on a file with fixed options, so
- * the equivalence test and the time conversion benchmarks drive exactly the same code.
+ * A time column is converted by the parser's worker threads. TimePath names the three loads that exist: the table sink
+ * of the library, a sink that only forwards to it, as the desktop application's sink does for its model, and a table
+ * that already has its time columns when the parse starts. LoadFileViaPath runs one of them on a file with fixed
+ * options, so the equivalence test and the time conversion benchmarks drive exactly the same code.
  *
  * This is test support. It is not part of the library.
  */
@@ -36,11 +35,11 @@ namespace test_support
 /** @brief How the time columns of a file get converted. */
 enum class TimePath
 {
-    /** @brief TableSink: the parser converts a column from the batch after the table detected it. */
+    /** @brief TableSink: the parser converts the time keys it finds by name. */
     TableSink,
-    /** @brief A sink that never reports detected columns, so the table converts them for the whole file. */
+    /** @brief A sink that only forwards to a TableSink, with the table holding no columns before the parse. */
     NoFeedback,
-    /** @brief The table has its time columns before the parse, so the parser converts them from the first line. */
+    /** @brief The table has its time columns before the parse, so the parser gets them in the options. */
     UpFront,
 };
 
@@ -58,7 +57,7 @@ enum class TimePath
     return "";
 }
 
-/** @brief A TableSink that does not tell the parser which time columns the table detected. */
+/** @brief A sink that forwards every call to a TableSink and nothing else. */
 class NoFeedbackSink final : public loglib::LogParseSink
 {
 public:
@@ -85,11 +84,6 @@ public:
     void OnFinished(bool cancelled) override
     {
         mInner.OnFinished(cancelled);
-    }
-
-    std::vector<loglib::Column> TimeColumnsAdded() override
-    {
-        return {};
     }
 
     [[nodiscard]] loglib::TableSink &Inner()

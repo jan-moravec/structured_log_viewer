@@ -367,7 +367,10 @@ TEST_CASE(
     const MemoryStructuredLog fixture(std::move(records), test_common::Logfmt());
 
     const LogfmtParser parser;
-    const ParseResult result = ParseSource(parser, fixture.OpenSource());
+    // The record keeps its timestamp as text, so the column is configured as text.
+    ParserOptions options;
+    options.columns.push_back(Column{.header = "timestamp", .keys = {"timestamp"}, .type = ColumnType::String});
+    const ParseResult result = ParseSource(parser, fixture.OpenSource(), options);
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == LINE_COUNT);
 

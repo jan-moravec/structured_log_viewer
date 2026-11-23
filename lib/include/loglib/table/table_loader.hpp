@@ -3,7 +3,7 @@
  *
  * A parser sends its output to a sink. TableSink is the sink that appends each batch to a LogTable, keeps the parse
  * errors and counts the lines read. ParseIntoTable adds a source to the table and runs a parser over it to the end.
- * ParserOptionsFor gives the parser the table's time columns and zone, so the parser converts timestamps on its own
+ * ParserOptionsFor gives the parser the table's columns and zone, so the parser converts timestamps on its own
  * threads. FinishLoading ends type detection after the last source. Together they are the one way to fill a table from
  * a parser without an application.
  *
@@ -61,9 +61,6 @@ public:
 
     void OnFinished(bool cancelled) override;
 
-    /** @brief The Time columns the table has that an earlier call did not return, so a parser can convert them. */
-    std::vector<Column> TimeColumnsAdded() override;
-
     /**
      * @brief Returns the errors collected so far and clears them.
      *
@@ -93,7 +90,6 @@ private:
     std::uint64_t mErrorCount = 0;
     std::uint64_t mLinesConsumed = 0;
     bool mCancelled = false;
-    std::vector<std::string> mReportedTimeColumns;
 };
 
 /** @brief What one ParseIntoTable call found. */
@@ -113,12 +109,12 @@ struct ParseOutcome
 };
 
 /**
- * @brief Parser options that match what the table expects: its time columns, its default source zone and the given
- * stop token.
+ * @brief Parser options that match what the table expects: its columns, its default source zone and the given stop
+ * token.
  *
- * With them the parser converts the table's time columns while it parses. Without them the rows are still correct,
- * but the table converts the columns itself, which is slower. Set threads, the batch size or other options on the
- * result before parsing.
+ * With them the parser converts the table's time columns, and the keys that the table makes time columns from their
+ * name, while it parses. Without them the rows are still correct, but the table converts the columns itself, which is
+ * slower. Set threads, the batch size or other options on the result before parsing.
  */
 [[nodiscard]] ParserOptions ParserOptionsFor(const LogTable &table, StopToken stop = {});
 

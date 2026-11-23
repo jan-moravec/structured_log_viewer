@@ -36,8 +36,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -73,7 +71,8 @@ ContinuationSpliceOutcome SpliceCrossBatchContinuation(
 /**
  * @brief The body of RunStaticParserPipeline, after the sink was started. It may throw.
  *
- * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
+ * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got. declaredKeys are
+ * the keys interned before the run, which the workers never meet.
  */
 template <LineDecoder Decoder, class MakeDecoder>
 void RunStaticParserPipelineBody(
@@ -82,23 +81,18 @@ void RunStaticParserPipelineBody(
     const ParserOptions &options,
     const MakeDecoder &makeDecoder,
     BatchCoalescer &coalescer,
-    size_t &nextLineNumber
+    size_t &nextLineNumber,
+    std::span<const KeyId> declaredKeys
 )
 {
     KeyIndex &keys = sink.Keys();
 
     const auto referenceTime = options.referenceTime.value_or(std::chrono::system_clock::now());
-    const auto makeSnapshot = [&](std::span<const Column> columns) {
-        const auto snapshot = std::make_shared<TimeColumnSnapshot>();
-        snapshot->specs = BuildTimeColumnSpecs(keys, columns, options.defaultSourceTimeZone, referenceTime);
-        snapshot->convertedKeys = ConvertedTimeKeys(snapshot->specs);
-        return snapshot;
-    };
-    std::vector<Column> knownTimeColumns = options.timeColumns;
-    std::mutex snapshotMutex;
-    std::shared_ptr<const TimeColumnSnapshot> currentTimeColumns = makeSnapshot(knownTimeColumns);
+    const TimeConversion timeConversion =
+        BuildTimeConversion(keys, options.columns, declaredKeys, options.defaultSourceTimeZone, referenceTime);
+    const std::span<const TimeColumnSpec> timeSpecs(timeConversion.specs);
 
-    coalescer.SetConvertedTimeKeys(currentTimeColumns->convertedKeys);
+    coalescer.SetConvertedTimeKeys(ConvertedTimeKeys(timeSpecs));
 
     // Sink contract: at least one OnBatch before OnFinished on
     // every early-exit path.
@@ -126,7 +120,9 @@ void RunStaticParserPipelineBody(
         Decoder decoder;
     };
     oneapi::tbb::enumerable_thread_specific<Worker> workers([&] {
-        return Worker{.scratch = {}, .decoder = makeDecoder()};
+        Worker worker{.scratch = {}, .decoder = makeDecoder()};
+        worker.scratch.keyCache.autoTime.plan = &timeConversion.automatic;
+        return worker;
     });
 
     // The delivery stage holds a batch's open final record until the next batch
@@ -136,7 +132,6 @@ void RunStaticParserPipelineBody(
     {
         LogLine line;
         KeyId continuationTargetKeyId = INVALID_KEY_ID;
-        std::shared_ptr<const TimeColumnSnapshot> timeColumns;
         size_t absoluteLineNumber = 0; // header's absolute line number for Prime
         size_t headerLineIdx = 0;      // 0-based absolute physical-line index (mLineOffsets index)
         size_t lastLineIdx = 0;        // 0-based absolute physical-line index of the record's last line
@@ -174,59 +169,15 @@ void RunStaticParserPipelineBody(
     // time columns are converted.
     auto decodeBatch = [&](ByteRange token) -> DecodedBatch {
         Worker &worker = workers.local();
-        std::shared_ptr<const TimeColumnSnapshot> timeColumns;
-        {
-            const std::scoped_lock lock(snapshotMutex);
-            timeColumns = currentTimeColumns;
-        }
-        worker.scratch.EnsureTimeColumnCapacity(timeColumns->specs.size());
+        worker.scratch.EnsureTimeColumnCapacity(timeSpecs.size());
 
         worker.scratch.keyCache.BeginBatch();
         DecodedBatch parsed;
-        DecodeBatch(
-            token,
-            worker.decoder,
-            worker.scratch,
-            keys,
-            source,
-            std::span<const TimeColumnSpec>(timeColumns->specs),
-            parsed
-        );
+        DecodeBatch(token, worker.decoder, worker.scratch, keys, source, timeSpecs, parsed);
         parsed.firstSeenKeys = worker.scratch.keyCache.TakeFirstSeen();
-        parsed.timeColumns = std::move(timeColumns);
+        parsed.automaticTimeKeys = worker.scratch.keyCache.autoTime.keyIds;
 
         return parsed;
-    };
-
-    // Asks the sink for Time columns it detected and gives the workers a new snapshot. A column with a key that is
-    // converted already is skipped. Batches that are being parsed keep the old snapshot, and the table converts their
-    // rows itself.
-    auto publishTimeColumns = [&] {
-        std::vector<Column> added = sink.TimeColumnsAdded();
-        bool changed = false;
-        for (Column &column : added)
-        {
-            if (column.type != ColumnType::Time)
-            {
-                continue;
-            }
-            const auto &converted = currentTimeColumns->convertedKeys;
-            const bool known = std::ranges::any_of(column.keys, [&](const std::string &key) {
-                const KeyId id = keys.Find(key);
-                return id != INVALID_KEY_ID && std::ranges::binary_search(converted, id);
-            });
-            if (!known)
-            {
-                knownTimeColumns.push_back(std::move(column));
-                changed = true;
-            }
-        }
-        if (changed)
-        {
-            auto snapshot = makeSnapshot(knownTimeColumns);
-            const std::scoped_lock lock(snapshotMutex);
-            currentTimeColumns = std::move(snapshot);
-        }
     };
 
     // Puts the batches back in file order: shifts line ids to file positions, moves the batch's strings to the arena of
@@ -317,7 +268,6 @@ void RunStaticParserPipelineBody(
         const bool batchHasNewRecords = !parsed.lines.empty();
         std::optional<LogLine> heldLineToEmit;
         std::optional<MultiLineRecordSpan> heldSpanToEmit;
-        std::shared_ptr<const TimeColumnSnapshot> heldTimeColumns;
         size_t heldAbsoluteLineNumber = 0;
         if (batchHasNewRecords && held.has_value())
         {
@@ -328,7 +278,6 @@ void RunStaticParserPipelineBody(
                     MultiLineRecordSpan{.headerLineId = held->headerLineIdx, .lastLineId = held->lastLineIdx};
             }
             heldLineToEmit = std::move(held->line);
-            heldTimeColumns = std::move(held->timeColumns);
             held.reset();
         }
 
@@ -359,7 +308,6 @@ void RunStaticParserPipelineBody(
             newHeld = HeldTail{
                 std::move(tailLine),
                 parsed.continuationTargetKeyId,
-                parsed.timeColumns,
                 absoluteLine,
                 headerAbs,
                 lastAbs,
@@ -368,12 +316,12 @@ void RunStaticParserPipelineBody(
 
         RowBatch &pending = coalescer.Pending();
         coalescer.AddSeenKeys(parsed.firstSeenKeys);
+        coalescer.AddConvertedTimeKeys(parsed.automaticTimeKeys);
 
         // Prime with the earliest record represented in this output.
         if (heldLineToEmit.has_value())
         {
             coalescer.Prime(heldAbsoluteLineNumber);
-            coalescer.RestrictConvertedTimeKeys(heldTimeColumns->convertedKeys);
             pending.lines.push_back(std::move(*heldLineToEmit));
             if (heldSpanToEmit.has_value())
             {
@@ -387,7 +335,6 @@ void RunStaticParserPipelineBody(
         {
             const size_t firstAbsolute = nextLineNumber + parsed.leadingContinuationLineCount;
             coalescer.Prime(firstAbsolute);
-            coalescer.RestrictConvertedTimeKeys(parsed.timeColumns->convertedKeys);
             pending.lines.insert(
                 pending.lines.end(),
                 std::make_move_iterator(parsed.lines.begin()),
@@ -419,14 +366,10 @@ void RunStaticParserPipelineBody(
 
         nextLineNumber += parsed.totalLineCount;
 
-        const bool flushed = coalescer.TryFlush(false, nextLineNumber - 1);
+        coalescer.TryFlush(false, nextLineNumber - 1);
         if (batchHasNewRecords)
         {
             held = std::move(newHeld);
-        }
-        if (flushed)
-        {
-            publishTimeColumns();
         }
     };
 
@@ -450,7 +393,6 @@ void RunStaticParserPipelineBody(
 
             RowBatch &pending = coalescer.Pending();
             coalescer.Prime(held->absoluteLineNumber);
-            coalescer.RestrictConvertedTimeKeys(held->timeColumns->convertedKeys);
             pending.lines.push_back(std::move(held->line));
             if (isMultiLine)
             {
@@ -522,7 +464,9 @@ void RunStaticParserPipeline(
 
     try
     {
-        RunStaticParserPipelineBody<Decoder>(source, sink, options, makeDecoder, coalescer, nextLineNumber);
+        RunStaticParserPipelineBody<Decoder>(
+            source, sink, options, makeDecoder, coalescer, nextLineNumber, declaredKeys
+        );
     }
     catch (...)
     {

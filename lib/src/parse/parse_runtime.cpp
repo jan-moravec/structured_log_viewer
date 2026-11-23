@@ -11,16 +11,22 @@
 namespace loglib::internal
 {
 
-std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
+TimeConversion BuildTimeConversion(
     KeyIndex &keys,
     std::span<const Column> columns,
+    std::span<const KeyId> declaredKeys,
     const TimeZoneContext &timeZone,
     std::chrono::system_clock::time_point referenceTime
 )
 {
-    std::vector<TimeColumnSpec> result;
+    TimeConversion conversion;
+    AutomaticTimeKeys &automatic = conversion.automatic;
     for (const Column &column : columns)
     {
+        for (const std::string &key : column.keys)
+        {
+            automatic.excluded.insert(key);
+        }
         if (column.type != ColumnType::Time)
         {
             continue;
@@ -38,9 +44,28 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
         {
             spec.formats.emplace_back(format);
         }
-        result.push_back(std::move(spec));
+        conversion.specs.push_back(std::move(spec));
     }
-    return result;
+
+    automatic.prototype.timeZone = timeZone;
+    automatic.prototype.referenceTime = referenceTime;
+    for (const std::string &format : DefaultTimeParseFormats())
+    {
+        automatic.prototype.formats.emplace_back(format);
+    }
+    for (const KeyId id : declaredKeys)
+    {
+        const std::string key(keys.KeyOf(id));
+        if (!automatic.Matches(key))
+        {
+            continue;
+        }
+        TimeColumnSpec spec = automatic.prototype;
+        spec.keyIds = {id};
+        conversion.specs.push_back(std::move(spec));
+        automatic.excluded.insert(key);
+    }
+    return conversion;
 }
 
 std::vector<KeyId> ConvertedTimeKeys(std::span<const TimeColumnSpec> specs)

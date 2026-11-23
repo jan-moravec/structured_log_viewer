@@ -16,22 +16,6 @@ namespace
 
 constexpr const char *DEFAULT_TIME_PRINT_FORMAT = "%F %H:%M:%S";
 
-std::string ToLower(const std::string &str)
-{
-    std::string lower = str;
-    std::ranges::transform(lower, lower.begin(), [](auto c) { return static_cast<unsigned char>(std::tolower(c)); });
-    return lower;
-}
-
-// Common JSON and structured-log timestamp field names. The bare name t is left out because it gives false positives.
-bool IsTimestampKey(const std::string &key)
-{
-    static const std::vector<std::string> KEYS = {"timestamp", "time", "ts", "@timestamp", "datetime", "created_at"};
-    return std::ranges::any_of(KEYS, [lowerKey = ToLower(key)](const std::string &value) {
-        return (lowerKey == value);
-    });
-}
-
 /**
  * @brief True if fmt accepts the format for at least one of the value types a cell can hold. A format such as {:d} is
  * fine for integers and not for doubles, so only a format that fails for every type counts as invalid.
@@ -186,7 +170,7 @@ void ColumnLayout::AppendKeys(const std::vector<std::string> &newKeys)
         {
             continue;
         }
-        if (IsTimestampKey(key))
+        if (IsTimeKeyName(key))
         {
             mColumns.push_back(
                 Column{
@@ -394,24 +378,6 @@ std::optional<size_t> FirstTimeColumnIndex(const ColumnLayout &layout)
         }
     }
     return std::nullopt;
-}
-
-std::vector<Column> TimeColumnsOf(const ColumnLayout &layout)
-{
-    return TimeColumnsOf(std::span<const Column>(layout.Columns()));
-}
-
-std::vector<Column> TimeColumnsOf(std::span<const Column> columns)
-{
-    std::vector<Column> result;
-    for (const Column &column : columns)
-    {
-        if (column.type == ColumnType::Time)
-        {
-            result.push_back(column);
-        }
-    }
-    return result;
 }
 
 } // namespace loglib

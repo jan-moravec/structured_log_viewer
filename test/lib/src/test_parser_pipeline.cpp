@@ -560,7 +560,7 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     configuration->columns.push_back(timeColumn);
 
     loglib::ParserOptions options;
-    options.timeColumns = TimeColumnsOf(configuration->columns);
+    options.columns = configuration->columns;
     options.threads = 1;
 
     CollectingSink sink;

@@ -9,7 +9,11 @@
  */
 #pragma once
 
+#include "loglib/core/ascii_case.hpp"
+
+#include <array>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -129,6 +133,29 @@ struct Column
         "%b %d %H:%M:%S",
         "%a %b %d %H:%M:%S %Y",
     };
+}
+
+/**
+ * @brief True when the name of a key marks a timestamp: timestamp, time, ts, @timestamp, datetime or created_at, in any
+ * letter case.
+ *
+ * The table makes a Time column for a new key with such a name, and the parser converts the values of such a key to
+ * timestamps while it parses. Both use this one rule, so they always agree. The bare name t is not on the list, because
+ * it is too often something else, such as a thread or a tag.
+ */
+[[nodiscard]] inline bool IsTimeKeyName(std::string_view key) noexcept
+{
+    static constexpr std::array<std::string_view, 6> NAMES = {
+        "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
+    };
+    for (const std::string_view name : NAMES)
+    {
+        if (EqualsIgnoreCaseAscii(key, name))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace loglib

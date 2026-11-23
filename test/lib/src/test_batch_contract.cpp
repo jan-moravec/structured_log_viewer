@@ -320,12 +320,12 @@ private:
     LogTable *mTable;
 };
 
-[[nodiscard]] LogConfiguration TimeConfiguration()
+[[nodiscard]] LogConfiguration TimeConfiguration(const std::string &key = "ts")
 {
     LogConfiguration configuration;
     Column ts;
-    ts.header = "ts";
-    ts.keys = {"ts"};
+    ts.header = key;
+    ts.keys = {key};
     ts.type = ColumnType::Time;
     ts.printFormat = "%F %T";
     ts.parseFormats = {"%F %T"};
@@ -335,27 +335,36 @@ private:
 
 constexpr const char *TIME_LINES = "{\"ts\":\"2026-01-15 12:00:00\"}\n{\"ts\":\"2026-01-15 12:00:01\"}\n";
 
-/** Parses TIME_LINES into a table and checks the time cells. Returns whether the table had to convert a column. */
-[[nodiscard]] bool ParseTimeLinesIntoTable(bool passTimeColumns)
+/**
+ * Parses two lines with a time value into a table and checks the time cells. The key is ts, a name that marks a time,
+ * or when, which does not. Returns whether the table had to convert a column.
+ */
+[[nodiscard]] bool ParseTimeLinesIntoTable(bool passTimeColumns, const std::string &key)
 {
-    auto source = MemorySource(TIME_LINES, "batch_contract_time.jsonl");
+    std::string bytes = TIME_LINES;
+    if (key != "ts")
+    {
+        bytes.replace(bytes.find("ts"), 2, key);
+        bytes.replace(bytes.find("ts"), 2, key);
+    }
+    auto source = MemorySource(bytes, "batch_contract_time.jsonl");
     FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.Layout().SetColumns(TimeConfiguration().columns);
+    table.Layout().SetColumns(TimeConfiguration(key).columns);
     table.BeginStreaming(std::move(source));
 
     ParserOptions options;
     if (passTimeColumns)
     {
-        options.timeColumns = TimeColumnsOf(table.Layout());
+        options.columns = table.Layout().Columns();
     }
     AppendingSink sink(table);
     JsonParser{}.Parse(*sourcePtr, sink, options);
 
     REQUIRE(table.RowCount() == 2);
     REQUIRE(table.ColumnCount() >= 1);
-    CHECK(table.GetHeader(0) == "ts");
+    CHECK(table.GetHeader(0) == key);
     for (std::size_t row = 0; row < 2; ++row)
     {
         CHECK(std::holds_alternative<TimeStamp>(table.GetValue(row, 0)));
@@ -368,13 +377,13 @@ constexpr const char *TIME_LINES = "{\"ts\":\"2026-01-15 12:00:00\"}\n{\"ts\":\"
 TEST_CASE("Every batch lists the time keys the parser converted", "[batch_contract][time_keys]")
 {
     ParserOptions options;
-    options.timeColumns = TimeConfiguration().columns;
+    options.columns = TimeConfiguration().columns;
     Column second;
     second.header = "when";
     second.keys = {"when", "ts"};
     second.type = ColumnType::Time;
     second.parseFormats = {"%F %T"};
-    options.timeColumns.push_back(second);
+    options.columns.push_back(second);
 
     const std::string bytes = TIME_LINES;
     SECTION("a file")
@@ -413,10 +422,23 @@ TEST_CASE("Every batch lists the time keys the parser converted", "[batch_contra
         REQUIRE(sink.batches.size() == 1);
         CHECK(sink.batches[0].convertedTimeKeys.size() == 2);
     }
-    SECTION("no time columns give an empty list")
+    SECTION("no columns give the keys that are named like times, from the first batch")
     {
         RecordingSink sink;
         ParseAsStream(JsonParser{}, bytes, 5, sink);
+        REQUIRE_FALSE(sink.batches.empty());
+        const std::vector<KeyId> expected = {sink.Keys().Find("ts")};
+        for (const RowBatch &batch : sink.batches)
+        {
+            CHECK(batch.convertedTimeKeys == expected);
+        }
+    }
+    SECTION("a key that a configured column of another type uses is not converted")
+    {
+        ParserOptions textOptions;
+        textOptions.columns.push_back(Column{.header = "ts", .keys = {"ts"}, .type = ColumnType::String});
+        RecordingSink sink;
+        ParseAsStream(JsonParser{}, bytes, 5, sink, textOptions);
         for (const RowBatch &batch : sink.batches)
         {
             CHECK(batch.convertedTimeKeys.empty());
@@ -425,17 +447,26 @@ TEST_CASE("Every batch lists the time keys the parser converted", "[batch_contra
 }
 
 TEST_CASE(
-    "A parse without time columns still gives time cells for a configured Time column", "[batch_contract][time_keys]"
+    "A parse without columns still gives time cells for a Time column whose key is not named like a time",
+    "[batch_contract][time_keys]"
 )
 {
-    CHECK(ParseTimeLinesIntoTable(false));
+    CHECK(ParseTimeLinesIntoTable(false, "when"));
 }
 
 TEST_CASE(
     "A parse with time columns gives the same cells without a table-side back-fill", "[batch_contract][time_keys]"
 )
 {
-    CHECK_FALSE(ParseTimeLinesIntoTable(true));
+    CHECK_FALSE(ParseTimeLinesIntoTable(true, "when"));
+}
+
+TEST_CASE(
+    "A parse without columns converts a key named like a time, so the table has nothing to convert",
+    "[batch_contract][time_keys]"
+)
+{
+    CHECK_FALSE(ParseTimeLinesIntoTable(false, "ts"));
 }
 
 namespace

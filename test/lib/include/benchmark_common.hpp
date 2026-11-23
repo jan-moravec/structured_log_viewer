@@ -457,7 +457,7 @@ inline StreamingRunResult RunStreamingFlow(
         sink.table = &table;
 
         loglib::ParserOptions opts;
-        opts.timeColumns = loglib::TimeColumnsOf(configuration->columns);
+        opts.columns = configuration->columns;
         opts.defaultSourceTimeZone = table.DefaultSourceTimeZone();
 
         parserStream(*parseSource, sink, opts);
