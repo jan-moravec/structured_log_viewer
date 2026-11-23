@@ -77,9 +77,9 @@ public:
     /**
      * @brief Adds time keys that the workers convert to the ones every later batch lists.
      *
-     * A key is added when the first batch that holds it is delivered, so a batch never lists a key that appears only in
-     * later batches. Workers convert a key the same way in every batch, so a batch can list the key even if none of its
-     * rows has a value for it.
+     * The pipelines add the keys a worker has met when they deliver a batch from that worker, so the early batches of a
+     * file that hold none of a key do not list it. Every worker converts a key the same way, so a batch may list a key
+     * even when none of its rows has a value for it. Adding a key that is listed already does nothing.
      */
     void AddConvertedTimeKeys(std::span<const KeyId> ids);
 

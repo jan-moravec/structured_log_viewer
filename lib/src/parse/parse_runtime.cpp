@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace loglib::internal
@@ -55,7 +56,7 @@ TimeConversion BuildTimeConversion(
     }
     for (const KeyId id : declaredKeys)
     {
-        const std::string key(keys.KeyOf(id));
+        const std::string_view key = keys.KeyOf(id);
         if (!automatic.Matches(key))
         {
             continue;
@@ -63,7 +64,7 @@ TimeConversion BuildTimeConversion(
         TimeColumnSpec spec = automatic.prototype;
         spec.keyIds = {id};
         conversion.specs.push_back(std::move(spec));
-        automatic.excluded.insert(key);
+        automatic.excluded.emplace(key);
     }
     return conversion;
 }

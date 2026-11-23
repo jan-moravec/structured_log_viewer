@@ -36,8 +36,8 @@ namespace loglib::internal
  * @brief The keys that a parse converts by their name, and what a worker needs to convert them.
  *
  * A key is converted by name when IsTimeKeyName accepts it and nothing else handles it: no configured column uses it,
- * and no spec was built for it up front. The plan is built once for a parse and read by all workers, which never change
- * it.
+ * and no spec was built for it up front. The plan is built once for a parse, and workers only read it. The streaming
+ * loop, which has a single worker, moves the reference time of the prototype forward as the clock advances.
  */
 struct AutomaticTimeKeys
 {

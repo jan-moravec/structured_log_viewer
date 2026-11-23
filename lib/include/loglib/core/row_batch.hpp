@@ -82,8 +82,8 @@ struct RowBatch
     /**
      * @brief The key ids of the time keys the parser converts, sorted and without duplicates.
      *
-     * It holds the keys of the configured Time columns from the first batch on, and every other time key from the batch
-     * in which the key first appears. The table converts the values of the time keys that are not listed.
+     * It holds the keys of the configured Time columns from the first batch on, and every other time key no later than
+     * the batch in which the key first appears. The table converts the values of the time keys that are not listed.
      */
     std::vector<KeyId> convertedTimeKeys;
 };
