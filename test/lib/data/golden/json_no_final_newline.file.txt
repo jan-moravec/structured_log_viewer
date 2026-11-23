@@ -1,0 +1,35 @@
+# rows
+row 0: n=int:0 s=slice:v0
+row 1: n=int:1 s=slice:v1
+row 2: n=int:2 s=slice:v2
+row 3: n=int:3 s=slice:v3
+row 4: n=int:4 s=slice:v4
+row 5: n=int:5 s=slice:v5
+row 6: n=int:6 s=slice:v6
+row 7: n=int:7 s=slice:v7
+row 8: n=int:8 s=slice:v8
+row 9: n=int:9 s=slice:v9
+row 10: n=int:10 s=slice:v10
+row 11: n=int:11 s=slice:v11
+row 12: n=int:12 s=slice:v12
+row 13: n=int:13 s=slice:v13
+row 14: n=int:14 s=slice:v14
+row 15: n=int:15 s=slice:v15
+row 16: n=int:16 s=slice:v16
+row 17: n=int:17 s=slice:v17
+row 18: n=int:18 s=slice:v18
+row 19: n=int:19 s=slice:v19
+row 20: n=int:20 s=slice:v20
+row 21: n=int:21 s=owned:v21
+row 22: n=int:22 s=owned:v22
+row 23: n=int:23 s=owned:v23
+row 24: n=int:24 s=owned:v24
+# errors
+# offsets
+ 17 34 51 68 85 102 119 136 153 170 189 208 227 246 265 284 303 322 341 360 379 398 417 436 455
+# spans
+# keys
+n
+s
+# last line 25
+# started 1 finished 1 cancelled false

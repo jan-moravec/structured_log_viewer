@@ -3,6 +3,8 @@
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/stop_token.hpp"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <exception>
 #include <iterator>
@@ -11,6 +13,19 @@
 
 namespace loglib::internal
 {
+
+ParseError MakeOrphanedContinuationError(size_t firstLine, size_t lastLine)
+{
+    if (firstLine == lastLine)
+    {
+        return ParseError{.firstLine = firstLine, .lastLine = lastLine, .message = "Orphaned continuation line."};
+    }
+    return ParseError{
+        .firstLine = firstLine,
+        .lastLine = lastLine,
+        .message = fmt::format("{} orphaned continuation lines dropped.", lastLine - firstLine + 1),
+    };
+}
 
 BatchCoalescer::BatchCoalescer(
     LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval

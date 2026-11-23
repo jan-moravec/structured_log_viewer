@@ -1,0 +1,27 @@
+# rows
+row 0: level=slice:INFO code=uint:0 note=owned:note\n  continues 0
+row 2: level=slice:INFO code=uint:1
+row 4: level=slice:INFO code=uint:2 note=owned:note\n  continues 2
+row 6: level=slice:INFO code=uint:3
+row 8: level=slice:INFO code=uint:4 note=owned:note\n  continues 4
+row 10: level=slice:INFO code=uint:5
+row 12: level=slice:INFO code=uint:6 note=owned:note\n  continues 6
+row 14: level=slice:INFO code=uint:7
+# errors
+error 4-4: Continuation lines dropped: target field is not present in the record.
+error 8-8: Continuation lines dropped: target field is not present in the record.
+error 12-12: Continuation lines dropped: target field is not present in the record.
+error 16-16: Continuation lines dropped: target field is not present in the record.
+# offsets
+ 12 26 33 47 59 73 80 94 106 120 127 141 153 167 174 188
+# spans
+span 0-1
+span 4-5
+span 8-9
+span 12-13
+# keys
+level
+code
+note
+# last line 16
+# started 1 finished 1 cancelled false

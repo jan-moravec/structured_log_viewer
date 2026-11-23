@@ -23,6 +23,7 @@ void RegisterRegexBenchmarks();
 void RegisterSessionBundleBenchmarks();
 void RegisterStreamBenchmarks();
 void RegisterTableBenchmarks();
+void RegisterTimeConversionBenchmarks();
 void RegisterTimestampBenchmarks();
 
 } // namespace bench

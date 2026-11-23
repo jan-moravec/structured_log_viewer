@@ -1,0 +1,25 @@
+# rows
+row 1: a=uint:1 n=uint:5
+row 2: b=uint:2 t=slice:  after an empty value
+row 3: c=uint:3 s=owned:text\n  after a string
+row 4: d=uint:4 e=bool:true
+row 5: f=uint:6 g=owned:x\n  after blanks
+# errors
+error 1-1: Continuation lines dropped (1 line): target field is not present in the record or is not a string.
+error 7-7: Continuation lines dropped (1 line): target field is not present in the record or is not a string.
+# offsets
+
+# spans
+# keys
+a
+n
+b
+t
+c
+s
+d
+e
+f
+g
+# last line 13
+# started 1 finished 1 cancelled false

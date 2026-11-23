@@ -17,6 +17,7 @@
 #include "loglib/parse/internal/batch_coalescer.hpp"
 #include "loglib/parse/internal/line_decoder.hpp"
 #include "loglib/parse/internal/parse_runtime.hpp"
+#include "loglib/parse/internal/record_assembler.hpp"
 #include "loglib/parse/log_parse_sink.hpp"
 #include "loglib/parse/parser_options.hpp"
 #include "loglib/time/internal/timestamp_promotion.hpp"
@@ -64,141 +65,14 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
  * are not in the line, such as decoded escapes or text added from continuation lines, stay owned, and ownedArena is
  * rebuilt to hold only those.
  */
-inline void SliceValuesOfRawLine(
-    std::vector<CompactLogValue> &values, std::string &ownedArena, std::string_view rawLine
-)
-{
-    if (ownedArena.empty())
-    {
-        return;
-    }
-    const std::string_view arena(ownedArena);
-    std::string kept;
-    for (CompactLogValue &field : values)
-    {
-        if (field.tag != CompactTag::OwnedString)
-        {
-            continue;
-        }
-        const std::string_view text = arena.substr(field.payload, field.aux);
-        const size_t position = text.empty() ? std::string_view::npos : rawLine.find(text);
-        if (position != std::string_view::npos)
-        {
-            field = CompactLogValue::MakeMmapSlice(position, field.aux).WithKey(field.Key());
-            continue;
-        }
-        const uint64_t offset = kept.size();
-        kept.append(text);
-        field.payload = offset;
-    }
-    ownedArena = std::move(kept);
-}
-
-/**
- * @brief Adds continuation text, with a separator in front, to a field of a record.
- *
- * A value that lives in the mapped file needs mmapBytes and is first copied into ownedArena. A field that has no text
- * yet, such as a bare key=, gets the text without a separator.
- */
-inline ContinuationSpliceOutcome ExtendContinuationTarget(
-    std::vector<CompactLogValue> &values,
-    std::string &ownedArena,
-    KeyId targetKey,
-    std::string_view continuationBytes,
-    std::string_view mmapBytes = std::string_view{}
-)
-{
-    if (targetKey == INVALID_KEY_ID)
-    {
-        return ContinuationSpliceOutcome::MissingTarget;
-    }
-    if (continuationBytes.empty())
-    {
-        return ContinuationSpliceOutcome::Ok;
-    }
-
-    for (auto &kv : values)
-    {
-        if (kv.Key() != targetKey)
-        {
-            continue;
-        }
-        CompactLogValue &v = kv;
-        switch (v.tag)
-        {
-        case CompactTag::OwnedString:
-        {
-            const uint64_t offset = v.payload;
-            const uint32_t length = v.aux;
-            if (offset + length == ownedArena.size())
-            {
-                ownedArena.append(continuationBytes.data(), continuationBytes.size());
-                v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-            }
-            else
-            {
-                // Reserve before self-appending: reallocation would
-                // invalidate the source pointer, and overlap safety
-                // is not guaranteed.
-                ownedArena.reserve(ownedArena.size() + length + continuationBytes.size());
-                const uint64_t newOffset = ownedArena.size();
-                ownedArena.append(ownedArena.data() + offset, length);
-                ownedArena.append(continuationBytes.data(), continuationBytes.size());
-                v.payload = newOffset;
-                v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-            }
-            return ContinuationSpliceOutcome::Ok;
-        }
-        case CompactTag::Monostate:
-        {
-            // A bare key= has no preceding content to separate.
-            std::string_view bytes = continuationBytes;
-            if (!bytes.empty() && bytes.front() == '\n')
-            {
-                bytes.remove_prefix(1);
-            }
-            v.tag = CompactTag::OwnedString;
-            v.payload = ownedArena.size();
-            v.aux = static_cast<uint32_t>(bytes.size());
-            ownedArena.append(bytes.data(), bytes.size());
-            return ContinuationSpliceOutcome::Ok;
-        }
-        case CompactTag::MmapSlice:
-        {
-            // Materialise the mmap slice before extending it.
-            const uint64_t offset = v.payload;
-            const uint32_t length = v.aux;
-            if (mmapBytes.empty() || offset + length > mmapBytes.size())
-            {
-                return ContinuationSpliceOutcome::NonStringTarget;
-            }
-            const uint64_t newOffset = ownedArena.size();
-            ownedArena.append(mmapBytes.data() + offset, length);
-            ownedArena.append(continuationBytes.data(), continuationBytes.size());
-            v.tag = CompactTag::OwnedString;
-            v.payload = newOffset;
-            v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-            return ContinuationSpliceOutcome::Ok;
-        }
-        case CompactTag::DictRef:
-        case CompactTag::Int64:
-        case CompactTag::Uint64:
-        case CompactTag::Double:
-        case CompactTag::Bool:
-        case CompactTag::Timestamp:
-            return ContinuationSpliceOutcome::NonStringTarget;
-        }
-        return ContinuationSpliceOutcome::NonStringTarget;
-    }
-    return ContinuationSpliceOutcome::MissingTarget;
-}
+void SliceValuesOfRawLine(std::vector<CompactLogValue> &values, std::string &ownedArena, std::string_view rawLine);
 
 /**
  * @brief The body of RunStreamingParseLoop, after the sink was started. It may throw.
  *
  * nextLineNumber is the line counter. The caller reads it after a throw, to say how far the run got.
  */
-template <class Decoder>
+template <LineDecoder Decoder>
 void RunStreamingParseLoopBody(
     StreamLineSource &source,
     Decoder &decoder,
@@ -230,7 +104,7 @@ void RunStreamingParseLoopBody(
 
     const StopToken stopToken = options.stopToken;
 
-    WorkerScratchBase promoteScratch;
+    WorkerScratch promoteScratch;
     promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
 
     // Bytes that an earlier stage, such as format detection, read from the producer and gave back to the source. They
@@ -243,78 +117,32 @@ void RunStreamingParseLoopBody(
     bool skippingOversizedLine = false;
     const size_t maxLineBytes = options.maxLineBytes;
 
-    // Reused per line; move-transferred into the source on success.
+    // Reused per line; the open record takes them when the line starts a record.
     std::vector<CompactLogValue> compactValues;
     std::string ownedArena;
     std::string lineError;
-
-    /**
-     * @brief A record kept outside the coalescer until AppendLine gives it its final line id. It can still change
-     * while continuation lines arrive.
-     */
-    struct PendingRecord
-    {
-        std::string rawText;
-        std::string ownedArena;
-        std::vector<CompactLogValue> compactValues;
-        size_t startLineNumber = 0;
-        KeyId continuationTarget = INVALID_KEY_ID;
-        // The continuation text for the target field, each part with a separator in front. Blank lines are left out.
-        std::string continuationBytes;
-        // The raw text that follows the record. Unlike the field value it keeps blank lines between continuations.
-        std::string rawTextAppendix;
-        // Blanks become record content only if another continuation follows.
-        size_t pendingBlanks = 0;
-        std::chrono::steady_clock::time_point openedAt;
-        /**
-         * @brief True when continuation text can be buffered. For an invalid target the lines are counted and dropped,
-         * so memory stays bounded.
-         */
-        bool continuationAcceptsText = false;
-        /**
-         * @brief The number of continuation lines dropped because of an invalid target, reported in one summary when
-         * the record is committed.
-         */
-        size_t droppedContinuationLines = 0;
+    LineContext context{
+        .keys = keys,
+        .keyCache = promoteScratch.keyCache,
+        .ownedBytes = ownedArena,
+        .stableBytes = std::span<const char>{},
+        .bytesAfterLine = 0,
     };
-    std::optional<PendingRecord> pending;
+
+    // The record that is held back until the next header, the end of the stream or its age limit. The assembler holds
+    // its values and continuation text. The raw text and the owned strings are stored in the source when the record is
+    // committed, and the record can still change until then.
+    RecordAssembler assembler(/*keepRawText=*/true);
+    std::string recordRawText;
+    std::string recordOwnedBytes;
+    std::chrono::steady_clock::time_point recordOpenedAt;
+    bool sawFirstLine = false;
 
     // Announces the keys the decoder met since the last call. This runs before every flush, so a batch always lists the
     // keys of its rows. A key is recorded once for the whole stream, because the loop never starts a new key batch.
     auto announceSeenKeys = [&] {
         coalescer.AddSeenKeys(promoteScratch.keyCache.firstSeen);
         promoteScratch.keyCache.firstSeen.clear();
-    };
-
-    // Reject invalid targets before buffering to keep memory bounded.
-    auto canAcceptContinuation = [](std::span<const CompactLogValue> values, KeyId key) -> bool {
-        if (key == INVALID_KEY_ID)
-        {
-            return false;
-        }
-        for (const auto &kv : values)
-        {
-            if (kv.Key() != key)
-            {
-                continue;
-            }
-            switch (kv.tag)
-            {
-            case CompactTag::OwnedString:
-            case CompactTag::Monostate:
-            case CompactTag::MmapSlice:
-                return true;
-            case CompactTag::DictRef:
-            case CompactTag::Int64:
-            case CompactTag::Uint64:
-            case CompactTag::Double:
-            case CompactTag::Bool:
-            case CompactTag::Timestamp:
-                return false;
-            }
-            return false;
-        }
-        return false;
     };
 
     // Summarize each consecutive orphan run as one error.
@@ -331,21 +159,18 @@ void RunStreamingParseLoopBody(
     };
 
     auto commitPending = [&]() {
-        if (!pending)
+        if (!assembler.IsOpen())
         {
             return;
         }
-        PendingRecord rec = std::move(*pending);
-        pending.reset();
+        const size_t startLineNumber = assembler.FirstLine();
 
-        if (!rec.continuationBytes.empty())
+        if (!assembler.ContinuationText().empty())
         {
-            const ContinuationSpliceOutcome outcome = ExtendContinuationTarget(
-                rec.compactValues, rec.ownedArena, rec.continuationTarget, rec.continuationBytes
-            );
+            const ContinuationSpliceOutcome outcome = assembler.JoinContinuation(recordOwnedBytes, std::string_view{});
             if (outcome == ContinuationSpliceOutcome::Ok)
             {
-                rec.rawText.append(rec.rawTextAppendix);
+                recordRawText.append(assembler.RawContinuationText());
             }
             else
             {
@@ -355,37 +180,39 @@ void RunStreamingParseLoopBody(
                                                     : "target field is not a string";
                 coalescer.Pending().errors.push_back(
                     ParseError{
-                        .firstLine = rec.startLineNumber,
-                        .lastLine = rec.startLineNumber,
+                        .firstLine = startLineNumber,
+                        .lastLine = startLineNumber,
                         .message = fmt::format("Continuation lines dropped: {}.", reason),
                     }
                 );
             }
         }
         // Trailing blanks remain between-record separators.
-        if (rec.droppedContinuationLines > 0)
+        const size_t dropped = assembler.DroppedContinuationLines();
+        if (dropped > 0)
         {
             coalescer.Pending().errors.push_back(
                 ParseError{
-                    .firstLine = rec.startLineNumber,
-                    .lastLine = rec.startLineNumber,
+                    .firstLine = startLineNumber,
+                    .lastLine = startLineNumber,
                     .message = fmt::format(
                         "Continuation lines dropped ({} line{}): target field is not present in the record or is not "
                         "a string.",
-                        rec.droppedContinuationLines,
-                        rec.droppedContinuationLines == 1 ? "" : "s"
+                        dropped,
+                        dropped == 1 ? "" : "s"
                     ),
                 }
             );
         }
 
-        std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
-            return a.Key() < b.Key();
-        });
+        std::vector<CompactLogValue> recordValues;
+        assembler.Close(recordValues);
 
-        SliceValuesOfRawLine(rec.compactValues, rec.ownedArena, rec.rawText);
-        const size_t lineId = source.AppendLine(std::move(rec.rawText), std::move(rec.ownedArena));
-        LogLine logLine(std::move(rec.compactValues), source, lineId);
+        SliceValuesOfRawLine(recordValues, recordOwnedBytes, recordRawText);
+        const size_t lineId = source.AppendLine(std::move(recordRawText), std::move(recordOwnedBytes));
+        recordRawText.clear();
+        recordOwnedBytes.clear();
+        LogLine logLine(std::move(recordValues), source, lineId);
         if (!options.referenceTime.has_value() && coalescer.Pending().lines.empty())
         {
             const auto now = readClock();
@@ -396,7 +223,7 @@ void RunStreamingParseLoopBody(
         }
         // Promote only after all continuations have joined the record.
         promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
-        coalescer.Prime(rec.startLineNumber);
+        coalescer.Prime(startLineNumber);
         coalescer.Pending().lines.push_back(std::move(logLine));
     };
 
@@ -409,19 +236,27 @@ void RunStreamingParseLoopBody(
         const size_t lineNumber = nextLineNumber;
         ++nextLineNumber;
 
-        if (trimmed.empty())
+        // The decoder sees the line without a byte order mark, while the stored raw text keeps it.
+        std::string_view decodable = trimmed;
+        if constexpr (StripsBom<Decoder>())
+        {
+            if (!sawFirstLine && decodable.starts_with(UTF8_BYTE_ORDER_MARK))
+            {
+                decodable.remove_prefix(UTF8_BYTE_ORDER_MARK.size());
+            }
+        }
+        sawFirstLine = true;
+
+        if (decodable.empty())
         {
             flushOrphanRun();
             // Delay classifying blanks until another continuation arrives.
-            if (pending && pending->continuationAcceptsText)
-            {
-                ++pending->pendingBlanks;
-            }
+            assembler.AddBlank();
             return;
         }
 
-        const LineDecodeResult result =
-            decoder.DecodeCompact(trimmed, keys, promoteScratch.keyCache, compactValues, ownedArena, lineError);
+        ownedArena.clear();
+        const LineDecodeResult result = decoder.Decode(decodable, context, compactValues, lineError);
         if (result == LineDecodeResult::Error)
         {
             flushOrphanRun();
@@ -437,33 +272,10 @@ void RunStreamingParseLoopBody(
         }
         if (result == LineDecodeResult::Continue)
         {
-            if (pending)
+            if (assembler.IsOpen())
             {
                 flushOrphanRun();
-                if (pending->continuationAcceptsText &&
-                    pending->continuationBytes.size() + trimmed.size() >= maxLineBytes)
-                {
-                    pending->continuationAcceptsText = false;
-                }
-                if (pending->continuationAcceptsText)
-                {
-                    // Preserve blanks in raw text, but not in the target field.
-                    if (pending->pendingBlanks > 0)
-                    {
-                        pending->rawTextAppendix.append(pending->pendingBlanks, '\n');
-                        pending->pendingBlanks = 0;
-                    }
-                    pending->continuationBytes.push_back('\n');
-                    pending->continuationBytes.append(trimmed.data(), trimmed.size());
-                    pending->rawTextAppendix.push_back('\n');
-                    pending->rawTextAppendix.append(trimmed.data(), trimmed.size());
-                }
-                else
-                {
-                    // Count invalid-target lines without retaining their bytes.
-                    ++pending->droppedContinuationLines;
-                    pending->pendingBlanks = 0;
-                }
+                assembler.AddContinuation(decodable, lineNumber, maxLineBytes);
             }
             else
             {
@@ -486,24 +298,11 @@ void RunStreamingParseLoopBody(
         flushOrphanRun();
         commitPending();
 
-        PendingRecord fresh;
-        fresh.rawText.assign(trimmed.data(), trimmed.size());
-        fresh.ownedArena = std::move(ownedArena);
-        fresh.compactValues = std::move(compactValues);
-        fresh.startLineNumber = lineNumber;
-        fresh.openedAt = std::chrono::steady_clock::now();
-        // Decoders that return Continue must expose its target.
-        if constexpr (requires { decoder.LastContinuationTarget(); })
-        {
-            fresh.continuationTarget = decoder.LastContinuationTarget();
-        }
-        fresh.continuationAcceptsText =
-            canAcceptContinuation(std::span<const CompactLogValue>(fresh.compactValues), fresh.continuationTarget);
-        pending = std::move(fresh);
-
-        // Reset moved-from buffers explicitly for clang-analyzer.
-        compactValues.clear();
+        recordRawText.assign(trimmed.data(), trimmed.size());
+        recordOwnedBytes = std::move(ownedArena);
         ownedArena.clear();
+        recordOpenedAt = std::chrono::steady_clock::now();
+        assembler.Open(compactValues, lineNumber, decoder.ContinuationTarget());
     };
 
     // Emit complete lines already present in the unread bytes before waiting for more producer bytes.
@@ -594,9 +393,9 @@ void RunStreamingParseLoopBody(
                 else
                 {
                     // Bound how long a quiet producer keeps a record invisible.
-                    if (pending)
+                    if (assembler.IsOpen())
                     {
-                        const auto age = std::chrono::steady_clock::now() - pending->openedAt;
+                        const auto age = std::chrono::steady_clock::now() - recordOpenedAt;
                         if (age >= STREAMING_PENDING_RECORD_MAX_AGE)
                         {
                             commitPending();
@@ -650,7 +449,7 @@ void RunStreamingParseLoopBody(
  * @brief Parses a live stream line by line for any format.
  *
  * The loop reads lines from source.Producer() and hands each non-blank line to the decoder, which must satisfy
- * CompactLineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
+ * LineDecoder. It stores the raw text and the decoded strings in the source and puts the rows into batches,
  * which are sent on after STREAMING_BATCH_FLUSH_LINES lines or STREAMING_BATCH_FLUSH_INTERVAL.
  *
  * It runs on one thread, because a stream delivers thousands of lines per second and a thread pool would not pay off.
@@ -658,7 +457,7 @@ void RunStreamingParseLoopBody(
  * storage of StreamLineSource make that safe.
  *
  * A Continue result adds the line to the raw text of the pending record and to the field that
- * decoder.LastContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
+ * decoder.ContinuationTarget names. A pending record is committed on Emit, at the end of the stream, or when it has
  * waited STREAMING_PENDING_RECORD_MAX_AGE.
  *
  * The loop announces the keys that decoders look up through the worker key cache, before each flush, and the
@@ -668,7 +467,7 @@ void RunStreamingParseLoopBody(
  * When the loop throws, the sink still gets one last batch with an error that says so and the record that was still
  * open, and OnFinished, and the exception goes on to the caller. See BatchCoalescer::FinishAfterException.
  */
-template <class Decoder>
+template <LineDecoder Decoder>
 void RunStreamingParseLoop(
     StreamLineSource &source,
     Decoder &decoder,

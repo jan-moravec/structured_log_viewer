@@ -1,0 +1,13 @@
+# rows
+row 1: ok=uint:1 last=slice:text\n  fine
+# errors
+error 1-1: Unterminated quoted value.
+error 2-2: Orphaned continuation line.
+# offsets
+
+# spans
+# keys
+ok
+last
+# last line 4
+# started 1 finished 1 cancelled false

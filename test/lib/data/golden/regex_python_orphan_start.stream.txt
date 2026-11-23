@@ -1,0 +1,28 @@
+# rows
+row 1: level=slice:INFO message=slice:record 0\nTraceback (most recent call last):\n  File "x.py", line 0, in <module>\n    run()\nValueError: boom
+row 2: level=slice:INFO message=slice:record 1
+row 3: level=slice:INFO message=slice:record 2
+row 4: level=slice:INFO message=slice:record 3\nTraceback (most recent call last):\n  File "x.py", line 3, in <module>\n    run()\nValueError: boom
+row 5: level=slice:INFO message=slice:record 4
+row 6: level=slice:ERROR message=slice:after a blank line
+row 7: level=slice:INFO message=slice:record 5
+row 8: level=slice:INFO message=slice:record 6\nTraceback (most recent call last):\n  File "x.py", line 6, in <module>\n    run()\nValueError: boom
+row 9: level=slice:INFO message=slice:record 7
+row 10: level=slice:INFO message=slice:record 8
+row 11: level=slice:INFO message=slice:record 9\nTraceback (most recent call last):\n  File "x.py", line 9, in <module>\n    run()\nValueError: boom
+row 12: level=slice:ERROR message=slice:after a blank line
+row 13: level=slice:INFO message=slice:record 10
+row 14: level=slice:INFO message=slice:record 11
+row 15: level=slice:INFO message=slice:record 12\nTraceback (most recent call last):\n  File "x.py", line 12, in <module>\n    run()\nValueError: boom
+row 16: level=slice:INFO message=slice:record 13
+# errors
+error 1-2: 2 orphaned continuation lines dropped.
+error 4-4: Orphaned continuation line.
+# offsets
+
+# spans
+# keys
+level
+message
+# last line 42
+# started 1 finished 1 cancelled false

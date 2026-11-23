@@ -45,6 +45,7 @@ add_executable(
     "src/test_file_line_source.cpp"
     "src/test_file_loading.cpp"
     "src/test_format_detection.cpp"
+    "src/test_golden_output.cpp"
     "src/test_time_histogram.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
@@ -88,6 +89,7 @@ add_executable(
     "src/test_timestamp_corpus.cpp"
     "src/test_timestamp_format.cpp"
     "src/test_timestamp_formatter.cpp"
+    "src/test_time_conversion_paths.cpp"
     "src/test_timestamp_promotion.cpp"
     "src/test_udp_server_producer.cpp"
     "src/test_tzdata_search.cpp"
@@ -126,6 +128,14 @@ target_link_libraries(
 # The version the library must report, taken from the same project() call that sets it.
 target_compile_definitions(tests PRIVATE "LOGLIB_TEST_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
 
+# The golden dumps the parser output tests compare with, and the fuzz seed corpora they also parse.
+target_compile_definitions(
+    tests
+    PRIVATE
+        "LOGLIB_TEST_GOLDEN_DIR=\"${PROJECT_SOURCE_DIR}/test/lib/data/golden\""
+        "LOGLIB_TEST_FUZZ_CORPUS_DIR=\"${PROJECT_SOURCE_DIR}/test/fuzz/corpus\""
+)
+
 # The configuration files the round-trip test loads. They are also the seed corpus of the configuration fuzz target.
 target_compile_definitions(
     tests
@@ -150,6 +160,7 @@ add_executable(
     "src/benchmark_session_bundle.cpp"
     "src/benchmark_stream.cpp"
     "src/benchmark_table.cpp"
+    "src/benchmark_time_conversion.cpp"
     "src/benchmark_timestamp.cpp"
 )
 

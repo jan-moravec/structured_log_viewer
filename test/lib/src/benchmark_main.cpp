@@ -52,6 +52,7 @@ int main(int argc, char **argv)
     bench::RegisterSessionBundleBenchmarks();
     bench::RegisterStreamBenchmarks();
     bench::RegisterTableBenchmarks();
+    bench::RegisterTimeConversionBenchmarks();
     bench::RegisterTimestampBenchmarks();
 
     try

@@ -1,0 +1,26 @@
+# rows
+row 1: timestamp=slice:2024-04-28 04:02:03 message_id=slice:1qK3dV-0001Bp-7y flag=slice:<= message=slice:sender@example.com H=mail.example.com [192.0.2.1] P=esmtp S=1500 id=<deadbeef@example.com>
+row 2: timestamp=slice:2024-04-28 04:02:04 message_id=slice:1qK3dV-0001Bp-7y flag=slice:=> message=slice:recipient@example.org R=dnslookup T=remote_smtp H=mx.example.org [203.0.113.1] X=TLS1.3:ECDHE_RSA_AES_256_GCM_SHA384:256 CV=yes
+row 3: timestamp=slice:2024-04-28 04:02:05 message_id=slice:1qK3dV-0001Bp-7y flag=slice:Completed
+row 4: timestamp=slice:2024-04-28 04:02:06 +0000 pid=slice:[12345] flag=slice:H= message=slice:(badmailer) [198.51.100.5] sender verify defer for <bad@example.com>: temporary problem
+row 5: timestamp=slice:2024-04-28 04:02:03 message_id=slice:1qK3dV-0001Bp-7y flag=slice:<= message=slice:sender@example.com H=mail.example.com [192.0.2.1] P=esmtp S=1500 id=<deadbeef@example.com>
+row 6: timestamp=slice:2024-04-28 04:02:04 message_id=slice:1qK3dV-0001Bp-7y flag=slice:=> message=slice:recipient@example.org R=dnslookup T=remote_smtp H=mx.example.org [203.0.113.1] X=TLS1.3:ECDHE_RSA_AES_256_GCM_SHA384:256 CV=yes
+row 7: timestamp=slice:2024-04-28 04:02:05 message_id=slice:1qK3dV-0001Bp-7y flag=slice:Completed
+row 8: timestamp=slice:2024-04-28 04:02:06 +0000 pid=slice:[12345] flag=slice:H= message=slice:(badmailer) [198.51.100.5] sender verify defer for <bad@example.com>: temporary problem
+row 9: timestamp=slice:2024-04-28 04:02:03 message_id=slice:1qK3dV-0001Bp-7y flag=slice:<= message=slice:sender@example.com H=mail.example.com [192.0.2.1] P=esmtp S=1500 id=<deadbeef@example.com>
+row 10: timestamp=slice:2024-04-28 04:02:04 message_id=slice:1qK3dV-0001Bp-7y flag=slice:=> message=slice:recipient@example.org R=dnslookup T=remote_smtp H=mx.example.org [203.0.113.1] X=TLS1.3:ECDHE_RSA_AES_256_GCM_SHA384:256 CV=yes
+row 11: timestamp=slice:2024-04-28 04:02:05 message_id=slice:1qK3dV-0001Bp-7y flag=slice:Completed
+row 12: timestamp=slice:2024-04-28 04:02:06 +0000 pid=slice:[12345] flag=slice:H= message=slice:(badmailer) [198.51.100.5] sender verify defer for <bad@example.com>: temporary problem
+# errors
+error 6-6: Line did not match the regex pattern.
+# offsets
+
+# spans
+# keys
+timestamp
+pid
+message_id
+flag
+message
+# last line 14
+# started 1 finished 1 cancelled false

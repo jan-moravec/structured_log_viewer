@@ -1,0 +1,27 @@
+# rows
+row 0: severity=slice:I timestamp=slice:0517 12:34:56.789012 thread=uint:12345 file=slice:logging_unittest.cc line=uint:67 message=slice:Hello, world!
+row 1: severity=slice:W timestamp=slice:1231 23:59:59.000001 thread=uint:1 file=slice:main.cc line=uint:1 message=slice:About to roll over
+row 2: severity=slice:E timestamp=slice:0101 00:00:00.123456 thread=uint:4567 file=slice:server.cc line=uint:1234 message=slice:Connection refused: 127.0.0.1:8080
+row 3: severity=slice:F timestamp=slice:0701 06:00:00.000000 thread=uint:9999 file=slice:fatal.cc line=uint:42 message=owned:Process aborted\nthis line matches no template
+row 6: severity=slice:I timestamp=slice:0517 12:34:56.789012 thread=uint:12345 file=slice:logging_unittest.cc line=uint:67 message=slice:Hello, world!
+row 7: severity=slice:W timestamp=slice:1231 23:59:59.000001 thread=uint:1 file=slice:main.cc line=uint:1 message=slice:About to roll over
+row 8: severity=slice:E timestamp=slice:0101 00:00:00.123456 thread=uint:4567 file=slice:server.cc line=uint:1234 message=slice:Connection refused: 127.0.0.1:8080
+row 9: severity=slice:F timestamp=slice:0701 06:00:00.000000 thread=uint:9999 file=slice:fatal.cc line=uint:42 message=slice:Process aborted
+row 10: severity=slice:I timestamp=slice:0517 12:34:56.789012 thread=uint:12345 file=slice:logging_unittest.cc line=uint:67 message=slice:Hello, world!
+row 11: severity=slice:W timestamp=slice:1231 23:59:59.000001 thread=uint:1 file=slice:main.cc line=uint:1 message=slice:About to roll over
+row 12: severity=slice:E timestamp=slice:0101 00:00:00.123456 thread=uint:4567 file=slice:server.cc line=uint:1234 message=slice:Connection refused: 127.0.0.1:8080
+row 13: severity=slice:F timestamp=slice:0701 06:00:00.000000 thread=uint:9999 file=slice:fatal.cc line=uint:42 message=slice:Process aborted
+# errors
+# offsets
+ 66 124 203 260 261 291 357 415 494 551 617 675 754 811
+# spans
+span 3-5
+# keys
+severity
+timestamp
+thread
+file
+line
+message
+# last line 14
+# started 1 finished 1 cancelled false

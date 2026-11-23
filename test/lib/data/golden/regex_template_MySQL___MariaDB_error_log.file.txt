@@ -1,0 +1,26 @@
+# rows
+row 0: timestamp=slice:2024-04-28T04:02:03.123456Z thread=uint:0 level=slice:System subsystem=slice:MY-010931 message=slice:[Server] /usr/sbin/mysqld: ready for connections.
+row 1: timestamp=slice:2024-04-28T04:02:04.456789Z thread=uint:12 level=slice:Warning subsystem=slice:MY-013360 message=slice:[Server] Plugin sha256_password is deprecated.
+row 2: timestamp=slice:2024-04-28 04:02:05 thread=uint:0 level=slice:Note message=slice:InnoDB: Buffer pool(s) load completed at 240428  4:02:05
+row 3: timestamp=slice:2024-04-28 04:02:06 thread=uint:12 level=slice:ERROR message=slice:Access denied for user 'foo'@'localhost' (using password: YES)
+row 6: timestamp=slice:2024-04-28T04:02:03.123456Z thread=uint:0 level=slice:System subsystem=slice:MY-010931 message=slice:[Server] /usr/sbin/mysqld: ready for connections.
+row 7: timestamp=slice:2024-04-28T04:02:04.456789Z thread=uint:12 level=slice:Warning subsystem=slice:MY-013360 message=slice:[Server] Plugin sha256_password is deprecated.
+row 8: timestamp=slice:2024-04-28 04:02:05 thread=uint:0 level=slice:Note message=slice:InnoDB: Buffer pool(s) load completed at 240428  4:02:05
+row 9: timestamp=slice:2024-04-28 04:02:06 thread=uint:12 level=slice:ERROR message=slice:Access denied for user 'foo'@'localhost' (using password: YES)
+row 10: timestamp=slice:2024-04-28T04:02:03.123456Z thread=uint:0 level=slice:System subsystem=slice:MY-010931 message=slice:[Server] /usr/sbin/mysqld: ready for connections.
+row 11: timestamp=slice:2024-04-28T04:02:04.456789Z thread=uint:12 level=slice:Warning subsystem=slice:MY-013360 message=slice:[Server] Plugin sha256_password is deprecated.
+row 12: timestamp=slice:2024-04-28 04:02:05 thread=uint:0 level=slice:Note message=slice:InnoDB: Buffer pool(s) load completed at 240428  4:02:05
+row 13: timestamp=slice:2024-04-28 04:02:06 thread=uint:12 level=slice:ERROR message=slice:Access denied for user 'foo'@'localhost' (using password: YES)
+# errors
+error 6-6: Line did not match the regex pattern.
+# offsets
+ 101 201 287 381 382 412 513 613 699 793 894 994 1080 1174
+# spans
+# keys
+timestamp
+thread
+level
+subsystem
+message
+# last line 14
+# started 1 finished 1 cancelled false

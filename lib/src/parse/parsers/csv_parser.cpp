@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -229,162 +230,42 @@ bool HeaderLineLooksLikeCsv(std::string_view line, std::string &scratch)
     return cellCount >= 2 && nonEmptyCells >= 2;
 }
 
-struct CsvWorkerState
-{
-    std::string quotedScratch;
-};
-
-/** @brief Stage B: decodes the CSV rows of one line-aligned batch into compact lines. */
-void DecodeCsvBatch(
-    const internal::ByteRange &batch,
-    internal::WorkerScratch<CsvWorkerState> &worker,
-    FileLineSource &source,
-    std::span<const internal::TimeColumnSpec> timeColumns,
-    internal::ParsedPipelineBatch &parsed,
-    const std::vector<KeyId> &columnKeys,
-    std::optional<uint64_t> headerLineOffset
-)
-{
-    parsed.batchIndex = batch.batchIndex;
-
-    const char *cursor = batch.bytesBegin;
-    const char *end = batch.bytesEnd;
-    const char *fileEnd = batch.fileEnd;
-    const char *fileBegin = source.StableBytes().data();
-
-    const auto batchBytes = static_cast<size_t>(end - cursor);
-    const size_t estimatedLines = (batchBytes / 64) + 1;
-    parsed.lines.reserve(estimatedLines);
-    parsed.localLineOffsets.reserve(estimatedLines);
-
-    size_t relativeLineNumber = 1;
-
-    std::vector<loglib::CompactLogValue> values;
-
-    while (cursor < end)
-    {
-        const char *lineStart = cursor;
-        const char *newline = static_cast<const char *>(memchr(cursor, '\n', static_cast<size_t>(end - cursor)));
-        const char *lineEnd = newline ? newline : end;
-        cursor = (newline != nullptr) ? newline + 1 : end;
-
-        std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
-        line = StripCr(line);
-
-        // RawLine subtracts 1 for the '\n'; pad by 1 on an unterminated
-        // last line so the final byte isn't lost.
-        const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
-        parsed.localLineOffsets.push_back(nextOffset);
-
-        if (line.empty())
-        {
-            relativeLineNumber++;
-            continue;
-        }
-
-        // Skip the header by byte offset (set by the eager parse). This
-        // works no matter which Stage B batch contains it -- Stage A
-        // ends batches on newline boundaries, so the header line is
-        // fully contained in one batch.
-        if (headerLineOffset.has_value() && std::cmp_equal(lineStart - fileBegin, *headerLineOffset))
-        {
-            relativeLineNumber++;
-            continue;
-        }
-
-        try
-        {
-            const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
-            bool unterminated = false;
-            size_t raggedExtra = 0;
-            ParseCsvLine(
-                line,
-                columnKeys,
-                fileBegin,
-                fileSize,
-                parsed.ownedStringsArena,
-                worker.user.quotedScratch,
-                values,
-                unterminated,
-                raggedExtra
-            );
-            if (unterminated)
-            {
-                parsed.errors.push_back(
-                    internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = "Unterminated quoted value."}
-                );
-                relativeLineNumber++;
-                continue;
-            }
-            if (raggedExtra != 0)
-            {
-                parsed.errors.push_back(
-                    internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber,
-                        .body = fmt::format(
-                            "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, columnKeys.size()
-                        )
-                    }
-                );
-                relativeLineNumber++;
-                continue;
-            }
-            // Empty values is fine: we still emit a row so row count
-            // matches visible source lines.
-
-            // LogLine ctor asserts ascending KeyIds; header order may not be.
-            std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
-
-            LogLine logLine(values, parsed.fields, source, relativeLineNumber - 1);
-            parsed.lines.push_back(std::move(logLine));
-
-            worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
-
-            values.clear();
-        }
-        catch (const std::exception &e)
-        {
-            parsed.errors.push_back(
-                internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = std::string(e.what())}
-            );
-        }
-
-        relativeLineNumber++;
-    }
-
-    parsed.totalLineCount = relativeLineNumber - 1;
-}
-
 /**
- * The CSV decoder of the streaming parse loop. The first line that is not blank is the header, and the later lines use
- * its key ids.
+ * The CSV decoder. A stream decoder reads the header from the first line that is not blank and returns Skip for it. A
+ * file decoder is given the key ids of the header, which the parser read up front, and the position of the header in
+ * the file, where it returns Skip. The later lines use the key ids of the header.
  */
 class CsvLineDecoder
 {
 public:
+    /** A UTF-8 byte order mark can start the header line. */
+    static constexpr bool K_STRIP_BOM = true;
+
+    /** A decoder that reads the header from the first line it gets. */
     CsvLineDecoder() = default;
 
-    internal::LineDecodeResult DecodeCompact(
+    /** A decoder for a file whose header was read already. headerOffset is where the header text starts in the file, if
+     * the file has one. */
+    CsvLineDecoder(std::shared_ptr<const std::vector<KeyId>> header, std::optional<uint64_t> headerOffset)
+        : mHeaderConsumed(true), mSharedColumnKeys(std::move(header)), mHeaderOffset(headerOffset)
+    {
+    }
+
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache &keyCache,
+        internal::LineContext &ctx,
         std::vector<loglib::CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string &errorOut
     )
     {
         out.clear();
-        outOwnedArena.clear();
-        if (line.empty())
-        {
-            return internal::LineDecodeResult::Emit;
-        }
 
         if (!mHeaderConsumed)
         {
-            const std::string_view headerLine = StripBom(line);
-            const auto internKey = [&](std::string_view name) { return internal::InternKeyVia(name, keys, keyCache); };
-            if (!ParseHeaderLine(headerLine, internKey, mQuotedScratch, mColumnKeys))
+            const auto internKey = [&](std::string_view name) {
+                return internal::InternKeyVia(name, ctx.keys, ctx.keyCache);
+            };
+            if (!ParseHeaderLine(line, internKey, mQuotedScratch, mOwnColumnKeys))
             {
                 errorOut = "Invalid CSV header.";
                 return internal::LineDecodeResult::Error;
@@ -392,17 +273,23 @@ public:
             mHeaderConsumed = true;
             return internal::LineDecodeResult::Skip;
         }
+        if (mHeaderOffset.has_value() && !ctx.stableBytes.empty() &&
+            std::cmp_equal(line.data() - ctx.stableBytes.data(), *mHeaderOffset))
+        {
+            return internal::LineDecodeResult::Skip;
+        }
 
+        const std::vector<KeyId> &columnKeys = mSharedColumnKeys ? *mSharedColumnKeys : mOwnColumnKeys;
         try
         {
             bool unterminated = false;
             size_t raggedExtra = 0;
             ParseCsvLine(
                 line,
-                mColumnKeys,
-                /* fileBegin = */ nullptr,
-                /* fileSize = */ 0,
-                outOwnedArena,
+                columnKeys,
+                ctx.stableBytes.data(),
+                ctx.stableBytes.size(),
+                ctx.ownedBytes,
                 mQuotedScratch,
                 out,
                 unterminated,
@@ -416,10 +303,12 @@ public:
             if (raggedExtra != 0)
             {
                 errorOut = fmt::format(
-                    "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, mColumnKeys.size()
+                    "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, columnKeys.size()
                 );
                 return internal::LineDecodeResult::Error;
             }
+            // A row stores its fields by ascending key id, and the header order may differ.
+            std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return a.Key() < b.Key(); });
             return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
@@ -429,15 +318,22 @@ public:
         }
     }
 
+    // The result is a variable for the drivers, which compare it with INVALID_KEY_ID at run time.
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
+    {
+        return INVALID_KEY_ID;
+    }
+
 private:
     bool mHeaderConsumed = false;
-    std::vector<KeyId> mColumnKeys;
+    std::shared_ptr<const std::vector<KeyId>> mSharedColumnKeys;
+    std::optional<uint64_t> mHeaderOffset;
+    std::vector<KeyId> mOwnColumnKeys;
     std::string mQuotedScratch;
 };
 
-static_assert(
-    internal::CompactLineDecoder<CsvLineDecoder>, "CsvLineDecoder must satisfy the CompactLineDecoder concept"
-);
+static_assert(internal::LineDecoder<CsvLineDecoder>, "CsvLineDecoder must satisfy the LineDecoder concept");
 
 } // namespace
 
@@ -509,15 +405,14 @@ void CsvParser::Parse(StreamLineSource &source, LogParseSink &sink, ParserOption
 void CsvParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
     const std::span<const char> bytes = source.StableBytes();
-    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes : DEFAULT_PARSE_BATCH_BYTES;
 
     const char *fileBegin = bytes.data();
     const size_t fileSize = bytes.size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
     // Eagerly find and parse the header. Outputs:
-    //  * columnKeys -- shared column -> KeyId table for Stage B.
-    //  * headerLineOffset -- exact byte offset Stage B uses to skip
+    //  * columnKeys -- shared column -> KeyId table for the decoders.
+    //  * headerLineOffset -- exact byte offset the decoder uses to skip
     //    the header (handles the case where leading blanks push the
     //    header past batch 0).
     //  * headerParseFailed -- short-circuits the data pipeline so a
@@ -545,7 +440,8 @@ void CsvParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions 
             candidate = StripCr(candidate);
             if (!candidate.empty())
             {
-                headerLineOffset = static_cast<uint64_t>(cursor - fileBegin);
+                // Where the header text starts, after a byte order mark: the decoder sees the line without it.
+                headerLineOffset = static_cast<uint64_t>(candidate.data() - fileBegin);
                 headerLineNumber = blankLinesBeforeHeader + 1;
                 headerParseFailed = !ParseHeaderLine(
                     candidate,
@@ -581,21 +477,11 @@ void CsvParser::Parse(FileLineSource &source, LogParseSink &sink, ParserOptions 
         return;
     }
 
-    auto stageA = internal::MakeLineAlignedBatcher(fileBegin, fileEnd, batchSize);
-
-    FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, &columnKeys, headerLineOffset](
-                      internal::ByteRange token,
-                      internal::WorkerScratch<CsvWorkerState> &worker,
-                      KeyIndex & /*keys*/,
-                      std::span<const internal::TimeColumnSpec> timeColumns,
-                      internal::ParsedPipelineBatch &parsed
-                  ) { DecodeCsvBatch(token, worker, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset); };
-
-    // The header columns are interned up front, so the pipeline announces them as declared keys, even for a column
-    // that is empty in every row.
-    internal::RunStaticParserPipeline<internal::ByteRange, CsvWorkerState>(
-        source, sink, options, stageA, stageB, columnKeys
+    // The header columns are interned up front, so the pipeline announces them as declared keys, even for a column that
+    // is empty in every row.
+    const auto header = std::make_shared<const std::vector<KeyId>>(std::move(columnKeys));
+    internal::RunStaticParserPipeline<CsvLineDecoder>(
+        source, sink, options, [&] { return CsvLineDecoder(header, headerLineOffset); }, *header
     );
 }
 

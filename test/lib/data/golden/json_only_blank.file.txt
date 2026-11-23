@@ -1,0 +1,8 @@
+# rows
+# errors
+# offsets
+ 1 2 3
+# spans
+# keys
+# last line 3
+# started 1 finished 1 cancelled false

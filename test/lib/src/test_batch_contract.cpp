@@ -119,7 +119,7 @@ private:
     KeyIndex mKeys;
 };
 
-/** Runs a parser over bytes as a file, with a given Stage A batch size, and keeps the sink for inspection. */
+/** Runs a parser over bytes as a file, with a given batch size, and keeps the sink for inspection. */
 void ParseAsFile(
     const LogParser &parser,
     const std::string &fileName,
@@ -1297,40 +1297,59 @@ private:
     KeyIndex mKeys;
 };
 
-struct NoWorkerState
+/**
+ * A decoder for the static driver. It throws on one line, turns "head" into a record whose "msg" field continues over
+ * the indented lines that follow, and skips every other line, so it finds no rows in a file of other lines.
+ */
+template <class Exception> class ScriptedLineDecoder
 {
-};
-
-/** A Stage B that throws on one batch and otherwise only counts the lines of its slice. */
-struct ThrowingStageB
-{
-    template <class Exception> struct Of
+public:
+    ScriptedLineDecoder(std::string throwOnLine, Exception exception)
+        : mThrowOnLine(std::move(throwOnLine)), mException(std::move(exception))
     {
-        uint64_t throwOnBatch;
-        Exception exception;
+    }
 
-        void operator()(
-            internal::ByteRange token,
-            internal::WorkerScratch<NoWorkerState> & /*worker*/,
-            KeyIndex & /*keys*/,
-            std::span<const internal::TimeColumnSpec> /*timeColumns*/,
-            internal::ParsedPipelineBatch &parsed
-        ) const
+    internal::LineDecodeResult Decode(
+        std::string_view line, internal::LineContext &ctx, std::vector<CompactLogValue> &out, std::string & /*errorOut*/
+    )
+    {
+        out.clear();
+        if (line == mThrowOnLine)
         {
-            if (token.batchIndex == throwOnBatch)
-            {
-                // The tests throw types that are not derived from std::exception on purpose.
-                // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws,cert-err60-cpp)
-                throw exception;
-            }
-            parsed.batchIndex = token.batchIndex;
-            parsed.totalLineCount = static_cast<std::size_t>(std::count(token.bytesBegin, token.bytesEnd, '\n'));
+            // The tests throw types that are not derived from std::exception on purpose.
+            // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws,cert-err60-cpp)
+            throw mException;
         }
-    };
+        if (line.starts_with(' '))
+        {
+            return internal::LineDecodeResult::Continue;
+        }
+        if (line == "head")
+        {
+            mTarget = ctx.keys.GetOrInsert("msg");
+            const uint64_t offset = ctx.ownedBytes.size();
+            ctx.ownedBytes.append(line);
+            out.push_back(
+                CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(line.size())).WithKey(mTarget)
+            );
+            return internal::LineDecodeResult::Emit;
+        }
+        return internal::LineDecodeResult::Skip;
+    }
+
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
+    {
+        return mTarget;
+    }
+
+private:
+    std::string mThrowOnLine;
+    Exception mException;
+    KeyId mTarget = INVALID_KEY_ID;
 };
 
-/** Runs the static driver over about 300 short lines with a Stage B that throws. */
-template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, Exception exception)
+/** Runs the static driver over about 300 short lines with a decoder that throws on one of them, in the third batch. */
+template <class Exception> void RunStaticWithThrowingDecoder(CountingSink &sink, Exception exception)
 {
     std::string bytes;
     for (int i = 0; i < 300; ++i)
@@ -1338,19 +1357,12 @@ template <class Exception> void RunStaticWithThrowingStageB(CountingSink &sink, 
         bytes += "line " + std::to_string(i) + "\n";
     }
     auto source = MemorySource(bytes, "batch_contract_throwing_static.log");
-    const FileLineSource &logFile = *source;
     ParserOptions options;
     options.threads = 2;
-    ThrowingStageB::Of<Exception> stageB{.throwOnBatch = 2, .exception = std::move(exception)};
-    internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
-        *source,
-        sink,
-        options,
-        internal::MakeLineAlignedBatcher(
-            logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
-        ),
-        stageB
-    );
+    options.batchSizeBytes = 64;
+    internal::RunStaticParserPipeline<ScriptedLineDecoder<Exception>>(*source, sink, options, [&] {
+        return ScriptedLineDecoder<Exception>("line 30", exception);
+    });
 }
 
 /** An exception type that is not derived from std::exception. */
@@ -1368,23 +1380,25 @@ public:
     {
     }
 
-    internal::LineDecodeResult DecodeCompact(
+    internal::LineDecodeResult Decode(
         std::string_view line,
-        KeyIndex & /*keys*/,
-        internal::PerWorkerKeyCache & /*keyCache*/,
+        internal::LineContext & /*ctx*/,
         std::vector<CompactLogValue> &out,
-        std::string &outOwnedArena,
         std::string & /*errorOut*/
     )
     {
         out.clear();
-        outOwnedArena.clear();
         if (line == "boom")
         {
             // NOLINTNEXTLINE(bugprone-std-exception-baseclass,bugprone-exception-copy-constructor-throws,cert-err60-cpp)
             throw mException;
         }
         return internal::LineDecodeResult::Emit;
+    }
+
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
+    {
+        return INVALID_KEY_ID;
     }
 
 private:
@@ -1421,7 +1435,7 @@ TEST_CASE("A decoder that throws still finishes the sink, once, and the exceptio
     SECTION("the static driver")
     {
         CountingSink sink;
-        CHECK_THROWS_WITH(RunStaticWithThrowingStageB(sink, std::runtime_error("decoder failed")), "decoder failed");
+        CHECK_THROWS_WITH(RunStaticWithThrowingDecoder(sink, std::runtime_error("decoder failed")), "decoder failed");
         CheckFinishedWithFailureError(sink, "decoder failed");
     }
     SECTION("the streaming driver")
@@ -1454,17 +1468,11 @@ namespace
 class OpenRecordDecoder
 {
 public:
-    internal::LineDecodeResult DecodeCompact(
-        std::string_view line,
-        KeyIndex &keys,
-        internal::PerWorkerKeyCache & /*keyCache*/,
-        std::vector<CompactLogValue> &out,
-        std::string &outOwnedArena,
-        std::string & /*errorOut*/
+    internal::LineDecodeResult Decode(
+        std::string_view line, internal::LineContext &ctx, std::vector<CompactLogValue> &out, std::string & /*errorOut*/
     )
     {
         out.clear();
-        outOwnedArena.clear();
         if (line == "boom")
         {
             throw std::runtime_error("producer failed");
@@ -1473,13 +1481,13 @@ public:
         {
             return internal::LineDecodeResult::Continue;
         }
-        mTarget = keys.GetOrInsert("msg");
-        outOwnedArena.append(line);
+        mTarget = ctx.keys.GetOrInsert("msg");
+        ctx.ownedBytes.append(line);
         out.push_back(CompactLogValue::MakeOwnedString(0, static_cast<uint32_t>(line.size())).WithKey(mTarget));
         return internal::LineDecodeResult::Emit;
     }
 
-    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    [[nodiscard]] KeyId ContinuationTarget() const noexcept
     {
         return mTarget;
     }
@@ -1488,38 +1496,7 @@ private:
     KeyId mTarget = INVALID_KEY_ID;
 };
 
-/** A Stage B whose first batch holds one open record and whose second batch throws. */
-struct OpenRecordStageB
-{
-    void operator()(
-        internal::ByteRange token,
-        internal::WorkerScratch<NoWorkerState> & /*worker*/,
-        KeyIndex &keys,
-        std::span<const internal::TimeColumnSpec> /*timeColumns*/,
-        internal::ParsedPipelineBatch &parsed
-    ) const
-    {
-        parsed.batchIndex = token.batchIndex;
-        parsed.totalLineCount = static_cast<std::size_t>(std::count(token.bytesBegin, token.bytesEnd, '\n'));
-        if (token.batchIndex == 0)
-        {
-            const KeyId key = keys.GetOrInsert("msg");
-            parsed.lines.emplace_back(
-                std::vector<std::pair<KeyId, LogValue>>{{key, LogValue{std::string("head")}}}, *source, 0
-            );
-            parsed.firstSeenKeys.push_back(key);
-            parsed.lastRecordOpenForContinuation = true;
-            parsed.continuationTargetKeyId = key;
-            parsed.tailRecordHeaderPhysicalLine = 1;
-            parsed.tailRecordLastPhysicalLine = 1;
-            return;
-        }
-        throw std::runtime_error("producer failed");
-    }
-
-    FileLineSource *source = nullptr;
-};
-
+/** A decoder whose first batch holds one open record and whose second batch throws. */
 [[nodiscard]] std::size_t CountRows(const CountingSink &sink)
 {
     std::size_t rows = 0;
@@ -1536,29 +1513,27 @@ TEST_CASE("A failed parse still delivers the record that was open", "[batch_cont
 {
     SECTION("the static driver")
     {
-        std::string bytes;
-        for (int i = 0; i < 300; ++i)
+        // The first batch holds the record "head" and ends in its continuation lines. The second batch throws, so the
+        // record is still held when the parse fails.
+        std::string bytes = "head\n";
+        for (int i = 0; i < 12; ++i)
         {
-            bytes += "line " + std::to_string(i) + "\n";
+            bytes += "  more continuation text\n";
         }
+        bytes += "boom\n";
         auto source = MemorySource(bytes, "batch_contract_open_record_static.log");
-        const FileLineSource &logFile = *source;
         // With one thread, TBB takes the first batch through every stage before it reads the second, so the record is
         // held when the second batch throws.
         ParserOptions options;
         options.threads = 1;
+        options.batchSizeBytes = 64;
         CountingSink sink;
-        OpenRecordStageB stageB;
-        stageB.source = source.get();
         CHECK_THROWS_WITH(
-            (internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
+            (internal::RunStaticParserPipeline<ScriptedLineDecoder<std::runtime_error>>(
                 *source,
                 sink,
                 options,
-                internal::MakeLineAlignedBatcher(
-                    logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
-                ),
-                stageB
+                [] { return ScriptedLineDecoder<std::runtime_error>("boom", std::runtime_error("producer failed")); }
             )),
             "producer failed"
         );
@@ -1583,7 +1558,7 @@ TEST_CASE("A cancelled operation finishes the sink as cancelled and goes on", "[
     SECTION("the static driver")
     {
         CountingSink sink;
-        CHECK_THROWS_AS(RunStaticWithThrowingStageB(sink, OperationCancelled("stop")), OperationCancelled);
+        CHECK_THROWS_AS(RunStaticWithThrowingDecoder(sink, OperationCancelled("stop")), OperationCancelled);
         CHECK(sink.finished == 1);
         CHECK(sink.wasCancelled);
         CHECK_FALSE(sink.callAfterFinish);
@@ -1617,7 +1592,7 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
     }
     SECTION("from OnBatch, in the static driver")
     {
-        // Stage B finds no rows here, so the only batch is the last one, sent when the pipeline finishes.
+        // The decoder finds no rows here, so the only batch is the last one, sent when the pipeline finishes.
         CountingSink sink(CountingSink::ThrowFrom::OnBatch, 1);
         std::string bytes;
         for (int i = 0; i < 2000; ++i)
@@ -1625,20 +1600,14 @@ TEST_CASE("A sink that threw is not called again", "[batch_contract][failure]")
             bytes += "line " + std::to_string(i) + "\n";
         }
         auto source = MemorySource(bytes, "batch_contract_sink_throws.log");
-        const FileLineSource &logFile = *source;
-        ThrowingStageB::Of<std::runtime_error> stageB{
-            .throwOnBatch = UINT64_MAX,
-            .exception = std::runtime_error("unused"),
-        };
+        ParserOptions options;
+        options.batchSizeBytes = 64;
         CHECK_THROWS_AS(
-            (internal::RunStaticParserPipeline<internal::ByteRange, NoWorkerState>(
+            (internal::RunStaticParserPipeline<ScriptedLineDecoder<std::runtime_error>>(
                 *source,
                 sink,
-                ParserOptions{},
-                internal::MakeLineAlignedBatcher(
-                    logFile.StableBytes().data(), logFile.StableBytes().data() + logFile.StableBytes().size(), 64
-                ),
-                stageB
+                options,
+                [] { return ScriptedLineDecoder<std::runtime_error>("unused", std::runtime_error("unused")); }
             )),
             BrokenPipe
         );

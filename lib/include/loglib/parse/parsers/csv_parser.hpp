@@ -42,14 +42,14 @@ class StreamLineSource;
  * - With several TCP clients, the first line to arrive sets the columns for all of them. Use one sender, or agree on
  * the header.
  *
- * It uses the same parallel pipeline (DecodeCsvBatch) and streaming loop (CsvLineDecoder) as the other parsers.
+ * It uses the same parallel pipeline and streaming loop as the other parsers, through one CsvLineDecoder.
  */
 class CsvParser : public LogParser
 {
 public:
     /**
      * @brief Parses a static file. The header is read first to map the columns to key ids, then the pipeline runs.
-     * Stage B records the offset of the header line and emits no row for it.
+     * The decoder records the offset of the header line and emits no row for it.
      */
     void Parse(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 

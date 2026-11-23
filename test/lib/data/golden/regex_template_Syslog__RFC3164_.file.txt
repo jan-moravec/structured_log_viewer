@@ -1,0 +1,29 @@
+# rows
+row 0: timestamp=slice:Apr 28 04:02:03 hostname=slice:host-a program=slice:systemd message=slice:System starting
+row 1: timestamp=slice:Jun 27 01:47:20 hostname=slice:host-b program=slice:configd pid=uint:17 message=slice:network changed
+row 2: timestamp=slice:Jan  4 10:23:26 hostname=slice:host-c program=slice:CRON pid=uint:1234 message=slice:(root) CMD (test -e /tmp)
+row 3: timestamp=slice:2024-04-28T04:02:03+00:00 hostname=slice:host-a program=slice:systemd message=slice:System starting
+row 4: timestamp=slice:2024-06-27T01:47:20.123Z hostname=slice:host-b program=slice:configd pid=uint:17 message=slice:network changed
+row 7: timestamp=slice:Apr 28 04:02:03 hostname=slice:host-a program=slice:systemd message=slice:System starting
+row 8: timestamp=slice:Jun 27 01:47:20 hostname=slice:host-b program=slice:configd pid=uint:17 message=slice:network changed
+row 9: timestamp=slice:Jan  4 10:23:26 hostname=slice:host-c program=slice:CRON pid=uint:1234 message=slice:(root) CMD (test -e /tmp)
+row 10: timestamp=slice:2024-04-28T04:02:03+00:00 hostname=slice:host-a program=slice:systemd message=slice:System starting
+row 11: timestamp=slice:2024-06-27T01:47:20.123Z hostname=slice:host-b program=slice:configd pid=uint:17 message=slice:network changed
+row 12: timestamp=slice:Apr 28 04:02:03 hostname=slice:host-a program=slice:systemd message=slice:System starting
+row 13: timestamp=slice:Jun 27 01:47:20 hostname=slice:host-b program=slice:configd pid=uint:17 message=slice:network changed
+row 14: timestamp=slice:Jan  4 10:23:26 hostname=slice:host-c program=slice:CRON pid=uint:1234 message=slice:(root) CMD (test -e /tmp)
+row 15: timestamp=slice:2024-04-28T04:02:03+00:00 hostname=slice:host-a program=slice:systemd message=slice:System starting
+row 16: timestamp=slice:2024-06-27T01:47:20.123Z hostname=slice:host-b program=slice:configd pid=uint:17 message=slice:network changed
+# errors
+error 7-7: Line did not match the regex pattern.
+# offsets
+ 48 100 161 219 280 281 311 359 411 472 530 591 639 691 752 810 871
+# spans
+# keys
+timestamp
+hostname
+program
+pid
+message
+# last line 17
+# started 1 finished 1 cancelled false

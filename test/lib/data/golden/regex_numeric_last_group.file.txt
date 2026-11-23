@@ -1,0 +1,23 @@
+# rows
+row 0: level=slice:INFO message=slice:text code=owned:0\n  more 0
+row 2: level=slice:INFO message=slice:text code=owned:1\n  more 1
+row 4: level=slice:INFO message=slice:text code=owned:2\n  more 2
+row 6: level=slice:INFO message=slice:text code=owned:3\n  more 3
+row 8: level=slice:INFO message=slice:text code=owned:4\n  more 4
+row 10: level=slice:INFO message=slice:text code=owned:5\n  more 5
+# errors
+# offsets
+ 12 21 33 42 54 63 75 84 96 105 117 126
+# spans
+span 0-1
+span 2-3
+span 4-5
+span 6-7
+span 8-9
+span 10-11
+# keys
+level
+message
+code
+# last line 12
+# started 1 finished 1 cancelled false

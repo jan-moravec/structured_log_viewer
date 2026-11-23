@@ -1,0 +1,9 @@
+# rows
+# errors
+error 1-1: Invalid CSV header.
+# offsets
+
+# spans
+# keys
+# last line 1
+# started 1 finished 1 cancelled false

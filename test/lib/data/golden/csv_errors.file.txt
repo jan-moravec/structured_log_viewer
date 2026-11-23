@@ -1,0 +1,17 @@
+# rows
+row 1: a=uint:1 b=uint:2 c=uint:3
+row 2: a=uint:1 b=uint:2
+row 5: a=owned:quoted "inner"  b=uint:2 c=uint:3
+row 6: a=uint:7 b=uint:8 c=uint:9
+# errors
+error 4-4: Row has 2 extra cell(s) beyond the 3-column header.
+error 5-5: Unterminated quoted value.
+# offsets
+ 6 12 16 26 44 68 74
+# spans
+# keys
+a
+b
+c
+# last line 7
+# started 1 finished 1 cancelled false

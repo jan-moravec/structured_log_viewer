@@ -1,0 +1,11 @@
+# rows
+# errors
+error 1-1: UTF8_ERROR: The input is not valid UTF-8
+error 2-2: UTF8_ERROR: The input is not valid UTF-8
+error 3-3: Not a JSON object.
+# offsets
+ 17 26 33
+# spans
+# keys
+# last line 3
+# started 1 finished 1 cancelled false

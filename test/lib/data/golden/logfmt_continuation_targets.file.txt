@@ -1,0 +1,28 @@
+# rows
+row 0: a=uint:1 n=uint:5
+row 2: b=uint:2 t=owned:  after an empty value
+row 4: c=uint:3 s=owned:text\n  after a string
+row 6: d=uint:4 e=bool:true
+row 9: f=uint:6 g=owned:x\n  after blanks
+# errors
+error 2-2: Continuation lines dropped: target field is not a string.
+error 8-8: Continuation lines dropped: target field is not a string.
+# offsets
+ 8 25 32 55 68 85 96 111 112 120 121 122 137
+# spans
+span 2-3
+span 4-5
+span 9-12
+# keys
+a
+n
+b
+t
+c
+s
+d
+e
+f
+g
+# last line 13
+# started 1 finished 1 cancelled false
