@@ -11,6 +11,7 @@
 
 #include "loglib/core/ascii_case.hpp"
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <string_view>
@@ -146,16 +147,14 @@ struct Column
 [[nodiscard]] inline bool IsTimeKeyName(std::string_view key) noexcept
 {
     static constexpr std::array<std::string_view, 6> NAMES = {
-        "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
+        "timestamp",
+        "time",
+        "ts",
+        "@timestamp",
+        "datetime",
+        "created_at",
     };
-    for (const std::string_view name : NAMES)
-    {
-        if (EqualsIgnoreCaseAscii(key, name))
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(NAMES, [key](std::string_view name) { return EqualsIgnoreCaseAscii(key, name); });
 }
 
 } // namespace loglib
