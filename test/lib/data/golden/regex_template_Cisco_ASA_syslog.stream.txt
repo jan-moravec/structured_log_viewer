@@ -1,13 +1,13 @@
 # rows
-row 1: priority=uint:166 timestamp=slice:Jun 27 01:47:20 hostname=slice:fw01 level=uint:6 message_id=uint:302013 message=slice:Built outbound TCP connection 12345 for outside:1.2.3.4/443 (1.2.3.4/443) to inside:10.0.0.5/52001 (10.0.0.5/52001)
-row 2: timestamp=slice:Jun 27 01:47:21 hostname=slice:fw02 level=uint:4 message_id=uint:106023 message=slice:Deny tcp src outside:1.2.3.4/443 dst inside:10.0.0.5/52001 by access-group "OUTSIDE-IN"
-row 3: priority=uint:162 timestamp=slice:Apr 28 04:02:03 hostname=slice:asa-edge level=uint:2 message_id=uint:106017 message=slice:Deny IP due to Land Attack from 10.0.0.1 to 10.0.0.1
-row 4: priority=uint:166 timestamp=slice:Jun 27 01:47:20 hostname=slice:fw01 level=uint:6 message_id=uint:302013 message=slice:Built outbound TCP connection 12345 for outside:1.2.3.4/443 (1.2.3.4/443) to inside:10.0.0.5/52001 (10.0.0.5/52001)
-row 5: timestamp=slice:Jun 27 01:47:21 hostname=slice:fw02 level=uint:4 message_id=uint:106023 message=slice:Deny tcp src outside:1.2.3.4/443 dst inside:10.0.0.5/52001 by access-group "OUTSIDE-IN"
-row 6: priority=uint:162 timestamp=slice:Apr 28 04:02:03 hostname=slice:asa-edge level=uint:2 message_id=uint:106017 message=slice:Deny IP due to Land Attack from 10.0.0.1 to 10.0.0.1
-row 7: priority=uint:166 timestamp=slice:Jun 27 01:47:20 hostname=slice:fw01 level=uint:6 message_id=uint:302013 message=slice:Built outbound TCP connection 12345 for outside:1.2.3.4/443 (1.2.3.4/443) to inside:10.0.0.5/52001 (10.0.0.5/52001)
-row 8: timestamp=slice:Jun 27 01:47:21 hostname=slice:fw02 level=uint:4 message_id=uint:106023 message=slice:Deny tcp src outside:1.2.3.4/443 dst inside:10.0.0.5/52001 by access-group "OUTSIDE-IN"
-row 9: priority=uint:162 timestamp=slice:Apr 28 04:02:03 hostname=slice:asa-edge level=uint:2 message_id=uint:106017 message=slice:Deny IP due to Land Attack from 10.0.0.1 to 10.0.0.1
+row 1: priority=uint:166 timestamp=time:1782524840000000 hostname=slice:fw01 level=uint:6 message_id=uint:302013 message=slice:Built outbound TCP connection 12345 for outside:1.2.3.4/443 (1.2.3.4/443) to inside:10.0.0.5/52001 (10.0.0.5/52001)
+row 2: timestamp=time:1782524841000000 hostname=slice:fw02 level=uint:4 message_id=uint:106023 message=slice:Deny tcp src outside:1.2.3.4/443 dst inside:10.0.0.5/52001 by access-group "OUTSIDE-IN"
+row 3: priority=uint:162 timestamp=time:1777348923000000 hostname=slice:asa-edge level=uint:2 message_id=uint:106017 message=slice:Deny IP due to Land Attack from 10.0.0.1 to 10.0.0.1
+row 4: priority=uint:166 timestamp=time:1782524840000000 hostname=slice:fw01 level=uint:6 message_id=uint:302013 message=slice:Built outbound TCP connection 12345 for outside:1.2.3.4/443 (1.2.3.4/443) to inside:10.0.0.5/52001 (10.0.0.5/52001)
+row 5: timestamp=time:1782524841000000 hostname=slice:fw02 level=uint:4 message_id=uint:106023 message=slice:Deny tcp src outside:1.2.3.4/443 dst inside:10.0.0.5/52001 by access-group "OUTSIDE-IN"
+row 6: priority=uint:162 timestamp=time:1777348923000000 hostname=slice:asa-edge level=uint:2 message_id=uint:106017 message=slice:Deny IP due to Land Attack from 10.0.0.1 to 10.0.0.1
+row 7: priority=uint:166 timestamp=time:1782524840000000 hostname=slice:fw01 level=uint:6 message_id=uint:302013 message=slice:Built outbound TCP connection 12345 for outside:1.2.3.4/443 (1.2.3.4/443) to inside:10.0.0.5/52001 (10.0.0.5/52001)
+row 8: timestamp=time:1782524841000000 hostname=slice:fw02 level=uint:4 message_id=uint:106023 message=slice:Deny tcp src outside:1.2.3.4/443 dst inside:10.0.0.5/52001 by access-group "OUTSIDE-IN"
+row 9: priority=uint:162 timestamp=time:1777348923000000 hostname=slice:asa-edge level=uint:2 message_id=uint:106017 message=slice:Deny IP due to Land Attack from 10.0.0.1 to 10.0.0.1
 # errors
 error 5-5: Line did not match the regex pattern.
 # offsets

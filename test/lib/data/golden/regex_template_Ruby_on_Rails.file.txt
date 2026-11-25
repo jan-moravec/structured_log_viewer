@@ -1,16 +1,16 @@
 # rows
-row 0: severity=slice:I timestamp=slice:2024-04-28T04:02:03.123456 pid=uint:12345 level=slice:INFO message=slice:Started GET "/users" for 127.0.0.1 at 2024-04-28 04:02:03 +0000
-row 1: severity=slice:D timestamp=slice:2024-04-28T04:02:03.234567 pid=uint:12345 level=slice:DEBUG progname=slice:ActiveRecord message=slice:User Load (0.3ms)  SELECT * FROM users
-row 2: severity=slice:W timestamp=slice:2024-04-28T04:02:04.345678 pid=uint:12345 level=slice:WARN message=slice:Deprecation warning: foo will be removed in Rails 7.2
-row 3: severity=slice:E timestamp=slice:2024-04-28T04:02:05.456789 pid=uint:12345 level=slice:ERROR message=owned:NoMethodError (undefined method `foo' for nil)\nthis line matches no template
-row 6: severity=slice:I timestamp=slice:2024-04-28T04:02:03.123456 pid=uint:12345 level=slice:INFO message=slice:Started GET "/users" for 127.0.0.1 at 2024-04-28 04:02:03 +0000
-row 7: severity=slice:D timestamp=slice:2024-04-28T04:02:03.234567 pid=uint:12345 level=slice:DEBUG progname=slice:ActiveRecord message=slice:User Load (0.3ms)  SELECT * FROM users
-row 8: severity=slice:W timestamp=slice:2024-04-28T04:02:04.345678 pid=uint:12345 level=slice:WARN message=slice:Deprecation warning: foo will be removed in Rails 7.2
-row 9: severity=slice:E timestamp=slice:2024-04-28T04:02:05.456789 pid=uint:12345 level=slice:ERROR message=slice:NoMethodError (undefined method `foo' for nil)
-row 10: severity=slice:I timestamp=slice:2024-04-28T04:02:03.123456 pid=uint:12345 level=slice:INFO message=slice:Started GET "/users" for 127.0.0.1 at 2024-04-28 04:02:03 +0000
-row 11: severity=slice:D timestamp=slice:2024-04-28T04:02:03.234567 pid=uint:12345 level=slice:DEBUG progname=slice:ActiveRecord message=slice:User Load (0.3ms)  SELECT * FROM users
-row 12: severity=slice:W timestamp=slice:2024-04-28T04:02:04.345678 pid=uint:12345 level=slice:WARN message=slice:Deprecation warning: foo will be removed in Rails 7.2
-row 13: severity=slice:E timestamp=slice:2024-04-28T04:02:05.456789 pid=uint:12345 level=slice:ERROR message=slice:NoMethodError (undefined method `foo' for nil)
+row 0: severity=slice:I timestamp=time:1714276923123456 pid=uint:12345 level=slice:INFO message=slice:Started GET "/users" for 127.0.0.1 at 2024-04-28 04:02:03 +0000
+row 1: severity=slice:D timestamp=time:1714276923234567 pid=uint:12345 level=slice:DEBUG progname=slice:ActiveRecord message=slice:User Load (0.3ms)  SELECT * FROM users
+row 2: severity=slice:W timestamp=time:1714276924345678 pid=uint:12345 level=slice:WARN message=slice:Deprecation warning: foo will be removed in Rails 7.2
+row 3: severity=slice:E timestamp=time:1714276925456789 pid=uint:12345 level=slice:ERROR message=owned:NoMethodError (undefined method `foo' for nil)\nthis line matches no template
+row 6: severity=slice:I timestamp=time:1714276923123456 pid=uint:12345 level=slice:INFO message=slice:Started GET "/users" for 127.0.0.1 at 2024-04-28 04:02:03 +0000
+row 7: severity=slice:D timestamp=time:1714276923234567 pid=uint:12345 level=slice:DEBUG progname=slice:ActiveRecord message=slice:User Load (0.3ms)  SELECT * FROM users
+row 8: severity=slice:W timestamp=time:1714276924345678 pid=uint:12345 level=slice:WARN message=slice:Deprecation warning: foo will be removed in Rails 7.2
+row 9: severity=slice:E timestamp=time:1714276925456789 pid=uint:12345 level=slice:ERROR message=slice:NoMethodError (undefined method `foo' for nil)
+row 10: severity=slice:I timestamp=time:1714276923123456 pid=uint:12345 level=slice:INFO message=slice:Started GET "/users" for 127.0.0.1 at 2024-04-28 04:02:03 +0000
+row 11: severity=slice:D timestamp=time:1714276923234567 pid=uint:12345 level=slice:DEBUG progname=slice:ActiveRecord message=slice:User Load (0.3ms)  SELECT * FROM users
+row 12: severity=slice:W timestamp=time:1714276924345678 pid=uint:12345 level=slice:WARN message=slice:Deprecation warning: foo will be removed in Rails 7.2
+row 13: severity=slice:E timestamp=time:1714276925456789 pid=uint:12345 level=slice:ERROR message=slice:NoMethodError (undefined method `foo' for nil)
 # errors
 # offsets
  114 215 319 416 417 447 561 662 766 863 977 1078 1182 1279

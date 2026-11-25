@@ -570,13 +570,14 @@ FormatSpec DetectFileFormat(const std::filesystem::path &file, const loglib::Reg
 }
 
 /**
- * @brief Parser options for a column layout: its Time columns and the application's display zone as the zone in which
- * timestamps without an offset were written. The table is given the same zone by LogModel, so both agree.
+ * @brief Parser options for a column layout: its columns, so the workers convert the time columns and the keys named
+ * like times, and the application's display zone as the zone in which timestamps without an offset were written. The
+ * table is given the same zone by LogModel, so both agree.
  */
 loglib::ParserOptions MakeParserOptionsFor(const loglib::ColumnLayout &layout, const loglib::TimeZoneContext &timeZone)
 {
     loglib::ParserOptions options;
-    options.timeColumns = loglib::TimeColumnsOf(layout);
+    options.columns = layout.Columns();
     options.defaultSourceTimeZone = timeZone;
     return options;
 }

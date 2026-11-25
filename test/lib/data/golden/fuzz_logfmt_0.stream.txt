@@ -1,6 +1,6 @@
 # rows
-row 1: ts=slice:2024-01-01T00:00:00Z level=slice:info msg=slice:hello world service=slice:auth dur=slice:1.5s
-row 2: ts=slice:2024-01-01T00:00:01Z level=slice:error msg=owned:say "boom" ok=bool:true n=int:-7 empty=null: bare=null:
+row 1: ts=time:1704067200000000 level=slice:info msg=slice:hello world service=slice:auth dur=slice:1.5s
+row 2: ts=time:1704067201000000 level=slice:error msg=owned:say "boom" ok=bool:true n=int:-7 empty=null: bare=null:
 # errors
 # offsets
 

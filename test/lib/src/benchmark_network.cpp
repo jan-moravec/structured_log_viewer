@@ -161,7 +161,7 @@ double RunOnce(const Payload &payload, Transport transport)
     StopSource stop;
     ParserOptions options;
     options.stopToken = stop.GetToken();
-    options.timeColumns = TimeColumnsOf(configuration->columns);
+    options.columns = configuration->columns;
     options.defaultSourceTimeZone = table.DefaultSourceTimeZone();
     std::thread parser([&] { LogfmtParser{}.Parse(source, sink, options); });
 

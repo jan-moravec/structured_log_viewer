@@ -1,16 +1,16 @@
 # rows
-row 3: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:0)\n\tat com.example.Main.main(Main.java:1)
-row 6: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n    at indented with spaces\n\tafter a blank line
-row 10: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 12: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:3)\n\tat com.example.Main.main(Main.java:1)
-row 15: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 16: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n    at indented with spaces\n\tafter a blank line
-row 20: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:6)\n\tat com.example.Main.main(Main.java:1)
-row 23: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 25: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 26: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:9)\n\tat com.example.Main.main(Main.java:1)\n    at indented with spaces\n\tafter a blank line
-row 32: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 33: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 3: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:0)\n\tat com.example.Main.main(Main.java:1)
+row 6: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n    at indented with spaces\n\tafter a blank line
+row 10: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 12: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:3)\n\tat com.example.Main.main(Main.java:1)
+row 15: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 16: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n    at indented with spaces\n\tafter a blank line
+row 20: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:6)\n\tat com.example.Main.main(Main.java:1)
+row 23: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 25: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 26: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=owned:Application starting\n\tat com.example.Service.run(Service.java:9)\n\tat com.example.Main.main(Main.java:1)\n    at indented with spaces\n\tafter a blank line
+row 32: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 33: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
 # errors
 error 1-3: 3 orphaned continuation lines dropped.
 error 12-12: Line did not match the regex pattern.

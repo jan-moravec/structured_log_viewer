@@ -1,16 +1,16 @@
 # rows
-row 0: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 1: timestamp=slice:2024-04-28T04:02:04.456Z level=slice:WARN thread=slice:http-nio-8080-exec-1 logger=slice:o.s.web.servlet.PageNotFound message=slice:No mapping for GET /favicon.ico
-row 2: timestamp=slice:2024-04-28 04:02:05.789 level=slice:ERROR thread=slice:pool-1-thread-3 logger=slice:com.example.Worker$Inner message=slice:Task failed after 3 retries
-row 3: timestamp=slice:2024-04-28T04:02:06+02:00 level=slice:DEBUG message=slice:Trace evaluated
-row 6: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 7: timestamp=slice:2024-04-28T04:02:04.456Z level=slice:WARN thread=slice:http-nio-8080-exec-1 logger=slice:o.s.web.servlet.PageNotFound message=slice:No mapping for GET /favicon.ico
-row 8: timestamp=slice:2024-04-28 04:02:05.789 level=slice:ERROR thread=slice:pool-1-thread-3 logger=slice:com.example.Worker$Inner message=slice:Task failed after 3 retries
-row 9: timestamp=slice:2024-04-28T04:02:06+02:00 level=slice:DEBUG message=slice:Trace evaluated
-row 10: timestamp=slice:2024-04-28 04:02:03,123 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
-row 11: timestamp=slice:2024-04-28T04:02:04.456Z level=slice:WARN thread=slice:http-nio-8080-exec-1 logger=slice:o.s.web.servlet.PageNotFound message=slice:No mapping for GET /favicon.ico
-row 12: timestamp=slice:2024-04-28 04:02:05.789 level=slice:ERROR thread=slice:pool-1-thread-3 logger=slice:com.example.Worker$Inner message=slice:Task failed after 3 retries
-row 13: timestamp=slice:2024-04-28T04:02:06+02:00 level=slice:DEBUG message=slice:Trace evaluated
+row 0: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 1: timestamp=time:1714276924456000 level=slice:WARN thread=slice:http-nio-8080-exec-1 logger=slice:o.s.web.servlet.PageNotFound message=slice:No mapping for GET /favicon.ico
+row 2: timestamp=time:1714276925789000 level=slice:ERROR thread=slice:pool-1-thread-3 logger=slice:com.example.Worker$Inner message=slice:Task failed after 3 retries
+row 3: timestamp=time:1714269726000000 level=slice:DEBUG message=slice:Trace evaluated
+row 6: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 7: timestamp=time:1714276924456000 level=slice:WARN thread=slice:http-nio-8080-exec-1 logger=slice:o.s.web.servlet.PageNotFound message=slice:No mapping for GET /favicon.ico
+row 8: timestamp=time:1714276925789000 level=slice:ERROR thread=slice:pool-1-thread-3 logger=slice:com.example.Worker$Inner message=slice:Task failed after 3 retries
+row 9: timestamp=time:1714269726000000 level=slice:DEBUG message=slice:Trace evaluated
+row 10: timestamp=time:1714276923123000 level=slice:INFO thread=slice:main logger=slice:com.example.App message=slice:Application starting
+row 11: timestamp=time:1714276924456000 level=slice:WARN thread=slice:http-nio-8080-exec-1 logger=slice:o.s.web.servlet.PageNotFound message=slice:No mapping for GET /favicon.ico
+row 12: timestamp=time:1714276925789000 level=slice:ERROR thread=slice:pool-1-thread-3 logger=slice:com.example.Worker$Inner message=slice:Task failed after 3 retries
+row 13: timestamp=time:1714269726000000 level=slice:DEBUG message=slice:Trace evaluated
 # errors
 error 6-6: Line did not match the regex pattern.
 # offsets

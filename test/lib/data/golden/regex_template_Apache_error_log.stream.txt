@@ -1,13 +1,13 @@
 # rows
-row 1: timestamp=slice:Wed Oct 11 14:32:52 2000 level=slice:error client=slice:127.0.0.1 message=slice:File does not exist: /var/www/html/foo
-row 2: timestamp=slice:Tue Apr 19 16:38:38.290122 2011 module=slice:ssl level=slice:warn pid=uint:1234 client=slice:127.0.0.1:50318 message=slice:AH02032: log
-row 3: timestamp=slice:Mon Jan 01 00:00:00.000000 2024 module=slice:core level=slice:notice pid=uint:9999 message=slice:AH00094: Command line: 'httpd'
-row 4: timestamp=slice:Wed Oct 11 14:32:52 2000 level=slice:error client=slice:127.0.0.1 message=slice:File does not exist: /var/www/html/foo
-row 5: timestamp=slice:Tue Apr 19 16:38:38.290122 2011 module=slice:ssl level=slice:warn pid=uint:1234 client=slice:127.0.0.1:50318 message=slice:AH02032: log
-row 6: timestamp=slice:Mon Jan 01 00:00:00.000000 2024 module=slice:core level=slice:notice pid=uint:9999 message=slice:AH00094: Command line: 'httpd'
-row 7: timestamp=slice:Wed Oct 11 14:32:52 2000 level=slice:error client=slice:127.0.0.1 message=slice:File does not exist: /var/www/html/foo
-row 8: timestamp=slice:Tue Apr 19 16:38:38.290122 2011 module=slice:ssl level=slice:warn pid=uint:1234 client=slice:127.0.0.1:50318 message=slice:AH02032: log
-row 9: timestamp=slice:Mon Jan 01 00:00:00.000000 2024 module=slice:core level=slice:notice pid=uint:9999 message=slice:AH00094: Command line: 'httpd'
+row 1: timestamp=time:971274772000000 level=slice:error client=slice:127.0.0.1 message=slice:File does not exist: /var/www/html/foo
+row 2: timestamp=time:1303231118290122 module=slice:ssl level=slice:warn pid=uint:1234 client=slice:127.0.0.1:50318 message=slice:AH02032: log
+row 3: timestamp=time:1704067200000000 module=slice:core level=slice:notice pid=uint:9999 message=slice:AH00094: Command line: 'httpd'
+row 4: timestamp=time:971274772000000 level=slice:error client=slice:127.0.0.1 message=slice:File does not exist: /var/www/html/foo
+row 5: timestamp=time:1303231118290122 module=slice:ssl level=slice:warn pid=uint:1234 client=slice:127.0.0.1:50318 message=slice:AH02032: log
+row 6: timestamp=time:1704067200000000 module=slice:core level=slice:notice pid=uint:9999 message=slice:AH00094: Command line: 'httpd'
+row 7: timestamp=time:971274772000000 level=slice:error client=slice:127.0.0.1 message=slice:File does not exist: /var/www/html/foo
+row 8: timestamp=time:1303231118290122 module=slice:ssl level=slice:warn pid=uint:1234 client=slice:127.0.0.1:50318 message=slice:AH02032: log
+row 9: timestamp=time:1704067200000000 module=slice:core level=slice:notice pid=uint:9999 message=slice:AH00094: Command line: 'httpd'
 # errors
 error 5-5: Line did not match the regex pattern.
 # offsets

@@ -427,7 +427,10 @@ TEST_CASE("test_common::Csv() round-trips the generator's record shape end-to-en
     const MemoryStructuredLog fixture(std::move(records), test_common::Csv(schema), schema);
 
     const CsvParser parser;
-    const ParseResult result = ParseSource(parser, fixture.OpenSource());
+    // The record keeps its timestamp as text, so the column is configured as text.
+    ParserOptions options;
+    options.columns.push_back(Column{.header = "timestamp", .keys = {"timestamp"}, .type = ColumnType::String});
+    const ParseResult result = ParseSource(parser, fixture.OpenSource(), options);
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == LINE_COUNT);
 

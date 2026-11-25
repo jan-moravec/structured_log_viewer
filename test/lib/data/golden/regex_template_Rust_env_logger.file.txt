@@ -1,16 +1,16 @@
 # rows
-row 0: timestamp=slice:2024-04-28T04:02:03Z level=slice:INFO module=slice:myapp::server message=slice:listening on 0.0.0.0:8080
-row 1: timestamp=slice:2024-04-28T04:02:04.123456Z level=slice:WARN module=slice:reqwest::connect message=slice:connection reset by peer
-row 2: timestamp=slice:2024-04-28T04:02:05+02:00 level=slice:ERROR module=slice:myapp message=slice:failed to load configuration: Permission denied
-row 3: timestamp=slice:2024-04-28T04:02:06Z level=slice:TRACE module=slice:tokio::runtime::scheduler message=owned:picking next task\nthis line matches no template
-row 6: timestamp=slice:2024-04-28T04:02:03Z level=slice:INFO module=slice:myapp::server message=slice:listening on 0.0.0.0:8080
-row 7: timestamp=slice:2024-04-28T04:02:04.123456Z level=slice:WARN module=slice:reqwest::connect message=slice:connection reset by peer
-row 8: timestamp=slice:2024-04-28T04:02:05+02:00 level=slice:ERROR module=slice:myapp message=slice:failed to load configuration: Permission denied
-row 9: timestamp=slice:2024-04-28T04:02:06Z level=slice:TRACE module=slice:tokio::runtime::scheduler message=slice:picking next task
-row 10: timestamp=slice:2024-04-28T04:02:03Z level=slice:INFO module=slice:myapp::server message=slice:listening on 0.0.0.0:8080
-row 11: timestamp=slice:2024-04-28T04:02:04.123456Z level=slice:WARN module=slice:reqwest::connect message=slice:connection reset by peer
-row 12: timestamp=slice:2024-04-28T04:02:05+02:00 level=slice:ERROR module=slice:myapp message=slice:failed to load configuration: Permission denied
-row 13: timestamp=slice:2024-04-28T04:02:06Z level=slice:TRACE module=slice:tokio::runtime::scheduler message=slice:picking next task
+row 0: timestamp=time:1714276923000000 level=slice:INFO module=slice:myapp::server message=slice:listening on 0.0.0.0:8080
+row 1: timestamp=time:1714276924123456 level=slice:WARN module=slice:reqwest::connect message=slice:connection reset by peer
+row 2: timestamp=time:1714269725000000 level=slice:ERROR module=slice:myapp message=slice:failed to load configuration: Permission denied
+row 3: timestamp=time:1714276926000000 level=slice:TRACE module=slice:tokio::runtime::scheduler message=owned:picking next task\nthis line matches no template
+row 6: timestamp=time:1714276923000000 level=slice:INFO module=slice:myapp::server message=slice:listening on 0.0.0.0:8080
+row 7: timestamp=time:1714276924123456 level=slice:WARN module=slice:reqwest::connect message=slice:connection reset by peer
+row 8: timestamp=time:1714269725000000 level=slice:ERROR module=slice:myapp message=slice:failed to load configuration: Permission denied
+row 9: timestamp=time:1714276926000000 level=slice:TRACE module=slice:tokio::runtime::scheduler message=slice:picking next task
+row 10: timestamp=time:1714276923000000 level=slice:INFO module=slice:myapp::server message=slice:listening on 0.0.0.0:8080
+row 11: timestamp=time:1714276924123456 level=slice:WARN module=slice:reqwest::connect message=slice:connection reset by peer
+row 12: timestamp=time:1714269725000000 level=slice:ERROR module=slice:myapp message=slice:failed to load configuration: Permission denied
+row 13: timestamp=time:1714276926000000 level=slice:TRACE module=slice:tokio::runtime::scheduler message=slice:picking next task
 # errors
 # offsets
  69 147 235 308 309 339 408 486 574 647 716 794 882 955

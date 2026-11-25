@@ -429,7 +429,7 @@ void RegisterEnumBenchmark()
             StreamSink sink;
             sink.table = run.table.get();
             ParserOptions opts;
-            opts.timeColumns = TimeColumnsOf(fixture.configuration->columns);
+            opts.columns = fixture.configuration->columns;
             opts.defaultSourceTimeZone = run.table->DefaultSourceTimeZone();
             JsonParser{}.Parse(*parseSource, sink, opts);
         }

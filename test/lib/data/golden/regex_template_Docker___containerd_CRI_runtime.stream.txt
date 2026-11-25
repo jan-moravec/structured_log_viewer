@@ -1,16 +1,16 @@
 # rows
-row 1: timestamp=slice:2024-04-28T04:02:03.123456789Z stream=slice:stdout tag=slice:F message=slice:Server started on port 8080
-row 2: timestamp=slice:2024-04-28T04:02:04.987654321Z stream=slice:stderr tag=slice:F message=slice:panic: runtime error: index out of range [5] with length 3
-row 3: timestamp=slice:2024-04-28T04:02:05.000000000Z stream=slice:stdout tag=slice:P message=slice:partial-line-without-trailing-newline-because-buffer-was
-row 4: timestamp=slice:2024-04-28T04:02:05.123456789Z stream=slice:stdout tag=slice:F message=slice:flushed-after-the-process-printed-the-final-newline
-row 5: timestamp=slice:2024-04-28T04:02:03.123456789Z stream=slice:stdout tag=slice:F message=slice:Server started on port 8080
-row 6: timestamp=slice:2024-04-28T04:02:04.987654321Z stream=slice:stderr tag=slice:F message=slice:panic: runtime error: index out of range [5] with length 3
-row 7: timestamp=slice:2024-04-28T04:02:05.000000000Z stream=slice:stdout tag=slice:P message=slice:partial-line-without-trailing-newline-because-buffer-was
-row 8: timestamp=slice:2024-04-28T04:02:05.123456789Z stream=slice:stdout tag=slice:F message=slice:flushed-after-the-process-printed-the-final-newline
-row 9: timestamp=slice:2024-04-28T04:02:03.123456789Z stream=slice:stdout tag=slice:F message=slice:Server started on port 8080
-row 10: timestamp=slice:2024-04-28T04:02:04.987654321Z stream=slice:stderr tag=slice:F message=slice:panic: runtime error: index out of range [5] with length 3
-row 11: timestamp=slice:2024-04-28T04:02:05.000000000Z stream=slice:stdout tag=slice:P message=slice:partial-line-without-trailing-newline-because-buffer-was
-row 12: timestamp=slice:2024-04-28T04:02:05.123456789Z stream=slice:stdout tag=slice:F message=slice:flushed-after-the-process-printed-the-final-newline
+row 1: timestamp=time:1714276923123456 stream=slice:stdout tag=slice:F message=slice:Server started on port 8080
+row 2: timestamp=time:1714276924987654 stream=slice:stderr tag=slice:F message=slice:panic: runtime error: index out of range [5] with length 3
+row 3: timestamp=time:1714276925000000 stream=slice:stdout tag=slice:P message=slice:partial-line-without-trailing-newline-because-buffer-was
+row 4: timestamp=time:1714276925123456 stream=slice:stdout tag=slice:F message=slice:flushed-after-the-process-printed-the-final-newline
+row 5: timestamp=time:1714276923123456 stream=slice:stdout tag=slice:F message=slice:Server started on port 8080
+row 6: timestamp=time:1714276924987654 stream=slice:stderr tag=slice:F message=slice:panic: runtime error: index out of range [5] with length 3
+row 7: timestamp=time:1714276925000000 stream=slice:stdout tag=slice:P message=slice:partial-line-without-trailing-newline-because-buffer-was
+row 8: timestamp=time:1714276925123456 stream=slice:stdout tag=slice:F message=slice:flushed-after-the-process-printed-the-final-newline
+row 9: timestamp=time:1714276923123456 stream=slice:stdout tag=slice:F message=slice:Server started on port 8080
+row 10: timestamp=time:1714276924987654 stream=slice:stderr tag=slice:F message=slice:panic: runtime error: index out of range [5] with length 3
+row 11: timestamp=time:1714276925000000 stream=slice:stdout tag=slice:P message=slice:partial-line-without-trailing-newline-because-buffer-was
+row 12: timestamp=time:1714276925123456 stream=slice:stdout tag=slice:F message=slice:flushed-after-the-process-printed-the-final-newline
 # errors
 error 6-6: Line did not match the regex pattern.
 # offsets

@@ -63,7 +63,7 @@ TEST_CASE("ParserOptions{} selects the default thread cap and batch size", "[jso
 
     const ParserOptions defaults;
     CHECK_FALSE(defaults.stopToken.StopRequested());
-    CHECK(defaults.timeColumns.empty());
+    CHECK(defaults.columns.empty());
     CHECK_FALSE(defaults.referenceTime.has_value());
 
     CHECK(defaults.threads == 0u);
@@ -868,7 +868,7 @@ TEST_CASE(
     "[json_parser][stage_b_timestamps]"
 )
 {
-    // When ParserOptions::timeColumns names a Time column, every parsed line
+    // When ParserOptions::columns names a Time column, every parsed line
     // whose value at the column's key is a parseable ISO-8601 string must
     // come out of the parser already promoted to TimeStamp. The whole-data
     // ParseTimestamps pass is thus redundant for these keys, which backs the
@@ -910,7 +910,7 @@ TEST_CASE(
     configuration->columns.push_back(std::move(timestampColumn));
 
     ParserOptions opts;
-    opts.timeColumns = TimeColumnsOf(configuration->columns);
+    opts.columns = configuration->columns;
 
     const JsonParser parser;
     const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);
@@ -975,7 +975,7 @@ TEST_CASE(
     configuration->columns.push_back(std::move(timestampColumn));
 
     ParserOptions opts;
-    opts.timeColumns = TimeColumnsOf(configuration->columns);
+    opts.columns = configuration->columns;
 
     const ParseResult result = ParseWithSink(testFile.OpenSource(), opts);
 

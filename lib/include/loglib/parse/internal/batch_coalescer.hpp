@@ -17,7 +17,6 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
-#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -66,18 +65,23 @@ public:
      */
     void Prime(size_t firstLineNumber) noexcept;
 
-    /** @brief Sets the converted time keys that every batch carries. Call it once, before the first flush. */
+    /**
+     * @brief Sets the time keys that every batch lists as converted, sorted and without duplicates. Call it once,
+     * before the first flush.
+     */
     void SetConvertedTimeKeys(std::vector<KeyId> keys)
     {
         mConvertedTimeKeys = std::move(keys);
     }
 
     /**
-     * @brief Narrows the converted time keys of the pending batch to the keys in keys, which must be sorted. A batch
-     * that mixes lines parsed with different time columns claims only the keys that all of them converted. The
-     * restriction ends when the batch is sent.
+     * @brief Adds time keys that the workers convert to the ones every later batch lists.
+     *
+     * The pipelines add the keys a worker has met when they deliver a batch from that worker, so the early batches of a
+     * file that hold none of a key do not list it. Every worker converts a key the same way, so a batch may list a key
+     * even when none of its rows has a value for it. Adding a key that is listed already does nothing.
      */
-    void RestrictConvertedTimeKeys(const std::vector<KeyId> &keys);
+    void AddConvertedTimeKeys(std::span<const KeyId> ids);
 
     [[nodiscard]] bool IsPrimed() const noexcept
     {
@@ -119,9 +123,6 @@ public:
 private:
     /** Sends a batch to the sink and remembers whether the sink threw. */
     void SendBatch(RowBatch batch);
-    /** Returns the converted time keys the pending batch claims, and ends the restriction. */
-    std::vector<KeyId> TakeConvertedTimeKeys();
-
     LogParseSink &mSink;
     KeyIndex &mKeys;
     RowBatch mPending;
@@ -131,7 +132,6 @@ private:
     bool mSinkThrew = false;
     bool mFinished = false;
     std::vector<KeyId> mConvertedTimeKeys;
-    std::optional<std::vector<KeyId>> mRestrictedTimeKeys;
     size_t mFlushLines;
     std::chrono::milliseconds mFlushInterval;
     std::chrono::steady_clock::time_point mLastFlush;

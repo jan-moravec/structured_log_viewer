@@ -13,13 +13,11 @@
 #include "loglib/core/compact_log_value.hpp"
 #include "loglib/core/key_index.hpp"
 #include "loglib/core/log_line.hpp"
-#include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -37,27 +35,17 @@ struct ParsedLineError
 };
 
 /**
- * @brief The time columns the workers convert while parsing: the specs, and their keys sorted for RowBatch.
- *
- * A run starts with the columns of the parser options. The delivery stage replaces the snapshot when the sink reports a
- * Time column it detected from the first rows, and workers pick up the new one at the start of their next batch. A
- * snapshot never changes after it is published.
- */
-struct TimeColumnSnapshot
-{
-    std::vector<TimeColumnSpec> specs;
-    std::vector<KeyId> convertedKeys;
-};
-
-/**
  * @brief What a worker produces for one batch. The delivery stage puts the batches back in file order before the sink
  * sees them.
  */
 struct DecodedBatch
 {
     uint64_t batchIndex = 0;
-    /** @brief The time columns this batch was parsed with. */
-    std::shared_ptr<const TimeColumnSnapshot> timeColumns;
+    /**
+     * @brief The key ids of the time keys that the worker converts by name, as far as it has met them, sorted. The
+     * delivery stage lists them as converted from this batch on.
+     */
+    std::vector<KeyId> automaticTimeKeys;
     std::vector<LogLine> lines;
     /** @brief The memory the fields of lines are taken from. The delivery stage gives it to the source before it passes
      * lines on.

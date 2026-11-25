@@ -104,6 +104,7 @@ int AppTestBase::StreamFixtureForColumnTests()
 
     loglib::ParserOptions options;
     options.stopToken = stopToken;
+    options.defaultSourceTimeZone = TestTimeZone();
     options.threads = 1;
     const loglib::JsonParser parser;
     parser.Parse(*fileSourcePtr, *model->Sink(), options);
@@ -142,6 +143,7 @@ int AppTestBase::StreamFixtureWithTimeColumnForRowMenuTests()
 
     loglib::ParserOptions options;
     options.stopToken = stopToken;
+    options.defaultSourceTimeZone = TestTimeZone();
     options.threads = 1;
     const loglib::JsonParser parser;
     parser.Parse(*fileSourcePtr, *model->Sink(), options);
@@ -376,6 +378,7 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme)
     {
         loglib::ParserOptions options;
         options.stopToken = stopToken;
+        options.defaultSourceTimeZone = TestTimeZone();
         options.threads = 1;
 
         const loglib::JsonParser parser;
@@ -409,6 +412,7 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme)
     {
         loglib::ParserOptions options;
         options.stopToken = stopToken;
+        options.defaultSourceTimeZone = TestTimeZone();
         options.threads = 1;
 
         loglib::LogfmtParser{}.Parse(*fileSourcePtr, *run.model->Sink(), options);
@@ -439,6 +443,7 @@ std::unique_ptr<LogModel> RunStaticLoadInModel(const QString &fixturePath, const
 
     loglib::ParserOptions options;
     options.stopToken = stopToken;
+    options.defaultSourceTimeZone = TestTimeZone();
     parser.Parse(*fileSourcePtr, *model->Sink(), options);
 
     if (finishedSpy.count() == 0)

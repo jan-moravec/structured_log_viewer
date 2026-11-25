@@ -1,9 +1,10 @@
 /**
  * @brief Options that control a parse.
  *
- * ParserOptions carries the stop token, the time columns to convert while parsing, the time zone and reference time
- * they are read with, and the knobs for the parallel file pipeline: thread count and batch size. It also holds the
- * longest line a live stream buffers. It holds plain values only, so a parse never reads a process-wide setting.
+ * ParserOptions carries the stop token, the configured columns that decide which values are converted to timestamps
+ * while parsing, the time zone and reference time they are read with, and the knobs for the parallel file pipeline:
+ * thread count and batch size. It also holds the longest line a live stream buffers. It holds plain values only, so a
+ * parse never reads a process-wide setting.
  *
  * This is part of the parse module.
  */
@@ -39,8 +40,15 @@ struct ParserOptions
     /** @brief Cancels the parse when its source requests a stop. */
     StopToken stopToken;
 
-    /** @brief Time columns to convert while parsing. Values in other columns are left as text. */
-    std::vector<Column> timeColumns;
+    /**
+     * @brief The configured columns, of every type, empty when none are known yet.
+     *
+     * Workers convert the values of a Time column with the formats of that column. They also convert a key that no
+     * column uses when IsTimeKeyName says its name marks a time, with DefaultTimeParseFormats, so a new file gets its
+     * times converted on the worker threads without any configuration. The values of a key that another column uses are
+     * left as they are.
+     */
+    std::vector<Column> columns;
 
     /** @brief The zone in which timestamps that carry no offset were written. UTC unless set. */
     TimeZoneContext defaultSourceTimeZone;

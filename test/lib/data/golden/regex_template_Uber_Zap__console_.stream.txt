@@ -1,16 +1,16 @@
 # rows
-row 1: timestamp=slice:2024-04-28T04:02:03.123Z level=slice:INFO caller=slice:main.go:42 message=slice:server started {"port": 8080}
-row 2: timestamp=slice:2024-04-28T04:02:04.456-04:00 level=slice:WARN caller=slice:service/foo.go:99 message=slice:retrying request {"attempt": 3}
-row 3: timestamp=slice:2024-04-28T04:02:05Z level=slice:ERROR message=slice:Failed to connect to backend
-row 4: timestamp=slice:2024-04-28T04:02:06.789Z level=slice:DEBUG caller=slice:handler.go:17 message=owned:request received {"method": "GET", "path": "/v1/health"}\nthis line matches no template
-row 5: timestamp=slice:2024-04-28T04:02:03.123Z level=slice:INFO caller=slice:main.go:42 message=slice:server started {"port": 8080}
-row 6: timestamp=slice:2024-04-28T04:02:04.456-04:00 level=slice:WARN caller=slice:service/foo.go:99 message=slice:retrying request {"attempt": 3}
-row 7: timestamp=slice:2024-04-28T04:02:05Z level=slice:ERROR message=slice:Failed to connect to backend
-row 8: timestamp=slice:2024-04-28T04:02:06.789Z level=slice:DEBUG caller=slice:handler.go:17 message=slice:request received {"method": "GET", "path": "/v1/health"}
-row 9: timestamp=slice:2024-04-28T04:02:03.123Z level=slice:INFO caller=slice:main.go:42 message=slice:server started {"port": 8080}
-row 10: timestamp=slice:2024-04-28T04:02:04.456-04:00 level=slice:WARN caller=slice:service/foo.go:99 message=slice:retrying request {"attempt": 3}
-row 11: timestamp=slice:2024-04-28T04:02:05Z level=slice:ERROR message=slice:Failed to connect to backend
-row 12: timestamp=slice:2024-04-28T04:02:06.789Z level=slice:DEBUG caller=slice:handler.go:17 message=slice:request received {"method": "GET", "path": "/v1/health"}
+row 1: timestamp=time:1714276923123000 level=slice:INFO caller=slice:main.go:42 message=slice:server started {"port": 8080}
+row 2: timestamp=time:1714291324456000 level=slice:WARN caller=slice:service/foo.go:99 message=slice:retrying request {"attempt": 3}
+row 3: timestamp=time:1714276925000000 level=slice:ERROR message=slice:Failed to connect to backend
+row 4: timestamp=time:1714276926789000 level=slice:DEBUG caller=slice:handler.go:17 message=owned:request received {"method": "GET", "path": "/v1/health"}\nthis line matches no template
+row 5: timestamp=time:1714276923123000 level=slice:INFO caller=slice:main.go:42 message=slice:server started {"port": 8080}
+row 6: timestamp=time:1714291324456000 level=slice:WARN caller=slice:service/foo.go:99 message=slice:retrying request {"attempt": 3}
+row 7: timestamp=time:1714276925000000 level=slice:ERROR message=slice:Failed to connect to backend
+row 8: timestamp=time:1714276926789000 level=slice:DEBUG caller=slice:handler.go:17 message=slice:request received {"method": "GET", "path": "/v1/health"}
+row 9: timestamp=time:1714276923123000 level=slice:INFO caller=slice:main.go:42 message=slice:server started {"port": 8080}
+row 10: timestamp=time:1714291324456000 level=slice:WARN caller=slice:service/foo.go:99 message=slice:retrying request {"attempt": 3}
+row 11: timestamp=time:1714276925000000 level=slice:ERROR message=slice:Failed to connect to backend
+row 12: timestamp=time:1714276926789000 level=slice:DEBUG caller=slice:handler.go:17 message=slice:request received {"method": "GET", "path": "/v1/health"}
 # errors
 # offsets
 

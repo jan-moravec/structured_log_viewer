@@ -2,8 +2,8 @@
  * @brief Per-thread scratch state shared by the parsing pipelines.
  *
  * Each worker keeps a cache from key text to key id and the last parsed timestamp per time column, so repeated work is
- * skipped. The static pipeline and the live-stream loop share this state. This header defines it and builds the time
- * column specs from a configuration.
+ * skipped. The static pipeline and the live-stream loop share this state. This header defines it and decides, from the
+ * configuration and the names of the keys, which keys a parse converts to timestamps.
  *
  * This is part of the parse module.
  */
@@ -16,6 +16,7 @@
 #include "loglib/time/internal/timestamp_promotion.hpp"
 
 #include <tsl/robin_map.h>
+#include <tsl/robin_set.h>
 
 #include <algorithm>
 #include <chrono>
@@ -32,21 +33,82 @@ namespace loglib::internal
 {
 
 /**
- * @brief Builds a TimeColumnSpec for each column of type Time, in order. Columns of another type are skipped. Every
- * spec reads naive timestamps in timeZone and uses referenceTime for formats without a year.
+ * @brief The keys that a parse converts by their name, and what a worker needs to convert them.
+ *
+ * A key is converted by name when IsTimeKeyName accepts it and nothing else handles it: no configured column uses it,
+ * and no spec was built for it up front. The plan is built once for a parse, and workers only read it. The streaming
+ * loop, which has a single worker, moves the reference time of the prototype forward as the clock advances.
  */
-std::vector<TimeColumnSpec> BuildTimeColumnSpecs(
+struct AutomaticTimeKeys
+{
+    /** Keys that something else handles. A key in this set is never converted by name. */
+    tsl::robin_set<std::string, TransparentStringHash, TransparentStringEqual> excluded;
+    /** What every automatic key starts from: the default formats, the zone and the reference time. */
+    TimeColumnSpec prototype;
+
+    [[nodiscard]] bool Matches(std::string_view key) const
+    {
+        return IsTimeKeyName(key) && !excluded.contains(key);
+    }
+};
+
+/**
+ * @brief How a parse converts times: the specs that are known before the first line, and the plan for the keys that
+ * show up later.
+ *
+ * The specs are the Time columns of the configuration, and the declared keys whose name marks a time. A declared key is
+ * interned before the parse starts, such as a CSV header or the group of a regex, so no worker meets it.
+ */
+struct TimeConversion
+{
+    std::vector<TimeColumnSpec> specs;
+    AutomaticTimeKeys automatic;
+};
+
+/**
+ * @brief Builds the time conversion of a parse. Every spec reads naive timestamps in timeZone and uses referenceTime
+ * for formats without a year. Keys of the Time columns are interned in keys.
+ */
+TimeConversion BuildTimeConversion(
     KeyIndex &keys,
     std::span<const Column> columns,
+    std::span<const KeyId> declaredKeys,
     const TimeZoneContext &timeZone,
     std::chrono::system_clock::time_point referenceTime
 );
 
 /**
  * @brief The key ids of all time columns in specs, sorted and without duplicates. It is what
- * RowBatch::convertedTimeKeys holds.
+ * RowBatch::convertedTimeKeys starts from.
  */
 std::vector<KeyId> ConvertedTimeKeys(std::span<const TimeColumnSpec> specs);
+
+/**
+ * @brief The automatic time keys that one worker met, with what it needs to convert each of them.
+ *
+ * A worker adds a key when its name cache meets the key for the first time, so the check of the name runs once for each
+ * key and worker, and a row costs nothing extra for keys that are not times.
+ */
+struct WorkerAutoTime
+{
+    /** The plan of the parse. Null when the worker converts nothing by name. */
+    const AutomaticTimeKeys *plan = nullptr;
+    std::vector<TimeColumnSpec> specs;
+    std::vector<std::optional<LastValidTimestampParse>> lastValid;
+    std::vector<LastTimestampBytesHit> bytesHits;
+    /** The key ids of specs, sorted. */
+    std::vector<KeyId> keyIds;
+
+    void Add(KeyId id)
+    {
+        TimeColumnSpec spec = plan->prototype;
+        spec.keyIds = {id};
+        specs.push_back(std::move(spec));
+        lastValid.emplace_back();
+        bytesHits.emplace_back();
+        keyIds.insert(std::ranges::lower_bound(keyIds, id), id);
+    }
+};
 
 /**
  * @brief Each worker's own map from key text to key id, and the keys it met first in the current batch.
@@ -64,6 +126,8 @@ struct WorkerKeyCache
     uint32_t generation = 1;
     /** Keys first met in the current batch, in the order they were met. */
     std::vector<KeyId> firstSeen;
+    /** The keys met so far that the parse converts by name. */
+    WorkerAutoTime autoTime;
 
     /** Forgets which keys were met, so the next lookups record them again. */
     void BeginBatch()
@@ -122,15 +186,22 @@ struct WorkerScratch
      * @brief Converts the time columns of a line to timestamps, in place.
      *
      * ownedArena holds the bytes behind the line's OwnedString values. The static pipeline passes its staging buffer
-     * for the batch, and the streaming loop passes an empty one, because the line's source resolves them.
+     * for the batch, and the streaming loop passes an empty one, because the line's source resolves them. timeColumns
+     * are the specs known up front. The worker adds the time keys it met itself.
      */
     void PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena)
     {
-        if (timeColumns.empty())
+        if (!timeColumns.empty())
         {
-            return;
+            PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch, ownedArena);
         }
-        PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch, ownedArena);
+        WorkerAutoTime &automatic = keyCache.autoTime;
+        if (!automatic.specs.empty())
+        {
+            PromoteLineTimestamps(
+                line, automatic.specs, automatic.lastValid, automatic.bytesHits, tsScratch, ownedArena
+            );
+        }
     }
 };
 
@@ -149,6 +220,10 @@ inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, WorkerKeyCache &
     {
         id = keys.GetOrInsert(key);
         cache.map.emplace(std::string(key), id);
+        if (cache.autoTime.plan != nullptr && cache.autoTime.plan->Matches(key))
+        {
+            cache.autoTime.Add(id);
+        }
     }
     cache.NoteSeen(id);
     return id;

@@ -1,6 +1,6 @@
 # rows
-row 1: ts=slice:2024-01-01T00:00:00Z level=slice:info msg=slice:hello service=slice:auth
-row 2: ts=slice:2024-01-01T00:00:01Z level=slice:error msg=slice:boom service=slice:auth
+row 1: ts=time:1704067200000000 level=slice:info msg=slice:hello service=slice:auth
+row 2: ts=time:1704067201000000 level=slice:error msg=slice:boom service=slice:auth
 # errors
 # offsets
 
